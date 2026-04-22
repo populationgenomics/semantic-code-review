@@ -16,7 +16,15 @@ from ..augment.schemas import (
 )
 
 
-def build_viewer_json(diff: AugmentedDiff, meta: dict[str, Any]) -> dict[str, Any]:
+#: cap — files with more than this many lines don't bundle head_lines.
+_HEAD_LINES_CAP = 5000
+
+
+def build_viewer_json(
+    diff: AugmentedDiff,
+    meta: dict[str, Any],
+    head_dir: Path | None = None,
+) -> dict[str, Any]:
     return {
         "version": "1",
         "pr": _pr_block(diff, meta),
@@ -28,7 +36,7 @@ def build_viewer_json(diff: AugmentedDiff, meta: dict[str, Any]) -> dict[str, An
             }
             for tag, d in SMELL_CATALOGUE.items()
         },
-        "files": [_file_block(f, i) for i, f in enumerate(diff.files)],
+        "files": [_file_block(f, i, head_dir) for i, f in enumerate(diff.files)],
     }
 
 
@@ -51,9 +59,10 @@ def _pr_block(diff: AugmentedDiff, meta: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _file_block(f: FilePatch, idx: int) -> dict[str, Any]:
+def _file_block(f: FilePatch, idx: int, head_dir: Path | None = None) -> dict[str, Any]:
     adds = sum(sum(1 for ln in h.body.splitlines() if ln.startswith("+")) for h in f.hunks)
     dels = sum(sum(1 for ln in h.body.splitlines() if ln.startswith("-")) for h in f.hunks)
+    head_lines = _load_head_lines(f, head_dir)
     return {
         "id": f"F{idx}",
         "path": f.path,
@@ -64,8 +73,32 @@ def _file_block(f: FilePatch, idx: int) -> dict[str, Any]:
         "dels": dels,
         "summary": f.summary,
         "symbols": f.symbols.model_dump() if f.symbols else {"added": [], "modified": [], "removed": []},
+        "head_lines": head_lines,
         "hunks": [_hunk_block(h, idx, hi, f) for hi, h in enumerate(f.hunks)],
     }
+
+
+def _load_head_lines(f: FilePatch, head_dir: Path | None) -> list[str] | None:
+    """Return the full head-file content split into lines, or None if we skip.
+
+    Skipped when: no head_dir available, file is GENERATED/BINARY, head file
+    doesn't exist (e.g. deleted file), or the file is over the size cap.
+    """
+    if head_dir is None:
+        return None
+    if f.role is not None and f.role.value in ("generated", "binary", "deleted"):
+        return None
+    path = head_dir / f.path
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    lines = text.splitlines()
+    if len(lines) > _HEAD_LINES_CAP:
+        return None
+    return lines
 
 
 def _hunk_block(h: Hunk, fi: int, hi: int, f: FilePatch) -> dict[str, Any]:

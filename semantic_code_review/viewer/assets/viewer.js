@@ -77,10 +77,111 @@
     if (!folded) {
       const body = el("div", "file-body");
       body.appendChild(renderFileOverview(f));
-      for (const h of f.hunks) body.appendChild(renderHunk(h, f));
+      // Gap chip above the first hunk (file head lines not in any hunk).
+      const top = gapBeforeFirstHunk(f);
+      if (top) body.appendChild(renderGapChip(f, top));
+      for (let i = 0; i < f.hunks.length; i++) {
+        body.appendChild(renderHunk(f.hunks[i], f));
+        const mid = gapAfterHunk(f, i);
+        if (mid) body.appendChild(renderGapChip(f, mid));
+      }
       div.appendChild(body);
     }
     return div;
+  }
+
+  // --- Inter-hunk context expansion ----------------------------------------
+
+  function gapBeforeFirstHunk(f) {
+    if (!f.head_lines || f.hunks.length === 0) return null;
+    const h = f.hunks[0];
+    const newStart = 1, newEnd = h.new_start - 1;
+    if (newEnd < newStart) return null;
+    return {
+      position: "top",
+      new_start: newStart, new_end: newEnd,
+      old_start: 1, old_end: h.old_start - 1,
+    };
+  }
+
+  function gapAfterHunk(f, i) {
+    if (!f.head_lines) return null;
+    const h = f.hunks[i];
+    const newStart = h.new_start + h.new_count;
+    const oldStart = h.old_start + h.old_count;
+    if (i + 1 < f.hunks.length) {
+      const n = f.hunks[i + 1];
+      const newEnd = n.new_start - 1;
+      if (newEnd < newStart) return null;
+      return {
+        position: "between",
+        new_start: newStart, new_end: newEnd,
+        old_start: oldStart, old_end: n.old_start - 1,
+      };
+    }
+    // After last hunk — run to end of file.
+    const total = f.head_lines.length;
+    if (newStart > total) return null;
+    return {
+      position: "bottom",
+      new_start: newStart, new_end: total,
+      old_start: oldStart, old_end: oldStart + (total - newStart),
+    };
+  }
+
+  function renderGapChip(f, gap) {
+    const chip = el("div", "gap-chip");
+    const count = gap.new_end - gap.new_start + 1;
+    const icon = gap.position === "top" ? "⬆" : gap.position === "bottom" ? "⬇" : "⋯";
+    const word = count === 1 ? "line" : "lines";
+    const label = gap.position === "top" ? `expand ${count} ${word} above`
+                : gap.position === "bottom" ? `expand ${count} ${word} below`
+                : `expand ${count} hidden ${word}`;
+    chip.innerHTML = `<span class="gap-icon">${icon}</span> <span class="gap-label">${label}</span>`;
+    chip.title = `lines ${gap.new_start}–${gap.new_end}`;
+    chip.addEventListener("click", () => {
+      chip.replaceWith(renderGapExpansion(f, gap));
+    });
+    return chip;
+  }
+
+  function renderGapExpansion(f, gap) {
+    const container = el("div", "hunk-diff gap-expansion d2h-auto-color-scheme");
+    const lines = f.head_lines.slice(gap.new_start - 1, gap.new_end);
+    // Escape any backticks / dollar signs? No — we're building a unified
+    // diff string, not a template literal that'll be evaluated. Just make
+    // sure every body line starts with a space so diff2html treats it as a
+    // context line.
+    const body = lines.map(l => " " + l).join("\n");
+    const newCount = gap.new_end - gap.new_start + 1;
+    const oldCount = gap.old_end - gap.old_start + 1;
+    const fakeDiff =
+      `diff --git a/${f.path} b/${f.path}\n` +
+      `--- a/${f.path}\n+++ b/${f.path}\n` +
+      `@@ -${gap.old_start},${oldCount} +${gap.new_start},${newCount} @@\n` +
+      body + "\n";
+    try {
+      container.innerHTML = window.Diff2Html.html(fakeDiff, {
+        outputFormat: "side-by-side",
+        drawFileList: false,
+        matching: "lines",
+      });
+      if (window.hljs) {
+        container.querySelectorAll(".d2h-code-line-ctn").forEach(n => {
+          try { window.hljs.highlightElement(n); } catch (_) {}
+        });
+      }
+    } catch (e) {
+      container.textContent = "expand error: " + e.message;
+    }
+    // A thin collapse handle at the top lets the reviewer hide it again.
+    const collapse = el("button", "gap-collapse", "× collapse");
+    collapse.title = "Hide these lines again";
+    collapse.addEventListener("click", () => {
+      container.replaceWith(renderGapChip(f, gap));
+    });
+    container.prepend(collapse);
+    return container;
   }
 
   function renderFileHeader(f, folded) {

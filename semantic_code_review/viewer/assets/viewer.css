@@ -175,6 +175,41 @@ body {
 .hunk-diff .d2h-diff-table { font-family: var(--mono); font-size: 12.5px; }
 .hunk-diff .d2h-file-wrapper { border: 1px solid var(--border); }
 
+/* --- Gap expansion chips (inter-hunk context) ---------------------------- */
+.gap-chip {
+  margin: 8px 0;
+  padding: 6px 12px;
+  background: var(--bg-alt);
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+  text-align: center;
+  font-family: var(--mono);
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+.gap-chip:hover {
+  background: var(--bg-panel);
+  color: var(--fg);
+  border-color: var(--accent);
+  border-style: solid;
+}
+.gap-chip .gap-icon { margin-right: 6px; color: var(--accent); }
+
+.gap-expansion { position: relative; margin: 8px 0; }
+.gap-expansion .gap-collapse {
+  position: absolute; top: 4px; right: 4px; z-index: 2;
+  background: var(--bg-panel); color: var(--fg-muted);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 2px 8px; font-size: 11px; cursor: pointer;
+  font-family: var(--mono);
+}
+.gap-expansion .gap-collapse:hover { color: var(--fg); border-color: var(--accent); }
+/* Visually mark an expansion as context-only (not a real hunk). */
+.gap-expansion .d2h-file-wrapper { border-style: dashed; opacity: 0.92; }
+
 /* --- Status bar ----------------------------------------------------------- */
 .status-bar {
   position: sticky; bottom: 0; background: var(--bg-alt); border-top: 1px solid var(--border);

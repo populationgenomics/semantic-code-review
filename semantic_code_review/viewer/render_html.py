@@ -24,7 +24,8 @@ def render_run_dir(run_dir: Path, out_path: Path, *, offline: bool = False) -> P
         diff = load_sidecar(sidecar)
     else:
         diff = parse_augmented_diff((run_dir / "augmented.diff").read_text(encoding="utf-8"))
-    data = build_viewer_json(diff, meta)
+    head_dir = run_dir / "head"
+    data = build_viewer_json(diff, meta, head_dir=head_dir if head_dir.exists() else None)
     html = render_html(data, offline=offline)
     out_path.write_text(html, encoding="utf-8")
     return out_path
