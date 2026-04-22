@@ -320,11 +320,100 @@
   function renderHunkDiff(h, file) {
     if (STATE.renderedDiffs[h.id]) return STATE.renderedDiffs[h.id];
     const container = el("div", "diff");
+    const rowEls = [];
     for (const row of h.rows || []) {
-      container.appendChild(renderRow(row, file));
+      const re = renderRow(row, file);
+      container.appendChild(re);
+      rowEls.push(re);
     }
+    attachIndentFolds(rowEls, h.rows || []);
     STATE.renderedDiffs[h.id] = container;
     return container;
+  }
+
+  // --- Indent-based code folding ------------------------------------------
+
+  function attachIndentFolds(rowEls, rows) {
+    const indents = rows.map(rowIndent);
+    const regions = computeFoldRegions(indents);
+    for (const r of regions) addFoldChevron(rowEls, r);
+  }
+
+  function rowIndent(row) {
+    // Use the side whose content survives: new-side for ctx/ins/pair,
+    // old-side for del rows. Blank lines (whitespace-only) don't open or
+    // close fold regions.
+    const text = (row.kind === "del") ? row.old_text : row.new_text;
+    if (text === "" || !text.trim()) return -1;
+    let ind = 0;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (ch === " ") ind++;
+      else if (ch === "\t") ind += 4;
+      else break;
+    }
+    return ind;
+  }
+
+  function computeFoldRegions(indents) {
+    // A fold region opens at a row whose next non-blank row has deeper
+    // indent. It closes at the next non-blank row whose indent is <= the
+    // header's indent. Regions nest; each opens its own entry on the stack.
+    const regions = [];
+    const stack = [];
+    function nextNonBlank(i) {
+      for (let j = i + 1; j < indents.length; j++) {
+        if (indents[j] !== -1) return indents[j];
+      }
+      return null;
+    }
+    for (let i = 0; i < indents.length; i++) {
+      const ind = indents[i];
+      if (ind === -1) continue;
+      while (stack.length && stack[stack.length - 1].indent >= ind) {
+        const top = stack.pop();
+        regions.push({ headerIdx: top.headerIdx, bodyEnd: i - 1 });
+      }
+      const ni = nextNonBlank(i);
+      if (ni !== null && ni > ind) {
+        stack.push({ indent: ind, headerIdx: i });
+      }
+    }
+    while (stack.length) {
+      const top = stack.pop();
+      regions.push({ headerIdx: top.headerIdx, bodyEnd: indents.length - 1 });
+    }
+    return regions;
+  }
+
+  function addFoldChevron(rowEls, region) {
+    const headerEl = rowEls[region.headerIdx];
+    if (!headerEl) return;
+    const bodyStart = region.headerIdx + 1;
+    const bodyEnd = region.bodyEnd;
+    if (bodyStart > bodyEnd) return;
+
+    const chev = el("span", "fold-chev", "▾");
+    chev.title = "Fold this block";
+    chev.addEventListener("click", e => {
+      e.stopPropagation();
+      const folded = chev.classList.toggle("folded");
+      chev.textContent = folded ? "▸" : "▾";
+      for (let i = bodyStart; i <= bodyEnd; i++) {
+        if (rowEls[i]) rowEls[i].style.display = folded ? "none" : "";
+      }
+    });
+
+    // Prepend to whichever content cell has visible text on the header row.
+    // Children: [old-lineno, old-content, new-lineno, new-content].
+    const children = headerEl.children;
+    const newContent = children[3];
+    const oldContent = children[1];
+    if (newContent && !newContent.classList.contains("empty")) {
+      newContent.prepend(chev);
+    } else if (oldContent) {
+      oldContent.prepend(chev);
+    }
   }
 
   function renderRow(row, file) {

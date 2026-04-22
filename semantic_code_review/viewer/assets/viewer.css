@@ -220,6 +220,22 @@ body {
   background: rgba(110, 118, 129, 0.05);
 }
 
+/* Indent-based fold control ---------------------------------------------- */
+.diff .fold-chev {
+  display: inline-block;
+  width: 10px;
+  margin-right: 4px;
+  margin-left: -2px;
+  color: var(--fg-muted);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  vertical-align: baseline;
+}
+.diff .fold-chev:hover  { color: var(--accent); }
+.diff .fold-chev.folded { color: var(--accent); }
+
 @media (prefers-color-scheme: light) {
   .diff .row-ins .cell-content-new { background: rgba(26, 127, 55, 0.10); }
   .diff .row-del .cell-content-old { background: rgba(207, 34, 46, 0.10); }
