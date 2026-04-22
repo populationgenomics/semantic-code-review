@@ -7,8 +7,12 @@ job as comprehension-first; smells are secondary.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
+
+
+log = logging.getLogger(__name__)
 
 from ..augment.schemas import (
     AugmentedDiff, FilePatch, Hunk, LineNote, Ref, Segment, Smell,
@@ -106,25 +110,57 @@ async def run_hunk_pass(
 
 
 def apply_hunk_annotations(hunk: Hunk, submit_args: dict[str, Any]) -> None:
-    """Fold a submit_annotations payload into a Hunk in place."""
+    """Fold a submit_annotations payload into a Hunk in place.
+
+    Drops segments that fall outside the hunk's post-image range or
+    overlap a previously-kept segment — the LLM occasionally emits
+    pre-image line numbers or off-by-a-few ranges.
+    """
     hunk.intent = submit_args.get("intent", "") or ""
     hunk.context = submit_args.get("context", "") or ""
     hunk.confidence = submit_args.get("confidence")
     hunk.smells = [_smell(s) for s in submit_args.get("smells") or []]
     hunk.refs = [Ref(**_ref(r)) for r in submit_args.get("refs") or []]
-    hunk.line_notes = [LineNote(**ln) for ln in submit_args.get("line_notes") or []]
+    hunk.line_notes = [LineNote(**ln) for ln in submit_args.get("line_notes") or []
+                       if _line_in_hunk(int(ln["line"]), hunk)]
+
     hunk.segments = []
+    hunk_end = hunk.new_start + hunk.new_count - 1
+    last_end = hunk.new_start - 1  # so a segment starting at new_start is allowed
     for seg in submit_args.get("segments") or []:
+        try:
+            start = int(seg["new_start"])
+            count = int(seg["new_count"])
+        except (KeyError, TypeError, ValueError):
+            log.warning("hunk %s: malformed segment %r — dropped", hunk.header, seg)
+            continue
+        end = start + count - 1
+        if count <= 0 or start < hunk.new_start or end > hunk_end:
+            log.warning(
+                "hunk %s: segment +%d..+%d outside range +%d..+%d — dropped",
+                hunk.header, start, end, hunk.new_start, hunk_end,
+            )
+            continue
+        if start <= last_end:
+            log.warning(
+                "hunk %s: segment +%d..+%d overlaps previous (ends +%d) — dropped",
+                hunk.header, start, end, last_end,
+            )
+            continue
         hunk.segments.append(
             Segment(
-                new_start=int(seg["new_start"]),
-                new_count=int(seg["new_count"]),
+                new_start=start, new_count=count,
                 intent=seg.get("intent", "") or "",
                 smells=[_smell(s) for s in seg.get("smells") or []],
                 context=seg.get("context", "") or "",
                 refs=[Ref(**_ref(r)) for r in seg.get("refs") or []],
             )
         )
+        last_end = end
+
+
+def _line_in_hunk(line: int, hunk: Hunk) -> bool:
+    return hunk.new_start <= line <= hunk.new_start + hunk.new_count - 1
 
 
 def _smell(d: dict[str, Any]) -> Smell:
