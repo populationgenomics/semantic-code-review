@@ -216,7 +216,9 @@
 
   function renderHunkDiff(h) {
     if (STATE.renderedDiffs[h.id]) return STATE.renderedDiffs[h.id];
-    const container = el("div", "hunk-diff");
+    // `d2h-auto-color-scheme` flips diff2html's palette to match
+    // prefers-color-scheme (dark + light built-in).
+    const container = el("div", "hunk-diff d2h-auto-color-scheme");
     try {
       const html = window.Diff2Html.html(h.diff_text, {
         outputFormat: "side-by-side",

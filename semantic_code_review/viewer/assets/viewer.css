@@ -164,102 +164,16 @@ body {
 .smell.sev-major   { background: #d2992280; }
 .smell.sev-critical{ background: #f8514980; }
 
-/* --- Hunk diff (diff2html theme override) -------------------------------- */
-.hunk-diff { padding: 0; background: var(--bg); }
+/* --- Hunk diff ------------------------------------------------------------
+ * The container gets `d2h-auto-color-scheme`, so diff2html's own dark/light
+ * palette kicks in automatically via @media (prefers-color-scheme). We only
+ * hide the wrapper chrome (file header, file list) and match fonts.
+ */
+.hunk-diff { padding: 0; }
 .hunk-diff .d2h-file-header,
 .hunk-diff .d2h-file-list-wrapper { display: none !important; }
 .hunk-diff .d2h-diff-table { font-family: var(--mono); font-size: 12.5px; }
-
-/* Repaint diff2html's default light palette onto our themed surface. */
-.hunk-diff .d2h-wrapper,
-.hunk-diff .d2h-file-wrapper,
-.hunk-diff .d2h-files-diff,
-.hunk-diff .d2h-file-side-diff,
-.hunk-diff .d2h-code-wrapper,
-.hunk-diff .d2h-diff-table,
-.hunk-diff .d2h-diff-tbody {
-  background: var(--bg) !important;
-  color: var(--fg) !important;
-  border-color: var(--border) !important;
-}
-
-/* Context rows */
-.hunk-diff tr.d2h-cntx > td,
-.hunk-diff td.d2h-cntx {
-  background-color: var(--bg) !important;
-  color: var(--fg) !important;
-}
-
-/* Line numbers */
-.hunk-diff td.d2h-code-linenumber,
-.hunk-diff td.d2h-code-side-linenumber,
-.hunk-diff .d2h-code-linenumber,
-.hunk-diff .d2h-code-side-linenumber {
-  background-color: var(--bg-alt) !important;
-  color: var(--fg-dim) !important;
-  border-color: var(--border) !important;
-}
-
-/* Added / removed line backgrounds */
-.hunk-diff tr.d2h-ins > td,
-.hunk-diff td.d2h-ins {
-  background-color: rgba(63, 185, 80, 0.16) !important;
-}
-.hunk-diff tr.d2h-del > td,
-.hunk-diff td.d2h-del {
-  background-color: rgba(248, 81, 73, 0.16) !important;
-}
-
-/* Intra-line word-level changes (brighter highlight) */
-.hunk-diff td.d2h-ins.d2h-change,
-.hunk-diff td.d2h-del.d2h-change {
-  background-color: rgba(63, 185, 80, 0.08) !important;
-}
-.hunk-diff td.d2h-del.d2h-change {
-  background-color: rgba(248, 81, 73, 0.08) !important;
-}
-.hunk-diff ins {
-  background-color: rgba(63, 185, 80, 0.40) !important;
-  text-decoration: none !important;
-  color: inherit !important;
-}
-.hunk-diff del {
-  background-color: rgba(248, 81, 73, 0.40) !important;
-  text-decoration: none !important;
-  color: inherit !important;
-}
-
-/* Empty placeholders on the opposite side of an add/del */
-.hunk-diff tr.d2h-emptyplaceholder > td,
-.hunk-diff td.d2h-emptyplaceholder,
-.hunk-diff .d2h-emptyplaceholder {
-  background-color: rgba(110, 118, 129, 0.06) !important;
-  border-color: transparent !important;
-}
-
-/* Hunk-header row inside d2h (the `@@ ... @@` line) */
-.hunk-diff tr.d2h-info > td,
-.hunk-diff td.d2h-info,
-.hunk-diff .d2h-info {
-  background-color: var(--bg-panel) !important;
-  color: var(--fg-muted) !important;
-  border-color: var(--border) !important;
-}
-
-/* +/- prefix column */
-.hunk-diff .d2h-code-line-prefix { color: var(--fg-dim) !important; }
-.hunk-diff .d2h-code-line,
-.hunk-diff .d2h-code-side-line { color: var(--fg) !important; }
-
-/* In light mode, soften the backgrounds a little so they don't dominate. */
-@media (prefers-color-scheme: light) {
-  .hunk-diff tr.d2h-ins > td,
-  .hunk-diff td.d2h-ins { background-color: rgba(26, 127, 55, 0.10) !important; }
-  .hunk-diff tr.d2h-del > td,
-  .hunk-diff td.d2h-del { background-color: rgba(207, 34, 46, 0.10) !important; }
-  .hunk-diff ins { background-color: rgba(26, 127, 55, 0.32) !important; }
-  .hunk-diff del { background-color: rgba(207, 34, 46, 0.32) !important; }
-}
+.hunk-diff .d2h-file-wrapper { border: 1px solid var(--border); }
 
 /* --- Status bar ----------------------------------------------------------- */
 .status-bar {
