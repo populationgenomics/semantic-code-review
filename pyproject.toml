@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "semantic-code-review"
+version = "0.1.0"
+description = "LLM-augmented GitHub PR viewer with foldable semantic diffs."
+requires-python = ">=3.11"
+authors = [{name = "Toby Sargeant", email = "toby.sargeant@populationgenomics.org.au"}]
+dependencies = [
+  "anthropic>=0.40.0",
+  "unidiff>=0.7.5",
+  "typer>=0.12.0",
+  "pydantic>=2.6",
+  "jinja2>=3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+scr = "semantic_code_review.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["semantic_code_review*"]
+
+[tool.setuptools.package-data]
+"semantic_code_review.viewer" = ["assets/*", "assets/vendor/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
