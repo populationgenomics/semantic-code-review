@@ -15,6 +15,9 @@ from .gh import PRRef
 
 def init_worktrees(run_dir: Path, ref: PRRef, base_sha: str, head_sha: str) -> tuple[Path, Path]:
     """Create `<run_dir>/base` and `<run_dir>/head` and return their paths."""
+    # Use absolute paths throughout so relative cwd changes inside _git don't
+    # accidentally create nested directories under repo.git.
+    run_dir = run_dir.resolve()
     repo_git = run_dir / "repo.git"
     base = run_dir / "base"
     head = run_dir / "head"
@@ -22,10 +25,11 @@ def init_worktrees(run_dir: Path, ref: PRRef, base_sha: str, head_sha: str) -> t
     if base.exists() and head.exists() and repo_git.exists():
         return base, head
 
-    repo_git.mkdir(parents=True, exist_ok=True)
-    _git(repo_git.parent, "init", str(repo_git))
-    _git(repo_git, "remote", "add", "origin", ref.clone_url)
-    _git(repo_git, "fetch", "--depth", "1", "origin", base_sha, head_sha)
+    if not repo_git.exists():
+        repo_git.mkdir(parents=True, exist_ok=True)
+        _git(run_dir, "init", str(repo_git))
+        _git(repo_git, "remote", "add", "origin", ref.clone_url)
+        _git(repo_git, "fetch", "--depth", "1", "origin", base_sha, head_sha)
 
     if not base.exists():
         _git(repo_git, "worktree", "add", "--detach", str(base), base_sha)

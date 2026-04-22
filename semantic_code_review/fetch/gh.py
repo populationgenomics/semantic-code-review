@@ -50,6 +50,8 @@ _PR_FIELDS = [
     "additions",
     "deletions",
     "changedFiles",
+    "files",
+    "number",
 ]
 
 

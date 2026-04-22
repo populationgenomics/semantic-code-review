@@ -13,6 +13,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import fnmatch
+
 from ..cache.store import CacheStore
 from ..format.emit import emit_augmented_diff
 from ..format.parse import parse_augmented_diff
@@ -23,8 +25,32 @@ from .hunks import (
 from .overview import apply_overview_to_diff, run_overview_pass
 from .prompts import PROMPT_VERSION
 from .runner import AnthropicClient, ClaudeClient
-from .schemas import AugmentedDiff, PRInfo
+from .schemas import AugmentedDiff, FileRole, PRInfo
 from .tools import RepoTools
+
+
+# Paths we do not send to the LLM — lock files, vendored bundles, binary
+# formats. The hunks still appear in the viewer; they just lack annotations.
+DEFAULT_SKIP_GLOBS: tuple[str, ...] = (
+    "*.lock",
+    "*.min.js",
+    "*.min.css",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "Pipfile.lock",
+    "poetry.lock",
+    "uv.lock",
+    "*.png", "*.jpg", "*.jpeg", "*.gif", "*.svg", "*.ico",
+    "*.woff", "*.woff2", "*.ttf", "*.otf",
+    "*.pdf",
+)
+
+
+def _should_skip(path: str, extra_globs: tuple[str, ...] = ()) -> bool:
+    globs = DEFAULT_SKIP_GLOBS + tuple(extra_globs)
+    name = path.rsplit("/", 1)[-1]
+    return any(fnmatch.fnmatch(path, g) or fnmatch.fnmatch(name, g) for g in globs)
 
 
 log = logging.getLogger(__name__)
@@ -65,6 +91,17 @@ async def augment_run_dir(
     if only_files:
         diff.files = [f for f in diff.files if f.path in only_files]
 
+    # Mark generated files; their hunks stay in the diff but don't go to the LLM.
+    skipped_files = set()
+    for fp in diff.files:
+        if _should_skip(fp.path):
+            fp.role = FileRole.GENERATED
+            fp.summary = "Generated / lock file — not analysed."
+            skipped_files.add(fp.path)
+    if skipped_files:
+        log.info("skipping %d generated file(s): %s",
+                 len(skipped_files), ", ".join(sorted(skipped_files)))
+
     # --- Overview pass -----------------------------------------------------
     if not skip_overview:
         log.info("overview pass for %d files", len(diff.files))
@@ -85,6 +122,8 @@ async def augment_run_dir(
     tasks: list[asyncio.Task] = []
     hunks_seen = 0
     for fp in diff.files:
+        if fp.path in skipped_files:
+            continue
         file_summary = (fp.summary or "").strip()
         for h in fp.hunks:
             if max_hunks is not None and hunks_seen >= max_hunks:
