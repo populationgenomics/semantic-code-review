@@ -1,0 +1,74 @@
+#scr: scr-version: 1
+#scr: scr-pr: https://github.com/acme/widgets/pull/482
+#scr: scr-base: 7c3a2b1
+#scr: scr-head: 9fa18e0
+#scr: scr-model: claude-opus-4-7 2026-04-22
+#scr: scr-overview: {
+#scr>   "summary": "Introduces pagination on /users; callers updated.",
+#scr>   "symbols_added": [
+#scr>     {
+#scr>       "path": "src/users.py",
+#scr>       "kind": "function",
+#scr>       "name": "paginate"
+#scr>     }
+#scr>   ],
+#scr>   "symbols_modified": [
+#scr>     {
+#scr>       "path": "src/users.py",
+#scr>       "kind": "function",
+#scr>       "name": "list_users"
+#scr>     }
+#scr>   ],
+#scr>   "symbols_removed": [],
+#scr>   "callgraph_edges": [
+#scr>     {
+#scr>       "from": "src/users.py:list_users",
+#scr>       "to": "src/users.py:paginate"
+#scr>     }
+#scr>   ],
+#scr>   "themes": [
+#scr>     "api-surface",
+#scr>     "pagination"
+#scr>   ]
+#scr> }
+diff --git a/src/users.py b/src/users.py
+--- a/src/users.py
++++ b/src/users.py
+#scr: scr-file-summary: Adds paginate() helper and threads page/size through list_users.
+#scr: scr-file-role: modified
+#scr: scr-file-lang: python
+@@ -1,2 +1,7 @@
+-def list_users(db):
+-    return db.query("SELECT * FROM users")
++def paginate(query, page, size):
++    offset = page * size
++    return f"{query} LIMIT {size} OFFSET {offset}"
++
++def list_users(db, page=0, size=50):
++    sql = paginate("SELECT * FROM users", page, size)
++    return db.query(sql)
+#scr: scr-hunk-intent: Pagination is introduced for /users; the mechanism is extracted into a reusable helper so
+#scr>   other listing endpoints can adopt it.
+#scr: scr-hunk-context: src/api.py register_routes() parses page/size from query params; input validation happens
+#scr>   there, not here.
+#scr: scr-hunk-refs: [
+#scr>   {
+#scr>     "path": "src/api.py",
+#scr>     "line": 42,
+#scr>     "reason": "caller updated"
+#scr>   },
+#scr>   {
+#scr>     "path": "tests/test_users.py",
+#scr>     "line": 18,
+#scr>     "reason": "covers new defaults"
+#scr>   }
+#scr> ]
+#scr: scr-hunk-confidence: 85
+#scr: scr-segment-begin: +1..+3
+#scr: scr-segment-intent: New paginate() helper that builds the LIMIT/OFFSET suffix.
+#scr: scr-segment-smell: string-sql "SQL is still interpolated, not parameterized."
+#scr: scr-segment-end
+#scr: scr-segment-begin: +5..+7
+#scr: scr-segment-intent: list_users gains keyword args with safe defaults; existing callers continue to work.
+#scr: scr-segment-end
+#scr: scr-line: +5 "size=50 is an implicit API contract; worth documenting."
