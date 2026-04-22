@@ -46,3 +46,19 @@ def test_show_prints_augmented(tmp_path: Path) -> None:
     result = runner.invoke(app, ["show", str(run)])
     assert result.exit_code == 0
     assert "scr-version" in result.stdout
+
+
+def test_render_runs_against_fixture(tmp_path: Path) -> None:
+    """Render works with just augmented.diff present (sidecar fallback)."""
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "augmented.diff").write_text(FIXTURE.read_text())
+    out = tmp_path / "review.html"
+    runner = CliRunner()
+    result = runner.invoke(app, ["render", str(run), "--out", str(out)])
+    assert result.exit_code == 0, result.stdout + "\n" + (getattr(result, "stderr", "") or "")
+    assert out.exists()
+    html = out.read_text()
+    assert "Pagination is introduced" in html
+    assert "string-sql" in html
+    assert 'data-fold="segments"' in html

@@ -8,6 +8,7 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from ..format.parse import parse_augmented_diff
 from ..format.sidecar import load_sidecar
 from .build_json import build_viewer_json
 
@@ -16,8 +17,13 @@ ASSETS_DIR = Path(__file__).parent / "assets"
 
 
 def render_run_dir(run_dir: Path, out_path: Path, *, offline: bool = False) -> Path:
-    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
-    diff = load_sidecar(run_dir / "augmented.scr.json")
+    meta_path = run_dir / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    sidecar = run_dir / "augmented.scr.json"
+    if sidecar.exists():
+        diff = load_sidecar(sidecar)
+    else:
+        diff = parse_augmented_diff((run_dir / "augmented.diff").read_text(encoding="utf-8"))
     data = build_viewer_json(diff, meta)
     html = render_html(data, offline=offline)
     out_path.write_text(html, encoding="utf-8")
