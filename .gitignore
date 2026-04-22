@@ -12,3 +12,6 @@ dist/
 *.swp
 .idea/
 .vscode/
+.env
+.env.*
+!.env.example

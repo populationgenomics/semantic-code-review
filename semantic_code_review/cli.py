@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -20,6 +21,34 @@ app = typer.Typer(help="Semantic Code Review — LLM-augmented PR diff viewer.")
 
 
 DEFAULT_RUNS_ROOT = Path(".scr/runs")
+
+
+def _load_dotenv(path: Path = Path(".env")) -> None:
+    """Minimal .env loader: KEY=value lines, optional quotes, # comments.
+
+    Also aliases ANTHROPIC_API_TOKEN -> ANTHROPIC_API_KEY because the
+    Anthropic SDK reads the KEY form.
+    """
+    if not path.exists():
+        return
+    try:
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            os.environ.setdefault(key, value)
+    except OSError:
+        return
+    if "ANTHROPIC_API_KEY" not in os.environ and "ANTHROPIC_API_TOKEN" in os.environ:
+        os.environ["ANTHROPIC_API_KEY"] = os.environ["ANTHROPIC_API_TOKEN"]
+
+
+_load_dotenv()
 
 
 def _configure_logging(verbose: bool) -> None:
