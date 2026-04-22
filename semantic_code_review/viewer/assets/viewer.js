@@ -33,8 +33,27 @@
     return n;
   }
 
-  function chev(folded) {
-    return el("span", "chevron", folded ? "▸" : "▾");
+  const SVG_NS = "http://www.w3.org/2000/svg";
+
+  // A disclosure chevron, drawn as a stroked caret (`>`). When `.open` is
+  // applied, CSS rotates it 90° so it points down. Reused by file, hunk,
+  // segment, and in-diff indent fold controls.
+  function chev(folded, extraClass) {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 12 12");
+    svg.setAttribute("aria-hidden", "true");
+    svg.classList.add("chevron");
+    if (extraClass) svg.classList.add(extraClass);
+    if (!folded) svg.classList.add("open");
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", "M4.25 2.75 L8 6 L4.25 9.25");
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "1.75");
+    path.setAttribute("stroke-linecap", "round");
+    path.setAttribute("stroke-linejoin", "round");
+    svg.appendChild(path);
+    return svg;
   }
 
   function smellPill(smell) {
@@ -397,14 +416,17 @@
     const bodyEnd = region.bodyEnd;
     if (bodyStart > bodyEnd) return;
 
-    const chev = el("span", "fold-chev", "▾");
-    chev.title = "Fold this block";
-    chev.addEventListener("click", e => {
+    // Folded state by default? We want the code to start expanded so the
+    // reviewer sees full content; the chevron therefore starts in the
+    // `.open` state and toggles back to collapsed on click.
+    const marker = chev(/* folded */ false, "fold-chev");
+    marker.setAttribute("role", "button");
+    marker.setAttribute("tabindex", "0");
+    marker.addEventListener("click", e => {
       e.stopPropagation();
-      const folded = chev.classList.toggle("folded");
-      chev.textContent = folded ? "▸" : "▾";
+      const nowOpen = marker.classList.toggle("open");
       for (let i = bodyStart; i <= bodyEnd; i++) {
-        if (rowEls[i]) rowEls[i].style.display = folded ? "none" : "";
+        if (rowEls[i]) rowEls[i].style.display = nowOpen ? "" : "none";
       }
     });
 
@@ -414,9 +436,9 @@
     const newContent = children[3];
     const oldContent = children[1];
     if (newContent && !newContent.classList.contains("empty")) {
-      newContent.prepend(chev);
+      newContent.prepend(marker);
     } else if (oldContent) {
-      oldContent.prepend(chev);
+      oldContent.prepend(marker);
     }
   }
 
