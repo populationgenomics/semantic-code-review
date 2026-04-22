@@ -7,6 +7,7 @@ job as comprehension-first; smells are secondary.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from ..augment.schemas import (
@@ -49,11 +50,17 @@ async def run_hunk_pass(
     repo_tools: RepoTools,
     model: str,
     cache: CacheStore | None = None,
+    trace_dir: Path | None = None,
 ) -> dict[str, Any]:
     user_content = format_hunk_prompt(fp, hunk, overview_json, file_summary)
 
+    trace_path = None
+    if trace_dir is not None:
+        safe_file = fp.path.replace("/", "_")
+        safe_hunk = hunk.header.replace(" ", "_").replace("@", "").replace(",", "_").replace("+", "p").replace("-", "m")
+        trace_path = trace_dir / f"hunk-{safe_file}-{safe_hunk[:40]}.json"
+
     if cache is not None:
-        # Key on stable inputs that determine the model's output.
         key = cache.key(
             "hunk",
             model,
@@ -66,6 +73,15 @@ async def run_hunk_pass(
         )
         entry = cache.get(key)
         if entry is not None:
+            if trace_path is not None:
+                trace_path.parent.mkdir(parents=True, exist_ok=True)
+                trace_path.write_text(
+                    json.dumps(
+                        {"cache_hit": True, "pass": "hunk", "response": entry.get("response")},
+                        indent=2, ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
             return entry["response"]
 
     result = await run_agentic(
@@ -76,6 +92,7 @@ async def run_hunk_pass(
         tools=hunk_tools(),
         submit_tool_name="submit_annotations",
         repo_tools=repo_tools,
+        trace_path=trace_path,
     )
 
     if cache is not None:

@@ -102,10 +102,16 @@ async def augment_run_dir(
         log.info("skipping %d generated file(s): %s",
                  len(skipped_files), ", ".join(sorted(skipped_files)))
 
+    trace_dir = run_dir / "trace"
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    _attach_file_log(trace_dir / "augment.log")
+
     # --- Overview pass -----------------------------------------------------
     if not skip_overview:
         log.info("overview pass for %d files", len(diff.files))
-        ov = await run_overview_pass(client, diff=diff, meta=meta, model=model, cache=cache)
+        ov = await run_overview_pass(
+            client, diff=diff, meta=meta, model=model, cache=cache, trace_dir=trace_dir,
+        )
         apply_overview_to_diff(diff, ov)
 
     # --- Per-hunk pass -----------------------------------------------------
@@ -131,7 +137,7 @@ async def augment_run_dir(
             hunks_seen += 1
             tasks.append(asyncio.create_task(
                 _augment_one_hunk(sem, client, fp, h, overview_json, file_summary,
-                                  repo_tools, model, cache)
+                                  repo_tools, model, cache, trace_dir)
             ))
         if max_hunks is not None and hunks_seen >= max_hunks:
             break
@@ -156,24 +162,41 @@ async def _augment_one_hunk(
     repo_tools: RepoTools | None,
     model: str,
     cache: CacheStore | None,
+    trace_dir: Path,
 ) -> None:
     async with sem:
         try:
             if repo_tools is None:
-                # Skip-context mode: call with dummy RepoTools that rejects calls.
-                from pathlib import Path as _P
                 repo_tools = RepoTools(
-                    head_worktree=_P("/dev/null"), repo_git=_P("/dev/null"),
+                    head_worktree=Path("/dev/null"), repo_git=Path("/dev/null"),
                     base_sha="", head_sha="",
                 )
             submit = await run_hunk_pass(
                 client, fp=fp, hunk=h,
                 overview_json=overview_json, file_summary=file_summary,
                 repo_tools=repo_tools, model=model, cache=cache,
+                trace_dir=trace_dir,
             )
             apply_hunk_annotations(h, submit)
+            log.info("hunk %s @ %s: intent=%r smells=%d segs=%d",
+                     fp.path, h.header, (h.intent or "")[:80], len(h.smells), len(h.segments))
         except Exception as e:  # noqa: BLE001
             log.warning("hunk %s @ %s failed: %s", fp.path, h.header, e)
+
+
+def _attach_file_log(path: Path) -> None:
+    """Route `semantic_code_review.*` INFO+ log records to `path`."""
+    root = logging.getLogger("semantic_code_review")
+    # Idempotent: replace any previous FileHandler for a different run.
+    for existing in list(root.handlers):
+        if isinstance(existing, logging.FileHandler):
+            root.removeHandler(existing)
+    handler = logging.FileHandler(path, mode="w", encoding="utf-8")
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root.addHandler(handler)
+    if root.level == 0 or root.level > logging.INFO:
+        root.setLevel(logging.INFO)
 
 
 __all__ = ["augment_run_dir"]

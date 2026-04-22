@@ -8,6 +8,7 @@ text and optional `lang` override that populate `FilePatch` fields.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from ..augment.schemas import (
@@ -55,6 +56,7 @@ async def run_overview_pass(
     meta: dict[str, Any],
     model: str,
     cache: CacheStore | None = None,
+    trace_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Run the overview call. Returns the raw submit_args from the model."""
     user_text = format_overview_prompt(diff, meta)
@@ -63,9 +65,12 @@ async def run_overview_pass(
         key = cache.key("overview", model, OVERVIEW_SYSTEM, user_text)
         entry = cache.get(key)
         if entry is not None:
+            if trace_dir is not None:
+                _write_cache_hit_marker(trace_dir / "overview.json", "overview", entry)
             return entry["response"]
 
     user_content = [{"type": "text", "text": user_text}]
+    trace_path = (trace_dir / "overview.json") if trace_dir is not None else None
     result = await run_agentic(
         client,
         model=model,
@@ -73,6 +78,7 @@ async def run_overview_pass(
         user_content=user_content,
         tools=overview_tools(),
         submit_tool_name="submit_overview",
+        trace_path=trace_path,
     )
 
     if cache is not None:
@@ -82,6 +88,17 @@ async def run_overview_pass(
             tokens_in=result.input_tokens, tokens_out=result.output_tokens,
         )
     return result.submit_args
+
+
+def _write_cache_hit_marker(path: Path, pass_name: str, entry: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {"cache_hit": True, "pass": pass_name, "response": entry.get("response")},
+            indent=2, ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
 
 def apply_overview_to_diff(diff: AugmentedDiff, submit_args: dict[str, Any]) -> None:
