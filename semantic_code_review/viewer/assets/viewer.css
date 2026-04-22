@@ -130,57 +130,28 @@ body {
   font-size: 13px; color: var(--accent); cursor: help;
 }
 
-/* --- Segment anchors overlaid on the d2h diff ---------------------------- */
-.hunk-diff tr.segment-anchor { background: var(--bg-panel) !important; }
-.hunk-diff tr.segment-anchor > td {
-  padding: 6px 10px !important;
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-  cursor: pointer;
-  background: var(--bg-panel) !important;
+/* --- Segments ------------------------------------------------------------- */
+.seg-list { padding: 8px 12px; background: var(--bg); }
+.segment {
+  margin: 6px 0; padding: 6px 10px; background: var(--bg-alt);
+  border-left: 3px solid var(--border); border-radius: 3px;
+  display: flex; gap: 10px; align-items: flex-start; cursor: pointer;
 }
-.segment-anchor-inner {
-  display: flex; gap: 10px; align-items: center; color: var(--fg);
-}
-.segment-anchor-inner .segment-chev { min-width: 12px; color: var(--fg-muted); }
+.segment .chevron { margin-top: 2px; }
 .segment-range {
-  font-family: var(--mono); color: var(--fg-dim); font-size: 12px;
-  min-width: 90px; flex-shrink: 0;
+  font-family: var(--mono); color: var(--fg-dim); font-size: 12px; min-width: 90px;
+  flex-shrink: 0;
 }
 .segment-intent { flex: 1; font-size: 13px; }
 .segment-intent.empty { color: var(--fg-dim); font-style: italic; }
 
-/* When the segment is expanded, make the anchor a slimmer label row so the
- * diff below dominates visually. */
-.hunk-diff tr.segment-anchor:not(.folded) > td {
-  padding: 2px 10px !important;
-  background: transparent !important;
-  border-bottom: none;
-  border-top: 1px dashed var(--border);
-}
-.hunk-diff tr.segment-anchor:not(.folded) .segment-intent {
-  color: var(--fg-muted); font-size: 12px;
-}
-
-/* d2h already shows the @@ header at the top of each hunk; our outer
- * hunk-header carries it too. Hide the duplicate to save space. */
-.hunk-diff tr.d2h-info { display: none !important; }
-
-/* --- Notes / context / refs ---------------------------------------------- */
 .context-note, .refs, .line-notes {
   padding: 6px 12px; background: var(--bg-alt); border-top: 1px solid var(--border);
   font-size: 12px; color: var(--fg-muted);
 }
 .context-note { border-left: 3px solid var(--accent); padding-left: 16px; }
-.refs .ref-link {
-  display: inline-block; padding: 1px 6px; margin: 1px 4px 1px 0;
-  border: 1px solid var(--border); border-radius: 4px;
-  font-family: var(--mono); font-size: 11px;
-  color: var(--accent); text-decoration: none; background: var(--bg);
-}
-.refs .ref-link:hover { background: var(--bg-panel); border-color: var(--accent); }
-.refs .ref-reason { color: var(--fg-muted); font-size: 11px; margin-right: 8px; }
-.line-notes .note { display: block; padding: 2px 0; }
+.refs .ref, .line-notes .note { display: block; padding: 2px 0; }
+.refs .ref code { color: var(--accent); }
 
 /* --- Smells --------------------------------------------------------------- */
 .smell {

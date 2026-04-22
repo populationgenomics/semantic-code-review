@@ -8,9 +8,10 @@
   const SMELLS = DATA.smells_catalogue || {};
 
   const STATE = {
-    fold: "segments",   // 'files' | 'hunks' | 'segments' | 'off'
+    fold: "hunks",      // 'files' | 'hunks' | 'segments' | 'off'
     overrides: {},      // regionId -> bool (true = folded)
     renderedDiffs: {},  // hunkId -> pre-rendered <div>
+    showPRPanel: true,
   };
 
   // --- Fold defaults per region type ---------------------------------------
@@ -130,17 +131,29 @@
     div.style.borderLeftColor = maxSeverityColor(h);
     div.appendChild(renderHunkHeader(h, folded));
     if (!folded) {
-      const diffEl = renderHunkDiff(h);
-      div.appendChild(diffEl);
-      // Segments fold _within_ the diff: each segment's rows can collapse
-      // behind a single anchor row carrying the intent + smells.
-      attachSegmentFolds(diffEl, h);
+      if (h.segments && h.segments.length > 0 && defaultSegmentFolded() && !anySegmentOverridden(h, false)) {
+        // hunks expanded, segments folded — show a segment list with intents.
+        const list = el("div", "seg-list");
+        for (const s of h.segments) list.appendChild(renderSegmentFolded(s));
+        div.appendChild(list);
+      } else {
+        div.appendChild(renderHunkDiff(h));
+      }
       if (h.context) {
         const c = el("div", "context-note");
         c.innerHTML = `<strong>context:</strong> ${esc(h.context)}`;
         div.appendChild(c);
       }
-      if (h.refs && h.refs.length) div.appendChild(renderRefs(h.refs));
+      if (h.refs && h.refs.length) {
+        const r = el("div", "refs");
+        r.innerHTML = "<strong>refs:</strong> ";
+        for (const ref of h.refs) {
+          const s = el("span", "ref");
+          s.innerHTML = `<code>${esc(ref.path)}:${ref.line}</code> ${esc(ref.reason || "")}`;
+          r.appendChild(s);
+        }
+        div.appendChild(r);
+      }
       if (h.line_notes && h.line_notes.length) {
         const ln = el("div", "line-notes");
         ln.innerHTML = "<strong>notes:</strong> ";
@@ -154,131 +167,12 @@
     return div;
   }
 
-  function renderRefs(refs) {
-    const r = el("div", "refs");
-    r.appendChild(el("strong", null, "refs: "));
-    for (const ref of refs) {
-      const link = buildRefLink(ref);
-      r.appendChild(link);
-      if (ref.reason) {
-        const reason = el("span", "ref-reason", " " + ref.reason);
-        r.appendChild(reason);
-      }
-      r.appendChild(document.createTextNode("  "));
-    }
-    return r;
+  function anySegmentOverridden(h, toValue) {
+    return (h.segments || []).some(s => {
+      const val = isFolded(s.id, defaultSegmentFolded());
+      return val === toValue;
+    });
   }
-
-  function buildRefLink(ref) {
-    const pr = DATA.pr || {};
-    const sha = pr.head_sha || pr.base_sha || "HEAD";
-    const a = document.createElement("a");
-    a.className = "ref-link";
-    a.href = pr.repo
-      ? `https://github.com/${pr.repo}/blob/${sha}/${ref.path}#L${ref.line}`
-      : "#";
-    a.target = "_blank";
-    a.rel = "noopener";
-    a.textContent = `${ref.path}:${ref.line}`;
-    a.title = ref.reason || "";
-    return a;
-  }
-
-  // --- Segment fold, overlaid on the d2h diff rows -------------------------
-  function attachSegmentFolds(diffEl, hunk) {
-    if (!hunk.segments || hunk.segments.length === 0) return;
-    const tbody = diffEl.querySelector(".d2h-diff-tbody") || diffEl.querySelector("tbody");
-    if (!tbody) return;
-
-    // If we've already attached anchors for this hunk in a previous render,
-    // just re-apply visibility based on current state. We don't want to keep
-    // re-inserting anchor rows.
-    const existingAnchors = tbody.querySelectorAll("tr.segment-anchor");
-    if (existingAnchors.length === hunk.segments.length) {
-      for (const anchor of existingAnchors) {
-        const segId = anchor.dataset.segId;
-        const members = tbody.querySelectorAll(`tr.segment-member-${cssEsc(segId)}`);
-        const folded = isFolded(segId, defaultSegmentFolded());
-        applySegmentVisibility(anchor, members, folded);
-      }
-      return;
-    }
-
-    // First attachment: classify each row by new-side line number, then
-    // group into segments.
-    const rows = Array.from(tbody.querySelectorAll("tr")).filter(
-      tr => !tr.classList.contains("d2h-info") && !tr.classList.contains("segment-anchor")
-    );
-    for (const tr of rows) {
-      const linenos = tr.querySelectorAll(".d2h-code-side-linenumber");
-      const cell = linenos.length >= 2 ? linenos[1] : linenos[0];
-      const n = cell ? parseInt(cell.textContent.trim(), 10) : NaN;
-      tr.dataset.newLine = isNaN(n) ? "" : String(n);
-    }
-
-    let segIdx = 0;
-    let inSegment = null;
-    const memberMap = {};  // segId -> [tr]
-    for (const tr of rows) {
-      const raw = tr.dataset.newLine;
-      const n = raw === "" ? NaN : parseInt(raw, 10);
-      while (segIdx < hunk.segments.length) {
-        const seg = hunk.segments[segIdx];
-        const segEnd = seg.new_start + seg.new_count - 1;
-        if (!isNaN(n) && n > segEnd) { segIdx++; inSegment = null; continue; }
-        if (!isNaN(n) && n < seg.new_start) { inSegment = null; break; }
-        inSegment = seg;  // line is in seg (or row has no new line & we're mid-seg)
-        break;
-      }
-      if (inSegment) {
-        (memberMap[inSegment.id] ||= []).push(tr);
-        tr.classList.add("segment-member", `segment-member-${cssClassSafe(inSegment.id)}`);
-      }
-    }
-
-    for (const seg of hunk.segments) {
-      const members = memberMap[seg.id];
-      if (!members || members.length === 0) continue;
-      const anchor = buildSegmentAnchorRow(seg, members[0].cells.length);
-      members[0].parentNode.insertBefore(anchor, members[0]);
-      const folded = isFolded(seg.id, defaultSegmentFolded());
-      applySegmentVisibility(anchor, members, folded);
-      anchor.addEventListener("click", e => {
-        e.stopPropagation();
-        toggleFold(seg.id, defaultSegmentFolded());
-      });
-    }
-  }
-
-  function buildSegmentAnchorRow(seg, colspan) {
-    const tr = document.createElement("tr");
-    tr.className = "segment-anchor";
-    tr.dataset.segId = seg.id;
-    const td = document.createElement("td");
-    td.colSpan = colspan || 4;
-    const inner = el("div", "segment-anchor-inner");
-    const chevNode = chev(true);
-    chevNode.classList.add("segment-chev");
-    inner.appendChild(chevNode);
-    inner.appendChild(el("span", "segment-range",
-      `+${seg.new_start}..+${seg.new_start + seg.new_count - 1}`));
-    inner.appendChild(el("span", seg.intent ? "segment-intent" : "segment-intent empty",
-      seg.intent || "(no intent)"));
-    for (const sm of seg.smells || []) inner.appendChild(smellPill(sm));
-    td.appendChild(inner);
-    tr.appendChild(td);
-    return tr;
-  }
-
-  function applySegmentVisibility(anchor, members, folded) {
-    anchor.classList.toggle("folded", folded);
-    const chevNode = anchor.querySelector(".segment-chev");
-    if (chevNode) chevNode.textContent = folded ? "▸" : "▾";
-    for (const m of members) m.style.display = folded ? "none" : "";
-  }
-
-  function cssClassSafe(s) { return String(s).replace(/[^\w-]/g, "_"); }
-  function cssEsc(s) { return (window.CSS && CSS.escape) ? CSS.escape(cssClassSafe(s)) : cssClassSafe(s); }
 
   function renderHunkHeader(h, folded) {
     const hdr = el("div", "hunk-header");
@@ -304,6 +198,20 @@
       toggleFold(h.id, defaultHunkFolded());
     });
     return hdr;
+  }
+
+  function renderSegmentFolded(s) {
+    const div = el("div", "segment");
+    div.dataset.id = s.id;
+    div.appendChild(chev(true));
+    div.appendChild(el("span", "segment-range", `+${s.new_start}..+${s.new_start + s.new_count - 1}`));
+    div.appendChild(el("span", s.intent ? "segment-intent" : "segment-intent empty", s.intent || "(no intent)"));
+    for (const sm of s.smells || []) div.appendChild(smellPill(sm));
+    div.addEventListener("click", e => {
+      e.stopPropagation();
+      toggleFold(s.id, defaultSegmentFolded());
+    });
+    return div;
   }
 
   function renderHunkDiff(h) {
