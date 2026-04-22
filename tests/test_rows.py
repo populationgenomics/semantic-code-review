@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from semantic_code_review.augment.schemas import Hunk
-from semantic_code_review.viewer.rows import build_rows
+from semantic_code_review.viewer.rows import build_rows, compute_fold_regions
 
 
 def _hunk(body: str, *, old_start: int = 1, old_count: int = 1, new_start: int = 1, new_count: int = 1) -> Hunk:
@@ -102,3 +102,68 @@ def test_interleaved_delete_run() -> None:
     assert rows[0].old_text == "a" and rows[0].new_text == "c"
     assert rows[1].old_text == "b"
     assert rows[2].old_text == "d" and rows[2].new_text == "e"
+
+
+# --- compute_fold_regions ---------------------------------------------------
+
+def test_fold_regions_simple_function() -> None:
+    body = (
+        " def foo():\n"
+        "     x = 1\n"
+        "     y = 2\n"
+        " def bar():\n"
+        "     z = 3\n"
+    )
+    rows = build_rows(_hunk(body, old_count=5, new_count=5))
+    regions = compute_fold_regions(rows)
+    # Two fold regions: `def foo():` body, `def bar():` body
+    assert len(regions) == 2
+    # First region header is the 'def foo' row, body is lines 2-3 (x, y).
+    assert regions[0].header_idx == 0
+    assert regions[0].body_start_idx == 1 and regions[0].body_end_idx == 2
+    assert regions[0].has_changes is False
+    assert regions[0].new_start == 1 and regions[0].new_end == 3
+    # Second region
+    assert regions[1].header_idx == 3
+    assert regions[1].body_start_idx == 4 and regions[1].body_end_idx == 4
+
+
+def test_fold_regions_flags_changed_content() -> None:
+    body = (
+        " def foo():\n"
+        "-    x = 1\n"
+        "+    x = 2\n"
+    )
+    rows = build_rows(_hunk(body, old_count=2, new_count=2))
+    regions = compute_fold_regions(rows)
+    assert len(regions) == 1
+    assert regions[0].has_changes is True
+
+
+def test_fold_regions_nested() -> None:
+    body = (
+        " def outer():\n"
+        "     def inner():\n"
+        "         pass\n"
+    )
+    rows = build_rows(_hunk(body, old_count=3, new_count=3))
+    regions = compute_fold_regions(rows)
+    assert len(regions) == 2
+    # Inner closes before outer, but sorted by header_idx so outer comes first.
+    assert regions[0].header_idx == 0
+    assert regions[0].body_end_idx == 2
+    assert regions[1].header_idx == 1
+    assert regions[1].body_end_idx == 2
+
+
+def test_fold_regions_ignores_blank_lines() -> None:
+    body = (
+        " def foo():\n"
+        "     x = 1\n"
+        "\n"  # blank line inside body shouldn't close the region
+        "     y = 2\n"
+    )
+    rows = build_rows(_hunk(body, old_count=4, new_count=4))
+    regions = compute_fold_regions(rows)
+    assert len(regions) == 1
+    assert regions[0].body_end_idx == 3  # last indented row, not the blank

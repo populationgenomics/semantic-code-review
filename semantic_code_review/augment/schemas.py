@@ -74,6 +74,18 @@ class Segment(BaseModel):
     refs: list[Ref] = Field(default_factory=list)
 
 
+class FoldDescription(BaseModel):
+    """One-line summary of the change inside an indent fold region.
+
+    `new_start`/`new_count` target post-image lines the region covers.
+    Emitted by the LLM for every fold region that contains changed text.
+    """
+
+    new_start: int
+    new_count: int
+    summary: str
+
+
 class Hunk(BaseModel):
     header: str
     old_start: int
@@ -88,6 +100,7 @@ class Hunk(BaseModel):
     confidence: int | None = None
     line_notes: list[LineNote] = Field(default_factory=list)
     segments: list[Segment] = Field(default_factory=list)
+    fold_descriptions: list[FoldDescription] = Field(default_factory=list)
 
 
 class FileRole(str, Enum):

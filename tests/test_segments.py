@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from semantic_code_review.augment.schemas import (
-    AugmentedDiff, FilePatch, Hunk, PRInfo, Segment, Smell,
+    AugmentedDiff, FilePatch, FoldDescription, Hunk, PRInfo, Segment, Smell,
 )
 from semantic_code_review.format.emit import emit_augmented_diff
 from semantic_code_review.format.parse import ParseError, parse_augmented_diff
@@ -103,6 +103,25 @@ def test_missing_segment_end_rejected() -> None:
     )
     with pytest.raises(ParseError, match="without matching scr-segment-end"):
         parse_augmented_diff(text)
+
+
+def test_fold_description_round_trip() -> None:
+    body = "-a\n+a1\n+a2\n+a3\n+a4\n"
+    diff = _minimal(
+        body, old_count=1, new_count=4,
+        segments=[],
+    )
+    diff.files[0].hunks[0].fold_descriptions = [
+        FoldDescription(new_start=1, new_count=2, summary="Intro block"),
+        FoldDescription(new_start=3, new_count=2, summary="Clean-up tail"),
+    ]
+    text = emit_augmented_diff(diff)
+    assert 'scr-fold: +1..+2 "Intro block"' in text
+    reparsed = parse_augmented_diff(text)
+    fds = reparsed.files[0].hunks[0].fold_descriptions
+    assert len(fds) == 2
+    assert fds[0].new_start == 1 and fds[0].new_count == 2 and fds[0].summary == "Intro block"
+    assert fds[1].new_start == 3 and fds[1].new_count == 2
 
 
 def test_segment_directive_outside_block_rejected() -> None:

@@ -15,9 +15,10 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 from ..augment.schemas import (
-    AugmentedDiff, FilePatch, Hunk, LineNote, Ref, Segment, Smell,
+    AugmentedDiff, FilePatch, FoldDescription, Hunk, LineNote, Ref, Segment, Smell,
 )
 from ..cache.store import CacheStore
+from ..viewer.rows import build_rows, compute_fold_regions
 from .prompts import HUNK_SYSTEM, PROMPT_VERSION, hunk_tools
 from .runner import ClaudeClient, run_agentic
 from .tools import RepoTools
@@ -27,13 +28,33 @@ def format_hunk_prompt(fp: FilePatch, hunk: Hunk, overview_json: str, file_summa
     """Assemble the user content blocks for one hunk call.
 
     Three blocks: overview (cached), file summary (cached), hunk-specific
-    (not cached). Caching the first two maximises prompt-cache hit rate
-    when hunks from the same file share these prefixes.
+    (not cached). The hunk-specific block also lists any indent fold
+    regions that contain changed lines — the LLM is expected to return a
+    one-line description per region.
     """
+    rows = build_rows(hunk)
+    regions = compute_fold_regions(rows)
+    changed_regions = [
+        r for r in regions
+        if r.has_changes and r.new_start is not None and r.new_end is not None
+    ]
+
+    fold_block = ""
+    if changed_regions:
+        bullet_lines = [
+            f"  +{r.new_start}..+{r.new_end}" for r in changed_regions
+        ]
+        fold_block = (
+            "\n# Indent fold regions (post-image, contain changes)\n"
+            + "\n".join(bullet_lines)
+            + "\nReturn a one-liner for each in `fold_descriptions`."
+        )
+
     hunk_text = (
         f"# File\npath: {fp.path}\n"
         f"lang: {fp.lang or ''}\n\n"
         f"# Hunk\n{hunk.header}\n{hunk.body}"
+        f"{fold_block}"
     )
     return [
         {"type": "text", "text": f"# PR overview\n{overview_json}",
@@ -157,6 +178,28 @@ def apply_hunk_annotations(hunk: Hunk, submit_args: dict[str, Any]) -> None:
             )
         )
         last_end = end
+
+    hunk.fold_descriptions = []
+    for fd in submit_args.get("fold_descriptions") or []:
+        try:
+            start = int(fd["new_start"])
+            count = int(fd["new_count"])
+        except (KeyError, TypeError, ValueError):
+            log.warning("hunk %s: malformed fold_description %r — dropped", hunk.header, fd)
+            continue
+        end = start + count - 1
+        if count <= 0 or start < hunk.new_start or end > hunk_end:
+            log.warning(
+                "hunk %s: fold +%d..+%d outside range — dropped",
+                hunk.header, start, end,
+            )
+            continue
+        summary = (fd.get("summary") or "").strip()
+        if not summary:
+            continue
+        hunk.fold_descriptions.append(
+            FoldDescription(new_start=start, new_count=count, summary=summary)
+        )
 
 
 def _line_in_hunk(line: int, hunk: Hunk) -> bool:

@@ -20,6 +20,7 @@ from typing import Any
 from ..augment.schemas import (
     AugmentedDiff,
     FilePatch,
+    FoldDescription,
     Hunk,
     Overview,
     Segment,
@@ -102,6 +103,9 @@ def _emit_hunk(h: Hunk) -> list[str]:
         lines.extend(_text("scr-hunk-confidence", str(h.confidence)))
     for seg in h.segments:
         lines.extend(_emit_segment(seg))
+    for fd in h.fold_descriptions:
+        end = fd.new_start + fd.new_count - 1
+        lines.extend(_text("scr-fold", f'+{fd.new_start}..+{end} "{fd.summary}"'))
     for ln in h.line_notes:
         lines.extend(_text("scr-line", f'+{ln.line} "{ln.body}"'))
     return lines

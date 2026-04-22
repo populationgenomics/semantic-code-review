@@ -15,7 +15,7 @@ from typing import Any
 from ..augment.schemas import (
     SMELL_CATALOGUE, AugmentedDiff, FilePatch, Hunk, Segment,
 )
-from .rows import build_rows
+from .rows import build_rows, compute_fold_regions
 
 
 #: cap — files with more than this many lines don't bundle head_lines.
@@ -105,6 +105,25 @@ def _load_head_lines(f: FilePatch, head_dir: Path | None) -> list[str] | None:
 
 def _hunk_block(h: Hunk, fi: int, hi: int, f: FilePatch) -> dict[str, Any]:
     hunk_id = f"H{fi}_{hi}"
+    rows = build_rows(h)
+    regions = compute_fold_regions(rows)
+    # Match LLM-generated summaries to regions by (new_start, new_count).
+    summary_by_range = {(fd.new_start, fd.new_count): fd.summary for fd in h.fold_descriptions}
+    fold_region_blocks: list[dict[str, Any]] = []
+    for reg in regions:
+        summary = ""
+        if reg.new_start is not None and reg.new_end is not None:
+            count = reg.new_end - reg.new_start + 1
+            summary = summary_by_range.get((reg.new_start, count), "")
+        fold_region_blocks.append({
+            "header_idx": reg.header_idx,
+            "body_start_idx": reg.body_start_idx,
+            "body_end_idx": reg.body_end_idx,
+            "new_start": reg.new_start,
+            "new_end": reg.new_end,
+            "has_changes": reg.has_changes,
+            "summary": summary,
+        })
     return {
         "id": hunk_id,
         "header": h.header,
@@ -117,7 +136,8 @@ def _hunk_block(h: Hunk, fi: int, hi: int, f: FilePatch) -> dict[str, Any]:
         "refs": [r.model_dump() for r in h.refs],
         "line_notes": [ln.model_dump() for ln in h.line_notes],
         "segments": [_segment_block(s, hunk_id, si) for si, s in enumerate(h.segments)],
-        "rows": [r.to_dict() for r in build_rows(h)],
+        "rows": [r.to_dict() for r in rows],
+        "fold_regions": fold_region_blocks,
     }
 
 

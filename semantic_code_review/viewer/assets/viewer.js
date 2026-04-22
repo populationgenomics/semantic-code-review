@@ -349,85 +349,48 @@
       container.appendChild(re);
       rowEls.push(re);
     }
-    attachIndentFolds(rowEls, h.rows || []);
+    attachIndentFolds(container, rowEls, h.fold_regions || []);
     STATE.renderedDiffs[h.id] = container;
     return container;
   }
 
   // --- Indent-based code folding ------------------------------------------
+  // Region ranges + summaries come pre-computed from the Python pipeline
+  // (so the LLM can describe each one). We just wire the chevron and the
+  // summary row for the folded state.
 
-  function attachIndentFolds(rowEls, rows) {
-    const indents = rows.map(rowIndent);
-    const regions = computeFoldRegions(indents);
-    for (const r of regions) addFoldChevron(rowEls, r);
+  function attachIndentFolds(container, rowEls, regions) {
+    for (const r of regions) attachOneFold(container, rowEls, r);
   }
 
-  function rowIndent(row) {
-    // Use the side whose content survives: new-side for ctx/ins/pair,
-    // old-side for del rows. Blank lines (whitespace-only) don't open or
-    // close fold regions.
-    const text = (row.kind === "del") ? row.old_text : row.new_text;
-    if (text === "" || !text.trim()) return -1;
-    let ind = 0;
-    for (let i = 0; i < text.length; i++) {
-      const ch = text[i];
-      if (ch === " ") ind++;
-      else if (ch === "\t") ind += 4;
-      else break;
-    }
-    return ind;
-  }
-
-  function computeFoldRegions(indents) {
-    // A fold region opens at a row whose next non-blank row has deeper
-    // indent. It closes at the next non-blank row whose indent is <= the
-    // header's indent. Regions nest; each opens its own entry on the stack.
-    const regions = [];
-    const stack = [];
-    function nextNonBlank(i) {
-      for (let j = i + 1; j < indents.length; j++) {
-        if (indents[j] !== -1) return indents[j];
-      }
-      return null;
-    }
-    for (let i = 0; i < indents.length; i++) {
-      const ind = indents[i];
-      if (ind === -1) continue;
-      while (stack.length && stack[stack.length - 1].indent >= ind) {
-        const top = stack.pop();
-        regions.push({ headerIdx: top.headerIdx, bodyEnd: i - 1 });
-      }
-      const ni = nextNonBlank(i);
-      if (ni !== null && ni > ind) {
-        stack.push({ indent: ind, headerIdx: i });
-      }
-    }
-    while (stack.length) {
-      const top = stack.pop();
-      regions.push({ headerIdx: top.headerIdx, bodyEnd: indents.length - 1 });
-    }
-    return regions;
-  }
-
-  function addFoldChevron(rowEls, region) {
-    const headerEl = rowEls[region.headerIdx];
+  function attachOneFold(container, rowEls, region) {
+    const headerEl = rowEls[region.header_idx];
     if (!headerEl) return;
-    const bodyStart = region.headerIdx + 1;
-    const bodyEnd = region.bodyEnd;
+    const bodyStart = region.body_start_idx;
+    const bodyEnd = region.body_end_idx;
     if (bodyStart > bodyEnd) return;
 
-    // Folded state by default? We want the code to start expanded so the
-    // reviewer sees full content; the chevron therefore starts in the
-    // `.open` state and toggles back to collapsed on click.
     const marker = chev(/* folded */ false, "fold-chev");
     marker.setAttribute("role", "button");
     marker.setAttribute("tabindex", "0");
+    const summaryRow = buildFoldSummaryRow(region);
+    summaryRow.style.display = "none";
+    // Summary row sits immediately after the last body row, and is only
+    // visible when the fold is collapsed.
+    const insertAfter = rowEls[bodyEnd];
+    if (insertAfter && insertAfter.nextSibling) {
+      insertAfter.parentNode.insertBefore(summaryRow, insertAfter.nextSibling);
+    } else if (insertAfter) {
+      insertAfter.parentNode.appendChild(summaryRow);
+    }
+
     marker.addEventListener("click", e => {
       e.stopPropagation();
       const nowOpen = marker.classList.toggle("open");
       for (let i = bodyStart; i <= bodyEnd; i++) {
         if (rowEls[i]) rowEls[i].style.display = nowOpen ? "" : "none";
       }
+      summaryRow.style.display = nowOpen ? "none" : "";
     });
 
     // Prepend to whichever content cell has visible text on the header row.
@@ -440,6 +403,26 @@
     } else if (oldContent) {
       oldContent.prepend(marker);
     }
+  }
+
+  function buildFoldSummaryRow(region) {
+    const row = el("div", "row row-fold-summary");
+    const cell = el("div", "cell-fold-summary");
+    const bodyLines = region.body_end_idx - region.body_start_idx + 1;
+    const word = bodyLines === 1 ? "line" : "lines";
+    const badge = el("span", "fold-summary-meta", `… ${bodyLines} ${word}`);
+    if (region.summary) {
+      cell.appendChild(el("span", "fold-summary-text", region.summary));
+      cell.appendChild(badge);
+    } else if (region.has_changes) {
+      cell.appendChild(el("span", "fold-summary-text fold-summary-missing",
+        "(changes here; run augment to generate a description)"));
+      cell.appendChild(badge);
+    } else {
+      cell.appendChild(badge);
+    }
+    row.appendChild(cell);
+    return row;
   }
 
   function renderRow(row, file) {

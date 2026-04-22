@@ -11,7 +11,7 @@ from typing import Any
 from .tools import ANTHROPIC_TOOL_SCHEMAS
 
 
-PROMPT_VERSION = "p1"
+PROMPT_VERSION = "p2"
 
 
 # --- Submission tools -------------------------------------------------------
@@ -139,6 +139,19 @@ SUBMIT_ANNOTATIONS_TOOL: dict[str, Any] = {
                     "required": ["line", "body"],
                 },
             },
+            "fold_descriptions": {
+                "type": "array",
+                "description": "One-line summary per indent fold region containing changes.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "new_start": {"type": "integer"},
+                        "new_count": {"type": "integer"},
+                        "summary": {"type": "string", "description": "Short sentence, <= 12 words, plain text."},
+                    },
+                    "required": ["new_start", "new_count", "summary"],
+                },
+            },
         },
         "required": ["intent"],
     },
@@ -182,7 +195,13 @@ HUNK_SYSTEM = (
     "- `context`: cross-file dependencies the reviewer can't see from the diff.\n"
     "- `refs`: {path, line, reason} for other files the reviewer should look at.\n"
     "- `confidence`: 0-100 integer. Low is fine and honest.\n"
-    "- `line_notes`: {line, body} for notes too specific for intent. `line` is post-image.\n\n"
+    "- `line_notes`: {line, body} for notes too specific for intent. `line` is post-image.\n"
+    "- `fold_descriptions`: the viewer supports indent-based code folding inside the "
+    "diff. The prompt lists the nested fold regions in this hunk that contain changed "
+    "lines. For each listed region, return a one-line summary (<= 12 words, present "
+    "tense, no leading capital required) matching its `new_start`/`new_count` exactly. "
+    "Describe the change, not the code ('raise inner TypeError when parser is None' is "
+    "good; 'if / else / raise' is not). If no regions are listed, omit the field.\n\n"
     "Tone: explanatory, not evaluative. Comprehension first."
 )
 
