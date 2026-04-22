@@ -1,5 +1,7 @@
 // Semantic Code Review — viewer.
 // Single foldable diff with IDE-style code folding at PR/file/hunk/segment levels.
+// Custom side-by-side diff renderer driven by pre-paired rows from the Python
+// build step (no diff2html dependency).
 
 (function () {
   "use strict";
@@ -11,7 +13,6 @@
     fold: "hunks",      // 'files' | 'hunks' | 'segments' | 'off'
     overrides: {},      // regionId -> bool (true = folded)
     renderedDiffs: {},  // hunkId -> pre-rendered <div>
-    showPRPanel: true,
   };
 
   // --- Fold defaults per region type ---------------------------------------
@@ -33,8 +34,7 @@
   }
 
   function chev(folded) {
-    const c = el("span", "chevron", folded ? "▸" : "▾");
-    return c;
+    return el("span", "chevron", folded ? "▸" : "▾");
   }
 
   function smellPill(smell) {
@@ -77,7 +77,6 @@
     if (!folded) {
       const body = el("div", "file-body");
       body.appendChild(renderFileOverview(f));
-      // Gap chip above the first hunk (file head lines not in any hunk).
       const top = gapBeforeFirstHunk(f);
       if (top) body.appendChild(renderGapChip(f, top));
       for (let i = 0; i < f.hunks.length; i++) {
@@ -119,7 +118,6 @@
         old_start: oldStart, old_end: n.old_start - 1,
       };
     }
-    // After last hunk — run to end of file.
     const total = f.head_lines.length;
     if (newStart > total) return null;
     return {
@@ -146,41 +144,26 @@
   }
 
   function renderGapExpansion(f, gap) {
-    const container = el("div", "hunk-diff gap-expansion d2h-auto-color-scheme");
-    const lines = f.head_lines.slice(gap.new_start - 1, gap.new_end);
-    // Escape any backticks / dollar signs? No — we're building a unified
-    // diff string, not a template literal that'll be evaluated. Just make
-    // sure every body line starts with a space so diff2html treats it as a
-    // context line.
-    const body = lines.map(l => " " + l).join("\n");
-    const newCount = gap.new_end - gap.new_start + 1;
-    const oldCount = gap.old_end - gap.old_start + 1;
-    const fakeDiff =
-      `diff --git a/${f.path} b/${f.path}\n` +
-      `--- a/${f.path}\n+++ b/${f.path}\n` +
-      `@@ -${gap.old_start},${oldCount} +${gap.new_start},${newCount} @@\n` +
-      body + "\n";
-    try {
-      container.innerHTML = window.Diff2Html.html(fakeDiff, {
-        outputFormat: "side-by-side",
-        drawFileList: false,
-        matching: "lines",
-      });
-      if (window.hljs) {
-        container.querySelectorAll(".d2h-code-line-ctn").forEach(n => {
-          try { window.hljs.highlightElement(n); } catch (_) {}
-        });
-      }
-    } catch (e) {
-      container.textContent = "expand error: " + e.message;
-    }
-    // A thin collapse handle at the top lets the reviewer hide it again.
+    const container = el("div", "gap-expansion");
     const collapse = el("button", "gap-collapse", "× collapse");
     collapse.title = "Hide these lines again";
     collapse.addEventListener("click", () => {
       container.replaceWith(renderGapChip(f, gap));
     });
-    container.prepend(collapse);
+    container.appendChild(collapse);
+
+    const diff = el("div", "diff");
+    const count = gap.new_end - gap.new_start + 1;
+    for (let i = 0; i < count; i++) {
+      const ol = gap.old_start + i;
+      const nl = gap.new_start + i;
+      const text = f.head_lines[nl - 1] ?? "";
+      diff.appendChild(renderRow({
+        kind: "ctx", old_line: ol, new_line: nl,
+        old_text: text, new_text: text,
+      }, f));
+    }
+    container.appendChild(diff);
     return container;
   }
 
@@ -188,8 +171,7 @@
     const hdr = el("div", "file-header");
     hdr.appendChild(chev(folded));
     hdr.appendChild(el("span", "file-path", f.path));
-    const s = el("span", "file-summary", f.summary || "");
-    hdr.appendChild(s);
+    hdr.appendChild(el("span", "file-summary", f.summary || ""));
     const meta = el("div", "file-meta");
     meta.appendChild(el("span", "adds", `+${f.adds}`));
     meta.appendChild(el("span", "dels", `-${f.dels}`));
@@ -233,12 +215,11 @@
     div.appendChild(renderHunkHeader(h, folded));
     if (!folded) {
       if (h.segments && h.segments.length > 0 && defaultSegmentFolded() && !anySegmentOverridden(h, false)) {
-        // hunks expanded, segments folded — show a segment list with intents.
         const list = el("div", "seg-list");
         for (const s of h.segments) list.appendChild(renderSegmentFolded(s));
         div.appendChild(list);
       } else {
-        div.appendChild(renderHunkDiff(h));
+        div.appendChild(renderHunkDiff(h, f));
       }
       if (h.context) {
         const c = el("div", "context-note");
@@ -246,14 +227,7 @@
         div.appendChild(c);
       }
       if (h.refs && h.refs.length) {
-        const r = el("div", "refs");
-        r.innerHTML = "<strong>refs:</strong> ";
-        for (const ref of h.refs) {
-          const s = el("span", "ref");
-          s.innerHTML = `<code>${esc(ref.path)}:${ref.line}</code> ${esc(ref.reason || "")}`;
-          r.appendChild(s);
-        }
-        div.appendChild(r);
+        div.appendChild(renderRefs(h.refs));
       }
       if (h.line_notes && h.line_notes.length) {
         const ln = el("div", "line-notes");
@@ -266,6 +240,32 @@
       }
     }
     return div;
+  }
+
+  function renderRefs(refs) {
+    const div = el("div", "refs");
+    div.appendChild(el("strong", null, "refs: "));
+    for (const ref of refs) {
+      const link = buildRefLink(ref);
+      div.appendChild(link);
+      if (ref.reason) div.appendChild(el("span", "ref-reason", " " + ref.reason + " "));
+    }
+    return div;
+  }
+
+  function buildRefLink(ref) {
+    const pr = DATA.pr || {};
+    const sha = pr.head_sha || pr.base_sha || "HEAD";
+    const a = document.createElement("a");
+    a.className = "ref-link";
+    a.href = pr.repo
+      ? `https://github.com/${pr.repo}/blob/${sha}/${ref.path}#L${ref.line}`
+      : "#";
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = `${ref.path}:${ref.line}`;
+    a.title = ref.reason || "";
+    return a;
   }
 
   function anySegmentOverridden(h, toValue) {
@@ -315,28 +315,58 @@
     return div;
   }
 
-  function renderHunkDiff(h) {
+  // --- Custom side-by-side diff renderer -----------------------------------
+
+  function renderHunkDiff(h, file) {
     if (STATE.renderedDiffs[h.id]) return STATE.renderedDiffs[h.id];
-    // `d2h-auto-color-scheme` flips diff2html's palette to match
-    // prefers-color-scheme (dark + light built-in).
-    const container = el("div", "hunk-diff d2h-auto-color-scheme");
-    try {
-      const html = window.Diff2Html.html(h.diff_text, {
-        outputFormat: "side-by-side",
-        drawFileList: false,
-        matching: "lines",
-      });
-      container.innerHTML = html;
-      if (window.hljs) {
-        container.querySelectorAll(".d2h-code-line-ctn").forEach(node => {
-          try { window.hljs.highlightElement(node); } catch (_) {}
-        });
-      }
-    } catch (err) {
-      container.textContent = "render error: " + err.message;
+    const container = el("div", "diff");
+    for (const row of h.rows || []) {
+      container.appendChild(renderRow(row, file));
     }
     STATE.renderedDiffs[h.id] = container;
     return container;
+  }
+
+  function renderRow(row, file) {
+    const wrapper = el("div", `row row-${row.kind}`);
+    const hasOld = row.old_line !== null && row.old_line !== undefined;
+    const hasNew = row.new_line !== null && row.new_line !== undefined;
+    wrapper.appendChild(renderLineno(row.old_line, "old", hasOld));
+    wrapper.appendChild(renderContent(row.old_text, "old", hasOld, file));
+    wrapper.appendChild(renderLineno(row.new_line, "new", hasNew));
+    wrapper.appendChild(renderContent(row.new_text, "new", hasNew, file));
+    return wrapper;
+  }
+
+  function renderLineno(line, side, present) {
+    const c = el("span", `cell cell-lineno cell-lineno-${side}`);
+    if (!present) {
+      c.classList.add("empty");
+      return c;
+    }
+    c.textContent = String(line);
+    return c;
+  }
+
+  function renderContent(text, side, present, file) {
+    const c = el("span", `cell cell-content cell-content-${side}`);
+    if (!present) {
+      c.classList.add("empty");
+      return c;
+    }
+    const code = el("code", "hljs");
+    const lang = file && file.language;
+    if (window.hljs && lang) {
+      try {
+        code.innerHTML = hljs.highlight(text || " ", { language: lang, ignoreIllegals: true }).value;
+      } catch (_) {
+        code.textContent = text;
+      }
+    } else {
+      code.textContent = text;
+    }
+    c.appendChild(code);
+    return c;
   }
 
   // --- Severity color ------------------------------------------------------
@@ -450,7 +480,6 @@
 
   // --- Boot ----------------------------------------------------------------
   function boot() {
-    // Wire the slider buttons.
     document.querySelectorAll(".fold-slider button").forEach(b => {
       b.addEventListener("click", () => setGlobalFold(b.dataset.fold));
     });

@@ -55,11 +55,19 @@ def test_viewer_json_files_and_hunks() -> None:
     assert h["segments"][0]["smells"][0]["tag"] == "string-sql"
     assert h["segments"][1]["new_start"] == 5 and h["segments"][1]["new_count"] == 3
 
-    # diff_text should be a complete mini-diff diff2html can consume.
-    dt = h["diff_text"]
-    assert dt.startswith("diff --git a/src/users.py")
-    assert "@@ -1,2 +1,7 @@" in dt
-    assert "def paginate" in dt
+    # rows carry the side-by-side structure: two pairs + five ins rows
+    # (hunk replaces 2 old lines with 7 new, so 2 are paired and 5 are inserts).
+    rows = h["rows"]
+    kinds = [r["kind"] for r in rows]
+    assert kinds.count("pair") == 2
+    assert kinds.count("ins") == 5
+    # First row is the pair (list_users → paginate).
+    assert rows[0]["kind"] == "pair"
+    assert rows[0]["old_text"].startswith("def list_users(db):")
+    assert rows[0]["new_text"].startswith("def paginate(")
+    # Line numbers advance correctly.
+    assert rows[0]["old_line"] == 1 and rows[0]["new_line"] == 1
+    assert rows[-1]["new_line"] == 7 and rows[-1]["old_line"] is None
 
 
 def test_render_html_has_key_elements() -> None:

@@ -1,8 +1,9 @@
 """Transform an AugmentedDiff + run metadata into the viewer JSON schema.
 
 The viewer's JS consumes this structure directly; it does not re-parse
-the unified diff. Per-hunk `diff_text` is carried through so diff2html
-renders one hunk at a time on expand.
+the unified diff. Per-hunk `rows` are pre-paired here (sequential `-`/`+`
+matching) so the renderer can emit the side-by-side DOM without running
+a diff algorithm in the browser.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from typing import Any
 from ..augment.schemas import (
     SMELL_CATALOGUE, AugmentedDiff, FilePatch, Hunk, Segment,
 )
+from .rows import build_rows
 
 
 #: cap — files with more than this many lines don't bundle head_lines.
@@ -103,15 +105,6 @@ def _load_head_lines(f: FilePatch, head_dir: Path | None) -> list[str] | None:
 
 def _hunk_block(h: Hunk, fi: int, hi: int, f: FilePatch) -> dict[str, Any]:
     hunk_id = f"H{fi}_{hi}"
-    # diff2html wants each hunk wrapped in the minimal file header so it can
-    # produce a self-contained side-by-side render.
-    diff_text = (
-        f"diff --git a/{f.path} b/{f.path}\n"
-        f"{f.old_file_marker or f'--- a/{f.path}'}\n"
-        f"{f.new_file_marker or f'+++ b/{f.path}'}\n"
-        f"{h.header}\n"
-        f"{h.body.rstrip(chr(10))}\n"
-    )
     return {
         "id": hunk_id,
         "header": h.header,
@@ -124,7 +117,7 @@ def _hunk_block(h: Hunk, fi: int, hi: int, f: FilePatch) -> dict[str, Any]:
         "refs": [r.model_dump() for r in h.refs],
         "line_notes": [ln.model_dump() for ln in h.line_notes],
         "segments": [_segment_block(s, hunk_id, si) for si, s in enumerate(h.segments)],
-        "diff_text": diff_text,
+        "rows": [r.to_dict() for r in build_rows(h)],
     }
 
 

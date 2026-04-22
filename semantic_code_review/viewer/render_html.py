@@ -64,8 +64,6 @@ def render_html(data: dict[str, Any], *, offline: bool = False) -> str:
     }
     if offline:
         vendor = ASSETS_DIR / "vendor"
-        ctx["d2h_css"] = (vendor / "diff2html.min.css").read_text(encoding="utf-8") if (vendor / "diff2html.min.css").exists() else ""
-        ctx["d2h_js"]  = (vendor / "diff2html.min.js").read_text(encoding="utf-8") if (vendor / "diff2html.min.js").exists() else ""
         ctx["hljs_css"] = (vendor / "github-dark.min.css").read_text(encoding="utf-8") if (vendor / "github-dark.min.css").exists() else ""
         ctx["hljs_js"]  = (vendor / "highlight.min.js").read_text(encoding="utf-8") if (vendor / "highlight.min.js").exists() else ""
     return tmpl.render(**ctx)

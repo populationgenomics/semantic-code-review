@@ -5,11 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ pr_title|e }}</title>
   {% if offline %}
-  <style>{{ d2h_css|safe }}</style>
   <style>{{ hljs_css|safe }}</style>
   {% else %}
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/diff2html@3/bundles/css/diff2html.min.css">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release/build/styles/github-dark.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release/build/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release/build/styles/github.min.css" media="(prefers-color-scheme: light)">
   {% endif %}
   <style>{{ viewer_css|safe }}</style>
 </head>
@@ -44,10 +43,8 @@
   </div>
 
   {% if offline %}
-  <script>{{ d2h_js|safe }}</script>
   <script>{{ hljs_js|safe }}</script>
   {% else %}
-  <script src="https://cdn.jsdelivr.net/npm/diff2html@3/bundles/js/diff2html.min.js"></script>
   <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release/build/highlight.min.js"></script>
   {% endif %}
   <script type="application/json" id="scr-data">{{ data_json|safe }}</script>
