@@ -76,7 +76,8 @@
     div.appendChild(renderFileHeader(f, folded));
     if (!folded) {
       const body = el("div", "file-body");
-      body.appendChild(renderFileOverview(f));
+      const overview = renderFileOverview(f);
+      if (overview) body.appendChild(overview);
       const top = gapBeforeFirstHunk(f);
       if (top) body.appendChild(renderGapChip(f, top));
       for (let i = 0; i < f.hunks.length; i++) {
@@ -196,13 +197,16 @@
   }
 
   function renderFileOverview(f) {
-    const div = el("div", "file-overview");
-    const parts = [];
+    // Only render when there's something worth showing. An empty "no symbols"
+    // row just pushes the hunks further from the file header.
     const sym = f.symbols || {};
+    const parts = [];
     if (sym.added && sym.added.length)    parts.push(`<span class="label">added:</span>${esc(sym.added.join(", "))}`);
     if (sym.modified && sym.modified.length) parts.push(`<span class="label">modified:</span>${esc(sym.modified.join(", "))}`);
     if (sym.removed && sym.removed.length) parts.push(`<span class="label">removed:</span>${esc(sym.removed.join(", "))}`);
-    div.innerHTML = parts.join("&nbsp;&nbsp;") || "<span class='label'>no symbol changes detected</span>";
+    if (parts.length === 0) return null;
+    const div = el("div", "file-overview");
+    div.innerHTML = parts.join("&nbsp;&nbsp;");
     return div;
   }
 
