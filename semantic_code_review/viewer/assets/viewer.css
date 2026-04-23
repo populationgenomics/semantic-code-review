@@ -287,14 +287,16 @@ body {
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
   border-radius: 4px;
-  font-size: 75%;
-  line-height: 1.35;
+  font-size: 13px;
+  line-height: 1.4;
   font-style: italic;
   color: var(--fg);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-weight: 400;
   white-space: normal;
   max-width: 64ch;
+  /* Fold summaries stay compact (max ~2 lines); line-notes and comments
+   * get to wrap freely — see the per-variant overrides below. */
   max-height: 3.9em;
   overflow: hidden;
 }
@@ -311,8 +313,21 @@ body {
   font-style: normal;
   max-height: none;         /* comments can wrap freely */
 }
+
+/* Line-note variant: same palette as fold summaries, but the body is
+ * often several sentences and should not be clipped. */
+.diff .annot-note .annot-box {
+  max-height: none;
+}
 .comment-body { white-space: pre-wrap; font-size: 100%; }
 
+/* The comment editor should not inherit the annot-box width/height
+ * clamps — it grows freely with the user's text. */
+.diff .annot-editor .annot-box.comment-editor-box {
+  max-width: none;
+  max-height: none;
+  width: 100%;
+}
 .comment-editor-box textarea.comment-editor-input {
   display: block;
   width: 100%;
@@ -324,8 +339,11 @@ body {
   border-radius: 3px;
   padding: 4px 6px;
   font-family: var(--mono);
-  font-size: 12px;
-  resize: vertical;
+  font-size: 13px;
+  /* Start at a single line; JS autosizes height on input. User can still
+   * drag the handle horizontally to widen if they want a wider box. */
+  resize: horizontal;
+  overflow: hidden;
   outline: none;
 }
 .comment-editor-box textarea.comment-editor-input:focus {

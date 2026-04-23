@@ -81,6 +81,11 @@
     updateSliderButtons();
     // Re-attach any loaded comments to freshly-rendered rows.
     if (Object.keys(STATE.comments).length) renderAllExistingComments();
+    // Annotation arrows attached during render were sized while the
+    // tree was still detached (no layout). Re-size once now that
+    // everything is in the document so line-note arrows land at the
+    // right height.
+    requestAnimationFrame(resizeAllAnnotArrows);
   }
 
   function renderPRPanel(pr) {
@@ -446,6 +451,9 @@
         annotRow.style.display = nowOpen ? "none" : "";
         if (!nowOpen && annotRow._scrSizeArrow) annotRow._scrSizeArrow();
       }
+      // Showing/hiding the fold summary shifts every sibling annotation
+      // below it; re-size any that share this fold's header as anchor.
+      resizeAnnotSiblings(headerEl);
     });
 
     // Prepend chevron to whichever content cell has visible text on the
@@ -506,7 +514,22 @@
     const boxH = box.offsetHeight;
     if (boxH <= 0) return;
 
-    const topOverrun = 6;
+    // topOverrun = how far above this annotation row the arrow should
+    // rise. When multiple annotations stack after the same anchor (e.g.
+    // a reviewer comment plus an LLM line-note on the same source line)
+    // the earlier annotations sit between this row and its anchor; a
+    // fixed 6px would plant the arrow inside the preceding annotation
+    // box. Measure the real distance so each arrow reaches its own
+    // anchor — nested stacks render as concentric L-shapes.
+    const anchor = annotRow._scrAnchor;
+    const minOverrun = 6;
+    let topOverrun = minOverrun;
+    if (anchor) {
+      const rowRect = annotRow.getBoundingClientRect();
+      const anchorRect = anchor.getBoundingClientRect();
+      const gap = rowRect.top - anchorRect.bottom;
+      if (gap > 0) topOverrun = gap + minOverrun;
+    }
     const totalH = topOverrun + boxH;
     const midY = topOverrun + boxH / 2;
     const tipX = 17;
@@ -519,7 +542,6 @@
     svg.style.marginTop = `-${topOverrun}px`;
 
     // Horizontal alignment: put the SVG's vLineX at anchorX.
-    const anchor = annotRow._scrAnchor;
     const side = annotRow._scrSide || "new";
     if (anchor) {
       const anchorX = firstPrintingCharLeft(anchor, side);
@@ -542,11 +564,26 @@
 
   // Re-size all currently-visible annotation arrows on window resize, since
   // box text can reflow and change height.
-  window.addEventListener("resize", () => {
+  window.addEventListener("resize", resizeAllAnnotArrows);
+
+  function resizeAllAnnotArrows() {
     document.querySelectorAll(".row-annotation").forEach(r => {
       if (r.style.display !== "none") sizeAnnotArrow(r);
     });
-  });
+  }
+
+  // Re-size every annotation row anchored to the same source row. Call
+  // after inserting or removing a row so stacked arrows restretch to
+  // reach the real anchor rather than a sibling annotation above them.
+  function resizeAnnotSiblings(anchor) {
+    if (!anchor || !anchor.parentNode) return;
+    const all = anchor.parentNode.querySelectorAll(".row-annotation");
+    all.forEach(r => {
+      if (r._scrAnchor === anchor && r.style.display !== "none") {
+        sizeAnnotArrow(r);
+      }
+    });
+  }
 
   // Measure where the anchor row's first printing character is, in px,
   // relative to the annotation cell's left edge. More reliable than ch-based
@@ -859,6 +896,7 @@
       rowEl.parentNode.appendChild(editor);
     }
     editor._scrSizeArrow();
+    resizeAnnotSiblings(rowEl);
     const ta = editor.querySelector("textarea");
     if (ta) {
       ta.focus();
@@ -873,10 +911,17 @@
     cell.appendChild(svgAnnotArrow());
     const box = el("div", "annot-box comment-editor-box");
     const ta = el("textarea", "comment-editor-input");
-    ta.rows = 2;
+    ta.rows = 1;
     ta.placeholder = "Write a comment… (Enter to save, Shift-Enter for newline, Esc to cancel)";
     ta.value = existing ? existing.body : "";
     box.appendChild(ta);
+    // Auto-grow vertically so the editor stays at one line until the
+    // user types past it, then expands as needed. Width is still user-
+    // controllable via the drag handle (resize: horizontal).
+    function autosizeTextarea() {
+      ta.style.height = "auto";
+      ta.style.height = ta.scrollHeight + "px";
+    }
     const bar = el("div", "comment-editor-bar");
     const save = el("button", "comment-btn comment-btn-save", existing ? "Update" : "Save");
     const cancel = el("button", "comment-btn comment-btn-cancel", "Cancel");
@@ -889,7 +934,10 @@
     row._scrSide = side;
     row._scrSizeArrow = () => sizeAnnotArrow(row);
 
-    function close() { row.remove(); }
+    function close() {
+      row.remove();
+      resizeAnnotSiblings(anchorRowEl);
+    }
 
     function submit() {
       const body = ta.value.trim();
@@ -914,8 +962,14 @@
       else if (e.key === "Escape") { e.preventDefault(); close(); }
       e.stopPropagation();
     });
-    // Resize arrow when the textarea grows.
-    ta.addEventListener("input", () => row._scrSizeArrow());
+    // Resize arrow and grow textarea when content changes.
+    ta.addEventListener("input", () => {
+      autosizeTextarea();
+      row._scrSizeArrow();
+      resizeAnnotSiblings(anchorRowEl);
+    });
+    // Initial autosize — runs once the row is in the DOM.
+    requestAnimationFrame(autosizeTextarea);
     return row;
   }
 
@@ -972,6 +1026,10 @@
       cr._scrSizeArrow();
       insertAfter = cr;
     }
+    // Any LLM annotations (line_notes, fold summaries) that also anchor
+    // at this row now sit further from it — re-measure their arrows so
+    // they stretch past the newly-inserted comments.
+    resizeAnnotSiblings(anchorRowEl);
   }
 
   function removeCommentRowsAfter(anchorRowEl) {
