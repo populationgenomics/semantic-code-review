@@ -29,12 +29,24 @@ SUBMIT_TOOL = {
 }
 
 
-def _envelope(result: Any, *, is_error: bool = False, usage: dict | None = None) -> bytes:
-    payload = {
+def _envelope(
+    result: Any,
+    *,
+    is_error: bool = False,
+    usage: dict | None = None,
+    use_structured_output: bool = True,
+) -> bytes:
+    """Build a claude -p --output-format=json envelope.
+
+    With --json-schema active (our normal invocation), the validated
+    JSON lives in `structured_output` and `result` is empty. Set
+    `use_structured_output=False` to simulate the pre-schema output
+    shape (only `result` populated).
+    """
+    payload: dict[str, Any] = {
         "type": "result",
         "subtype": "success",
         "is_error": is_error,
-        "result": result if isinstance(result, str) else json.dumps(result),
         "stop_reason": "end_turn",
         "session_id": "sess-abc",
         "usage": usage or {
@@ -44,6 +56,16 @@ def _envelope(result: Any, *, is_error: bool = False, usage: dict | None = None)
             "cache_read_input_tokens": 0,
         },
     }
+    if is_error:
+        # Error envelopes put the message in `result`.
+        payload["result"] = result if isinstance(result, str) else json.dumps(result)
+    elif use_structured_output:
+        payload["result"] = ""
+        payload["structured_output"] = (
+            result if not isinstance(result, str) else json.loads(result)
+        )
+    else:
+        payload["result"] = result if isinstance(result, str) else json.dumps(result)
     return (json.dumps(payload) + "\n").encode("utf-8")
 
 
@@ -208,9 +230,34 @@ async def test_nonzero_exit_with_envelope_surfaces_result(
 async def test_bad_result_json_raises(
     cli_client: ClaudeCLIClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    proc = _FakeProc(_envelope("not-json-at-all"))
+    # Simulate a pre-schema envelope with garbage in result (no
+    # structured_output to fall back to).
+    proc = _FakeProc(
+        _envelope("not-json-at-all", use_structured_output=False)
+    )
     _install_fake_subprocess(monkeypatch, proc)
     with pytest.raises(ClaudeCLIError, match="not valid JSON"):
+        await cli_client.create_message(
+            model="claude-opus-4-7", max_tokens=4096,
+            system=[], tools=[SUBMIT_TOOL], messages=[],
+        )
+
+
+async def test_missing_structured_output_raises(
+    cli_client: ClaudeCLIClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Common failure: model tried to call a tool, produced no JSON."""
+    envelope = {
+        "type": "result", "subtype": "success", "is_error": False,
+        "result": "",
+        "stop_reason": "tool_use", "num_turns": 2,
+        "session_id": "sess",
+        "usage": {"input_tokens": 1, "output_tokens": 1,
+                  "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+    }
+    proc = _FakeProc((json.dumps(envelope) + "\n").encode("utf-8"))
+    _install_fake_subprocess(monkeypatch, proc)
+    with pytest.raises(ClaudeCLIError, match="no structured_output"):
         await cli_client.create_message(
             model="claude-opus-4-7", max_tokens=4096,
             system=[], tools=[SUBMIT_TOOL], messages=[],
@@ -276,4 +323,6 @@ async def test_single_shot_when_no_repo_tools(
     )
     argv = calls[0]
     assert "--mcp-config" not in argv
-    assert int(argv[argv.index("--max-turns") + 1]) == 1
+    # Single-shot mode allows a few turns so the model has room to
+    # redirect if it attempts a disallowed tool call before the JSON.
+    assert int(argv[argv.index("--max-turns") + 1]) == 3

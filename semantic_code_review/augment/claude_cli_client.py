@@ -57,7 +57,7 @@ class ClaudeCLIClient:
         *,
         claude_path: str | None = None,
         fallback_model: str | None = "claude-sonnet-4-6",
-        max_turns_single_shot: int = 1,
+        max_turns_single_shot: int = 3,
         max_turns_with_mcp: int = 20,
     ) -> None:
         resolved = claude_path or shutil.which("claude")
@@ -238,17 +238,33 @@ class ClaudeCLIClient:
                 f"num_turns={envelope.get('num_turns')}): {message or '<empty>'}"
             )
 
-        result_text = envelope.get("result") or ""
-        try:
-            structured = json.loads(result_text)
-        except json.JSONDecodeError as e:
-            stop = envelope.get("stop_reason")
-            turns = envelope.get("num_turns")
-            raise ClaudeCLIError(
-                f"claude -p result is not valid JSON (schema mode); "
-                f"stop_reason={stop!r} num_turns={turns}: {e}; "
-                f"result[:400]={result_text[:400]!r}"
-            ) from e
+        # When --json-schema is set, the validated object is returned in
+        # `structured_output` (already parsed). `result` is empty in that
+        # case. Fall back to parsing `result` as JSON for older `claude`
+        # versions that emitted it there.
+        structured = envelope.get("structured_output")
+        if structured is None:
+            result_text = envelope.get("result") or ""
+            if not result_text:
+                stop = envelope.get("stop_reason")
+                turns = envelope.get("num_turns")
+                raise ClaudeCLIError(
+                    "claude -p returned no structured_output and no result "
+                    f"(stop_reason={stop!r}, num_turns={turns}). This usually "
+                    "means the model tried to call a tool instead of emitting "
+                    "the JSON payload — bump --max-turns or reinforce the "
+                    "no-tool instruction in the prompt."
+                )
+            try:
+                structured = json.loads(result_text)
+            except json.JSONDecodeError as e:
+                stop = envelope.get("stop_reason")
+                turns = envelope.get("num_turns")
+                raise ClaudeCLIError(
+                    f"claude -p result is not valid JSON (schema mode); "
+                    f"stop_reason={stop!r} num_turns={turns}: {e}; "
+                    f"result[:400]={result_text[:400]!r}"
+                ) from e
         log.debug(
             "claude -p structured result: %d top-level keys, usage=%s",
             len(structured) if isinstance(structured, dict) else -1,
