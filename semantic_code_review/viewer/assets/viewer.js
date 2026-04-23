@@ -9,6 +9,59 @@
   const DATA = JSON.parse(document.getElementById("scr-data").textContent);
   const SMELLS = DATA.smells_catalogue || {};
 
+  // Debug trace for annotation-arrow reflow. Toggle from the console:
+  //   window.SCR_DEBUG_ARROWS = true    // turn on
+  //   window.SCR_DEBUG_ARROWS = false   // turn off
+  // Logs are prefixed with [scr:arrow] so they're easy to filter. Each
+  // call includes a short "who" tag (anchor line number where possible)
+  // so you can follow a specific line across many events.
+  function arrowDebug() { return !!window.SCR_DEBUG_ARROWS; }
+  function arrowLog(...args) {
+    if (arrowDebug()) console.log("[scr:arrow]", ...args);
+  }
+  function anchorTag(anchor) {
+    if (!anchor) return "<no anchor>";
+    const cells = anchor.children || [];
+    const pieces = [];
+    const newLineno = cells[2] && cells[2].textContent.trim();
+    const oldLineno = cells[0] && cells[0].textContent.trim();
+    if (newLineno) pieces.push(`+${newLineno}`);
+    else if (oldLineno) pieces.push(`-${oldLineno}`);
+    else pieces.push("?");
+    return pieces.join("/");
+  }
+  // Expose a one-shot "trace the next mutation" helper so users can
+  // dump state at a precise moment:  window.scrDebugArrows(anchorEl)
+  window.scrDebugArrows = function (anchor) {
+    const on = arrowDebug();
+    window.SCR_DEBUG_ARROWS = true;
+    if (anchor) debugDumpAnchor(anchor);
+    console.log("[scr:arrow] tracing enabled. Set SCR_DEBUG_ARROWS=false to stop.");
+    return on;
+  };
+  function debugDumpAnchor(anchor) {
+    if (!anchor || !anchor.parentNode) {
+      arrowLog("dump: anchor has no parent", anchor);
+      return;
+    }
+    const rows = [];
+    let n = anchor.nextSibling;
+    while (n) {
+      if (n.classList && n.classList.contains("row-annotation")) {
+        rows.push({
+          node: n,
+          cls: n.className,
+          sameAnchor: n._scrAnchor === anchor,
+          display: n.style.display || "(default)",
+          hasObserver: !!n._scrResizeObserver,
+        });
+      }
+      n = n.nextSibling;
+    }
+    arrowLog(`dump anchor ${anchorTag(anchor)}: ${rows.length} annotation row(s) after it`);
+    rows.forEach((r, i) => arrowLog(`  [${i}]`, r));
+  }
+
   const SESSION_ENDPOINT = (() => {
     const m = document.querySelector('meta[name="scr-session-endpoint"]');
     return m ? m.getAttribute("content") : "";
@@ -461,6 +514,7 @@
       }
       // Showing/hiding the fold summary shifts every sibling annotation
       // below it; re-size any that share this fold's header as anchor.
+      arrowLog("mutation: fold-toggle", anchorTag(headerEl), "open=", nowOpen);
       scheduleReflow(headerEl);
     });
 
@@ -521,9 +575,20 @@
     row._scrSide = side;
     row._scrSizeArrow = () => sizeAnnotArrow(row);
     if (typeof ResizeObserver !== "undefined") {
-      const ro = new ResizeObserver(() => scheduleReflow(anchor));
+      const ro = new ResizeObserver(entries => {
+        arrowLog("ResizeObserver fired for",
+          anchorTag(anchor),
+          "variant=", row.className.match(/annot-\w+/)?.[0] || "?",
+          "entries=", entries.length,
+          entries.map(e => ({ w: e.contentRect.width, h: e.contentRect.height })));
+        scheduleReflow(anchor);
+      });
       ro.observe(box);
       row._scrResizeObserver = ro;
+      arrowLog("wired", anchorTag(anchor),
+        "variant=", row.className.match(/annot-\w+/)?.[0] || "?");
+    } else {
+      arrowLog("ResizeObserver unavailable — mutations will rely on explicit scheduleReflow");
     }
   }
 
@@ -532,11 +597,14 @@
   // insertion into a single measurement pass after layout settles.
   const _pendingReflow = new Set();
   function scheduleReflow(anchor) {
-    if (!anchor) return;
+    if (!anchor) { arrowLog("scheduleReflow skipped: no anchor"); return; }
+    arrowLog("scheduleReflow", anchorTag(anchor),
+      "pending=", _pendingReflow.size);
     if (_pendingReflow.size === 0) {
       requestAnimationFrame(() => {
         const anchors = [..._pendingReflow];
         _pendingReflow.clear();
+        arrowLog("RAF reflow pass: anchors=", anchors.map(anchorTag));
         for (const a of anchors) resizeAnnotSiblings(a);
       });
     }
@@ -564,21 +632,33 @@
     const anchor = annotRow._scrAnchor;
     const minOverrun = 6;
     let topOverrun = minOverrun;
+    let measuredEmpty = false;
+    let cellRectT = null, anchorMidYT = null;
     if (anchor) {
       const cellRect = cell.getBoundingClientRect();
       const anchorRect = anchor.getBoundingClientRect();
-      // A degenerate rect (all zeros) means the anchor isn't laid out
-      // yet — usually because the whole viewer just mounted and fonts
-      // haven't finished loading. Bail to the minimum overrun; the
-      // ResizeObserver + double-RAF + document.fonts.ready in renderAll
-      // will trigger another pass once layout settles.
+      cellRectT = cellRect.top;
       const anchorEmpty =
         anchorRect.top === 0 && anchorRect.bottom === 0
           && anchorRect.left === 0 && anchorRect.right === 0;
       if (!anchorEmpty) {
         const anchorMidY = (anchorRect.top + anchorRect.bottom) / 2;
+        anchorMidYT = anchorMidY;
         topOverrun = Math.max(minOverrun, cellRect.top - anchorMidY);
+      } else {
+        measuredEmpty = true;
       }
+    }
+    if (arrowDebug()) {
+      const variant = annotRow.className.match(/annot-\w+/)?.[0] || "?";
+      arrowLog("sizeAnnotArrow", anchorTag(anchor),
+        variant, {
+          boxH,
+          topOverrun,
+          cellTop: cellRectT,
+          anchorMidY: anchorMidYT,
+          anchorEmpty: measuredEmpty,
+        });
     }
     const totalH = topOverrun + boxH;
     const midY = topOverrun + boxH / 2;
@@ -632,13 +712,23 @@
   // after inserting or removing a row so stacked arrows restretch to
   // reach the real anchor rather than a sibling annotation above them.
   function resizeAnnotSiblings(anchor) {
-    if (!anchor || !anchor.parentNode) return;
+    if (!anchor) { arrowLog("resizeAnnotSiblings skipped: null anchor"); return; }
+    if (!anchor.parentNode) {
+      arrowLog("resizeAnnotSiblings skipped: anchor", anchorTag(anchor), "has no parent");
+      return;
+    }
     const all = anchor.parentNode.querySelectorAll(".row-annotation");
+    let total = 0, matched = 0, visible = 0;
     all.forEach(r => {
-      if (r._scrAnchor === anchor && r.style.display !== "none") {
-        sizeAnnotArrow(r);
-      }
+      total++;
+      if (r._scrAnchor !== anchor) return;
+      matched++;
+      if (r.style.display === "none") return;
+      visible++;
+      sizeAnnotArrow(r);
     });
+    arrowLog("resizeAnnotSiblings", anchorTag(anchor),
+      "total=", total, "matched=", matched, "visible=", visible);
   }
 
   // Count annotation rows that sit below `annotRow` in the DOM and
@@ -993,6 +1083,7 @@
     } else {
       rowEl.parentNode.appendChild(editor);
     }
+    arrowLog("mutation: editor-open", anchorTag(rowEl));
     editor._scrSizeArrow();
     scheduleReflow(rowEl);
     const ta = editor.querySelector("textarea");
@@ -1031,6 +1122,7 @@
     wireAnnotationRow(row, box, anchorRowEl, side);
 
     function close() {
+      arrowLog("mutation: editor-close", anchorTag(anchorRowEl));
       row.remove();
       scheduleReflow(anchorRowEl);
     }
@@ -1087,6 +1179,8 @@
 
     edit.addEventListener("click", e => {
       e.stopPropagation();
+      arrowLog("mutation: edit-button", anchorTag(anchorRowEl),
+        "comment=", comment.id);
       row.remove();
       scheduleReflow(anchorRowEl);
       openCommentEditor({
@@ -1096,6 +1190,8 @@
     });
     del.addEventListener("click", e => {
       e.stopPropagation();
+      arrowLog("mutation: delete-button", anchorTag(anchorRowEl),
+        "comment=", comment.id);
       deleteComment(comment.id).then(() => {
         row.remove();
         scheduleReflow(anchorRowEl);
@@ -1124,6 +1220,8 @@
     // Any LLM annotations (line_notes, fold summaries) that also anchor
     // at this row now sit further from it — re-measure their arrows so
     // they stretch past the newly-inserted comments.
+    arrowLog("mutation: refreshComments",
+      anchorTag(anchorRowEl), "inserted=", relevant.length);
     scheduleReflow(anchorRowEl);
   }
 
