@@ -636,12 +636,9 @@
     let cellRectT = null, anchorMidYT = null;
     if (anchor) {
       const cellRect = cell.getBoundingClientRect();
-      const anchorRect = anchor.getBoundingClientRect();
+      const anchorRect = anchorRowRect(anchor);
       cellRectT = cellRect.top;
-      const anchorEmpty =
-        anchorRect.top === 0 && anchorRect.bottom === 0
-          && anchorRect.left === 0 && anchorRect.right === 0;
-      if (!anchorEmpty) {
+      if (anchorRect) {
         const anchorMidY = (anchorRect.top + anchorRect.bottom) / 2;
         anchorMidYT = anchorMidY;
         topOverrun = Math.max(minOverrun, cellRect.top - anchorMidY);
@@ -729,6 +726,28 @@
     });
     arrowLog("resizeAnnotSiblings", anchorTag(anchor),
       "total=", total, "matched=", matched, "visible=", visible);
+  }
+
+  // Anchor diff rows use `display:contents`, so the row element itself
+  // has no layout box and `anchor.getBoundingClientRect()` returns
+  // {0,0,0,0} in Chromium (the CSSOM spec says "union of child
+  // fragments", but Chrome/Edge ignore children entirely). Walk the
+  // cells — any of them has a real rect whose top/bottom match the
+  // grid track — and return that.
+  function anchorRowRect(anchor) {
+    if (!anchor || !anchor.children) return null;
+    let top = Infinity, bottom = -Infinity, left = Infinity, right = -Infinity;
+    let found = false;
+    for (const child of anchor.children) {
+      const r = child.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) continue;
+      top = Math.min(top, r.top);
+      bottom = Math.max(bottom, r.bottom);
+      left = Math.min(left, r.left);
+      right = Math.max(right, r.right);
+      found = true;
+    }
+    return found ? { top, bottom, left, right } : null;
   }
 
   // Count annotation rows that sit below `annotRow` in the DOM and
