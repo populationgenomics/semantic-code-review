@@ -52,6 +52,8 @@ Use the Bash tool to run:
 scr review <the args you inferred>
 ```
 
+**Do not `cd` anywhere before running it.** `scr review` resolves the git repo from `Path.cwd()`, so the cwd must be the repo the user wants reviewed (typically the session's working directory). Do not `cd` into the scr plugin directory or any other repo.
+
 The command:
 - builds the local diff into `.scr/runs/<slug>/`
 - runs the LLM augmentation pass (unless `--no-augment` was passed)

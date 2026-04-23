@@ -157,13 +157,19 @@ class ClaudeCLIClient:
             self._max_turns_with_mcp if mcp_active else self._max_turns_single_shot
         )
 
+        # NOTE: do NOT pass --bare here. Its docs are explicit:
+        # "Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper
+        #  via --settings (OAuth and keychain are never read)."
+        # Our entire reason to shell out to `claude -p` is that the user
+        # lacks an API key but has OAuth/keychain credentials — --bare
+        # would defeat the point and always return "Not logged in".
+        # We pick the useful pieces of --bare individually below.
         argv = [
             self._claude, "-p",
             "--model", model,
             "--system-prompt", system_text,
             "--json-schema", schema_json,
             "--tools", "",
-            "--bare",
             "--no-session-persistence",
             "--setting-sources", "",
             "--permission-mode", "bypassPermissions",

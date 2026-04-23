@@ -126,7 +126,10 @@ async def test_create_message_synthesizes_tool_use(
     argv = calls[0]
     assert "--json-schema" in argv
     assert "--tools" in argv and argv[argv.index("--tools") + 1] == ""
-    assert "--bare" in argv
+    # --bare must NOT be present: it disables OAuth/keychain auth, which
+    # is the only reason we're in the subprocess fallback in the first
+    # place. See claude_cli_client.create_message for the full rationale.
+    assert "--bare" not in argv
     assert "--permission-mode" in argv
     assert response["role"] == "assistant"
     assert response["content"] == [
