@@ -260,15 +260,8 @@
       if (h.refs && h.refs.length) {
         div.appendChild(renderRefs(h.refs));
       }
-      if (h.line_notes && h.line_notes.length) {
-        const ln = el("div", "line-notes");
-        ln.innerHTML = "<strong>notes:</strong> ";
-        for (const n of h.line_notes) {
-          const s = el("span", "note", `+${n.line}: ${n.body}`);
-          ln.appendChild(s);
-        }
-        div.appendChild(ln);
-      }
+      // line_notes used to render here as a bottom-of-hunk block; they
+      // are now attached inline by attachLineNotes() in renderHunkDiff.
     }
     return div;
   }
@@ -358,8 +351,47 @@
       rowEls.push(re);
     }
     attachIndentFolds(container, rowEls, h.fold_regions || []);
+    attachLineNotes(container, rowEls, h.rows || [], h.line_notes || []);
     STATE.renderedDiffs[h.id] = container;
     return container;
+  }
+
+  // Inline line-note annotations: each {line, body} entry is placed as an
+  // annotation row directly under the post-image row it describes, using
+  // the same emacs-flycheck-style row builder as fold summaries. The
+  // previous behaviour collected them into a single "notes:" block at
+  // the bottom of the hunk, which made it hard to see which line each
+  // note applied to.
+  function attachLineNotes(container, rowEls, rows, notes) {
+    if (!notes.length || !rows.length) return;
+    // Map post-image line number -> row element (last occurrence wins
+    // for safety, though duplicates shouldn't happen in a valid hunk).
+    const byNewLine = new Map();
+    for (let i = 0; i < rows.length; i++) {
+      const ln = rows[i].new_line;
+      if (ln !== null && ln !== undefined) byNewLine.set(ln, rowEls[i]);
+    }
+    for (const note of notes) {
+      const anchor = byNewLine.get(note.line);
+      if (!anchor) continue;  // note points at a line that isn't in the hunk
+      const annotRow = buildAnnotationRow({
+        anchorRowEl: anchor,
+        side: pickAnnotationSide(anchor),
+        text: note.body,
+        missing: false,
+        variant: "note",
+      });
+      if (anchor.nextSibling) {
+        anchor.parentNode.insertBefore(annotRow, anchor.nextSibling);
+      } else {
+        anchor.parentNode.appendChild(annotRow);
+      }
+      // Measure arrow after the row is in the DOM. Deferred because the
+      // annotation box needs layout to report its height.
+      if (annotRow._scrSizeArrow) {
+        requestAnimationFrame(annotRow._scrSizeArrow);
+      }
+    }
   }
 
   // --- Indent-based code folding ------------------------------------------

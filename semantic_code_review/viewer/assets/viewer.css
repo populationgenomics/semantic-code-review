@@ -169,7 +169,7 @@ body {
 .segment-intent { flex: 1; font-size: 13px; }
 .segment-intent.empty { color: var(--fg-dim); font-style: italic; }
 
-.context-note, .refs, .line-notes {
+.context-note, .refs {
   padding: 6px 12px; background: var(--bg-alt); border-top: 1px solid var(--border);
   font-size: 12px; color: var(--fg-muted);
 }
@@ -182,7 +182,6 @@ body {
 }
 .refs a.ref-link:hover { background: var(--bg-panel); border-color: var(--accent); }
 .refs .ref-reason { color: var(--fg-muted); font-size: 11px; }
-.line-notes .note { display: block; padding: 2px 0; }
 
 /* --- Smells --------------------------------------------------------------- */
 .smell {
