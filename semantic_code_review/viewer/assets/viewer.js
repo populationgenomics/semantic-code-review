@@ -437,9 +437,6 @@
     const { anchorRowEl, side, text, missing, variant } = opts;
     const row = el("div", `row row-annotation${variant ? ` annot-${variant}` : ""}`);
     const cell = el("div", `cell-annotation cell-annotation-${side}`);
-    const anchorCol = computeAnchorCol(anchorRowEl, side);
-    cell.style.setProperty("--anchor-col", `${anchorCol}ch`);
-
     cell.appendChild(svgAnnotArrow());
     const box = el("div", "annot-box");
     if (missing) {
@@ -450,31 +447,55 @@
     }
     cell.appendChild(box);
     row.appendChild(cell);
+    // Anchor + side stashed so sizeAnnotArrow can (re-)measure on resize.
+    row._scrAnchor = anchorRowEl;
+    row._scrSide = side;
     row._scrSizeArrow = () => sizeAnnotArrow(row);
     return row;
   }
 
-  // Size the SVG after the box is in the DOM so the arrow tip lands at the
-  // vertical midpoint of the box's left side regardless of how many lines
-  // the text wraps to. Safe to call multiple times.
+  // Position + size the SVG after the box is in the DOM. Margin-left is
+  // measured in pixels so the arrow's vertical segment lands exactly under
+  // the anchor line's first printing character. Margin-top lifts the arrow
+  // into the row above. Arrow tip sits at the vertical midpoint of the box.
   function sizeAnnotArrow(annotRow) {
     const box = annotRow.querySelector(".annot-box");
     const svg = annotRow.querySelector("svg.annot-arrow");
-    if (!box || !svg) return;
+    const cell = annotRow.querySelector(".cell-annotation");
+    if (!box || !svg || !cell) return;
     const boxH = box.offsetHeight;
     if (boxH <= 0) return;
-    const topOverrun = 6;                 // extend up into the anchor line's row
+
+    const topOverrun = 6;
     const totalH = topOverrun + boxH;
-    const midY = topOverrun + boxH / 2;   // y-coord of arrow-horizontal + tip
+    const midY = topOverrun + boxH / 2;
     const tipX = 17;
     const head = 4;
+    const svgW = 20;
+    const vLineX = 2;   // x-coord of the arrow's vertical segment in SVG space
     svg.setAttribute("height", String(totalH));
-    svg.setAttribute("viewBox", `0 0 20 ${totalH}`);
+    svg.setAttribute("width", String(svgW));
+    svg.setAttribute("viewBox", `0 0 ${svgW} ${totalH}`);
     svg.style.marginTop = `-${topOverrun}px`;
+
+    // Horizontal alignment: put the SVG's vLineX at anchorX.
+    const anchor = annotRow._scrAnchor;
+    const side = annotRow._scrSide || "new";
+    if (anchor) {
+      const anchorX = firstPrintingCharLeft(anchor, side);
+      if (anchorX !== null) {
+        const cellRect = cell.getBoundingClientRect();
+        const cs = window.getComputedStyle(cell);
+        const padL = parseFloat(cs.paddingLeft) || 0;
+        const marginL = anchorX - cellRect.left - padL - vLineX;
+        svg.style.marginLeft = `${Math.max(0, marginL)}px`;
+      }
+    }
+
     const path = svg.querySelector("path");
     path.setAttribute(
       "d",
-      `M 2 0 L 2 ${midY} L ${tipX} ${midY} ` +
+      `M ${vLineX} 0 L ${vLineX} ${midY} L ${tipX} ${midY} ` +
       `M ${tipX - head} ${midY - head} L ${tipX} ${midY} L ${tipX - head} ${midY + head}`,
     );
   }
@@ -487,19 +508,30 @@
     });
   });
 
-  function computeAnchorCol(anchorRowEl, side) {
+  // Measure where the anchor row's first printing character is, in px,
+  // relative to the annotation cell's left edge. More reliable than ch-based
+  // counting because chevrons + hljs fonts throw off character width math.
+  function firstPrintingCharLeft(anchorRowEl, side) {
     const idx = (side === "old") ? 1 : 3;
-    const cell = anchorRowEl.children[idx];
-    if (!cell) return 0;
-    const text = (cell.querySelector("code") || cell).textContent || "";
-    let col = 0;
-    for (let i = 0; i < text.length; i++) {
-      const ch = text[i];
-      if (ch === " ") col++;
-      else if (ch === "\t") col += 4;
-      else break;
+    const contentCell = anchorRowEl.children[idx];
+    if (!contentCell) return null;
+    const code = contentCell.querySelector("code");
+    if (!code) return contentCell.getBoundingClientRect().left;
+    const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const s = node.nodeValue;
+      for (let i = 0; i < s.length; i++) {
+        if (!/\s/.test(s[i])) {
+          const range = document.createRange();
+          range.setStart(node, i);
+          range.setEnd(node, i + 1);
+          const r = range.getBoundingClientRect();
+          if (r.width || r.height) return r.left;
+        }
+      }
     }
-    return col;
+    return code.getBoundingClientRect().left;
   }
 
   function svgAnnotArrow() {
