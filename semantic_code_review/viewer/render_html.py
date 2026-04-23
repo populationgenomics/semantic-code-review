@@ -16,7 +16,13 @@ from .build_json import build_viewer_json
 ASSETS_DIR = Path(__file__).parent / "assets"
 
 
-def render_run_dir(run_dir: Path, out_path: Path, *, offline: bool = False) -> Path:
+def render_run_dir(
+    run_dir: Path,
+    out_path: Path,
+    *,
+    offline: bool = False,
+    session_endpoint: str | None = None,
+) -> Path:
     meta_path = run_dir / "meta.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
     sidecar = run_dir / "augmented.scr.json"
@@ -26,12 +32,17 @@ def render_run_dir(run_dir: Path, out_path: Path, *, offline: bool = False) -> P
         diff = parse_augmented_diff((run_dir / "augmented.diff").read_text(encoding="utf-8"))
     head_dir = run_dir / "head"
     data = build_viewer_json(diff, meta, head_dir=head_dir if head_dir.exists() else None)
-    html = render_html(data, offline=offline)
+    html = render_html(data, offline=offline, session_endpoint=session_endpoint)
     out_path.write_text(html, encoding="utf-8")
     return out_path
 
 
-def render_html(data: dict[str, Any], *, offline: bool = False) -> str:
+def render_html(
+    data: dict[str, Any],
+    *,
+    offline: bool = False,
+    session_endpoint: str | None = None,
+) -> str:
     env = Environment(
         loader=FileSystemLoader(ASSETS_DIR),
         autoescape=select_autoescape([]),  # we escape in the viewer JS; here we control every tag
@@ -61,6 +72,7 @@ def render_html(data: dict[str, Any], *, offline: bool = False) -> str:
         "viewer_js": viewer_js,
         "data_json": json.dumps(data, ensure_ascii=False).replace("</", "<\\/"),
         "offline": offline,
+        "session_endpoint": session_endpoint or "",
     }
     if offline:
         vendor = ASSETS_DIR / "vendor"

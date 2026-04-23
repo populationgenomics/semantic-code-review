@@ -11,7 +11,7 @@ from typing import Any
 from .tools import ANTHROPIC_TOOL_SCHEMAS
 
 
-PROMPT_VERSION = "p3"
+PROMPT_VERSION = "p4"
 
 
 # --- Submission tools -------------------------------------------------------
@@ -161,10 +161,11 @@ SUBMIT_ANNOTATIONS_TOOL: dict[str, Any] = {
 # --- System prompts ---------------------------------------------------------
 
 OVERVIEW_SYSTEM = (
-    "You are preparing a structured overview of a GitHub pull request to help a human "
-    "reviewer understand its shape at a glance.\n\n"
-    "You receive the PR title and body, a diffstat, and the hunk headers of each changed "
-    "file (no bodies). Produce a concise overview by calling `submit_overview`.\n\n"
+    "You are preparing a structured overview of a pull request (or a local diff) to "
+    "help a human reviewer understand its shape at a glance.\n\n"
+    "You receive the PR title and body, a diffstat, and the hunk headers of each "
+    "changed file (no bodies). Produce a concise overview by calling "
+    "`submit_overview`.\n\n"
     "Guidelines:\n"
     "- Lead with WHY, not WHAT.\n"
     "- Symbol kinds are: function, method, class, constant.\n"
@@ -172,6 +173,11 @@ OVERVIEW_SYSTEM = (
     "- `themes` are short keyword tags (e.g. 'pagination', 'api-surface').\n"
     "- Per-file `summary` is one sentence; `lang` only when the extension is ambiguous.\n"
     "- Favour clarity over completeness: the reviewer uses this to decide where to look.\n"
+    "- If the PR body contains a specification markdown block (look for a `# Spec` "
+    "  heading or similar), treat it as GROUND TRUTH for what the change was meant to "
+    "  accomplish. Call out in `summary` and `themes` any parts of the spec that look "
+    "  under-implemented, not implemented at all, or diverged from. Do not invent spec "
+    "  requirements that aren't in the body.\n"
 )
 
 

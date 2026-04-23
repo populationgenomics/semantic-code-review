@@ -179,5 +179,58 @@ def show(
     sys.stdout.write(path.read_text(encoding="utf-8"))
 
 
+@app.command()
+def review(
+    spec: str = typer.Argument(
+        ...,
+        help=(
+            "Git ref (e.g. 'main') or range ('main..HEAD', 'HEAD~3...HEAD'). "
+            "Single ref diffs against current working state; range is "
+            "committed-only."
+        ),
+    ),
+    spec_md: Path = typer.Option(
+        None, "--spec", help="Markdown file with the spec/intent for this change."
+    ),
+    runs_root: Path = typer.Option(DEFAULT_RUNS_ROOT),
+    repo_root: Path = typer.Option(None, help="Repo root (defaults to walking up from cwd)."),
+    no_staged: bool = typer.Option(False, help="With a single ref: exclude staged changes."),
+    no_unstaged: bool = typer.Option(False, help="With a single ref: exclude unstaged changes."),
+    augment: bool = typer.Option(True, help="Run the LLM augmentation pass before rendering."),
+    model: str = typer.Option("claude-opus-4-7"),
+    concurrency: int = typer.Option(8),
+    no_cache: bool = typer.Option(False),
+    cache_dir: Path = typer.Option(None),
+    offline: bool = typer.Option(False, help="Inline highlight.js into the HTML."),
+    no_open: bool = typer.Option(False, help="Skip opening the browser (for CI / SSH)."),
+    port: int = typer.Option(0, help="Server port (0 = kernel-assigned)."),
+    timeout: int = typer.Option(3600, help="Server idle timeout in seconds."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Review a local git diff; round-trip reviewer comments to stdout."""
+    _configure_logging(verbose)
+    from .review.runner import ReviewOptions, run_review
+
+    opts = ReviewOptions(
+        spec=spec,
+        spec_markdown=spec_md,
+        runs_root=runs_root,
+        repo_root=repo_root,
+        no_staged=no_staged,
+        no_unstaged=no_unstaged,
+        augment=augment,
+        model=model,
+        concurrency=concurrency,
+        no_cache=no_cache,
+        cache_dir=cache_dir,
+        offline_html=offline,
+        open_browser=not no_open,
+        port=port,
+        timeout=timeout,
+    )
+    code = run_review(opts)
+    raise typer.Exit(code=code)
+
+
 if __name__ == "__main__":
     app()
