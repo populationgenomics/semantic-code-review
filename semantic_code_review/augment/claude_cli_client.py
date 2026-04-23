@@ -178,7 +178,12 @@ class ClaudeCLIClient:
                 "--strict-mcp-config",
             ]
 
-        log.debug("claude -p invocation: %s", " ".join(argv[:7] + ["<prompt>"]))
+        log.info(
+            "claude -p invoking: model=%s mcp=%s max_turns=%d submit=%s",
+            model, mcp_active, max_turns, submit_tool["name"],
+        )
+        log.debug("claude -p argv: %s", argv)
+        log.debug("claude -p prompt length: %d chars", len(prompt))
 
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -187,6 +192,15 @@ class ClaudeCLIClient:
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await proc.communicate(prompt.encode("utf-8"))
+        log.info(
+            "claude -p exit=%d stdout=%d stderr=%d",
+            proc.returncode, len(stdout), len(stderr),
+        )
+        if stderr:
+            log.debug(
+                "claude -p stderr: %s",
+                _tail(stderr.decode("utf-8", errors="replace"), 2000),
+            )
 
         # `claude -p` frequently writes the real failure into the stdout
         # envelope (is_error=true, result=<message>) and exits non-zero
@@ -213,17 +227,27 @@ class ClaudeCLIClient:
                     "using --backend=cli."
                 )
             raise ClaudeCLIError(
-                f"claude -p returned error (exit {proc.returncode}): {message or '<empty>'}"
+                f"claude -p returned error (exit {proc.returncode}, "
+                f"stop_reason={envelope.get('stop_reason')!r}, "
+                f"num_turns={envelope.get('num_turns')}): {message or '<empty>'}"
             )
 
         result_text = envelope.get("result") or ""
         try:
             structured = json.loads(result_text)
         except json.JSONDecodeError as e:
+            stop = envelope.get("stop_reason")
+            turns = envelope.get("num_turns")
             raise ClaudeCLIError(
-                f"claude -p result is not valid JSON (schema mode): {e}; "
-                f"result[:200]={result_text[:200]!r}"
+                f"claude -p result is not valid JSON (schema mode); "
+                f"stop_reason={stop!r} num_turns={turns}: {e}; "
+                f"result[:400]={result_text[:400]!r}"
             ) from e
+        log.debug(
+            "claude -p structured result: %d top-level keys, usage=%s",
+            len(structured) if isinstance(structured, dict) else -1,
+            envelope.get("usage"),
+        )
 
         return _synthesize_tool_use_message(
             envelope=envelope,

@@ -59,7 +59,14 @@ _load_dotenv()
 
 def _configure_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # force=True so we take over even if a library (anthropic SDK, typer,
+    # etc.) already attached a root handler at WARNING — otherwise our
+    # INFO+ progress logs would be silently dropped.
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
 
 
 def _select_client(backend: str):  # -> ClaudeClient, but keep import lazy

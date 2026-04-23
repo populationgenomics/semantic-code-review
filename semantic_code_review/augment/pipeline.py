@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -140,6 +141,7 @@ async def augment_run_dir(
 
     sem = asyncio.Semaphore(concurrency)
     tasks: list[asyncio.Task] = []
+    stats = _HunkStats()
     hunks_seen = 0
     for fp in diff.files:
         if fp.path in skipped_files:
@@ -151,12 +153,36 @@ async def augment_run_dir(
             hunks_seen += 1
             tasks.append(asyncio.create_task(
                 _augment_one_hunk(sem, client, fp, h, overview_json, file_summary,
-                                  repo_tools, model, cache, trace_dir)
+                                  repo_tools, model, cache, trace_dir, stats)
             ))
         if max_hunks is not None and hunks_seen >= max_hunks:
             break
 
+    log.info("per-hunk pass: %d hunks queued (concurrency=%d)", len(tasks), concurrency)
     await asyncio.gather(*tasks)
+
+    backend_tag = (
+        "cli" if getattr(client, "is_subprocess_backend", False) else "api"
+    )
+    summary = (
+        f"scr augment: backend={backend_tag} model={model} hunks={len(tasks)} "
+        f"ok={stats.ok} failed={stats.failed}"
+    )
+    log.info(summary)
+    # Also emit to stderr directly so users who missed the log stream
+    # still see a one-liner summary before the viewer opens.
+    import sys as _sys
+    _sys.stderr.write(summary + "\n")
+    _sys.stderr.flush()
+
+    if stats.failed and stats.ok == 0:
+        log.error(
+            "augmentation produced ZERO annotations: all %d hunks failed. "
+            "See per-hunk warnings and trace files under %s. "
+            "Common cause in --backend=cli: `claude -p` not logged in or "
+            "refused to emit structured JSON within --max-turns.",
+            stats.failed, trace_dir,
+        )
 
     # --- Emit --------------------------------------------------------------
     augmented_text = emit_augmented_diff(diff)
@@ -164,6 +190,12 @@ async def augment_run_dir(
     dump_sidecar(diff, sidecar_path)
     log.info("wrote %s (%d bytes) + sidecar", augmented_path.name, len(augmented_text))
     return augmented_path
+
+
+@dataclass
+class _HunkStats:
+    ok: int = 0
+    failed: int = 0
 
 
 async def _augment_one_hunk(
@@ -177,6 +209,7 @@ async def _augment_one_hunk(
     model: str,
     cache: CacheStore | None,
     trace_dir: Path,
+    stats: _HunkStats,
 ) -> None:
     async with sem:
         try:
@@ -192,10 +225,15 @@ async def _augment_one_hunk(
                 trace_dir=trace_dir,
             )
             apply_hunk_annotations(h, submit)
+            stats.ok += 1
             log.info("hunk %s @ %s: intent=%r smells=%d segs=%d",
                      fp.path, h.header, (h.intent or "")[:80], len(h.smells), len(h.segments))
         except Exception as e:  # noqa: BLE001
-            log.warning("hunk %s @ %s failed: %s", fp.path, h.header, e)
+            stats.failed += 1
+            log.warning(
+                "hunk %s @ %s failed: %s: %s",
+                fp.path, h.header, type(e).__name__, e,
+            )
 
 
 def _attach_file_log(path: Path) -> None:
