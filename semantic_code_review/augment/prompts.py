@@ -11,7 +11,7 @@ from typing import Any
 from .tools import ANTHROPIC_TOOL_SCHEMAS
 
 
-PROMPT_VERSION = "p2"
+PROMPT_VERSION = "p3"
 
 
 # --- Submission tools -------------------------------------------------------
@@ -198,10 +198,19 @@ HUNK_SYSTEM = (
     "- `line_notes`: {line, body} for notes too specific for intent. `line` is post-image.\n"
     "- `fold_descriptions`: the viewer supports indent-based code folding inside the "
     "diff. The prompt lists the nested fold regions in this hunk that contain changed "
-    "lines. For each listed region, return a one-line summary (<= 12 words, present "
-    "tense, no leading capital required) matching its `new_start`/`new_count` exactly. "
-    "Describe the change, not the code ('raise inner TypeError when parser is None' is "
-    "good; 'if / else / raise' is not). If no regions are listed, omit the field.\n\n"
+    "lines. For EACH region, return a one-line hint (<= 15 words, present tense, "
+    "lowercase) that tells a reviewer who has the fold collapsed what the WHOLE folded "
+    "block DOES as a unit. Describe behaviour, not structure; describe the effect, not "
+    "the control flow. If the folded block REPLACES existing code, describe the "
+    "CHANGE the block introduces, not just the new steps.\n"
+    "Good: 'convert every top-level message in every descriptor to a json schema'. "
+    "Good: 'fall back to inline generation when include_all is set'. "
+    "Good: 'forward page/size kwargs to list_users so pagination reaches the handler'. "
+    "Bad: 'iterate every file descriptor in the set' (structure, not effect). "
+    "Bad: 'if / elif / else' (control flow). "
+    "Bad: 'call self._convert_message_to_schema' (names a call, not what is achieved).\n"
+    "Match each region's `new_start`/`new_count` exactly. If no regions are listed, "
+    "omit the field.\n\n"
     "Tone: explanatory, not evaluative. Comprehension first."
 )
 

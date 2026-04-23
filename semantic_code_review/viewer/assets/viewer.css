@@ -241,20 +241,21 @@ body {
 }
 .diff .fold-chev:hover { color: var(--accent); }
 
-/* Summary row that appears when a fold collapses. */
-.diff .row-fold-summary .cell-fold-summary {
-  grid-column: 1 / -1;
-  padding: 4px 12px 4px 36px; /* left pad roughly under the new-lineno column */
-  background: var(--bg-alt);
-  border-top: 1px dashed var(--border);
-  border-bottom: 1px dashed var(--border);
-  font-size: 12px;
+/* Emacs-style inline hint next to a fold header when the fold is closed.
+ * `white-space: pre` on the parent cell keeps our leading spacer visible,
+ * so the hint appears indented under the fold-header code. */
+.diff .fold-inline-hint {
+  display: none;
   color: var(--fg-muted);
-  font-family: var(--mono);
+  font-style: italic;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 12px;
+  padding-left: 2em;
+  white-space: pre-wrap;
+  vertical-align: baseline;
 }
-.fold-summary-text { color: var(--fg); margin-right: 10px; }
-.fold-summary-text.fold-summary-missing { color: var(--fg-muted); font-style: italic; }
-.fold-summary-meta { color: var(--fg-dim); font-size: 11px; }
+.diff .fold-inline-hint.missing { color: var(--fg-dim); }
+.diff .row.fold-closed .fold-inline-hint { display: inline; }
 
 @media (prefers-color-scheme: light) {
   .diff .row-ins .cell-content-new { background: rgba(26, 127, 55, 0.10); }

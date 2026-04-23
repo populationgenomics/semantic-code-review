@@ -373,24 +373,19 @@
     const marker = chev(/* folded */ false, "fold-chev");
     marker.setAttribute("role", "button");
     marker.setAttribute("tabindex", "0");
-    const summaryRow = buildFoldSummaryRow(region);
-    summaryRow.style.display = "none";
-    // Summary row sits immediately after the last body row, and is only
-    // visible when the fold is collapsed.
-    const insertAfter = rowEls[bodyEnd];
-    if (insertAfter && insertAfter.nextSibling) {
-      insertAfter.parentNode.insertBefore(summaryRow, insertAfter.nextSibling);
-    } else if (insertAfter) {
-      insertAfter.parentNode.appendChild(summaryRow);
-    }
+
+    // Inline hint — emacs-style inlay. Attached to the header row's content
+    // cell, right after the <code>; only visible when .fold-closed is set
+    // on the row.
+    const hint = buildFoldHint(region);
 
     marker.addEventListener("click", e => {
       e.stopPropagation();
       const nowOpen = marker.classList.toggle("open");
+      headerEl.classList.toggle("fold-closed", !nowOpen);
       for (let i = bodyStart; i <= bodyEnd; i++) {
         if (rowEls[i]) rowEls[i].style.display = nowOpen ? "" : "none";
       }
-      summaryRow.style.display = nowOpen ? "none" : "";
     });
 
     // Prepend to whichever content cell has visible text on the header row.
@@ -398,31 +393,23 @@
     const children = headerEl.children;
     const newContent = children[3];
     const oldContent = children[1];
-    if (newContent && !newContent.classList.contains("empty")) {
-      newContent.prepend(marker);
-    } else if (oldContent) {
-      oldContent.prepend(marker);
-    }
+    const contentCell = (newContent && !newContent.classList.contains("empty"))
+      ? newContent : oldContent;
+    if (!contentCell) return;
+    contentCell.prepend(marker);
+    if (hint) contentCell.appendChild(hint);
   }
 
-  function buildFoldSummaryRow(region) {
-    const row = el("div", "row row-fold-summary");
-    const cell = el("div", "cell-fold-summary");
-    const bodyLines = region.body_end_idx - region.body_start_idx + 1;
-    const word = bodyLines === 1 ? "line" : "lines";
-    const badge = el("span", "fold-summary-meta", `… ${bodyLines} ${word}`);
+  function buildFoldHint(region) {
+    if (!region.summary && !region.has_changes) return null;
+    const span = el("span", "fold-inline-hint");
     if (region.summary) {
-      cell.appendChild(el("span", "fold-summary-text", region.summary));
-      cell.appendChild(badge);
-    } else if (region.has_changes) {
-      cell.appendChild(el("span", "fold-summary-text fold-summary-missing",
-        "(changes here; run augment to generate a description)"));
-      cell.appendChild(badge);
+      span.textContent = region.summary;
     } else {
-      cell.appendChild(badge);
+      span.textContent = "(changes here; run augment to generate a description)";
+      span.classList.add("missing");
     }
-    row.appendChild(cell);
-    return row;
+    return span;
   }
 
   function renderRow(row, file) {
