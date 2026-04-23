@@ -461,7 +461,7 @@
       }
       // Showing/hiding the fold summary shifts every sibling annotation
       // below it; re-size any that share this fold's header as anchor.
-      resizeAnnotSiblings(headerEl);
+      scheduleReflow(headerEl);
     });
 
     // Prepend chevron to whichever content cell has visible text on the
@@ -503,22 +503,44 @@
     }
     cell.appendChild(box);
     row.appendChild(cell);
-    // Anchor + side stashed so sizeAnnotArrow can (re-)measure on resize.
-    row._scrAnchor = anchorRowEl;
+    wireAnnotationRow(row, box, anchorRowEl, side);
+    return row;
+  }
+
+  // Apply the shared plumbing every annotation row needs: stash the
+  // anchor/side for measurement, install a `_scrSizeArrow` callback,
+  // and attach a ResizeObserver whose callback reflows *all* sibling
+  // arrows on the same anchor. That last bit is critical: whenever a
+  // box resizes (new comment appears, editor grows, text wraps at a
+  // new viewport width) every arrow on the same anchor may need to
+  // restretch, not just this one. Callers that delete a row must
+  // still reach for scheduleReflow(anchor) explicitly — the observer
+  // can't see a removed element.
+  function wireAnnotationRow(row, box, anchor, side) {
+    row._scrAnchor = anchor;
     row._scrSide = side;
     row._scrSizeArrow = () => sizeAnnotArrow(row);
-    // Auto-resize whenever the box's dimensions change (font load, text
-    // reflow on viewport resize, stylesheet arriving late, etc.). This
-    // is what fixes the "arrow extends to the top of the diff on first
-    // load" case — the first RAF measurement often lands before fonts
-    // finish loading, leaving cellRect.top wildly inflated; the
-    // ResizeObserver catches the post-font-load layout.
     if (typeof ResizeObserver !== "undefined") {
-      const ro = new ResizeObserver(() => sizeAnnotArrow(row));
+      const ro = new ResizeObserver(() => scheduleReflow(anchor));
       ro.observe(box);
       row._scrResizeObserver = ro;
     }
-    return row;
+  }
+
+  // Defer a sibling-reflow to the next animation frame. Coalesces the
+  // many tiny mutations that happen during a single keystroke or DOM
+  // insertion into a single measurement pass after layout settles.
+  const _pendingReflow = new Set();
+  function scheduleReflow(anchor) {
+    if (!anchor) return;
+    if (_pendingReflow.size === 0) {
+      requestAnimationFrame(() => {
+        const anchors = [..._pendingReflow];
+        _pendingReflow.clear();
+        for (const a of anchors) resizeAnnotSiblings(a);
+      });
+    }
+    _pendingReflow.add(anchor);
   }
 
   // Size + position the SVG arrow using a negative margin-top to hoist
@@ -972,7 +994,7 @@
       rowEl.parentNode.appendChild(editor);
     }
     editor._scrSizeArrow();
-    resizeAnnotSiblings(rowEl);
+    scheduleReflow(rowEl);
     const ta = editor.querySelector("textarea");
     if (ta) {
       ta.focus();
@@ -1006,13 +1028,11 @@
     box.appendChild(bar);
     cell.appendChild(box);
     row.appendChild(cell);
-    row._scrAnchor = anchorRowEl;
-    row._scrSide = side;
-    row._scrSizeArrow = () => sizeAnnotArrow(row);
+    wireAnnotationRow(row, box, anchorRowEl, side);
 
     function close() {
       row.remove();
-      resizeAnnotSiblings(anchorRowEl);
+      scheduleReflow(anchorRowEl);
     }
 
     function submit() {
@@ -1038,12 +1058,9 @@
       else if (e.key === "Escape") { e.preventDefault(); close(); }
       e.stopPropagation();
     });
-    // Resize arrow and grow textarea when content changes.
-    ta.addEventListener("input", () => {
-      autosizeTextarea();
-      row._scrSizeArrow();
-      resizeAnnotSiblings(anchorRowEl);
-    });
+    // Grow textarea as content changes; the ResizeObserver on the
+    // editor box handles the sibling reflow for us.
+    ta.addEventListener("input", autosizeTextarea);
     // Initial autosize — runs once the row is in the DOM.
     requestAnimationFrame(autosizeTextarea);
     return row;
@@ -1066,13 +1083,12 @@
     cell.appendChild(box);
     row.appendChild(cell);
     row.dataset.commentId = comment.id;
-    row._scrAnchor = anchorRowEl;
-    row._scrSide = comment.side;
-    row._scrSizeArrow = () => sizeAnnotArrow(row);
+    wireAnnotationRow(row, box, anchorRowEl, comment.side);
 
     edit.addEventListener("click", e => {
       e.stopPropagation();
       row.remove();
+      scheduleReflow(anchorRowEl);
       openCommentEditor({
         rowEl: anchorRowEl, side: comment.side, line: comment.line,
         file: comment.file, existing: comment,
@@ -1080,7 +1096,10 @@
     });
     del.addEventListener("click", e => {
       e.stopPropagation();
-      deleteComment(comment.id).then(() => row.remove());
+      deleteComment(comment.id).then(() => {
+        row.remove();
+        scheduleReflow(anchorRowEl);
+      });
     });
     return row;
   }
@@ -1105,7 +1124,7 @@
     // Any LLM annotations (line_notes, fold summaries) that also anchor
     // at this row now sit further from it — re-measure their arrows so
     // they stretch past the newly-inserted comments.
-    resizeAnnotSiblings(anchorRowEl);
+    scheduleReflow(anchorRowEl);
   }
 
   function removeCommentRowsAfter(anchorRowEl) {
