@@ -515,20 +515,22 @@
     if (boxH <= 0) return;
 
     // topOverrun = how far above this annotation row the arrow should
-    // rise. When multiple annotations stack after the same anchor (e.g.
-    // a reviewer comment plus an LLM line-note on the same source line)
-    // the earlier annotations sit between this row and its anchor; a
-    // fixed 6px would plant the arrow inside the preceding annotation
-    // box. Measure the real distance so each arrow reaches its own
-    // anchor — nested stacks render as concentric L-shapes.
+    // rise. We want it to terminate at the vertical midline of the
+    // anchor row so the arrow visually lands on the code line's text,
+    // not at the row's bottom border (which leaves a ~half-row gap
+    // between the arrow head and the line). The same rule handles
+    // stacked annotations: when a comment sits between this note and
+    // its anchor, rowRect.top is farther down, so topOverrun gets
+    // larger automatically — the two arrows end at the same midline,
+    // rendering as concentric L-shapes pointing at one line.
     const anchor = annotRow._scrAnchor;
     const minOverrun = 6;
     let topOverrun = minOverrun;
     if (anchor) {
       const rowRect = annotRow.getBoundingClientRect();
       const anchorRect = anchor.getBoundingClientRect();
-      const gap = rowRect.top - anchorRect.bottom;
-      if (gap > 0) topOverrun = gap + minOverrun;
+      const anchorMidY = (anchorRect.top + anchorRect.bottom) / 2;
+      topOverrun = Math.max(minOverrun, rowRect.top - anchorMidY);
     }
     const totalH = topOverrun + boxH;
     const midY = topOverrun + boxH / 2;
