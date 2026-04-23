@@ -57,6 +57,10 @@ The command:
 - runs the LLM augmentation pass (unless `--no-augment` was passed)
 - starts a localhost HTTP server, opens the browser, and **blocks** until the user clicks "Done" (or the 1-hour default timeout)
 
+**Do not add `--no-augment` yourself.** Augmentation IS the point — without it the viewer shows a plain diff with no LLM annotations, smells, fold descriptions, or context. Pass it through only if the user explicitly asked for it.
+
+**Do not add `--backend=api` either.** `scr` picks a backend automatically: if `ANTHROPIC_API_KEY` is set it uses the Anthropic SDK directly; otherwise it falls back to the `claude` CLI subprocess (assuming the user is logged into Claude Code). The absence of an API key is not a reason to disable augmentation.
+
 When the user is reviewing in the browser, do not start other work or speculate — they are occupied. Just wait for the bash call to return.
 
 ## Step 3 — walk through the comments
