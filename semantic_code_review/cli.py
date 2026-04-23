@@ -56,6 +56,68 @@ def _configure_logging(verbose: bool) -> None:
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
+def _select_client(backend: str):  # -> ClaudeClient, but keep import lazy
+    """Pick a `ClaudeClient` based on env + explicit choice.
+
+    backend ∈ {"auto","api","cli"}. "auto" picks API if the key is set,
+    else CLI if `claude` is on PATH, else raises.
+    """
+    import shutil as _shutil
+
+    has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    has_claude = bool(_shutil.which("claude"))
+
+    if backend == "api":
+        if not has_key:
+            raise typer.BadParameter(
+                "--backend=api but ANTHROPIC_API_KEY is not set "
+                "(load a .env or export the variable)."
+            )
+        from .augment.runner import AnthropicClient
+        return AnthropicClient()
+
+    if backend == "cli":
+        if not has_claude:
+            raise typer.BadParameter(
+                "--backend=cli but `claude` is not on PATH "
+                "(install Claude Code CLI or set ANTHROPIC_API_KEY)."
+            )
+        from .augment.claude_cli_client import ClaudeCLIClient
+        _warn_cli_fallback()
+        return ClaudeCLIClient()
+
+    # auto
+    if has_key:
+        from .augment.runner import AnthropicClient
+        return AnthropicClient()
+    if has_claude:
+        from .augment.claude_cli_client import ClaudeCLIClient
+        _warn_cli_fallback()
+        return ClaudeCLIClient()
+
+    raise typer.BadParameter(
+        "No Anthropic credentials available: set ANTHROPIC_API_KEY "
+        "(or ANTHROPIC_API_TOKEN in .env), or install the `claude` CLI "
+        "for subscription-based fallback."
+    )
+
+
+_FALLBACK_WARNED = False
+
+
+def _warn_cli_fallback() -> None:
+    global _FALLBACK_WARNED
+    if _FALLBACK_WARNED:
+        return
+    _FALLBACK_WARNED = True
+    sys.stderr.write(
+        "scr: no ANTHROPIC_API_KEY; falling back to `claude -p` subprocess. "
+        "Note: no prompt caching, reduced concurrency, no in-loop repo tools "
+        "(annotation quality will be lower).\n"
+    )
+    sys.stderr.flush()
+
+
 @app.command()
 def fetch(
     pr_url: str = typer.Argument(..., help="https://github.com/owner/repo/pull/N"),
@@ -79,6 +141,9 @@ def augment(
     skip_context: bool = typer.Option(False, help="Disable repo tools (no cross-file context)."),
     no_cache: bool = typer.Option(False, help="Disable disk cache of LLM calls."),
     cache_dir: Path = typer.Option(None, help="Cache root (default ~/.cache/scr/v1)."),
+    backend: str = typer.Option(
+        "auto", help="LLM backend: auto|api|cli (cli shells out to `claude -p`)."
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Augment a fetched run directory with LLM annotations."""
@@ -88,6 +153,7 @@ def augment(
     from .augment.prompts import PROMPT_VERSION
 
     cache = None if no_cache else CacheStore(root=cache_dir, prompt_version=PROMPT_VERSION)
+    client = _select_client(backend)
 
     path = asyncio.run(
         augment_run_dir(
@@ -99,6 +165,7 @@ def augment(
             skip_overview=skip_overview,
             skip_context=skip_context,
             cache=cache,
+            client=client,
         )
     )
     typer.echo(f"wrote {path}")
@@ -126,6 +193,7 @@ def run(
     concurrency: int = typer.Option(8),
     no_cache: bool = typer.Option(False),
     offline: bool = typer.Option(False),
+    backend: str = typer.Option("auto"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Fetch + augment + render in one shot."""
@@ -136,8 +204,15 @@ def run(
 
     fetch_result = fetch_pr(pr_url, runs_root)
     cache = None if no_cache else CacheStore(prompt_version=PROMPT_VERSION)
+    client = _select_client(backend)
     asyncio.run(
-        augment_run_dir(fetch_result.run_dir, model=model, concurrency=concurrency, cache=cache)
+        augment_run_dir(
+            fetch_result.run_dir,
+            model=model,
+            concurrency=concurrency,
+            cache=cache,
+            client=client,
+        )
     )
     out = fetch_result.run_dir / "review.html"
     render_run_dir(fetch_result.run_dir, out, offline=offline)
@@ -205,11 +280,18 @@ def review(
     no_open: bool = typer.Option(False, help="Skip opening the browser (for CI / SSH)."),
     port: int = typer.Option(0, help="Server port (0 = kernel-assigned)."),
     timeout: int = typer.Option(3600, help="Server idle timeout in seconds."),
+    backend: str = typer.Option(
+        "auto", help="LLM backend: auto|api|cli (cli shells out to `claude -p`)."
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Review a local git diff; round-trip reviewer comments to stdout."""
     _configure_logging(verbose)
     from .review.runner import ReviewOptions, run_review
+
+    # Resolve the backend up-front so a misconfiguration fails fast, before
+    # we spend time building the diff / worktrees.
+    client = _select_client(backend) if augment else None
 
     opts = ReviewOptions(
         spec=spec,
@@ -227,6 +309,7 @@ def review(
         open_browser=not no_open,
         port=port,
         timeout=timeout,
+        client=client,
     )
     code = run_review(opts)
     raise typer.Exit(code=code)

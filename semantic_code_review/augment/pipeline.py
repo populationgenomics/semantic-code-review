@@ -73,6 +73,13 @@ async def augment_run_dir(
         client = AnthropicClient()
     # cache=None means "no disk caching"; callers pass a CacheStore to enable.
 
+    # Subprocess-backed clients (claude -p fallback) are much more expensive
+    # per call than one warm HTTP client; cap concurrency when the caller
+    # left the default in place.
+    if getattr(client, "is_subprocess_backend", False) and concurrency >= 8:
+        log.info("CLI backend active: reducing concurrency %d -> 2", concurrency)
+        concurrency = 2
+
     raw_diff_path = run_dir / "raw.diff"
     meta_path = run_dir / "meta.json"
     augmented_path = run_dir / "augmented.diff"

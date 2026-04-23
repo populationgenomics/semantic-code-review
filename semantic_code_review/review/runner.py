@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..augment.prompts import PROMPT_VERSION
+from ..augment.runner import ClaudeClient
 from ..cache.store import CacheStore
 from ..format.parse import parse_augmented_diff
 from ..viewer.build_json import build_viewer_json
@@ -48,6 +49,9 @@ class ReviewOptions:
     open_browser: bool = True
     port: int = 0
     timeout: int = 3600
+    # Optional preselected LLM client. None → augment_run_dir builds an
+    # AnthropicClient itself (legacy behavior).
+    client: ClaudeClient | None = None
 
 
 def run_review(opts: ReviewOptions) -> int:
@@ -75,6 +79,7 @@ def run_review(opts: ReviewOptions) -> int:
                 model=opts.model,
                 concurrency=opts.concurrency,
                 cache=cache,
+                client=opts.client,
             )
         )
     else:
