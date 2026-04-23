@@ -9,10 +9,16 @@
   const DATA = JSON.parse(document.getElementById("scr-data").textContent);
   const SMELLS = DATA.smells_catalogue || {};
 
+  const SESSION_ENDPOINT = (() => {
+    const m = document.querySelector('meta[name="scr-session-endpoint"]');
+    return m ? m.getAttribute("content") : "";
+  })();
+
   const STATE = {
     fold: "hunks",      // 'files' | 'hunks' | 'segments' | 'off'
     overrides: {},      // regionId -> bool (true = folded)
     renderedDiffs: {},  // hunkId -> pre-rendered <div>
+    comments: {},       // id -> Comment
   };
 
   // --- Fold defaults per region type ---------------------------------------
@@ -73,6 +79,8 @@
     updateStatus();
     syncHash();
     updateSliderButtons();
+    // Re-attach any loaded comments to freshly-rendered rows.
+    if (Object.keys(STATE.comments).length) renderAllExistingComments();
   }
 
   function renderPRPanel(pr) {
@@ -705,6 +713,285 @@
     }[c]));
   }
 
+  // ==========================================================================
+  // Reviewer comments (line-level).
+  //
+  // Each comment is anchored to {file_id, side, line}. When a session
+  // endpoint is present, every mutation (new / edit / delete) PUT/DELETEs
+  // to the server. Without one, comments persist in localStorage keyed
+  // by file+side+line+head_sha, so a reload keeps them but they won't
+  // round-trip back to a Claude Code session.
+  // ==========================================================================
+
+  const LS_KEY = `scr-comments:${(DATA.pr && DATA.pr.head_sha) || "local"}`;
+
+  function commentStorageLoad() {
+    if (SESSION_ENDPOINT) {
+      fetch(`${SESSION_ENDPOINT}/comments`)
+        .then(r => r.ok ? r.json() : { comments: [] })
+        .then(d => {
+          for (const c of d.comments || []) STATE.comments[c.id] = c;
+          renderAllExistingComments();
+        })
+        .catch(() => { /* server may have exited; ignore */ });
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      for (const c of data.comments || []) STATE.comments[c.id] = c;
+      renderAllExistingComments();
+    } catch (_) { /* ignore */ }
+  }
+
+  function commentStorageFlush() {
+    if (SESSION_ENDPOINT) return;  // server round-trips per-mutation
+    const payload = { comments: Object.values(STATE.comments) };
+    try { localStorage.setItem(LS_KEY, JSON.stringify(payload)); } catch (_) {}
+  }
+
+  function saveComment(c) {
+    STATE.comments[c.id] = c;
+    if (SESSION_ENDPOINT) {
+      return fetch(`${SESSION_ENDPOINT}/comments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(c),
+      }).then(r => r.ok ? r.json() : null)
+        .catch(() => null);
+    }
+    commentStorageFlush();
+    return Promise.resolve(c);
+  }
+
+  function deleteComment(id) {
+    delete STATE.comments[id];
+    if (SESSION_ENDPOINT) {
+      return fetch(`${SESSION_ENDPOINT}/comments/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      }).catch(() => null);
+    }
+    commentStorageFlush();
+    return Promise.resolve();
+  }
+
+  function postExit() {
+    if (!SESSION_ENDPOINT) return Promise.resolve();
+    return fetch(`${SESSION_ENDPOINT}/exit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    }).then(() => { /* server exits soon */ }).catch(() => {});
+  }
+
+  // --- Anchor key + lookup -------------------------------------------------
+
+  function commentKey(file, side, line) { return `${file}|${side}|${line}`; }
+
+  function commentsFor(file, side, line) {
+    const k = commentKey(file, side, line);
+    return Object.values(STATE.comments).filter(
+      c => commentKey(c.file, c.side, c.line) === k
+    );
+  }
+
+  // --- Gutter affordance + click-to-comment --------------------------------
+  // Installed via event delegation on the root so it survives re-renders.
+
+  function installCommentGutter(appEl) {
+    appEl.addEventListener("click", (e) => {
+      const cell = e.target.closest(".cell-lineno");
+      if (!cell || cell.classList.contains("empty")) return;
+      const row = cell.parentElement;
+      if (!row || !row.classList.contains("row")) return;
+      const side = cell.classList.contains("cell-lineno-old") ? "old" : "new";
+      const line = parseInt(cell.textContent.trim(), 10);
+      if (isNaN(line)) return;
+      const fileEl = row.closest(".file");
+      const filePath = fileEl && fileEl.querySelector(".file-path")
+        ? fileEl.querySelector(".file-path").textContent
+        : "";
+      openCommentEditor({ rowEl: row, side, line, file: filePath });
+      e.stopPropagation();
+    });
+  }
+
+  function openCommentEditor({ rowEl, side, line, file, existing }) {
+    // Insert an editor row immediately after rowEl, reusing the annotation
+    // arrow + box. The box contains a textarea.
+    const editor = buildCommentEditorRow({ anchorRowEl: rowEl, side, line, file, existing });
+    if (rowEl.nextSibling) {
+      rowEl.parentNode.insertBefore(editor, rowEl.nextSibling);
+    } else {
+      rowEl.parentNode.appendChild(editor);
+    }
+    editor._scrSizeArrow();
+    const ta = editor.querySelector("textarea");
+    if (ta) {
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+    }
+  }
+
+  function buildCommentEditorRow(opts) {
+    const { anchorRowEl, side, line, file, existing } = opts;
+    const row = el("div", "row row-annotation annot-comment annot-editor");
+    const cell = el("div", `cell-annotation cell-annotation-${side}`);
+    cell.appendChild(svgAnnotArrow());
+    const box = el("div", "annot-box comment-editor-box");
+    const ta = el("textarea", "comment-editor-input");
+    ta.rows = 2;
+    ta.placeholder = "Write a comment… (Enter to save, Shift-Enter for newline, Esc to cancel)";
+    ta.value = existing ? existing.body : "";
+    box.appendChild(ta);
+    const bar = el("div", "comment-editor-bar");
+    const save = el("button", "comment-btn comment-btn-save", existing ? "Update" : "Save");
+    const cancel = el("button", "comment-btn comment-btn-cancel", "Cancel");
+    bar.appendChild(save);
+    bar.appendChild(cancel);
+    box.appendChild(bar);
+    cell.appendChild(box);
+    row.appendChild(cell);
+    row._scrAnchor = anchorRowEl;
+    row._scrSide = side;
+    row._scrSizeArrow = () => sizeAnnotArrow(row);
+
+    function close() { row.remove(); }
+
+    function submit() {
+      const body = ta.value.trim();
+      if (!body) { close(); return; }
+      const id = (existing && existing.id) || `c-${Math.random().toString(36).slice(2, 10)}`;
+      const now = Date.now() / 1000;
+      const c = {
+        id, file, side, line, body,
+        created_at: existing ? existing.created_at : now,
+        updated_at: now,
+      };
+      saveComment(c).then(() => {
+        close();
+        refreshCommentsForAnchor(anchorRowEl, { file, side, line });
+      });
+    }
+
+    save.addEventListener("click", e => { e.stopPropagation(); submit(); });
+    cancel.addEventListener("click", e => { e.stopPropagation(); close(); });
+    ta.addEventListener("keydown", e => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+      else if (e.key === "Escape") { e.preventDefault(); close(); }
+      e.stopPropagation();
+    });
+    // Resize arrow when the textarea grows.
+    ta.addEventListener("input", () => row._scrSizeArrow());
+    return row;
+  }
+
+  function buildCommentRow(comment, anchorRowEl) {
+    const row = el("div", "row row-annotation annot-comment");
+    const cell = el("div", `cell-annotation cell-annotation-${comment.side}`);
+    cell.appendChild(svgAnnotArrow());
+    const box = el("div", "annot-box comment-display");
+    const body = el("div", "comment-body");
+    body.textContent = comment.body;
+    box.appendChild(body);
+    const bar = el("div", "comment-actions");
+    const edit = el("button", "comment-btn comment-btn-edit", "edit");
+    const del = el("button", "comment-btn comment-btn-del", "delete");
+    bar.appendChild(edit);
+    bar.appendChild(del);
+    box.appendChild(bar);
+    cell.appendChild(box);
+    row.appendChild(cell);
+    row.dataset.commentId = comment.id;
+    row._scrAnchor = anchorRowEl;
+    row._scrSide = comment.side;
+    row._scrSizeArrow = () => sizeAnnotArrow(row);
+
+    edit.addEventListener("click", e => {
+      e.stopPropagation();
+      row.remove();
+      openCommentEditor({
+        rowEl: anchorRowEl, side: comment.side, line: comment.line,
+        file: comment.file, existing: comment,
+      });
+    });
+    del.addEventListener("click", e => {
+      e.stopPropagation();
+      deleteComment(comment.id).then(() => row.remove());
+    });
+    return row;
+  }
+
+  function refreshCommentsForAnchor(anchorRowEl, anchor) {
+    // Clear any comment-display rows immediately after the anchor, then
+    // rebuild them from current state.
+    removeCommentRowsAfter(anchorRowEl);
+    const relevant = commentsFor(anchor.file, anchor.side, anchor.line)
+      .sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
+    let insertAfter = anchorRowEl;
+    for (const c of relevant) {
+      const cr = buildCommentRow(c, anchorRowEl);
+      if (insertAfter.nextSibling) {
+        insertAfter.parentNode.insertBefore(cr, insertAfter.nextSibling);
+      } else {
+        insertAfter.parentNode.appendChild(cr);
+      }
+      cr._scrSizeArrow();
+      insertAfter = cr;
+    }
+  }
+
+  function removeCommentRowsAfter(anchorRowEl) {
+    let n = anchorRowEl.nextSibling;
+    while (n && n.classList && n.classList.contains("annot-comment")
+           && !n.classList.contains("annot-editor")) {
+      const next = n.nextSibling;
+      n.remove();
+      n = next;
+    }
+  }
+
+  function renderAllExistingComments() {
+    // On load, walk the DOM for every row and reattach comments.
+    const byAnchor = {};  // anchorKey -> list
+    for (const c of Object.values(STATE.comments)) {
+      const k = `${c.file}|${c.side}|${c.line}`;
+      (byAnchor[k] ||= []).push(c);
+    }
+    document.querySelectorAll(".file").forEach(fileEl => {
+      const filePath = fileEl.querySelector(".file-path")
+        ? fileEl.querySelector(".file-path").textContent : "";
+      fileEl.querySelectorAll(".row").forEach(row => {
+        const [oldCell, , newCell] = [row.children[0], row.children[1], row.children[2]];
+        for (const [cell, side] of [[oldCell, "old"], [newCell, "new"]]) {
+          if (!cell || cell.classList.contains("empty")) continue;
+          const n = parseInt(cell.textContent.trim(), 10);
+          if (isNaN(n)) continue;
+          const relevant = byAnchor[`${filePath}|${side}|${n}`];
+          if (!relevant) continue;
+          refreshCommentsForAnchor(row, { file: filePath, side, line: n });
+        }
+      });
+    });
+  }
+
+  // --- Done button ---------------------------------------------------------
+
+  function installDoneButton() {
+    if (!SESSION_ENDPOINT) return;
+    const bar = document.querySelector(".pr-bar");
+    if (!bar) return;
+    const btn = el("button", "done-btn", "Done");
+    btn.title = "Finish review and return comments to the caller";
+    btn.addEventListener("click", () => {
+      btn.disabled = true;
+      btn.textContent = "Sending…";
+      postExit().then(() => { btn.textContent = "Done ✓"; });
+    });
+    bar.appendChild(btn);
+  }
+
   // --- Boot ----------------------------------------------------------------
   function boot() {
     document.querySelectorAll(".fold-slider button").forEach(b => {
@@ -720,8 +1007,11 @@
     });
     document.addEventListener("keydown", onKeydown);
     window.addEventListener("hashchange", () => { STATE.overrides = {}; restoreHash(); render(); });
+    installCommentGutter(document.getElementById("app"));
+    installDoneButton();
     restoreHash();
     render();
+    commentStorageLoad();
   }
 
   if (document.readyState === "loading") {

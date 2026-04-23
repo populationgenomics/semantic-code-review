@@ -304,6 +304,88 @@ body {
   border-left-color: var(--fg-dim);
 }
 
+/* Reviewer comment variant (amber/warn border so it stands out from the
+ * blue LLM fold descriptions). */
+.diff .annot-comment .annot-arrow { color: var(--warn); }
+.diff .annot-comment .annot-box {
+  border-left-color: var(--warn);
+  font-style: normal;
+  max-height: none;         /* comments can wrap freely */
+}
+.comment-body { white-space: pre-wrap; font-size: 100%; }
+
+.comment-editor-box textarea.comment-editor-input {
+  display: block;
+  width: 100%;
+  min-width: 32ch;
+  box-sizing: border-box;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+  resize: vertical;
+  outline: none;
+}
+.comment-editor-box textarea.comment-editor-input:focus {
+  border-color: var(--accent);
+}
+.comment-editor-bar, .comment-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  justify-content: flex-end;
+}
+.comment-btn {
+  background: var(--bg-panel);
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.comment-btn:hover { color: var(--fg); border-color: var(--accent); }
+.comment-btn-save { background: var(--warn); color: #000; border-color: var(--warn); }
+.comment-btn-save:hover { color: #000; background: #e0ab2c; }
+.comment-btn-del:hover { color: var(--err); border-color: var(--err); }
+
+/* Gutter hover affordance — show a faint + in the line-number column on
+ * hover so reviewers know the number is clickable. */
+.diff .cell-lineno:not(.empty) { cursor: pointer; position: relative; }
+.diff .cell-lineno:not(.empty):hover {
+  background: var(--bg-panel);
+  color: var(--accent);
+}
+.diff .cell-lineno:not(.empty):hover::before {
+  content: "+";
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 10px;
+  color: var(--warn);
+}
+
+/* "Done" button in the PR bar (only present when a session endpoint
+ * was baked into the HTML). */
+.done-btn {
+  background: var(--warn);
+  color: #000;
+  border: 1px solid var(--warn);
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-left: 8px;
+}
+.done-btn:hover:not(:disabled) { background: #e0ab2c; }
+.done-btn:disabled { opacity: 0.7; cursor: default; }
+
 @media (prefers-color-scheme: light) {
   .diff .row-ins .cell-content-new { background: rgba(26, 127, 55, 0.10); }
   .diff .row-del .cell-content-old { background: rgba(207, 34, 46, 0.10); }
