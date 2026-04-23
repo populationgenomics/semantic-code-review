@@ -543,10 +543,18 @@
     svg.setAttribute("viewBox", `0 0 ${svgW} ${totalH}`);
     svg.style.marginTop = `-${topOverrun}px`;
 
-    // Horizontal alignment: put the SVG's vLineX at anchorX.
+    // Horizontal alignment: put the SVG's vLineX at the character
+    // midpoint of the nth character in the anchor row (n = count of
+    // annotation siblings stacked *below* this one for the same
+    // anchor). This staggers each stacked arrow across one monospace
+    // character so they don't overlap: the annotation closest to the
+    // anchor (which has the shortest vertical span) sits one char to
+    // the right of the annotation below it, two to the right of the
+    // annotation below that, etc.
     const side = annotRow._scrSide || "new";
     if (anchor) {
-      const anchorX = firstPrintingCharLeft(anchor, side);
+      const offset = annotationsBelow(annotRow, anchor);
+      const anchorX = charCenterAt(anchor, side, offset);
       if (anchorX !== null) {
         const cellRect = cell.getBoundingClientRect();
         const cs = window.getComputedStyle(cell);
@@ -587,30 +595,72 @@
     });
   }
 
-  // Measure where the anchor row's first printing character is, in px,
-  // relative to the annotation cell's left edge. More reliable than ch-based
-  // counting because chevrons + hljs fonts throw off character width math.
-  function firstPrintingCharLeft(anchorRowEl, side) {
+  // Count annotation rows that sit below `annotRow` in the DOM and
+  // share the same anchor. Used to stagger stacked arrow origins —
+  // each arrow shifts right by one character per annotation below it.
+  function annotationsBelow(annotRow, anchor) {
+    let n = 0;
+    let s = annotRow.nextSibling;
+    while (s) {
+      if (s.classList && s.classList.contains("row-annotation")
+          && s.style.display !== "none"
+          && s._scrAnchor === anchor) {
+        n++;
+      }
+      s = s.nextSibling;
+    }
+    return n;
+  }
+
+  // Return the horizontal pixel midpoint of the nth character after
+  // (and including) the first non-whitespace character on the anchor
+  // row's content side. n=0 → first printing char's midpoint.
+  // Measurement comes from Range.getBoundingClientRect rather than a
+  // ch-based guess because hljs spans + ligatures make character width
+  // arithmetic unreliable.
+  function charCenterAt(anchorRowEl, side, n) {
     const idx = (side === "old") ? 1 : 3;
     const contentCell = anchorRowEl.children[idx];
     if (!contentCell) return null;
     const code = contentCell.querySelector("code");
     if (!code) return contentCell.getBoundingClientRect().left;
+    // Collect every text node, in order.
+    const texts = [];
     const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
     let node;
-    while ((node = walker.nextNode())) {
-      const s = node.nodeValue;
+    while ((node = walker.nextNode())) texts.push(node);
+
+    // Flatten to (node, localOffset) entries, skipping leading whitespace.
+    const chars = [];
+    let seenPrinting = false;
+    for (const t of texts) {
+      const s = t.nodeValue;
       for (let i = 0; i < s.length; i++) {
-        if (!/\s/.test(s[i])) {
-          const range = document.createRange();
-          range.setStart(node, i);
-          range.setEnd(node, i + 1);
-          const r = range.getBoundingClientRect();
-          if (r.width || r.height) return r.left;
+        if (!seenPrinting) {
+          if (/\s/.test(s[i])) continue;
+          seenPrinting = true;
         }
+        chars.push({ node: t, offset: i });
       }
     }
-    return code.getBoundingClientRect().left;
+    if (chars.length === 0) return code.getBoundingClientRect().left;
+
+    const target = chars[Math.min(n, chars.length - 1)];
+    const range = document.createRange();
+    range.setStart(target.node, target.offset);
+    range.setEnd(target.node, target.offset + 1);
+    const r = range.getBoundingClientRect();
+    if (!r.width && !r.height) {
+      // Zero-size range (line end or unusual node); fall back to the
+      // first printing character.
+      const first = chars[0];
+      const r0 = document.createRange();
+      r0.setStart(first.node, first.offset);
+      r0.setEnd(first.node, first.offset + 1);
+      const rr = r0.getBoundingClientRect();
+      return rr.left + rr.width / 2;
+    }
+    return r.left + r.width / 2;
   }
 
   function svgAnnotArrow() {
