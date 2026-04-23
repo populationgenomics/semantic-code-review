@@ -1,0 +1,10 @@
+{
+  "name": "semantic-code-review",
+  "version": "0.1.0",
+  "description": "LLM-augmented local-diff reviewer. /review opens an interactive side-by-side viewer with fold annotations and round-trips inline comments back into the session.",
+  "author": {
+    "name": "Toby Sargeant",
+    "email": "toby.sargeant@populationgenomics.org.au"
+  },
+  "homepage": "https://github.com/folded/semantic-code-review"
+}

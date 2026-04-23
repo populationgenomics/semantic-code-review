@@ -8,6 +8,7 @@ its query.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,10 @@ from typing import Any
 
 
 TOOL_RESULT_CAP_BYTES = 20 * 1024
+
+
+# Resolved once at import; tests that want to force a path can monkeypatch.
+_HAS_RIPGREP = shutil.which("rg") is not None
 
 
 @dataclass
@@ -52,7 +57,15 @@ class RepoTools:
     # --- search -----------------------------------------------------------
 
     def grep(self, pattern: str, path_glob: str | None = None, max_hits: int = 50) -> str:
-        """Search the head worktree with ripgrep. Returns `path:line:text` lines."""
+        """Search the head worktree. Prefers ripgrep; falls back to `git grep`.
+
+        Output is ``path:line:text`` with worktree prefix stripped.
+        """
+        if _HAS_RIPGREP:
+            return self._grep_rg(pattern, path_glob, max_hits)
+        return self._grep_git(pattern, path_glob, max_hits)
+
+    def _grep_rg(self, pattern: str, path_glob: str | None, max_hits: int) -> str:
         args = ["rg", "--no-heading", "-n", "--max-count", str(max_hits), "-e", pattern]
         if path_glob:
             args += ["--glob", path_glob]
@@ -60,12 +73,26 @@ class RepoTools:
         result = subprocess.run(args, capture_output=True, text=True, check=False)
         if result.returncode not in (0, 1):  # 1 = no matches
             return f"error: rg failed: {result.stderr.strip()}"
-        # Strip worktree prefix for readability.
         prefix = str(self.head_worktree) + os.sep
         out = "\n".join(
             line.removeprefix(prefix) for line in result.stdout.splitlines()
         )
         return _cap(out)
+
+    def _grep_git(self, pattern: str, path_glob: str | None, max_hits: int) -> str:
+        """Fallback search via ``git grep`` — always available since git is a
+        hard requirement. Respects .gitignore; only searches tracked files."""
+        args = ["git", "grep", "-n", "-I", "--max-count", str(max_hits), "-e", pattern]
+        if path_glob:
+            # git grep wants pathspecs after ``--``.
+            args += ["--", path_glob]
+        result = subprocess.run(
+            args, cwd=self.head_worktree, capture_output=True, text=True, check=False,
+        )
+        # git grep exits 1 on no matches, like rg; 128+ on error.
+        if result.returncode not in (0, 1):
+            return f"error: git grep failed: {result.stderr.strip()}"
+        return _cap(result.stdout)
 
     # --- listing ----------------------------------------------------------
 

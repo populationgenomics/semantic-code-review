@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Bootstrap wrapper for the `scr` CLI when packaged as a Claude Code plugin.
+#
+# Responsibilities, in order of importance:
+#
+# 1. Preflight system dependencies. python3 (>= 3.11) and git are hard
+#    requirements; gh and rg are optional and we only warn if missing.
+# 2. Maintain a per-plugin virtualenv under $CLAUDE_PLUGIN_DATA/venv, keyed by
+#    sha256(pyproject.toml). Any change to pyproject.toml — including a new
+#    transitive dep after a plugin update — triggers a reinstall automatically.
+# 3. Exec the real `scr` out of that venv, passing through all argv.
+#
+# The script is idempotent and cheap on the hot path (one sha256 check, one
+# stamp read, one exec) — the expensive bootstrap only runs when something
+# has actually changed.
+
+set -eu -o pipefail
+
+die() { printf 'scr: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'scr: warning: %s\n' "$*" >&2; }
+
+# --- locate plugin tree + data dir ------------------------------------------
+
+# $CLAUDE_PLUGIN_ROOT / $CLAUDE_PLUGIN_DATA are set by Claude Code when invoking
+# plugin bin/ scripts. Fall back sensibly when run standalone (e.g. during
+# development from inside the repo).
+if [ -z "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+  CLAUDE_PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+fi
+if [ -z "${CLAUDE_PLUGIN_DATA:-}" ]; then
+  CLAUDE_PLUGIN_DATA="${XDG_DATA_HOME:-$HOME/.local/share}/claude-plugins/semantic-code-review"
+fi
+
+mkdir -p "$CLAUDE_PLUGIN_DATA"
+
+VENV="$CLAUDE_PLUGIN_DATA/venv"
+PYPROJECT="$CLAUDE_PLUGIN_ROOT/pyproject.toml"
+
+[ -f "$PYPROJECT" ] || die "pyproject.toml not found at $PYPROJECT"
+
+# --- preflight --------------------------------------------------------------
+
+need_python=1
+if command -v python3 >/dev/null 2>&1; then
+  ver=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo "0.0")
+  major=${ver%%.*}
+  minor=${ver#*.}
+  if [ "$major" -gt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -ge 11 ]; }; then
+    need_python=0
+  fi
+fi
+[ "$need_python" -eq 0 ] || die "python3 >= 3.11 is required but missing or too old"
+
+command -v git >/dev/null 2>&1 || die "git is required but not on PATH"
+
+if ! command -v gh >/dev/null 2>&1; then
+  warn "gh not found — 'scr fetch' on a GitHub PR URL will fail. /review on local diffs still works."
+fi
+if ! command -v rg >/dev/null 2>&1; then
+  warn "ripgrep (rg) not found — falling back to 'git grep' for LLM tool-use searches."
+fi
+
+# --- venv install (idempotent) ---------------------------------------------
+
+# Cache key: hash the pyproject.toml so any edit to deps or metadata triggers
+# a reinstall. Avoids the common footgun of forgetting to bump plugin.version.
+hash_pyproject() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$PYPROJECT" | awk '{print $1}'
+  else
+    sha256sum "$PYPROJECT" | awk '{print $1}'
+  fi
+}
+
+want_hash=$(hash_pyproject)
+stamp="$CLAUDE_PLUGIN_DATA/installed-${want_hash}"
+
+if [ ! -x "$VENV/bin/scr" ] || [ ! -f "$stamp" ]; then
+  printf 'scr: setting up python environment under %s (first run / deps changed)\n' "$VENV" >&2
+  if [ -d "$VENV" ]; then
+    rm -rf "$VENV"
+  fi
+  python3 -m venv "$VENV"
+  # shellcheck disable=SC1090,SC1091
+  "$VENV/bin/pip" install --quiet --upgrade pip
+  "$VENV/bin/pip" install --quiet "$CLAUDE_PLUGIN_ROOT"
+  # Clear any previous stamps so a rolled-back install doesn't look fresh.
+  find "$CLAUDE_PLUGIN_DATA" -maxdepth 1 -name 'installed-*' -print0 2>/dev/null | xargs -0 rm -f || true
+  printf '%s\n' "$want_hash" > "$stamp"
+  printf 'scr: ready\n' >&2
+fi
+
+exec "$VENV/bin/scr" "$@"

@@ -73,6 +73,24 @@ def test_grep_with_glob(repo: RepoTools) -> None:
     assert "a.py" not in out
 
 
+def test_grep_fallback_to_git_grep(repo: RepoTools, monkeypatch) -> None:
+    """When rg isn't on PATH, grep still works via git grep."""
+    from semantic_code_review.augment import tools as tools_mod
+
+    monkeypatch.setattr(tools_mod, "_HAS_RIPGREP", False)
+    out = repo.grep("foo")
+    assert "a.py" in out and "b.py" in out
+
+
+def test_grep_fallback_with_glob(repo: RepoTools, monkeypatch) -> None:
+    from semantic_code_review.augment import tools as tools_mod
+
+    monkeypatch.setattr(tools_mod, "_HAS_RIPGREP", False)
+    out = repo.grep("foo", path_glob="b.py")
+    assert "b.py" in out
+    assert "a.py" not in out
+
+
 def test_list_dir(repo: RepoTools) -> None:
     out = repo.list_dir("")
     assert "a.py" in out and "sub/" in out
