@@ -83,9 +83,17 @@
     if (Object.keys(STATE.comments).length) renderAllExistingComments();
     // Annotation arrows attached during render were sized while the
     // tree was still detached (no layout). Re-size once now that
-    // everything is in the document so line-note arrows land at the
-    // right height.
-    requestAnimationFrame(resizeAllAnnotArrows);
+    // everything is in the document — double RAF because the first
+    // frame's measurements are sometimes stale before the browser has
+    // applied the final font metrics. Also re-size once fonts finish
+    // loading, since a late font load shifts the grid track heights.
+    requestAnimationFrame(() => {
+      resizeAllAnnotArrows();
+      requestAnimationFrame(resizeAllAnnotArrows);
+    });
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(resizeAllAnnotArrows);
+    }
   }
 
   function renderPRPanel(pr) {
@@ -499,6 +507,17 @@
     row._scrAnchor = anchorRowEl;
     row._scrSide = side;
     row._scrSizeArrow = () => sizeAnnotArrow(row);
+    // Auto-resize whenever the box's dimensions change (font load, text
+    // reflow on viewport resize, stylesheet arriving late, etc.). This
+    // is what fixes the "arrow extends to the top of the diff on first
+    // load" case — the first RAF measurement often lands before fonts
+    // finish loading, leaving cellRect.top wildly inflated; the
+    // ResizeObserver catches the post-font-load layout.
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(() => sizeAnnotArrow(row));
+      ro.observe(box);
+      row._scrResizeObserver = ro;
+    }
     return row;
   }
 
@@ -526,8 +545,18 @@
     if (anchor) {
       const cellRect = cell.getBoundingClientRect();
       const anchorRect = anchor.getBoundingClientRect();
-      const anchorMidY = (anchorRect.top + anchorRect.bottom) / 2;
-      topOverrun = Math.max(minOverrun, cellRect.top - anchorMidY);
+      // A degenerate rect (all zeros) means the anchor isn't laid out
+      // yet — usually because the whole viewer just mounted and fonts
+      // haven't finished loading. Bail to the minimum overrun; the
+      // ResizeObserver + double-RAF + document.fonts.ready in renderAll
+      // will trigger another pass once layout settles.
+      const anchorEmpty =
+        anchorRect.top === 0 && anchorRect.bottom === 0
+          && anchorRect.left === 0 && anchorRect.right === 0;
+      if (!anchorEmpty) {
+        const anchorMidY = (anchorRect.top + anchorRect.bottom) / 2;
+        topOverrun = Math.max(minOverrun, cellRect.top - anchorMidY);
+      }
     }
     const totalH = topOverrun + boxH;
     const midY = topOverrun + boxH / 2;
