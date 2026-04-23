@@ -120,16 +120,30 @@ body {
 }
 .hunk.folded { border-left-width: 3px; }
 .hunk-header {
-  display: flex; gap: 10px; align-items: flex-start; padding: 8px 12px; cursor: pointer;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas:
+    "chev  pos     meta"
+    ".     intent  intent";
+  column-gap: 10px;
+  row-gap: 4px;
+  padding: 8px 12px;
+  cursor: pointer;
   background: var(--bg-panel); user-select: none;
 }
+.hunk-header > .chevron { grid-area: chev; align-self: start; margin-top: 2px; }
 .hunk-pos {
-  font-family: var(--mono); color: var(--fg-dim); font-size: 12px; min-width: 140px;
-  flex-shrink: 0;
+  grid-area: pos;
+  font-family: var(--mono); color: var(--fg-dim); font-size: 12px;
+  align-self: start;
 }
-.hunk-intent { flex: 1; color: var(--fg); font-size: 13px; }
+.hunk-intent {
+  grid-area: intent;
+  color: var(--fg); font-size: 13px;
+  align-self: start;
+}
 .hunk-intent.empty { color: var(--fg-dim); font-style: italic; }
-.hunk-meta { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+.hunk-meta { grid-area: meta; display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
 .confidence {
   font-size: 11px; color: var(--fg-muted); padding: 1px 6px; border-radius: 10px;
   background: var(--bg-alt); border: 1px solid var(--border);
