@@ -7,9 +7,11 @@ expected submit-tool schema, parses the structured result, and returns
 a dict shaped like `runner._message_to_dict` so the rest of the
 pipeline is unchanged.
 
-v1 is single-shot: no MCP injection, no tool exploration. The model
-answers from the hunk text alone. v2 will add an MCP server exposing
-`RepoTools` so the agentic loop survives.
+If a `RepoTools` has been attached (via `set_repo_tools`), a stdio MCP
+server is also injected via `--mcp-config`, so the model can explore
+the worktree during the call — matching the behaviour of the API
+backend's in-process tool loop. Without `RepoTools`, the client runs
+single-shot and the model answers from the hunk text alone.
 """
 
 from __future__ import annotations
@@ -19,10 +21,13 @@ import json
 import logging
 import os
 import shutil
+import sys
 import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
+
+from .tools import RepoTools
 
 
 log = logging.getLogger(__name__)
@@ -52,14 +57,83 @@ class ClaudeCLIClient:
         *,
         claude_path: str | None = None,
         fallback_model: str | None = "claude-sonnet-4-6",
-        max_turns: int = 1,
+        max_turns_single_shot: int = 1,
+        max_turns_with_mcp: int = 20,
     ) -> None:
         resolved = claude_path or shutil.which("claude")
         if not resolved:
             raise ClaudeCLINotFound("`claude` not on PATH")
         self._claude = resolved
         self._fallback_model = fallback_model
-        self._max_turns = max_turns
+        self._max_turns_single_shot = max_turns_single_shot
+        self._max_turns_with_mcp = max_turns_with_mcp
+        self._repo_tools: RepoTools | None = None
+        self._mcp_config_path: Path | None = None
+
+    def set_repo_tools(self, repo_tools: RepoTools | None) -> None:
+        """Bind a `RepoTools` so subsequent calls get MCP-backed repo access.
+
+        Called by the augment pipeline once it has resolved the run dir
+        (head worktree + repo.git + SHAs). Calling with None disables MCP
+        injection and reverts to single-shot mode.
+        """
+        self._repo_tools = repo_tools
+        # Invalidate any prior config file; it will be rewritten on next
+        # create_message if MCP is still active.
+        if self._mcp_config_path is not None and self._mcp_config_path.exists():
+            try:
+                self._mcp_config_path.unlink()
+            except OSError:
+                pass
+        self._mcp_config_path = None
+
+    def _ensure_mcp_config(self) -> Path:
+        if self._mcp_config_path is not None and self._mcp_config_path.exists():
+            return self._mcp_config_path
+        assert self._repo_tools is not None
+        rt = self._repo_tools
+        # Ensure the child python can import `semantic_code_review` even
+        # when launched with an unrelated cwd: prepend our package root to
+        # PYTHONPATH. In the installed plugin this is redundant (the venv
+        # has the package on site-packages), but it's cheap insurance for
+        # dev environments and editable checkouts.
+        import semantic_code_review as _pkg
+        pkg_root = str(Path(_pkg.__file__).resolve().parent.parent)
+        existing_pp = os.environ.get("PYTHONPATH", "")
+        pythonpath = (
+            f"{pkg_root}{os.pathsep}{existing_pp}" if existing_pp else pkg_root
+        )
+        # `claude -p` launches stdio MCP servers as subprocesses itself; it
+        # owns stdin/stdout of the child. We just name the entrypoint.
+        config = {
+            "mcpServers": {
+                "scr": {
+                    "type": "stdio",
+                    "command": sys.executable,
+                    "args": [
+                        "-m", "semantic_code_review.augment.mcp_server",
+                        "--head-worktree", str(rt.head_worktree),
+                        "--repo-git", str(rt.repo_git),
+                        "--base-sha", rt.base_sha,
+                        "--head-sha", rt.head_sha,
+                    ],
+                    "env": {"PYTHONPATH": pythonpath},
+                }
+            }
+        }
+        fd, path = tempfile.mkstemp(prefix="scr-mcp-", suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(config, fh)
+        self._mcp_config_path = Path(path)
+        return self._mcp_config_path
+
+    async def aclose(self) -> None:
+        if self._mcp_config_path is not None and self._mcp_config_path.exists():
+            try:
+                self._mcp_config_path.unlink()
+            except OSError:
+                pass
+        self._mcp_config_path = None
 
     async def create_message(self, **kwargs: Any) -> dict:
         model: str = kwargs["model"]
@@ -78,6 +152,11 @@ class ClaudeCLIClient:
         prompt = _serialize_messages(messages, submit_tool)
         schema_json = json.dumps(submit_tool["input_schema"], ensure_ascii=False)
 
+        mcp_active = self._repo_tools is not None
+        max_turns = (
+            self._max_turns_with_mcp if mcp_active else self._max_turns_single_shot
+        )
+
         argv = [
             self._claude, "-p",
             "--model", model,
@@ -89,10 +168,15 @@ class ClaudeCLIClient:
             "--setting-sources", "",
             "--permission-mode", "bypassPermissions",
             "--output-format", "json",
-            "--max-turns", str(self._max_turns),
+            "--max-turns", str(max_turns),
         ]
         if self._fallback_model:
             argv += ["--fallback-model", self._fallback_model]
+        if mcp_active:
+            argv += [
+                "--mcp-config", str(self._ensure_mcp_config()),
+                "--strict-mcp-config",
+            ]
 
         log.debug("claude -p invocation: %s", " ".join(argv[:7] + ["<prompt>"]))
 

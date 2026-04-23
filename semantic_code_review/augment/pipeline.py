@@ -129,6 +129,13 @@ async def augment_run_dir(
         head_sha=diff.pr.head_sha,
     ) if not skip_context else None
 
+    # CLI backend: hand the RepoTools to the client so it can inject a
+    # stdio MCP server into `claude -p` and preserve the tool-exploration
+    # loop. `AnthropicClient` has no such hook so we duck-type.
+    setter = getattr(client, "set_repo_tools", None)
+    if callable(setter):
+        setter(repo_tools)
+
     overview_json = overview_to_prompt_json(diff)
 
     sem = asyncio.Semaphore(concurrency)

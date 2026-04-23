@@ -193,3 +193,52 @@ async def test_missing_submit_tool_raises(
             system=[], tools=[{"name": "read_file", "input_schema": {}}],
             messages=[],
         )
+
+
+async def test_mcp_config_injected_when_repo_tools_set(
+    cli_client: ClaudeCLIClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    from semantic_code_review.augment.tools import RepoTools
+
+    cli_client.set_repo_tools(RepoTools(
+        head_worktree=tmp_path, repo_git=tmp_path, base_sha="b", head_sha="h",
+    ))
+
+    proc = _FakeProc(_envelope({"intent": "with mcp"}))
+    calls = _install_fake_subprocess(monkeypatch, proc)
+
+    await cli_client.create_message(
+        model="claude-opus-4-7", max_tokens=4096,
+        system=[], tools=[SUBMIT_TOOL], messages=[],
+    )
+
+    argv = calls[0]
+    assert "--mcp-config" in argv
+    config_path = argv[argv.index("--mcp-config") + 1]
+    assert "--strict-mcp-config" in argv
+    # max-turns should be the MCP default (>1) so the agent can explore.
+    max_turns_value = int(argv[argv.index("--max-turns") + 1])
+    assert max_turns_value > 1
+    # Config file content references the stdio MCP entrypoint.
+    config = json.loads(open(config_path, encoding="utf-8").read())
+    server = config["mcpServers"]["scr"]
+    assert server["type"] == "stdio"
+    assert "semantic_code_review.augment.mcp_server" in server["args"]
+
+    await cli_client.aclose()
+
+
+async def test_single_shot_when_no_repo_tools(
+    cli_client: ClaudeCLIClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proc = _FakeProc(_envelope({"intent": "single shot"}))
+    calls = _install_fake_subprocess(monkeypatch, proc)
+    await cli_client.create_message(
+        model="claude-opus-4-7", max_tokens=4096,
+        system=[], tools=[SUBMIT_TOOL], messages=[],
+    )
+    argv = calls[0]
+    assert "--mcp-config" not in argv
+    assert int(argv[argv.index("--max-turns") + 1]) == 1
