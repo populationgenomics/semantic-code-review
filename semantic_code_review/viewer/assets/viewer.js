@@ -374,22 +374,42 @@
     marker.setAttribute("role", "button");
     marker.setAttribute("tabindex", "0");
 
-    // Inline hint — emacs-style inlay. Attached to the header row's content
-    // cell, right after the <code>; only visible when .fold-closed is set
-    // on the row.
-    const hint = buildFoldHint(region);
+    // Emacs-flycheck-style boxed annotation: a dedicated row below the
+    // anchored line, connected by an L-shaped SVG arrow pointing from
+    // under the first non-whitespace character on the anchor line down
+    // and right into the text box. Hidden while the fold is open.
+    const annotRow = region.summary || region.has_changes
+      ? buildAnnotationRow({
+          anchorRowEl: headerEl,
+          side: pickAnnotationSide(headerEl),
+          text: region.summary,
+          missing: !region.summary,
+          variant: "fold",
+        })
+      : null;
+    if (annotRow) {
+      annotRow.style.display = "none";
+      if (headerEl.nextSibling) {
+        headerEl.parentNode.insertBefore(annotRow, headerEl.nextSibling);
+      } else {
+        headerEl.parentNode.appendChild(annotRow);
+      }
+    }
 
     marker.addEventListener("click", e => {
       e.stopPropagation();
       const nowOpen = marker.classList.toggle("open");
-      headerEl.classList.toggle("fold-closed", !nowOpen);
       for (let i = bodyStart; i <= bodyEnd; i++) {
         if (rowEls[i]) rowEls[i].style.display = nowOpen ? "" : "none";
       }
+      if (annotRow) {
+        annotRow.style.display = nowOpen ? "none" : "";
+        if (!nowOpen && annotRow._scrSizeArrow) annotRow._scrSizeArrow();
+      }
     });
 
-    // Prepend to whichever content cell has visible text on the header row.
-    // Children: [old-lineno, old-content, new-lineno, new-content].
+    // Prepend chevron to whichever content cell has visible text on the
+    // header row. Children: [old-lineno, old-content, new-lineno, new-content].
     const children = headerEl.children;
     const newContent = children[3];
     const oldContent = children[1];
@@ -397,19 +417,109 @@
       ? newContent : oldContent;
     if (!contentCell) return;
     contentCell.prepend(marker);
-    if (hint) contentCell.appendChild(hint);
   }
 
-  function buildFoldHint(region) {
-    if (!region.summary && !region.has_changes) return null;
-    const span = el("span", "fold-inline-hint");
-    if (region.summary) {
-      span.textContent = region.summary;
+  // --- Annotation rows (emacs flycheck look) ------------------------------
+  // Used for fold descriptions now; cross-row annotations like line-notes and
+  // ref pointers can reuse the same row builder once we wire them up.
+
+  function pickAnnotationSide(anchorRowEl) {
+    // We annotate whichever content cell is populated (new by default, old
+    // for pure delete rows). The arrow anchors at the first non-whitespace
+    // character in that cell's code text.
+    const cells = anchorRowEl.children;
+    const newCell = cells[3];
+    if (newCell && !newCell.classList.contains("empty")) return "new";
+    return "old";
+  }
+
+  function buildAnnotationRow(opts) {
+    const { anchorRowEl, side, text, missing, variant } = opts;
+    const row = el("div", `row row-annotation${variant ? ` annot-${variant}` : ""}`);
+    const cell = el("div", `cell-annotation cell-annotation-${side}`);
+    const anchorCol = computeAnchorCol(anchorRowEl, side);
+    cell.style.setProperty("--anchor-col", `${anchorCol}ch`);
+
+    cell.appendChild(svgAnnotArrow());
+    const box = el("div", "annot-box");
+    if (missing) {
+      box.classList.add("missing");
+      box.textContent = "(changes here; run augment to generate a description)";
     } else {
-      span.textContent = "(changes here; run augment to generate a description)";
-      span.classList.add("missing");
+      box.textContent = text || "";
     }
-    return span;
+    cell.appendChild(box);
+    row.appendChild(cell);
+    row._scrSizeArrow = () => sizeAnnotArrow(row);
+    return row;
+  }
+
+  // Size the SVG after the box is in the DOM so the arrow tip lands at the
+  // vertical midpoint of the box's left side regardless of how many lines
+  // the text wraps to. Safe to call multiple times.
+  function sizeAnnotArrow(annotRow) {
+    const box = annotRow.querySelector(".annot-box");
+    const svg = annotRow.querySelector("svg.annot-arrow");
+    if (!box || !svg) return;
+    const boxH = box.offsetHeight;
+    if (boxH <= 0) return;
+    const topOverrun = 6;                 // extend up into the anchor line's row
+    const totalH = topOverrun + boxH;
+    const midY = topOverrun + boxH / 2;   // y-coord of arrow-horizontal + tip
+    const tipX = 17;
+    const head = 4;
+    svg.setAttribute("height", String(totalH));
+    svg.setAttribute("viewBox", `0 0 20 ${totalH}`);
+    svg.style.marginTop = `-${topOverrun}px`;
+    const path = svg.querySelector("path");
+    path.setAttribute(
+      "d",
+      `M 2 0 L 2 ${midY} L ${tipX} ${midY} ` +
+      `M ${tipX - head} ${midY - head} L ${tipX} ${midY} L ${tipX - head} ${midY + head}`,
+    );
+  }
+
+  // Re-size all currently-visible annotation arrows on window resize, since
+  // box text can reflow and change height.
+  window.addEventListener("resize", () => {
+    document.querySelectorAll(".row-annotation").forEach(r => {
+      if (r.style.display !== "none") sizeAnnotArrow(r);
+    });
+  });
+
+  function computeAnchorCol(anchorRowEl, side) {
+    const idx = (side === "old") ? 1 : 3;
+    const cell = anchorRowEl.children[idx];
+    if (!cell) return 0;
+    const text = (cell.querySelector("code") || cell).textContent || "";
+    let col = 0;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (ch === " ") col++;
+      else if (ch === "\t") col += 4;
+      else break;
+    }
+    return col;
+  }
+
+  function svgAnnotArrow() {
+    // L-shape with an arrowhead on the right-end. Viewbox 20x14; path:
+    //   (2,0) -> (2,9) -> (17,9), plus a small chevron head at (13,5)(17,9)(13,13).
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("class", "annot-arrow");
+    svg.setAttribute("viewBox", "0 0 20 14");
+    svg.setAttribute("width", "20");
+    svg.setAttribute("height", "14");
+    svg.setAttribute("aria-hidden", "true");
+    const p = document.createElementNS(SVG_NS, "path");
+    p.setAttribute("d", "M 2 0 L 2 9 L 17 9 M 13 5 L 17 9 L 13 13");
+    p.setAttribute("fill", "none");
+    p.setAttribute("stroke", "currentColor");
+    p.setAttribute("stroke-width", "1.4");
+    p.setAttribute("stroke-linecap", "round");
+    p.setAttribute("stroke-linejoin", "round");
+    svg.appendChild(p);
+    return svg;
   }
 
   function renderRow(row, file) {

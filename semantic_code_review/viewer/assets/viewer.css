@@ -241,21 +241,48 @@ body {
 }
 .diff .fold-chev:hover { color: var(--accent); }
 
-/* Emacs-style inline hint next to a fold header when the fold is closed.
- * `white-space: pre` on the parent cell keeps our leading spacer visible,
- * so the hint appears indented under the fold-header code. */
-.diff .fold-inline-hint {
-  display: none;
+/* Annotation rows — emacs-flycheck-style boxed callouts linked to a line
+ * in the diff via an L-shaped arrow. The arrow emerges from the first
+ * non-whitespace column of the anchor line, drops down, and turns right
+ * into the box. Two-line height by default; box overflow clipped. */
+.diff .cell-annotation {
+  grid-column: 4 / -1;          /* under the new-content column */
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 0 8px 6px;
   color: var(--fg-muted);
-  font-style: italic;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  font-size: 12px;
-  padding-left: 2em;
-  white-space: pre-wrap;
-  vertical-align: baseline;
+  background: transparent;
 }
-.diff .fold-inline-hint.missing { color: var(--fg-dim); }
-.diff .row.fold-closed .fold-inline-hint { display: inline; }
+.diff .cell-annotation-old { grid-column: 2 / 4; }
+.diff .annot-arrow {
+  flex-shrink: 0;
+  margin-left: var(--anchor-col, 0);
+  /* margin-top set inline by JS so arrow tip lands at box midpoint */
+  color: var(--accent);
+}
+.diff .annot-box {
+  flex: 0 1 auto;
+  padding: 4px 10px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  font-size: 75%;
+  line-height: 1.35;
+  font-style: italic;
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-weight: 400;
+  white-space: normal;
+  max-width: 64ch;
+  max-height: 3.9em;
+  overflow: hidden;
+}
+.diff .annot-box.missing {
+  color: var(--fg-dim);
+  border-left-color: var(--fg-dim);
+}
 
 @media (prefers-color-scheme: light) {
   .diff .row-ins .cell-content-new { background: rgba(26, 127, 55, 0.10); }
