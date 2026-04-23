@@ -502,10 +502,16 @@
     return row;
   }
 
-  // Position + size the SVG after the box is in the DOM. Margin-left is
-  // measured in pixels so the arrow's vertical segment lands exactly under
-  // the anchor line's first printing character. Margin-top lifts the arrow
-  // into the row above. Arrow tip sits at the vertical midpoint of the box.
+  // Size + position the SVG arrow using a negative margin-top to hoist
+  // it above the annotation row so its top terminates at the vertical
+  // midline of the anchor row (visually connecting to the code line,
+  // not to the bottom border of the row). The arrow's bend sits at the
+  // vertical midline of the annotation box.
+  //
+  // We measure using `cell.getBoundingClientRect()` rather than the
+  // annotation *row* — `.row` has `display:contents` so its own rect is
+  // not the geometry we care about; the cell has a real box whose top
+  // matches the grid track top visually.
   function sizeAnnotArrow(annotRow) {
     const box = annotRow.querySelector(".annot-box");
     const svg = annotRow.querySelector("svg.annot-arrow");
@@ -514,43 +520,32 @@
     const boxH = box.offsetHeight;
     if (boxH <= 0) return;
 
-    // topOverrun = how far above this annotation row the arrow should
-    // rise. We want it to terminate at the vertical midline of the
-    // anchor row so the arrow visually lands on the code line's text,
-    // not at the row's bottom border (which leaves a ~half-row gap
-    // between the arrow head and the line). The same rule handles
-    // stacked annotations: when a comment sits between this note and
-    // its anchor, rowRect.top is farther down, so topOverrun gets
-    // larger automatically — the two arrows end at the same midline,
-    // rendering as concentric L-shapes pointing at one line.
     const anchor = annotRow._scrAnchor;
     const minOverrun = 6;
     let topOverrun = minOverrun;
     if (anchor) {
-      const rowRect = annotRow.getBoundingClientRect();
+      const cellRect = cell.getBoundingClientRect();
       const anchorRect = anchor.getBoundingClientRect();
       const anchorMidY = (anchorRect.top + anchorRect.bottom) / 2;
-      topOverrun = Math.max(minOverrun, rowRect.top - anchorMidY);
+      topOverrun = Math.max(minOverrun, cellRect.top - anchorMidY);
     }
     const totalH = topOverrun + boxH;
     const midY = topOverrun + boxH / 2;
     const tipX = 17;
     const head = 4;
     const svgW = 20;
-    const vLineX = 2;   // x-coord of the arrow's vertical segment in SVG space
+    const vLineX = 2;
     svg.setAttribute("height", String(totalH));
     svg.setAttribute("width", String(svgW));
     svg.setAttribute("viewBox", `0 0 ${svgW} ${totalH}`);
     svg.style.marginTop = `-${topOverrun}px`;
 
-    // Horizontal alignment: put the SVG's vLineX at the character
-    // midpoint of the nth character in the anchor row (n = count of
-    // annotation siblings stacked *below* this one for the same
-    // anchor). This staggers each stacked arrow across one monospace
-    // character so they don't overlap: the annotation closest to the
-    // anchor (which has the shortest vertical span) sits one char to
-    // the right of the annotation below it, two to the right of the
-    // annotation below that, etc.
+    // Horizontal alignment: put vLineX at the character midpoint of the
+    // nth character in the anchor row (n = count of annotation siblings
+    // stacked *below* this one for the same anchor). Staggers each
+    // stacked arrow across one monospace character so their vertical
+    // segments don't overlap — the annotation closest to the anchor
+    // (shortest span) sits one char to the right of the one below.
     const side = annotRow._scrSide || "new";
     if (anchor) {
       const offset = annotationsBelow(annotRow, anchor);
