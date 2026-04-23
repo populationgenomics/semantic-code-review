@@ -238,8 +238,13 @@ body {
   color: var(--fg-dim);
   cursor: pointer;
   vertical-align: -1px;
+  outline: none;
 }
 .diff .fold-chev:hover { color: var(--accent); }
+.diff .fold-chev:focus-visible {
+  outline: 1px dotted var(--accent);
+  outline-offset: 1px;
+}
 
 /* Annotation rows — emacs-flycheck-style boxed callouts linked to a line
  * in the diff via an L-shaped arrow. The arrow emerges from the first
