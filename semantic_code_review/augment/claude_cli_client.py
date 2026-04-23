@@ -188,15 +188,33 @@ class ClaudeCLIClient:
         )
         stdout, stderr = await proc.communicate(prompt.encode("utf-8"))
 
-        if proc.returncode != 0:
-            raise ClaudeCLIError(
-                f"claude -p exited {proc.returncode}: "
-                f"{_tail(stderr.decode('utf-8', errors='replace'))}"
-            )
+        # `claude -p` frequently writes the real failure into the stdout
+        # envelope (is_error=true, result=<message>) and exits non-zero
+        # with empty stderr — e.g. when not logged in. So we parse stdout
+        # first regardless of exit code, and only fall back to stderr if
+        # stdout isn't a usable envelope.
+        envelope: dict[str, Any] | None = None
+        try:
+            envelope = _parse_envelope(stdout, stderr)
+        except ClaudeCLIError:
+            if proc.returncode != 0:
+                raise ClaudeCLIError(
+                    f"claude -p exited {proc.returncode}: "
+                    f"{_tail(stderr.decode('utf-8', errors='replace')) or '<no stderr>'}"
+                )
+            raise
 
-        envelope = _parse_envelope(stdout, stderr)
-        if envelope.get("is_error"):
-            raise ClaudeCLIError(f"claude -p returned error: {envelope.get('result')!r}")
+        if envelope.get("is_error") or proc.returncode != 0:
+            message = (envelope.get("result") or "").strip()
+            if "not logged in" in message.lower() or "please run /login" in message.lower():
+                raise ClaudeCLIError(
+                    "claude is not logged in; run `claude /login` (or "
+                    "`claude setup-token` for a long-lived token) before "
+                    "using --backend=cli."
+                )
+            raise ClaudeCLIError(
+                f"claude -p returned error (exit {proc.returncode}): {message or '<empty>'}"
+            )
 
         result_text = envelope.get("result") or ""
         try:

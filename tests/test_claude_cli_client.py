@@ -170,6 +170,38 @@ async def test_nonzero_exit_raises(
         )
 
 
+async def test_not_logged_in_gets_actionable_error(
+    cli_client: ClaudeCLIClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """claude -p puts the real error in stdout even when exit code != 0."""
+    proc = _FakeProc(
+        _envelope("Not logged in · Please run /login", is_error=True),
+        stderr=b"",
+        returncode=1,
+    )
+    _install_fake_subprocess(monkeypatch, proc)
+    with pytest.raises(ClaudeCLIError, match="not logged in"):
+        await cli_client.create_message(
+            model="claude-opus-4-7", max_tokens=4096,
+            system=[], tools=[SUBMIT_TOOL], messages=[],
+        )
+
+
+async def test_nonzero_exit_with_envelope_surfaces_result(
+    cli_client: ClaudeCLIClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proc = _FakeProc(
+        _envelope("Model unavailable in your region", is_error=True),
+        returncode=1,
+    )
+    _install_fake_subprocess(monkeypatch, proc)
+    with pytest.raises(ClaudeCLIError, match="Model unavailable"):
+        await cli_client.create_message(
+            model="claude-opus-4-7", max_tokens=4096,
+            system=[], tools=[SUBMIT_TOOL], messages=[],
+        )
+
+
 async def test_bad_result_json_raises(
     cli_client: ClaudeCLIClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

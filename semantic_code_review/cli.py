@@ -17,7 +17,13 @@ from .format.parse import parse_augmented_diff
 from .format.strip import strip_annotations
 
 
-app = typer.Typer(help="Semantic Code Review — LLM-augmented PR diff viewer.")
+app = typer.Typer(
+    help="Semantic Code Review — LLM-augmented PR diff viewer.",
+    # Typer's default rich tracebacks are noisy for end-users. Plain
+    # Python tracebacks still print on unexpected errors; expected ones
+    # (missing key, claude not logged in) are surfaced as short messages.
+    pretty_exceptions_enable=False,
+)
 
 
 DEFAULT_RUNS_ROOT = Path(".scr/runs")
