@@ -196,8 +196,12 @@ body {
 
 /* --- Diff grid -----------------------------------------------------------
  * Four-column grid: old-lineno | old-content | new-lineno | new-content.
- * Each .row uses display:contents so its four cells slot directly into the
- * grid, keeping columns aligned across all rows in a hunk.
+ * The outer `.diff` is a 4-column grid. Each "half" (old / new) is a
+ * subgrid spanning two of those columns and is its own horizontal-scroll
+ * container, so exactly one scrollbar serves every code row + annotation
+ * on that side. `.row` uses display:contents so its cells land directly
+ * in the subgrid; row heights stay aligned across both halves because
+ * the outer grid's row tracks are shared via `grid-template-rows: subgrid`.
  */
 .diff {
   display: grid;
@@ -210,15 +214,33 @@ body {
   overflow: hidden;
   background: var(--bg);
 }
+.diff .half {
+  display: grid;
+  grid-template-columns: subgrid;
+  grid-template-rows: subgrid;
+  grid-row: 1 / -1;
+  overflow-x: auto;
+  /* overflow-y is implicitly clipped (non-visible) when x is auto.
+   * The annotation arrow's upward bleed stays inside the same scroll
+   * container as its anchor row, so nothing should actually overflow
+   * vertically in practice. */
+}
+.diff .half-old { grid-column: 1 / 3; }
+.diff .half-new { grid-column: 3 / 5; }
 .diff .row { display: contents; }
 
 .diff .cell {
   padding: 0 8px;
   white-space: pre;
-  overflow-x: auto;
   min-width: 0;
 }
 .diff .cell-lineno {
+  /* Pin line numbers to the left of their half so they stay visible
+   * when the content cells pan horizontally. z-index keeps them above
+   * the scrolling code; the background eliminates bleed-through. */
+  position: sticky;
+  left: 0;
+  z-index: 1;
   color: var(--fg-dim);
   text-align: right;
   user-select: none;
@@ -264,7 +286,9 @@ body {
  * non-whitespace column of the anchor line, drops down, and turns right
  * into the box. Two-line height by default; box overflow clipped. */
 .diff .cell-annotation {
-  grid-column: 4 / -1;          /* under the new-content column */
+  /* Span both subgrid columns of the current half (new side by
+   * default; overridden for old-side annotations below). */
+  grid-column: 3 / 5;
   display: flex;
   align-items: flex-start;
   gap: 6px;
@@ -273,7 +297,8 @@ body {
   background: transparent;
   overflow: visible;            /* arrow top can extend above the cell */
 }
-.diff .cell-annotation-old { grid-column: 2 / 4; }
+.diff .cell-annotation-old { grid-column: 1 / 3; }
+.diff .cell-annotation-new { grid-column: 3 / 5; }
 .diff .annot-arrow {
   flex-shrink: 0;
   /* margin-left + margin-top set inline by JS so the arrow's vertical

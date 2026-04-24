@@ -357,54 +357,96 @@
   function renderHunkDiff(h, file) {
     if (STATE.renderedDiffs[h.id]) return STATE.renderedDiffs[h.id];
     const container = el("div", "diff");
-    const rowEls = [];
+    const halfOld = el("div", "half half-old");
+    const halfNew = el("div", "half half-new");
+    container.appendChild(halfOld);
+    container.appendChild(halfNew);
+
+    // Per-half row arrays, indexed by source-row position. These parallel
+    // arrays (rowElsOld[i] + rowElsNew[i]) represent the two sides of the
+    // same logical diff line, so fold toggles, annotation anchoring, and
+    // subgrid row alignment can all address either side by index.
+    const rowElsOld = [];
+    const rowElsNew = [];
     for (const row of h.rows || []) {
-      const re = renderRow(row, file);
-      container.appendChild(re);
-      rowEls.push(re);
+      const pair = renderRow(row, file);
+      // Cross-link the two wrappers so dynamic inserts (comments,
+      // editors) can add a matching placeholder to the opposite half
+      // without re-deriving the index.
+      pair.old._scrPair = pair.new;
+      pair.new._scrPair = pair.old;
+      halfOld.appendChild(pair.old);
+      halfNew.appendChild(pair.new);
+      rowElsOld.push(pair.old);
+      rowElsNew.push(pair.new);
     }
-    attachIndentFolds(container, rowEls, h.fold_regions || []);
-    attachLineNotes(container, rowEls, h.rows || [], h.line_notes || []);
+    attachIndentFolds(halfOld, halfNew, rowElsOld, rowElsNew, h.fold_regions || []);
+    attachLineNotes(halfOld, halfNew, rowElsOld, rowElsNew, h.rows || [], h.line_notes || []);
     STATE.renderedDiffs[h.id] = container;
     return container;
   }
 
   // Inline line-note annotations: each {line, body} entry is placed as an
   // annotation row directly under the post-image row it describes, using
-  // the same emacs-flycheck-style row builder as fold summaries. The
-  // previous behaviour collected them into a single "notes:" block at
-  // the bottom of the hunk, which made it hard to see which line each
-  // note applied to.
-  function attachLineNotes(container, rowEls, rows, notes) {
+  // the same emacs-flycheck-style row builder as fold summaries. Line
+  // notes are always anchored to post-image lines, so they live in the
+  // new-side half. A placeholder row is inserted into the opposite half
+  // at the same DOM position so subgrid row counts stay aligned.
+  function attachLineNotes(halfOld, halfNew, rowElsOld, rowElsNew, rows, notes) {
     if (!notes.length || !rows.length) return;
-    // Map post-image line number -> row element (last occurrence wins
-    // for safety, though duplicates shouldn't happen in a valid hunk).
     const byNewLine = new Map();
     for (let i = 0; i < rows.length; i++) {
       const ln = rows[i].new_line;
-      if (ln !== null && ln !== undefined) byNewLine.set(ln, rowEls[i]);
+      if (ln !== null && ln !== undefined) byNewLine.set(ln, i);
     }
     for (const note of notes) {
-      const anchor = byNewLine.get(note.line);
-      if (!anchor) continue;  // note points at a line that isn't in the hunk
+      const idx = byNewLine.get(note.line);
+      if (idx === undefined) continue;   // note points at a line that isn't in the hunk
+      const anchor = rowElsNew[idx];
+      const shadow = rowElsOld[idx];
       const annotRow = buildAnnotationRow({
         anchorRowEl: anchor,
-        side: pickAnnotationSide(anchor),
+        side: "new",
         text: note.body,
         missing: false,
         variant: "note",
       });
-      if (anchor.nextSibling) {
-        anchor.parentNode.insertBefore(annotRow, anchor.nextSibling);
-      } else {
-        anchor.parentNode.appendChild(annotRow);
-      }
-      // Measure arrow after the row is in the DOM. Deferred because the
-      // annotation box needs layout to report its height.
+      insertAnnotationWithShadow(annotRow, anchor, shadow);
       if (annotRow._scrSizeArrow) {
         requestAnimationFrame(annotRow._scrSizeArrow);
       }
     }
+  }
+
+  // Insert `annotRow` into its anchor's half immediately after `anchor`,
+  // and a matching invisible placeholder into the opposite half after
+  // `shadowAnchor`. The placeholder takes exactly one subgrid row slot
+  // so both halves keep the same row count and the outer grid's row
+  // tracks remain aligned across sides.
+  //
+  // The placeholder is hooked to the real annotation row via
+  // `_scrPlaceholder` so removal + show/hide stays in sync.
+  function insertAnnotationWithShadow(annotRow, anchor, shadowAnchor) {
+    insertAfter(annotRow, anchor);
+    if (shadowAnchor) {
+      const ph = el("div", "row row-placeholder");
+      ph.style.visibility = "hidden";
+      insertAfter(ph, shadowAnchor);
+      annotRow._scrPlaceholder = ph;
+    }
+  }
+
+  function insertAfter(node, ref) {
+    if (ref.nextSibling) ref.parentNode.insertBefore(node, ref.nextSibling);
+    else ref.parentNode.appendChild(node);
+  }
+
+  // Remove an annotation row and its paired placeholder on the opposite
+  // side so the halves stay aligned.
+  function removeAnnotationWithShadow(annotRow) {
+    const ph = annotRow._scrPlaceholder;
+    annotRow.remove();
+    if (ph) ph.remove();
   }
 
   // --- Indent-based code folding ------------------------------------------
@@ -412,16 +454,25 @@
   // (so the LLM can describe each one). We just wire the chevron and the
   // summary row for the folded state.
 
-  function attachIndentFolds(container, rowEls, regions) {
-    for (const r of regions) attachOneFold(container, rowEls, r);
+  function attachIndentFolds(halfOld, halfNew, rowElsOld, rowElsNew, regions) {
+    for (const r of regions) attachOneFold(halfOld, halfNew, rowElsOld, rowElsNew, r);
   }
 
-  function attachOneFold(container, rowEls, region) {
-    const headerEl = rowEls[region.header_idx];
-    if (!headerEl) return;
+  function attachOneFold(halfOld, halfNew, rowElsOld, rowElsNew, region) {
     const bodyStart = region.body_start_idx;
     const bodyEnd = region.body_end_idx;
     if (bodyStart > bodyEnd) return;
+
+    const headerOld = rowElsOld[region.header_idx];
+    const headerNew = rowElsNew[region.header_idx];
+    if (!headerOld && !headerNew) return;
+
+    // Choose which half the fold chevron + summary live on. Prefer the
+    // side whose content cell is non-empty; fall back to new-side.
+    const side = isRowContentEmpty(headerNew) && !isRowContentEmpty(headerOld)
+      ? "old" : "new";
+    const anchor = side === "new" ? headerNew : headerOld;
+    const shadow = side === "new" ? headerOld : headerNew;
 
     const marker = chev(/* folded */ false, "fold-chev");
     marker.setAttribute("role", "button");
@@ -433,8 +484,8 @@
     // and right into the text box. Hidden while the fold is open.
     const annotRow = region.summary || region.has_changes
       ? buildAnnotationRow({
-          anchorRowEl: headerEl,
-          side: pickAnnotationSide(headerEl),
+          anchorRowEl: anchor,
+          side,
           text: region.summary,
           missing: !region.summary,
           variant: "fold",
@@ -442,52 +493,43 @@
       : null;
     if (annotRow) {
       annotRow.style.display = "none";
-      if (headerEl.nextSibling) {
-        headerEl.parentNode.insertBefore(annotRow, headerEl.nextSibling);
-      } else {
-        headerEl.parentNode.appendChild(annotRow);
-      }
+      insertAnnotationWithShadow(annotRow, anchor, shadow);
+      // Also hide the paired placeholder while the fold is open (default).
+      if (annotRow._scrPlaceholder) annotRow._scrPlaceholder.style.display = "none";
     }
 
     marker.addEventListener("click", e => {
       e.stopPropagation();
       const nowOpen = marker.classList.toggle("open");
       for (let i = bodyStart; i <= bodyEnd; i++) {
-        if (rowEls[i]) rowEls[i].style.display = nowOpen ? "" : "none";
+        if (rowElsOld[i]) rowElsOld[i].style.display = nowOpen ? "" : "none";
+        if (rowElsNew[i]) rowElsNew[i].style.display = nowOpen ? "" : "none";
       }
       if (annotRow) {
         annotRow.style.display = nowOpen ? "none" : "";
+        if (annotRow._scrPlaceholder) annotRow._scrPlaceholder.style.display = nowOpen ? "none" : "";
         if (!nowOpen && annotRow._scrSizeArrow) annotRow._scrSizeArrow();
       }
       // Showing/hiding the fold summary shifts every sibling annotation
       // below it; re-size any that share this fold's header as anchor.
-      scheduleReflow(headerEl);
+      scheduleReflow(anchor);
     });
 
-    // Prepend chevron to whichever content cell has visible text on the
-    // header row. Children: [old-lineno, old-content, new-lineno, new-content].
-    const children = headerEl.children;
-    const newContent = children[3];
-    const oldContent = children[1];
-    const contentCell = (newContent && !newContent.classList.contains("empty"))
-      ? newContent : oldContent;
-    if (!contentCell) return;
-    contentCell.prepend(marker);
+    // Prepend chevron to the content cell of the chosen anchor row.
+    // Each row has two children: [lineno, content].
+    const contentCell = anchor && anchor.children[1];
+    if (contentCell) contentCell.prepend(marker);
+  }
+
+  function isRowContentEmpty(rowEl) {
+    if (!rowEl) return true;
+    const content = rowEl.children[1];
+    return !content || content.classList.contains("empty");
   }
 
   // --- Annotation rows (emacs flycheck look) ------------------------------
   // Used for fold descriptions now; cross-row annotations like line-notes and
   // ref pointers can reuse the same row builder once we wire them up.
-
-  function pickAnnotationSide(anchorRowEl) {
-    // We annotate whichever content cell is populated (new by default, old
-    // for pure delete rows). The arrow anchors at the first non-whitespace
-    // character in that cell's code text.
-    const cells = anchorRowEl.children;
-    const newCell = cells[3];
-    if (newCell && !newCell.classList.contains("empty")) return "new";
-    return "old";
-  }
 
   function buildAnnotationRow(opts) {
     const { anchorRowEl, side, text, missing, variant } = opts;
@@ -679,8 +721,11 @@
   // ch-based guess because hljs spans + ligatures make character width
   // arithmetic unreliable.
   function charCenterAt(anchorRowEl, side, n) {
-    const idx = (side === "old") ? 1 : 3;
-    const contentCell = anchorRowEl.children[idx];
+    // After the per-half restructure, each anchor row has exactly two
+    // children: [lineno, content]. The content cell is always at index 1,
+    // regardless of side — the side is determined by which half the row
+    // lives in, not by position within the row.
+    const contentCell = anchorRowEl.children[1];
     if (!contentCell) return null;
     const code = contentCell.querySelector("code");
     if (!code) return contentCell.getBoundingClientRect().left;
@@ -744,14 +789,19 @@
   }
 
   function renderRow(row, file) {
-    const wrapper = el("div", `row row-${row.kind}`);
+    // One logical diff row becomes two wrappers — one per half — each
+    // holding exactly its side's two cells (lineno + content). Callers
+    // append each wrapper into the matching half container; the outer
+    // grid's row tracks align both halves via `grid-template-rows: subgrid`.
     const hasOld = row.old_line !== null && row.old_line !== undefined;
     const hasNew = row.new_line !== null && row.new_line !== undefined;
-    wrapper.appendChild(renderLineno(row.old_line, "old", hasOld));
-    wrapper.appendChild(renderContent(row.old_text, "old", hasOld, file));
-    wrapper.appendChild(renderLineno(row.new_line, "new", hasNew));
-    wrapper.appendChild(renderContent(row.new_text, "new", hasNew, file));
-    return wrapper;
+    const oldRow = el("div", `row row-${row.kind}`);
+    oldRow.appendChild(renderLineno(row.old_line, "old", hasOld));
+    oldRow.appendChild(renderContent(row.old_text, "old", hasOld, file));
+    const newRow = el("div", `row row-${row.kind}`);
+    newRow.appendChild(renderLineno(row.new_line, "new", hasNew));
+    newRow.appendChild(renderContent(row.new_text, "new", hasNew, file));
+    return { old: oldRow, new: newRow };
   }
 
   function renderLineno(line, side, present) {
@@ -1000,13 +1050,10 @@
 
   function openCommentEditor({ rowEl, side, line, file, existing }) {
     // Insert an editor row immediately after rowEl, reusing the annotation
-    // arrow + box. The box contains a textarea.
+    // arrow + box. The box contains a textarea. A matching placeholder
+    // goes into the opposite half so subgrid row counts stay in sync.
     const editor = buildCommentEditorRow({ anchorRowEl: rowEl, side, line, file, existing });
-    if (rowEl.nextSibling) {
-      rowEl.parentNode.insertBefore(editor, rowEl.nextSibling);
-    } else {
-      rowEl.parentNode.appendChild(editor);
-    }
+    insertAnnotationWithShadow(editor, rowEl, rowEl._scrPair);
     editor._scrSizeArrow();
     scheduleReflow(rowEl);
     const ta = editor.querySelector("textarea");
@@ -1045,7 +1092,7 @@
     wireAnnotationRow(row, box, anchorRowEl, side);
 
     function close() {
-      row.remove();
+      removeAnnotationWithShadow(row);
       scheduleReflow(anchorRowEl);
     }
 
@@ -1101,7 +1148,7 @@
 
     edit.addEventListener("click", e => {
       e.stopPropagation();
-      row.remove();
+      removeAnnotationWithShadow(row);
       scheduleReflow(anchorRowEl);
       openCommentEditor({
         rowEl: anchorRowEl, side: comment.side, line: comment.line,
@@ -1111,7 +1158,7 @@
     del.addEventListener("click", e => {
       e.stopPropagation();
       deleteComment(comment.id).then(() => {
-        row.remove();
+        removeAnnotationWithShadow(row);
         scheduleReflow(anchorRowEl);
       });
     });
@@ -1124,16 +1171,17 @@
     removeCommentRowsAfter(anchorRowEl);
     const relevant = commentsFor(anchor.file, anchor.side, anchor.line)
       .sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
-    let insertAfter = anchorRowEl;
+    // Both halves advance in lockstep: each comment goes after the
+    // previous comment on its own side, and its placeholder goes after
+    // the previous placeholder on the opposite side.
+    let chainAnchor = anchorRowEl;
+    let chainShadow = anchorRowEl._scrPair;
     for (const c of relevant) {
       const cr = buildCommentRow(c, anchorRowEl);
-      if (insertAfter.nextSibling) {
-        insertAfter.parentNode.insertBefore(cr, insertAfter.nextSibling);
-      } else {
-        insertAfter.parentNode.appendChild(cr);
-      }
+      insertAnnotationWithShadow(cr, chainAnchor, chainShadow);
       cr._scrSizeArrow();
-      insertAfter = cr;
+      chainAnchor = cr;
+      chainShadow = cr._scrPlaceholder;
     }
     // Any LLM annotations (line_notes, fold summaries) that also anchor
     // at this row now sit further from it — re-measure their arrows so
@@ -1146,13 +1194,16 @@
     while (n && n.classList && n.classList.contains("annot-comment")
            && !n.classList.contains("annot-editor")) {
       const next = n.nextSibling;
-      n.remove();
+      removeAnnotationWithShadow(n);
       n = next;
     }
   }
 
   function renderAllExistingComments() {
     // On load, walk the DOM for every row and reattach comments.
+    // After the per-half restructure each .row lives inside a single half
+    // and holds only [lineno, content]; the side is readable from the
+    // lineno cell's class.
     const byAnchor = {};  // anchorKey -> list
     for (const c of Object.values(STATE.comments)) {
       const k = `${c.file}|${c.side}|${c.line}`;
@@ -1162,15 +1213,15 @@
       const filePath = fileEl.querySelector(".file-path")
         ? fileEl.querySelector(".file-path").textContent : "";
       fileEl.querySelectorAll(".row").forEach(row => {
-        const [oldCell, , newCell] = [row.children[0], row.children[1], row.children[2]];
-        for (const [cell, side] of [[oldCell, "old"], [newCell, "new"]]) {
-          if (!cell || cell.classList.contains("empty")) continue;
-          const n = parseInt(cell.textContent.trim(), 10);
-          if (isNaN(n)) continue;
-          const relevant = byAnchor[`${filePath}|${side}|${n}`];
-          if (!relevant) continue;
-          refreshCommentsForAnchor(row, { file: filePath, side, line: n });
-        }
+        const linenoCell = row.children[0];
+        if (!linenoCell || !linenoCell.classList.contains("cell-lineno")) return;
+        if (linenoCell.classList.contains("empty")) return;
+        const side = linenoCell.classList.contains("cell-lineno-old") ? "old" : "new";
+        const n = parseInt(linenoCell.textContent.trim(), 10);
+        if (isNaN(n)) return;
+        const relevant = byAnchor[`${filePath}|${side}|${n}`];
+        if (!relevant) return;
+        refreshCommentsForAnchor(row, { file: filePath, side, line: n });
       });
     });
   }
