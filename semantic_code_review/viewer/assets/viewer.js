@@ -82,18 +82,14 @@
     // Re-attach any loaded comments to freshly-rendered rows.
     if (Object.keys(STATE.comments).length) renderAllExistingComments();
     // Annotation arrows attached during render were sized while the
-    // tree was still detached (no layout). Re-size once now that
-    // everything is in the document — double RAF because the first
-    // frame's measurements are sometimes stale before the browser has
-    // applied the final font metrics. Also re-size once fonts finish
-    // loading, since a late font load shifts the grid track heights.
+    // tree was still detached. Install the viewport watcher (idempotent)
+    // which hooks window-resize + fonts.ready for post-mount reflow, and
+    // double-RAF a fresh pass for the first paint.
+    window.ScrAnnotations.watchViewport();
     requestAnimationFrame(() => {
-      resizeAllAnnotArrows();
-      requestAnimationFrame(resizeAllAnnotArrows);
+      window.ScrAnnotations.reflowAll();
+      requestAnimationFrame(() => window.ScrAnnotations.reflowAll());
     });
-    if (document.fonts && document.fonts.ready) {
-      document.fonts.ready.then(resizeAllAnnotArrows);
-    }
   }
 
   function renderPRPanel(pr) {
@@ -398,12 +394,16 @@
     return container;
   }
 
-  // Inline line-note annotations: each {line, body} entry is placed as an
-  // annotation row directly under the post-image row it describes, using
-  // the same emacs-flycheck-style row builder as fold summaries. Line
-  // notes are always anchored to post-image lines, so they live in the
-  // new-side half. A placeholder row is inserted into the opposite half
-  // at the same DOM position so subgrid row counts stay aligned.
+  // All annotation plumbing (row construction, arrow geometry, shadow
+  // placeholders, reflow coalescing) lives in `annotations.ts`, compiled
+  // to annotations.js and inlined into this HTML before viewer.js runs.
+  // The classic-script surface is `window.ScrAnnotations` with methods
+  // `attach(opts) -> handle`, `reflow(anchor)`, `reflowAll()`,
+  // `watchViewport()`, `charRectInRow(row, col)`.
+
+  // Line-note annotations are anchored to post-image lines → the
+  // new-side half. The shadow anchor on the old-side keeps the two
+  // halves aligned line-for-line.
   function attachLineNotes(halfOld, halfNew, rowElsOld, rowElsNew, rows, notes) {
     if (!notes.length || !rows.length) return;
     const byNewLine = new Map();
@@ -413,60 +413,19 @@
     }
     for (const note of notes) {
       const idx = byNewLine.get(note.line);
-      if (idx === undefined) continue;   // note points at a line that isn't in the hunk
-      const anchor = rowElsNew[idx];
-      const shadow = rowElsOld[idx];
-      const annotRow = buildAnnotationRow({
-        anchorRowEl: anchor,
-        side: "new",
-        text: note.body,
-        missing: false,
+      if (idx === undefined) continue;
+      window.ScrAnnotations.attach({
+        anchor: rowElsNew[idx],
+        shadowAnchor: rowElsOld[idx],
         variant: "note",
+        content: note.body || "",
       });
-      insertAnnotationWithShadow(annotRow, anchor, shadow);
-      if (annotRow._scrSizeArrow) {
-        requestAnimationFrame(annotRow._scrSizeArrow);
-      }
     }
-  }
-
-  // Insert `annotRow` into its anchor's half immediately after `anchor`,
-  // and a matching invisible placeholder into the opposite half after
-  // `shadowAnchor`. The placeholder takes exactly one subgrid row slot
-  // so both halves keep the same row count and the outer grid's row
-  // tracks remain aligned across sides.
-  //
-  // The placeholder is hooked to the real annotation row via
-  // `_scrPlaceholder` so removal + show/hide stays in sync.
-  function insertAnnotationWithShadow(annotRow, anchor, shadowAnchor) {
-    insertAfter(annotRow, anchor);
-    if (shadowAnchor) {
-      const ph = el("div", "row row-placeholder");
-      insertAfter(ph, shadowAnchor);
-      annotRow._scrPlaceholder = ph;
-      // Sync height once we're in the DOM (offsetHeight needs layout).
-      // Subsequent resizes of the annotation body will re-sync via the
-      // ResizeObserver in wireAnnotationRow.
-      requestAnimationFrame(() => syncPlaceholderHeight(annotRow));
-    }
-  }
-
-  function insertAfter(node, ref) {
-    if (ref.nextSibling) ref.parentNode.insertBefore(node, ref.nextSibling);
-    else ref.parentNode.appendChild(node);
-  }
-
-  // Remove an annotation row and its paired placeholder on the opposite
-  // side so the halves stay aligned.
-  function removeAnnotationWithShadow(annotRow) {
-    const ph = annotRow._scrPlaceholder;
-    annotRow.remove();
-    if (ph) ph.remove();
   }
 
   // --- Indent-based code folding ------------------------------------------
   // Region ranges + summaries come pre-computed from the Python pipeline
-  // (so the LLM can describe each one). We just wire the chevron and the
+  // (so the LLM can describe each one). Wire the chevron and the
   // summary row for the folded state.
 
   function attachIndentFolds(halfOld, halfNew, rowElsOld, rowElsNew, regions) {
@@ -493,24 +452,21 @@
     marker.setAttribute("role", "button");
     marker.setAttribute("tabindex", "0");
 
-    // Emacs-flycheck-style boxed annotation: a dedicated row below the
-    // anchored line, connected by an L-shaped SVG arrow pointing from
-    // under the first non-whitespace character on the anchor line down
-    // and right into the text box. Hidden while the fold is open.
-    const annotRow = region.summary || region.has_changes
-      ? buildAnnotationRow({
-          anchorRowEl: anchor,
-          side,
-          text: region.summary,
-          missing: !region.summary,
-          variant: "fold",
-        })
-      : null;
-    if (annotRow) {
-      annotRow.style.display = "none";
-      insertAnnotationWithShadow(annotRow, anchor, shadow);
-      // Also hide the paired placeholder while the fold is open (default).
-      if (annotRow._scrPlaceholder) annotRow._scrPlaceholder.style.display = "none";
+    let foldHandle = null;
+    if (region.summary || region.has_changes) {
+      foldHandle = window.ScrAnnotations.attach({
+        anchor,
+        shadowAnchor: shadow,
+        variant: "fold",
+        content: region.summary || "(changes here; run augment to generate a description)",
+      });
+      if (!region.summary) {
+        const box = foldHandle.element.querySelector(".annot-box");
+        if (box) box.classList.add("missing");
+      }
+      // Fold defaults to open, so the summary + its placeholder start hidden.
+      foldHandle.element.style.display = "none";
+      if (foldHandle.placeholder) foldHandle.placeholder.style.display = "none";
     }
 
     marker.addEventListener("click", e => {
@@ -520,18 +476,16 @@
         if (rowElsOld[i]) rowElsOld[i].style.display = nowOpen ? "" : "none";
         if (rowElsNew[i]) rowElsNew[i].style.display = nowOpen ? "" : "none";
       }
-      if (annotRow) {
-        annotRow.style.display = nowOpen ? "none" : "";
-        if (annotRow._scrPlaceholder) annotRow._scrPlaceholder.style.display = nowOpen ? "none" : "";
-        if (!nowOpen && annotRow._scrSizeArrow) annotRow._scrSizeArrow();
+      if (foldHandle) {
+        foldHandle.element.style.display = nowOpen ? "none" : "";
+        if (foldHandle.placeholder) foldHandle.placeholder.style.display = nowOpen ? "none" : "";
+        if (!nowOpen) foldHandle.resize();
       }
       // Showing/hiding the fold summary shifts every sibling annotation
       // below it; re-size any that share this fold's header as anchor.
-      scheduleReflow(anchor);
+      window.ScrAnnotations.reflow(anchor);
     });
 
-    // Prepend chevron to the content cell of the chosen anchor row.
-    // Each row has two children: [lineno, content].
     const contentCell = anchor && anchor.children[1];
     if (contentCell) contentCell.prepend(marker);
   }
@@ -540,284 +494,6 @@
     if (!rowEl) return true;
     const content = rowEl.children[1];
     return !content || content.classList.contains("empty");
-  }
-
-  // --- Annotation rows (emacs flycheck look) ------------------------------
-  // Used for fold descriptions now; cross-row annotations like line-notes and
-  // ref pointers can reuse the same row builder once we wire them up.
-
-  function buildAnnotationRow(opts) {
-    const { anchorRowEl, side, text, missing, variant } = opts;
-    const row = el("div", `row row-annotation${variant ? ` annot-${variant}` : ""}`);
-    const cell = el("div", `cell-annotation cell-annotation-${side}`);
-    cell.appendChild(svgAnnotArrow());
-    const box = el("div", "annot-box");
-    if (missing) {
-      box.classList.add("missing");
-      box.textContent = "(changes here; run augment to generate a description)";
-    } else {
-      box.textContent = text || "";
-    }
-    cell.appendChild(box);
-    row.appendChild(cell);
-    wireAnnotationRow(row, box, anchorRowEl, side);
-    return row;
-  }
-
-  // Apply the shared plumbing every annotation row needs: stash the
-  // anchor/side for measurement, install a `_scrSizeArrow` callback,
-  // and attach a ResizeObserver whose callback reflows *all* sibling
-  // arrows on the same anchor. That last bit is critical: whenever a
-  // box resizes (new comment appears, editor grows, text wraps at a
-  // new viewport width) every arrow on the same anchor may need to
-  // restretch, not just this one. Callers that delete a row must
-  // still reach for scheduleReflow(anchor) explicitly — the observer
-  // can't see a removed element.
-  function wireAnnotationRow(row, box, anchor, side) {
-    row._scrAnchor = anchor;
-    row._scrSide = side;
-    row._scrSizeArrow = () => sizeAnnotArrow(row);
-    if (typeof ResizeObserver !== "undefined") {
-      const ro = new ResizeObserver(() => {
-        // Keep the paired placeholder on the opposite half at the same
-        // height as this annotation row so the two halves stay aligned
-        // line-for-line.
-        syncPlaceholderHeight(row);
-        scheduleReflow(anchor);
-      });
-      ro.observe(box);
-      row._scrResizeObserver = ro;
-    }
-  }
-
-  // Mirror `annotRow`'s total height onto its paired placeholder row
-  // so the opposite half's row track takes the same vertical space.
-  // No-op if there's no placeholder (e.g. the first renderers haven't
-  // called insertAnnotationWithShadow yet).
-  function syncPlaceholderHeight(annotRow) {
-    const ph = annotRow._scrPlaceholder;
-    if (!ph) return;
-    const h = annotRow.offsetHeight;
-    if (h > 0) ph.style.height = h + "px";
-  }
-
-  // Defer a sibling-reflow to the next animation frame. Coalesces the
-  // many tiny mutations that happen during a single keystroke or DOM
-  // insertion into a single measurement pass after layout settles.
-  const _pendingReflow = new Set();
-  function scheduleReflow(anchor) {
-    if (!anchor) return;
-    if (_pendingReflow.size === 0) {
-      requestAnimationFrame(() => {
-        const anchors = [..._pendingReflow];
-        _pendingReflow.clear();
-        for (const a of anchors) resizeAnnotSiblings(a);
-      });
-    }
-    _pendingReflow.add(anchor);
-  }
-
-  // Size + position the SVG arrow using a negative margin-top to hoist
-  // it above the annotation row so its top terminates at the vertical
-  // midline of the anchor row (visually connecting to the code line,
-  // not to the bottom border of the row). The arrow's bend sits at the
-  // vertical midline of the annotation box.
-  //
-  // We measure using `cell.getBoundingClientRect()` rather than the
-  // annotation *row* — `.row` has `display:contents` so its own rect is
-  // not the geometry we care about; the cell has a real box whose top
-  // matches the grid track top visually.
-  function sizeAnnotArrow(annotRow) {
-    const box = annotRow.querySelector(".annot-box");
-    const svg = annotRow.querySelector("svg.annot-arrow");
-    const cell = annotRow.querySelector(".cell-annotation");
-    if (!box || !svg || !cell) return;
-    const boxH = box.offsetHeight;
-    if (boxH <= 0) return;
-
-    const anchor = annotRow._scrAnchor;
-    const minOverrun = 6;
-    let topOverrun = minOverrun;
-    if (anchor) {
-      const cellRect = cell.getBoundingClientRect();
-      const anchorRect = anchorRowRect(anchor);
-      if (anchorRect) {
-        const anchorMidY = (anchorRect.top + anchorRect.bottom) / 2;
-        topOverrun = Math.max(minOverrun, cellRect.top - anchorMidY);
-      }
-    }
-    const totalH = topOverrun + boxH;
-    const midY = topOverrun + boxH / 2;
-    const tipX = 17;
-    const head = 4;
-    const svgW = 20;
-    const vLineX = 2;
-    svg.setAttribute("height", String(totalH));
-    svg.setAttribute("width", String(svgW));
-    svg.setAttribute("viewBox", `0 0 ${svgW} ${totalH}`);
-    svg.style.marginTop = `-${topOverrun}px`;
-
-    // Horizontal alignment: put vLineX at the character midpoint of the
-    // nth character in the anchor row (n = count of annotation siblings
-    // stacked *below* this one for the same anchor). Staggers each
-    // stacked arrow across one monospace character so their vertical
-    // segments don't overlap — the annotation closest to the anchor
-    // (shortest span) sits one char to the right of the one below.
-    const side = annotRow._scrSide || "new";
-    if (anchor) {
-      const offset = annotationsBelow(annotRow, anchor);
-      const anchorX = charCenterAt(anchor, side, offset);
-      if (anchorX !== null) {
-        const cellRect = cell.getBoundingClientRect();
-        const cs = window.getComputedStyle(cell);
-        const padL = parseFloat(cs.paddingLeft) || 0;
-        const marginL = anchorX - cellRect.left - padL - vLineX;
-        svg.style.marginLeft = `${Math.max(0, marginL)}px`;
-      }
-    }
-
-    const path = svg.querySelector("path");
-    path.setAttribute(
-      "d",
-      `M ${vLineX} 0 L ${vLineX} ${midY} L ${tipX} ${midY} ` +
-      `M ${tipX - head} ${midY - head} L ${tipX} ${midY} L ${tipX - head} ${midY + head}`,
-    );
-  }
-
-  // Re-size all currently-visible annotation arrows on window resize, since
-  // box text can reflow and change height.
-  window.addEventListener("resize", resizeAllAnnotArrows);
-
-  function resizeAllAnnotArrows() {
-    document.querySelectorAll(".row-annotation").forEach(r => {
-      if (r.style.display !== "none") sizeAnnotArrow(r);
-    });
-  }
-
-  // Re-size every annotation row anchored to the same source row. Call
-  // after inserting or removing a row so stacked arrows restretch to
-  // reach the real anchor rather than a sibling annotation above them.
-  function resizeAnnotSiblings(anchor) {
-    if (!anchor || !anchor.parentNode) return;
-    const all = anchor.parentNode.querySelectorAll(".row-annotation");
-    all.forEach(r => {
-      if (r._scrAnchor === anchor && r.style.display !== "none") {
-        sizeAnnotArrow(r);
-      }
-    });
-  }
-
-  // Anchor diff rows use `display:contents`, so the row element itself
-  // has no layout box and `anchor.getBoundingClientRect()` returns
-  // {0,0,0,0} in Chromium (the CSSOM spec says "union of child
-  // fragments", but Chrome/Edge ignore children entirely). Walk the
-  // cells — any of them has a real rect whose top/bottom match the
-  // grid track — and return that.
-  function anchorRowRect(anchor) {
-    if (!anchor || !anchor.children) return null;
-    let top = Infinity, bottom = -Infinity, left = Infinity, right = -Infinity;
-    let found = false;
-    for (const child of anchor.children) {
-      const r = child.getBoundingClientRect();
-      if (r.width === 0 && r.height === 0) continue;
-      top = Math.min(top, r.top);
-      bottom = Math.max(bottom, r.bottom);
-      left = Math.min(left, r.left);
-      right = Math.max(right, r.right);
-      found = true;
-    }
-    return found ? { top, bottom, left, right } : null;
-  }
-
-  // Count annotation rows that sit below `annotRow` in the DOM and
-  // share the same anchor. Used to stagger stacked arrow origins —
-  // each arrow shifts right by one character per annotation below it.
-  function annotationsBelow(annotRow, anchor) {
-    let n = 0;
-    let s = annotRow.nextSibling;
-    while (s) {
-      if (s.classList && s.classList.contains("row-annotation")
-          && s.style.display !== "none"
-          && s._scrAnchor === anchor) {
-        n++;
-      }
-      s = s.nextSibling;
-    }
-    return n;
-  }
-
-  // Return the horizontal pixel midpoint of the nth character after
-  // (and including) the first non-whitespace character on the anchor
-  // row's content side. n=0 → first printing char's midpoint.
-  // Measurement comes from Range.getBoundingClientRect rather than a
-  // ch-based guess because hljs spans + ligatures make character width
-  // arithmetic unreliable.
-  function charCenterAt(anchorRowEl, side, n) {
-    // After the per-half restructure, each anchor row has exactly two
-    // children: [lineno, content]. The content cell is always at index 1,
-    // regardless of side — the side is determined by which half the row
-    // lives in, not by position within the row.
-    const contentCell = anchorRowEl.children[1];
-    if (!contentCell) return null;
-    const code = contentCell.querySelector("code");
-    if (!code) return contentCell.getBoundingClientRect().left;
-    // Collect every text node, in order.
-    const texts = [];
-    const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
-    let node;
-    while ((node = walker.nextNode())) texts.push(node);
-
-    // Flatten to (node, localOffset) entries, skipping leading whitespace.
-    const chars = [];
-    let seenPrinting = false;
-    for (const t of texts) {
-      const s = t.nodeValue;
-      for (let i = 0; i < s.length; i++) {
-        if (!seenPrinting) {
-          if (/\s/.test(s[i])) continue;
-          seenPrinting = true;
-        }
-        chars.push({ node: t, offset: i });
-      }
-    }
-    if (chars.length === 0) return code.getBoundingClientRect().left;
-
-    const target = chars[Math.min(n, chars.length - 1)];
-    const range = document.createRange();
-    range.setStart(target.node, target.offset);
-    range.setEnd(target.node, target.offset + 1);
-    const r = range.getBoundingClientRect();
-    if (!r.width && !r.height) {
-      // Zero-size range (line end or unusual node); fall back to the
-      // first printing character.
-      const first = chars[0];
-      const r0 = document.createRange();
-      r0.setStart(first.node, first.offset);
-      r0.setEnd(first.node, first.offset + 1);
-      const rr = r0.getBoundingClientRect();
-      return rr.left + rr.width / 2;
-    }
-    return r.left + r.width / 2;
-  }
-
-  function svgAnnotArrow() {
-    // L-shape with an arrowhead on the right-end. Viewbox 20x14; path:
-    //   (2,0) -> (2,9) -> (17,9), plus a small chevron head at (13,5)(17,9)(13,13).
-    const svg = document.createElementNS(SVG_NS, "svg");
-    svg.setAttribute("class", "annot-arrow");
-    svg.setAttribute("viewBox", "0 0 20 14");
-    svg.setAttribute("width", "20");
-    svg.setAttribute("height", "14");
-    svg.setAttribute("aria-hidden", "true");
-    const p = document.createElementNS(SVG_NS, "path");
-    p.setAttribute("d", "M 2 0 L 2 9 L 17 9 M 13 5 L 17 9 L 13 13");
-    p.setAttribute("fill", "none");
-    p.setAttribute("stroke", "currentColor");
-    p.setAttribute("stroke-width", "1.4");
-    p.setAttribute("stroke-linecap", "round");
-    p.setAttribute("stroke-linejoin", "round");
-    svg.appendChild(p);
-    return svg;
   }
 
   function renderRow(row, file) {
@@ -1080,54 +756,47 @@
     });
   }
 
-  function openCommentEditor({ rowEl, side, line, file, existing }) {
-    // Insert an editor row immediately after rowEl, reusing the annotation
-    // arrow + box. The box contains a textarea. A matching placeholder
-    // goes into the opposite half so subgrid row counts stay in sync.
-    const editor = buildCommentEditorRow({ anchorRowEl: rowEl, side, line, file, existing });
-    insertAnnotationWithShadow(editor, rowEl, rowEl._scrPair);
-    editor._scrSizeArrow();
-    scheduleReflow(rowEl);
-    const ta = editor.querySelector("textarea");
-    if (ta) {
-      ta.focus();
-      ta.setSelectionRange(ta.value.length, ta.value.length);
-    }
-  }
+  // Dynamic comment rows (display + editor) are each built via
+  // ScrAnnotations.attach, with the comment-specific UI (edit/delete
+  // buttons, or a textarea + save/cancel) nested inside the .annot-box.
+  // Comment state lives in the caller (STATE.comments + persistence);
+  // the annotation module just hosts the DOM.
 
-  function buildCommentEditorRow(opts) {
-    const { anchorRowEl, side, line, file, existing } = opts;
-    const row = el("div", "row row-annotation annot-comment annot-editor");
-    const cell = el("div", `cell-annotation cell-annotation-${side}`);
-    cell.appendChild(svgAnnotArrow());
-    const box = el("div", "annot-box comment-editor-box");
+  function openCommentEditor({ rowEl, side, line, file, existing }) {
+    // Build the editor's body (textarea + Save/Cancel bar).
+    const bodyWrap = el("div", "comment-editor-body");
     const ta = el("textarea", "comment-editor-input");
     ta.rows = 1;
     ta.placeholder = "Write a comment… (Enter to save, Shift-Enter for newline, Esc to cancel)";
     ta.value = existing ? existing.body : "";
-    box.appendChild(ta);
-    // Auto-grow vertically so the editor stays at one line until the
-    // user types past it, then expands as needed. Width is still user-
-    // controllable via the drag handle (resize: horizontal).
-    function autosizeTextarea() {
-      ta.style.height = "auto";
-      ta.style.height = ta.scrollHeight + "px";
-    }
+    bodyWrap.appendChild(ta);
     const bar = el("div", "comment-editor-bar");
     const save = el("button", "comment-btn comment-btn-save", existing ? "Update" : "Save");
     const cancel = el("button", "comment-btn comment-btn-cancel", "Cancel");
     bar.appendChild(save);
     bar.appendChild(cancel);
-    box.appendChild(bar);
-    cell.appendChild(box);
-    row.appendChild(cell);
-    wireAnnotationRow(row, box, anchorRowEl, side);
+    bodyWrap.appendChild(bar);
 
-    function close() {
-      removeAnnotationWithShadow(row);
-      scheduleReflow(anchorRowEl);
+    const handle = window.ScrAnnotations.attach({
+      anchor: rowEl,
+      shadowAnchor: rowEl._scrPair || null,
+      variant: "comment",
+      content: bodyWrap,
+      onInsert: (el) => {
+        el.classList.add("annot-editor");
+        // The annotation module applies "max-width: 64ch" to the box
+        // by default; the editor wants the full half width instead
+        // (see viewer.css .annot-editor .comment-editor-box rule).
+        const box = el.querySelector(".annot-box");
+        if (box) box.classList.add("comment-editor-box");
+      },
+    });
+
+    function autosizeTextarea() {
+      ta.style.height = "auto";
+      ta.style.height = ta.scrollHeight + "px";
     }
-
+    function close() { handle.remove(); }
     function submit() {
       const body = ta.value.trim();
       if (!body) { close(); return; }
@@ -1140,7 +809,7 @@
       };
       saveComment(c).then(() => {
         close();
-        refreshCommentsForAnchor(anchorRowEl, { file, side, line });
+        refreshCommentsForAnchor(rowEl, { file, side, line });
       });
     }
 
@@ -1151,37 +820,43 @@
       else if (e.key === "Escape") { e.preventDefault(); close(); }
       e.stopPropagation();
     });
-    // Grow textarea as content changes; the ResizeObserver on the
-    // editor box handles the sibling reflow for us.
     ta.addEventListener("input", autosizeTextarea);
-    // Initial autosize — runs once the row is in the DOM.
-    requestAnimationFrame(autosizeTextarea);
-    return row;
+    requestAnimationFrame(() => {
+      autosizeTextarea();
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+    });
   }
 
   function buildCommentRow(comment, anchorRowEl) {
-    const row = el("div", "row row-annotation annot-comment");
-    const cell = el("div", `cell-annotation cell-annotation-${comment.side}`);
-    cell.appendChild(svgAnnotArrow());
-    const box = el("div", "annot-box comment-display");
+    // Body of the comment: prose + action bar. The annotation module
+    // wraps this in a .row-annotation .cell-annotation .annot-box.
+    const bodyWrap = el("div", "comment-display-body");
     const body = el("div", "comment-body");
     body.textContent = comment.body;
-    box.appendChild(body);
+    bodyWrap.appendChild(body);
     const bar = el("div", "comment-actions");
     const edit = el("button", "comment-btn comment-btn-edit", "edit");
     const del = el("button", "comment-btn comment-btn-del", "delete");
     bar.appendChild(edit);
     bar.appendChild(del);
-    box.appendChild(bar);
-    cell.appendChild(box);
-    row.appendChild(cell);
-    row.dataset.commentId = comment.id;
-    wireAnnotationRow(row, box, anchorRowEl, comment.side);
+    bodyWrap.appendChild(bar);
+
+    const handle = window.ScrAnnotations.attach({
+      anchor: anchorRowEl,
+      shadowAnchor: anchorRowEl._scrPair || null,
+      variant: "comment",
+      content: bodyWrap,
+      onInsert: (elRoot) => {
+        elRoot.dataset.commentId = comment.id;
+        const box = elRoot.querySelector(".annot-box");
+        if (box) box.classList.add("comment-display");
+      },
+    });
 
     edit.addEventListener("click", e => {
       e.stopPropagation();
-      removeAnnotationWithShadow(row);
-      scheduleReflow(anchorRowEl);
+      handle.remove();
       openCommentEditor({
         rowEl: anchorRowEl, side: comment.side, line: comment.line,
         file: comment.file, existing: comment,
@@ -1189,44 +864,39 @@
     });
     del.addEventListener("click", e => {
       e.stopPropagation();
-      deleteComment(comment.id).then(() => {
-        removeAnnotationWithShadow(row);
-        scheduleReflow(anchorRowEl);
-      });
+      deleteComment(comment.id).then(() => handle.remove());
     });
-    return row;
+    return handle;
   }
 
   function refreshCommentsForAnchor(anchorRowEl, anchor) {
-    // Clear any comment-display rows immediately after the anchor, then
-    // rebuild them from current state.
     removeCommentRowsAfter(anchorRowEl);
     const relevant = commentsFor(anchor.file, anchor.side, anchor.line)
       .sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
-    // Both halves advance in lockstep: each comment goes after the
-    // previous comment on its own side, and its placeholder goes after
-    // the previous placeholder on the opposite side.
-    let chainAnchor = anchorRowEl;
-    let chainShadow = anchorRowEl._scrPair;
     for (const c of relevant) {
-      const cr = buildCommentRow(c, anchorRowEl);
-      insertAnnotationWithShadow(cr, chainAnchor, chainShadow);
-      cr._scrSizeArrow();
-      chainAnchor = cr;
-      chainShadow = cr._scrPlaceholder;
+      buildCommentRow(c, anchorRowEl);
     }
     // Any LLM annotations (line_notes, fold summaries) that also anchor
-    // at this row now sit further from it — re-measure their arrows so
-    // they stretch past the newly-inserted comments.
-    scheduleReflow(anchorRowEl);
+    // at this row now sit further from it — ScrAnnotations.reflow()
+    // re-measures their arrows to stretch past the newly-inserted
+    // comments.
+    window.ScrAnnotations.reflow(anchorRowEl);
   }
 
   function removeCommentRowsAfter(anchorRowEl) {
+    // Comment display rows carry a `data-comment-id`. Walk forward
+    // from the anchor detaching each matching row (which also removes
+    // its shadow placeholder). Stops at the first non-matching sibling.
     let n = anchorRowEl.nextSibling;
-    while (n && n.classList && n.classList.contains("annot-comment")
-           && !n.classList.contains("annot-editor")) {
+    while (n) {
       const next = n.nextSibling;
-      removeAnnotationWithShadow(n);
+      const isCommentRow = n.nodeType === 1
+        && n.classList.contains("row-annotation")
+        && n.classList.contains("annot-comment")
+        && !n.classList.contains("annot-editor")
+        && n.dataset && n.dataset.commentId;
+      if (!isCommentRow) break;
+      window.ScrAnnotations.detach(n);
       n = next;
     }
   }

@@ -15,3 +15,13 @@ dist/
 .env
 .env.*
 !.env.example
+
+# TypeScript build artifacts — annotations.ts is the source of truth;
+# annotations.js is produced by `tsc` (either via `npm run build` or
+# the bin/scr bootstrap) and inlined into the viewer HTML.
+node_modules/
+semantic_code_review/viewer/assets/annotations.js
+semantic_code_review/viewer/assets/*.d.ts
+.tsbuildinfo
+playwright-report/
+test-results/

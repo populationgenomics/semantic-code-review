@@ -70,7 +70,24 @@ def render_html(
     pr_meta = " · ".join(pr_meta_bits)
 
     viewer_css = (ASSETS_DIR / "viewer.css").read_text(encoding="utf-8")
-    viewer_js = (ASSETS_DIR / "viewer.js").read_text(encoding="utf-8")
+    # Concatenate the compiled annotations module before viewer.js.
+    # annotations.ts is the source of truth; tsc emits annotations.js
+    # (either via `npm run build` or the bin/scr bootstrap). If the
+    # compiled artifact is missing, fail loudly with a clear hint
+    # rather than silently shipping a viewer whose annotation pipeline
+    # is `undefined`.
+    annotations_path = ASSETS_DIR / "annotations.js"
+    if not annotations_path.exists():
+        raise FileNotFoundError(
+            f"compiled annotations module missing at {annotations_path}. "
+            "Run `bin/scr` (which auto-builds) or `npm run build` to "
+            "compile it from annotations.ts."
+        )
+    viewer_js = (
+        annotations_path.read_text(encoding="utf-8")
+        + "\n"
+        + (ASSETS_DIR / "viewer.js").read_text(encoding="utf-8")
+    )
 
     ctx: dict[str, Any] = {
         "pr_title": pr_title,

@@ -34,13 +34,18 @@ fi
 mkdir -p "$CLAUDE_PLUGIN_DATA"
 
 VENV="$CLAUDE_PLUGIN_DATA/venv"
+NODE_MODULES="$CLAUDE_PLUGIN_DATA/node_modules"
 PYPROJECT="$CLAUDE_PLUGIN_ROOT/pyproject.toml"
 LOCKFILE="$CLAUDE_PLUGIN_ROOT/requirements.lock"
 BUILD_LOCKFILE="$CLAUDE_PLUGIN_ROOT/build-requirements.lock"
+PACKAGE_LOCK="$CLAUDE_PLUGIN_ROOT/package-lock.json"
+TS_ASSETS_DIR="$CLAUDE_PLUGIN_ROOT/semantic_code_review/viewer/assets"
+ANNOT_JS="$TS_ASSETS_DIR/annotations.js"
 
 [ -f "$PYPROJECT" ]      || die "pyproject.toml missing from plugin tree at $PYPROJECT"
 [ -f "$LOCKFILE" ]       || die "requirements.lock missing from plugin tree at $LOCKFILE"
 [ -f "$BUILD_LOCKFILE" ] || die "build-requirements.lock missing from plugin tree at $BUILD_LOCKFILE"
+[ -f "$PACKAGE_LOCK" ]   || die "package-lock.json missing from plugin tree at $PACKAGE_LOCK"
 
 # --- preflight --------------------------------------------------------------
 
@@ -56,6 +61,8 @@ fi
 [ "$need_python" -eq 0 ] || die "python3 >= 3.11 is required but missing or too old"
 
 command -v git >/dev/null 2>&1 || die "git is required but not on PATH"
+command -v node >/dev/null 2>&1 || die "node is required to compile the viewer's TypeScript module. Install Node.js >= 20."
+command -v npm >/dev/null 2>&1 || die "npm is required to install the Node build toolchain. It ships with Node.js."
 
 if ! command -v gh >/dev/null 2>&1; then
   warn "gh not found — 'scr fetch' on a GitHub PR URL will fail. /review on local diffs still works."
@@ -103,6 +110,46 @@ if [ ! -x "$VENV/bin/scr" ] || [ ! -f "$stamp" ]; then
   find "$CLAUDE_PLUGIN_DATA" -maxdepth 1 -name 'installed-*' -print0 2>/dev/null | xargs -0 rm -f || true
   printf '%s\n' "$want_hash" > "$stamp"
   printf 'scr: ready\n' >&2
+fi
+
+# --- Node toolchain install + TypeScript build (idempotent) ---------------
+#
+# The viewer's annotation component is written in TypeScript. The
+# compiled JS is an npm-built artifact that is NOT committed; the
+# bootstrap maintains it via `npm ci` + `tsc`, keyed to the plugin
+# tree's package-lock.json and any .ts source changes.
+#
+# node_modules/ lives inside the plugin tree (gitignored). For a
+# pip-installed-only world (read-only plugin tree, no Node), we'll
+# ship prebuilt JS in the wheel — that path is deferred until we
+# actually publish wheels.
+
+hash_node_inputs() {
+  local shacmd
+  if command -v shasum >/dev/null 2>&1; then shacmd="shasum -a 256";
+  else shacmd="sha256sum"; fi
+  { $shacmd "$PACKAGE_LOCK"; find "$TS_ASSETS_DIR" -name '*.ts' -print0 2>/dev/null | xargs -0 $shacmd 2>/dev/null; } \
+    | awk '{print $1}' | $shacmd | awk '{print $1}'
+}
+
+node_want_hash=$(hash_node_inputs)
+node_stamp="$CLAUDE_PLUGIN_DATA/node-built-${node_want_hash}"
+
+if [ ! -f "$node_stamp" ] || [ ! -f "$ANNOT_JS" ]; then
+  printf 'scr: building viewer TypeScript module (first run / sources changed)\n' >&2
+  (
+    cd "$CLAUDE_PLUGIN_ROOT"
+    # `--ignore-scripts` keeps any package's install hooks from running
+    # (defense in depth; our deps are all well-known). Lock-hashed
+    # integrity is already enforced by package-lock.json's `integrity`
+    # fields — npm ci refuses mismatching tarballs.
+    if [ ! -d "node_modules" ] || ! node -e 'process.exit(require("fs").existsSync("node_modules/.bin/tsc") ? 0 : 1)'; then
+      npm ci --ignore-scripts --no-audit --no-fund >&2
+    fi
+    "$CLAUDE_PLUGIN_ROOT/node_modules/.bin/tsc"
+  )
+  find "$CLAUDE_PLUGIN_DATA" -maxdepth 1 -name 'node-built-*' -print0 2>/dev/null | xargs -0 rm -f || true
+  printf '%s\n' "$node_want_hash" > "$node_stamp"
 fi
 
 exec "$VENV/bin/scr" "$@"
