@@ -359,6 +359,13 @@ body {
    * expands to match (via minmax(0, 1fr)), and `.half`'s overflow-x
    * scrolls it into view. */
   min-width: max-content;
+  /* Reserve a left gutter for the fold chevron so it can float outside
+   * the text flow without displacing the code. Every line — chevron or
+   * not — pays the same gutter so indentation reads consistently.
+   * `position: relative` makes the chevron's absolute positioning
+   * anchor here rather than on the scroll container. */
+  position: relative;
+  padding-left: 20px;
 }
 .diff .cell-content code { background: transparent !important; padding: 0 !important; }
 .diff .cell-content.empty { background: transparent; min-width: 0; }
@@ -377,13 +384,18 @@ body {
 }
 
 /* Indent-based fold control ---------------------------------------------- */
+/* The chevron floats in the left gutter of .cell-content — it does NOT
+ * take text-flow space, so lines with chevrons read at the same indent
+ * as their siblings without. Without this, fold-header lines appeared
+ * ~2 chars more indented than their bodies and the nesting structure
+ * was visually illegible. */
 .diff .fold-chev {
+  position: absolute;
+  left: 4px;
+  top: 2px;
   width: 12px; height: 12px;
-  margin-right: 4px;
-  margin-left: -2px;
   color: var(--fg-dim);
   cursor: pointer;
-  vertical-align: -1px;
   outline: none;
 }
 .diff .fold-chev:hover { color: var(--accent); }
