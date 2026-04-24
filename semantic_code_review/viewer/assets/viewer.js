@@ -193,16 +193,28 @@
     });
     container.appendChild(collapse);
 
+    // Same structural shape as a regular hunk: a .diff with two .half
+    // children, each holding its side's rows. renderRow now returns
+    // {old, new}, so we must dispatch each side to its own half.
     const diff = el("div", "diff");
+    const halfOld = el("div", "half half-old");
+    const halfNew = el("div", "half half-new");
+    diff.appendChild(halfOld);
+    diff.appendChild(halfNew);
+
     const count = gap.new_end - gap.new_start + 1;
     for (let i = 0; i < count; i++) {
       const ol = gap.old_start + i;
       const nl = gap.new_start + i;
       const text = f.head_lines[nl - 1] ?? "";
-      diff.appendChild(renderRow({
+      const pair = renderRow({
         kind: "ctx", old_line: ol, new_line: nl,
         old_text: text, new_text: text,
-      }, f));
+      }, f);
+      pair.old._scrPair = pair.new;
+      pair.new._scrPair = pair.old;
+      halfOld.appendChild(pair.old);
+      halfNew.appendChild(pair.new);
     }
     container.appendChild(diff);
     return container;
