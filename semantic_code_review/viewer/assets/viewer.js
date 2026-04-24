@@ -19,7 +19,32 @@
     overrides: {},      // regionId -> bool (true = folded)
     renderedDiffs: {},  // hunkId -> pre-rendered <div>
     comments: {},       // id -> Comment
+    activeGroup: null,  // group id (e.g. "G0") or null for "show all"
   };
+
+  // --- Semantic groups -----------------------------------------------------
+  // The overview LLM pass may emit `DATA.groups`, a flat list of
+  // {id, title, rationale, hunk_ids[]} clusters. The sidebar renders
+  // them as pill buttons; clicking one filters the visible hunks to
+  // that group's members. Hunks in NO group get a subtle visual tell
+  // in the default view so reviewers can see which changes didn't
+  // cluster with anything. A hunk can appear in multiple groups.
+
+  const GROUPS = DATA.groups || [];
+  const GROUP_BY_ID = Object.create(null);
+  const HUNK_GROUP_COUNT = Object.create(null);  // hunkId -> int (how many groups claim it)
+  for (const g of GROUPS) {
+    GROUP_BY_ID[g.id] = g;
+    for (const hid of g.hunk_ids || []) {
+      HUNK_GROUP_COUNT[hid] = (HUNK_GROUP_COUNT[hid] || 0) + 1;
+    }
+  }
+
+  const GROUP_LS_KEY = "scr-active-group:" + (DATA.pr && DATA.pr.head_sha ? DATA.pr.head_sha : "local");
+  try {
+    const saved = localStorage.getItem(GROUP_LS_KEY);
+    if (saved && GROUP_BY_ID[saved]) STATE.activeGroup = saved;
+  } catch (_) { /* localStorage may be unavailable */ }
 
   // --- Fold defaults per region type ---------------------------------------
   function defaultFileFolded()    { return STATE.fold === "files"; }
@@ -76,6 +101,8 @@
     app.innerHTML = "";
     app.appendChild(renderPRPanel(DATA.pr));
     for (const f of DATA.files) app.appendChild(renderFile(f));
+    renderGroupSidebar();
+    applyGroupFilter();
     updateStatus();
     syncHash();
     updateSliderButtons();
@@ -89,6 +116,87 @@
     requestAnimationFrame(() => {
       window.ScrAnnotations.reflowAll();
       requestAnimationFrame(() => window.ScrAnnotations.reflowAll());
+    });
+  }
+
+  // Build the sidebar listing each semantic group plus a "Show all"
+  // button. Hidden entirely when the overview pass emitted no groups.
+  function renderGroupSidebar() {
+    const sidebar = document.getElementById("group-sidebar");
+    if (!sidebar) return;
+    sidebar.innerHTML = "";
+    if (!GROUPS.length) {
+      sidebar.classList.add("empty");
+      return;
+    }
+    sidebar.classList.remove("empty");
+    const header = el("div", "group-sidebar-header");
+    header.appendChild(el("h3", null, "Groups"));
+    sidebar.appendChild(header);
+
+    const showAll = el("button", "group-btn group-btn-all", "Show all");
+    showAll.title = "Clear filter — show every hunk";
+    if (STATE.activeGroup === null) showAll.classList.add("active");
+    showAll.addEventListener("click", () => setActiveGroup(null));
+    sidebar.appendChild(showAll);
+
+    for (const g of GROUPS) {
+      const btn = el("button", "group-btn");
+      const label = el("span", "group-btn-label", g.title);
+      const count = el("span", "group-btn-count", String((g.hunk_ids || []).length));
+      btn.appendChild(label);
+      btn.appendChild(count);
+      btn.title = g.rationale || g.title;
+      if (STATE.activeGroup === g.id) btn.classList.add("active");
+      btn.addEventListener("click", () => {
+        setActiveGroup(STATE.activeGroup === g.id ? null : g.id);
+      });
+      sidebar.appendChild(btn);
+    }
+  }
+
+  function setActiveGroup(groupId) {
+    STATE.activeGroup = groupId;
+    try {
+      if (groupId === null) localStorage.removeItem(GROUP_LS_KEY);
+      else localStorage.setItem(GROUP_LS_KEY, groupId);
+    } catch (_) { /* ignore */ }
+    // Refresh button active-state.
+    document.querySelectorAll(".group-btn").forEach(b => b.classList.remove("active"));
+    if (groupId === null) {
+      const all = document.querySelector(".group-btn-all");
+      if (all) all.classList.add("active");
+    } else {
+      const btns = document.querySelectorAll(".group-btn");
+      const gi = GROUPS.findIndex(g => g.id === groupId);
+      if (gi >= 0 && btns[gi + 1]) btns[gi + 1].classList.add("active");
+    }
+    applyGroupFilter();
+    // Arrow geometry changes when rows appear/disappear.
+    window.ScrAnnotations.reflowAll();
+  }
+
+  // Walk every .hunk element, tag .ungrouped for hunks no group claims,
+  // and apply visibility based on STATE.activeGroup. Files with no
+  // visible hunks are hidden too so the sidebar view reads cleanly.
+  function applyGroupFilter() {
+    const activeIds = STATE.activeGroup
+      ? new Set(GROUP_BY_ID[STATE.activeGroup].hunk_ids || [])
+      : null;
+    document.querySelectorAll(".file").forEach(fileEl => {
+      let visible = 0;
+      fileEl.querySelectorAll(".hunk").forEach(hunkEl => {
+        const hid = hunkEl.dataset.id;
+        const inAnyGroup = (HUNK_GROUP_COUNT[hid] || 0) > 0;
+        hunkEl.classList.toggle("ungrouped", !inAnyGroup);
+        const show = activeIds === null ? true : activeIds.has(hid);
+        hunkEl.style.display = show ? "" : "none";
+        // Also hide / show the gap chips immediately surrounding this
+        // hunk — if the hunk is hidden there's no reason to offer
+        // "expand 3 lines above" above a gap between two hidden hunks.
+        if (show) visible++;
+      });
+      fileEl.style.display = visible === 0 && activeIds !== null ? "none" : "";
     });
   }
 

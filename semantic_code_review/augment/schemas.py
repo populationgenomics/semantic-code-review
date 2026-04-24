@@ -149,6 +149,31 @@ class OverviewEdge(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class OverviewGroupMember(BaseModel):
+    """A hunk-address the LLM returned as part of a semantic group.
+
+    `path` is the file's post-image path; `hunk_index` is the 0-based
+    offset into that file's hunk list. Invalid references (path not
+    present, or index out of range) are dropped at parse time by
+    `apply_overview_to_diff`.
+    """
+    path: str
+    hunk_index: int
+
+
+class OverviewGroup(BaseModel):
+    """A cluster of hunks the LLM believes share a purpose.
+
+    Hunks may appear in multiple groups (overlap is expected — one
+    hunk can serve two themes) and need not cover every hunk in the
+    diff. The viewer renders each group as a sidebar entry; clicking
+    one filters the visible hunks to that group's members.
+    """
+    title: str
+    rationale: str = ""
+    members: list[OverviewGroupMember] = Field(default_factory=list)
+
+
 class Overview(BaseModel):
     summary: str = ""
     symbols_added: list[OverviewSymbol] = Field(default_factory=list)
@@ -156,6 +181,7 @@ class Overview(BaseModel):
     symbols_removed: list[OverviewSymbol] = Field(default_factory=list)
     callgraph_edges: list[OverviewEdge] = Field(default_factory=list)
     themes: list[str] = Field(default_factory=list)
+    groups: list[OverviewGroup] = Field(default_factory=list)
 
 
 class PRInfo(BaseModel):

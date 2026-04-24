@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from ..augment.schemas import (
-    AugmentedDiff, FilePatch, FileSymbols, Overview, OverviewEdge, OverviewSymbol,
+    AugmentedDiff, FilePatch, FileSymbols, Overview, OverviewEdge,
+    OverviewGroup, OverviewGroupMember, OverviewSymbol,
 )
 from ..cache.store import CacheStore
 from .prompts import OVERVIEW_SYSTEM, PROMPT_VERSION, overview_tools
@@ -40,11 +41,14 @@ def format_overview_prompt(diff: AugmentedDiff, meta: dict[str, Any]) -> str:
         dels = sum(sum(1 for ln in h.body.splitlines() if ln.startswith("-")) for h in f.hunks)
         parts.append(f"  {f.path}  +{adds} -{dels}  ({len(f.hunks)} hunks)")
 
+    # Each hunk header is prefixed with its 0-based `hunk_index` within
+    # the file, so the model can cite `{path, hunk_index}` from the
+    # `groups` output unambiguously.
     parts.append("\n# Hunk headers")
     for f in diff.files:
         parts.append(f"{f.path}")
-        for h in f.hunks:
-            parts.append(f"  {h.header}")
+        for i, h in enumerate(f.hunks):
+            parts.append(f"  [{i}] {h.header}")
 
     return "\n".join(parts) + "\n"
 
@@ -110,6 +114,7 @@ def apply_overview_to_diff(diff: AugmentedDiff, submit_args: dict[str, Any]) -> 
         symbols_removed=[OverviewSymbol(**s) for s in submit_args.get("symbols_removed", [])],
         callgraph_edges=[OverviewEdge.model_validate(e) for e in submit_args.get("callgraph_edges", [])],
         themes=list(submit_args.get("themes", [])),
+        groups=_resolve_groups(diff, submit_args.get("groups") or []),
     )
     by_path = {f["path"]: f for f in submit_args.get("files", [])}
     for fp in diff.files:
@@ -127,3 +132,47 @@ def apply_overview_to_diff(diff: AugmentedDiff, submit_args: dict[str, Any]) -> 
                 modified=list(sym.get("modified", [])),
                 removed=list(sym.get("removed", [])),
             )
+
+
+def _resolve_groups(diff: AugmentedDiff, raw_groups: list[dict[str, Any]]) -> list[OverviewGroup]:
+    """Build OverviewGroup instances from raw submit_overview payload.
+
+    Members whose (path, hunk_index) don't resolve to a real hunk in
+    the diff are dropped with a warning, the same defensive pattern
+    hunks.py uses for out-of-range segments. A group whose members
+    all get dropped is itself dropped.
+    """
+    import logging
+    log = logging.getLogger(__name__)
+    hunks_per_path: dict[str, int] = {fp.path: len(fp.hunks) for fp in diff.files}
+
+    out: list[OverviewGroup] = []
+    for raw in raw_groups:
+        title = (raw.get("title") or "").strip()
+        if not title:
+            continue
+        rationale = (raw.get("rationale") or "").strip()
+        members: list[OverviewGroupMember] = []
+        for m in raw.get("members") or []:
+            try:
+                path = str(m["path"])
+                idx = int(m["hunk_index"])
+            except (KeyError, TypeError, ValueError):
+                log.warning("group %r: malformed member %r — dropped", title, m)
+                continue
+            n = hunks_per_path.get(path)
+            if n is None:
+                log.warning("group %r: path %r not in diff — dropped", title, path)
+                continue
+            if idx < 0 or idx >= n:
+                log.warning(
+                    "group %r: hunk_index %d out of range for %s (n=%d) — dropped",
+                    title, idx, path, n,
+                )
+                continue
+            members.append(OverviewGroupMember(path=path, hunk_index=idx))
+        if not members:
+            log.warning("group %r: no valid members — dropped", title)
+            continue
+        out.append(OverviewGroup(title=title, rationale=rationale, members=members))
+    return out

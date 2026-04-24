@@ -39,7 +39,39 @@ def build_viewer_json(
             for tag, d in SMELL_CATALOGUE.items()
         },
         "files": [_file_block(f, i, head_dir) for i, f in enumerate(diff.files)],
+        "groups": _group_blocks(diff),
     }
+
+
+def _group_blocks(diff: AugmentedDiff) -> list[dict[str, Any]]:
+    """Translate Overview.groups into viewer-friendly blocks.
+
+    Each member's (path, hunk_index) becomes a stable viewer hunk id
+    of the form "H{fileIdx}_{hunkIdx}", matching _hunk_block below.
+    Members whose path isn't in the diff (e.g. the file got filtered
+    after the overview ran) are silently dropped.
+    """
+    ov = diff.overview
+    if ov is None or not ov.groups:
+        return []
+    path_to_file_idx = {fp.path: i for i, fp in enumerate(diff.files)}
+    out: list[dict[str, Any]] = []
+    for gi, g in enumerate(ov.groups):
+        hunk_ids: list[str] = []
+        for m in g.members:
+            fi = path_to_file_idx.get(m.path)
+            if fi is None:
+                continue
+            hunk_ids.append(f"H{fi}_{m.hunk_index}")
+        if not hunk_ids:
+            continue
+        out.append({
+            "id": f"G{gi}",
+            "title": g.title,
+            "rationale": g.rationale,
+            "hunk_ids": hunk_ids,
+        })
+    return out
 
 
 def _pr_block(diff: AugmentedDiff, meta: dict[str, Any]) -> dict[str, Any]:

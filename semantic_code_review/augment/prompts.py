@@ -11,7 +11,7 @@ from typing import Any
 from .tools import ANTHROPIC_TOOL_SCHEMAS
 
 
-PROMPT_VERSION = "p5"
+PROMPT_VERSION = "p6"
 
 
 # --- Submission tools -------------------------------------------------------
@@ -73,6 +73,44 @@ SUBMIT_OVERVIEW_TOOL: dict[str, Any] = {
                         },
                     },
                     "required": ["path"],
+                },
+            },
+            "groups": {
+                "type": "array",
+                "description": (
+                    "Semantic clusters of hunks the reviewer can filter by. Each hunk "
+                    "may appear in 0+ groups — overlap is expected when a hunk serves "
+                    "multiple purposes. Aim for 2–6 groups on a typical PR (more for "
+                    "large ones). A group need not cover every hunk; leave genuinely "
+                    "standalone hunks out."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "Short noun phrase, ≤ 6 words. e.g. 'annotation arrow geometry', 'node toolchain setup'. Lowercase; no trailing period.",
+                        },
+                        "rationale": {
+                            "type": "string",
+                            "description": "1 sentence: why these hunks cluster.",
+                        },
+                        "members": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string", "description": "Post-image file path."},
+                                    "hunk_index": {
+                                        "type": "integer",
+                                        "description": "0-based index within the file's hunk list, as shown in the '# Hunk headers' section.",
+                                    },
+                                },
+                                "required": ["path", "hunk_index"],
+                            },
+                        },
+                    },
+                    "required": ["title", "members"],
                 },
             },
         },
@@ -164,8 +202,8 @@ OVERVIEW_SYSTEM = (
     "You are preparing a structured overview of a pull request (or a local diff) to "
     "help a human reviewer understand its shape at a glance.\n\n"
     "You receive the PR title and body, a diffstat, and the hunk headers of each "
-    "changed file (no bodies). Produce a concise overview by calling "
-    "`submit_overview`.\n\n"
+    "changed file (no bodies), each numbered by its `hunk_index` within its file. "
+    "Produce a concise overview by calling `submit_overview`.\n\n"
     "Guidelines:\n"
     "- Lead with WHY, not WHAT.\n"
     "- Symbol kinds are: function, method, class, constant.\n"
@@ -177,7 +215,19 @@ OVERVIEW_SYSTEM = (
     "  heading or similar), treat it as GROUND TRUTH for what the change was meant to "
     "  accomplish. Call out in `summary` and `themes` any parts of the spec that look "
     "  under-implemented, not implemented at all, or diverged from. Do not invent spec "
-    "  requirements that aren't in the body.\n"
+    "  requirements that aren't in the body.\n\n"
+    "Groups — semantic clusters for reviewer navigation:\n"
+    "- Aim for 2–6 groups on a typical PR; larger changes can justify more. A group "
+    "  should represent ONE concrete purpose (e.g. 'annotation arrow geometry', "
+    "  'node toolchain setup'), not a whole file or a whole theme.\n"
+    "- A hunk can appear in multiple groups when it genuinely serves multiple "
+    "  purposes. Don't force every hunk into a group — a hunk that stands alone is "
+    "  fine and should simply be omitted.\n"
+    "- Cite members by `{path, hunk_index}` using the indices shown in the "
+    "  `# Hunk headers` section of the user prompt.\n"
+    "- Titles are lowercase noun phrases, ≤ 6 words, no trailing period.\n"
+    "- `rationale` is one sentence naming what the grouped hunks together accomplish. "
+    "  Not the mechanics — the reviewer already sees the hunks.\n"
 )
 
 
@@ -185,12 +235,22 @@ HUNK_SYSTEM = (
     "You are reviewing one hunk of a pull request. Your FIRST job is to help a human "
     "reviewer UNDERSTAND what this change does and why. Critique (smells, risks) is "
     "SECONDARY — only raise concerns when you can name a concrete risk.\n\n"
+    "BEFORE ANYTHING ELSE: read the hunk body. The full `- ...` / `+ ...` diff is in "
+    "the user prompt. Your `intent` must name what the hunk ACTUALLY does, grounded "
+    "in what you see — not what it plausibly does given the file path or header. "
+    "If the hunk is one line, quote the before/after tokens. If you're unsure, call "
+    "tools (`read_file`, `read_file_at`, `grep`). If you're still unsure after using "
+    "tools, lower `confidence` below 50 and state the exact missing piece in "
+    "`context`. Never write 'likely', 'probably', 'appears to', 'seems to', "
+    "'looks like' — those are signals you're guessing from the header instead of "
+    "reading the body or investigating.\n\n"
     "You have tools to read other files in the head worktree and at the base SHA, to "
     "grep, to list directories, and to check git history. Use them when the hunk depends "
     "on code outside the diff; skip them if the hunk is self-contained.\n\n"
     "When done, call `submit_annotations` with:\n"
-    "- `intent`: 1-2 sentences. MOTIVE, not mechanics. Bad: 'renames X to Y'. "
-    "Good: 'rename aligns the public API with the new namespace introduced earlier'.\n"
+    "- `intent`: 1-2 sentences. MOTIVE, not mechanics. Name the exact change (what was "
+    "X, is now Y), not 'probably'. Bad: 'one-line tweak to the compose file (likely an "
+    "image bump)'. Good: 'bumps the postgres image tag from 15.3 to 15.5'.\n"
     "- `segments`: when the hunk contains semantically distinct edits (e.g. a refactor "
     "plus an unrelated fix, or a changed if-branch alongside a new else-branch), split "
     "them. Each segment has POST-IMAGE `new_start`/`new_count` and its own intent. Omit "
