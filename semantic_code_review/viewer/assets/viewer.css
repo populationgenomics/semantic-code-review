@@ -229,7 +229,18 @@ body {
    * vertically in practice. */
 }
 
-.diff .row { display: contents; }
+/* Each `.row` is a real grid box spanning both of `.half`'s columns,
+ * and uses `subgrid` so its two cells land in `.half`'s column tracks
+ * (matching widths across every row). Making the row an actual box
+ * rather than `display: contents` is required for `position: sticky`
+ * on `.cell-lineno` to work reliably in Chromium — sticky grandchildren
+ * of a display:contents parent have quirks that make them scroll along
+ * with content. */
+.diff .row {
+  display: grid;
+  grid-template-columns: subgrid;
+  grid-column: 1 / -1;
+}
 
 .diff .cell {
   padding: 0 8px;
