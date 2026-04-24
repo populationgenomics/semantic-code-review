@@ -322,12 +322,15 @@ function sizeAnnotArrow(annotRow: HTMLElement): void {
   if (boxH <= 0) return;
 
   const anchor = state.anchor;
+  // The arrow's top should rise to the anchor row's BOTTOM edge, not
+  // its midline — sourcing the arrow from the bottom of the row cell
+  // keeps it clear of the code text itself and reads as "this points
+  // at the line above me" rather than "this crosses into that line".
   let topOverrun = ARROW_MIN_OVERRUN;
   const cellRect = rectProvider(cell);
   const anchorRect = anchorRowRect(anchor);
   if (anchorRect) {
-    const anchorMidY = (anchorRect.top + anchorRect.bottom) / 2;
-    topOverrun = Math.max(ARROW_MIN_OVERRUN, cellRect.top - anchorMidY);
+    topOverrun = Math.max(ARROW_MIN_OVERRUN, cellRect.top - anchorRect.bottom);
   }
   const totalH = topOverrun + boxH;
   const midY = topOverrun + boxH / 2;

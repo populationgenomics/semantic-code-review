@@ -290,9 +290,9 @@ describe("stack policy + column resolution", () => {
 });
 
 describe("arrow vertical geometry", () => {
-  test("topOverrun reaches back to the anchor row's midline", async () => {
-    // Canned rects: anchor cells at y=100-120 (mid=110),
-    // annotation cell at y=200. topOverrun should be 200-110 = 90.
+  test("topOverrun reaches back to the anchor row's bottom edge", async () => {
+    // Canned rects: anchor cells at y=100-120 (bottom=120),
+    // annotation cell at y=200. topOverrun should be 200-120 = 80.
     Annotations._setRectProvider((target: Element | Range) => {
       if (target instanceof Range) {
         return { x: 50, y: 100, width: 10, height: 20, top: 100, left: 50, right: 60, bottom: 120, toJSON() { return this; } } as DOMRect;
@@ -311,10 +311,10 @@ describe("arrow vertical geometry", () => {
     const handle = Annotations.attach(baseOpts(anchor));
     await flushRaf();
     const svg = handle.element.querySelector<SVGSVGElement>("svg")!;
-    // margin-top = -topOverrun; expect near -90.
+    // margin-top = -topOverrun; expect -80.
     const marginTop = parseFloat(svg.style.marginTop);
-    expect(marginTop).toBeLessThan(-80);
-    expect(marginTop).toBeGreaterThan(-100);
+    expect(marginTop).toBeLessThanOrEqual(-79);
+    expect(marginTop).toBeGreaterThanOrEqual(-81);
   });
 });
 
