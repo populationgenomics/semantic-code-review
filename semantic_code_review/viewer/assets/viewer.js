@@ -430,9 +430,12 @@
     insertAfter(annotRow, anchor);
     if (shadowAnchor) {
       const ph = el("div", "row row-placeholder");
-      ph.style.visibility = "hidden";
       insertAfter(ph, shadowAnchor);
       annotRow._scrPlaceholder = ph;
+      // Sync height once we're in the DOM (offsetHeight needs layout).
+      // Subsequent resizes of the annotation body will re-sync via the
+      // ResizeObserver in wireAnnotationRow.
+      requestAnimationFrame(() => syncPlaceholderHeight(annotRow));
     }
   }
 
@@ -563,10 +566,27 @@
     row._scrSide = side;
     row._scrSizeArrow = () => sizeAnnotArrow(row);
     if (typeof ResizeObserver !== "undefined") {
-      const ro = new ResizeObserver(() => scheduleReflow(anchor));
+      const ro = new ResizeObserver(() => {
+        // Keep the paired placeholder on the opposite half at the same
+        // height as this annotation row so the two halves stay aligned
+        // line-for-line.
+        syncPlaceholderHeight(row);
+        scheduleReflow(anchor);
+      });
       ro.observe(box);
       row._scrResizeObserver = ro;
     }
+  }
+
+  // Mirror `annotRow`'s total height onto its paired placeholder row
+  // so the opposite half's row track takes the same vertical space.
+  // No-op if there's no placeholder (e.g. the first renderers haven't
+  // called insertAnnotationWithShadow yet).
+  function syncPlaceholderHeight(annotRow) {
+    const ph = annotRow._scrPlaceholder;
+    if (!ph) return;
+    const h = annotRow.offsetHeight;
+    if (h > 0) ph.style.height = h + "px";
   }
 
   // Defer a sibling-reflow to the next animation frame. Coalesces the
