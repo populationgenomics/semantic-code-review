@@ -267,8 +267,18 @@ body {
   padding: 0 6px;
 }
 .diff .cell-lineno.empty { background: transparent; border-right-color: transparent; }
+.diff .cell-content {
+  /* Grow the content cell's box to the full width of its text so the
+   * row-kind background tint (green/red/context) covers everything the
+   * user can scroll to horizontally. Without this, `white-space: pre`
+   * lets the text overflow the grid track while the cell's border box
+   * — and thus its background — stays at track width. The grid track
+   * expands to match (via minmax(0, 1fr)), and `.half`'s overflow-x
+   * scrolls it into view. */
+  min-width: max-content;
+}
 .diff .cell-content code { background: transparent !important; padding: 0 !important; }
-.diff .cell-content.empty { background: transparent; }
+.diff .cell-content.empty { background: transparent; min-width: 0; }
 
 /* Per-row kind tints */
 .diff .row-ctx .cell-content { background: var(--bg); }
