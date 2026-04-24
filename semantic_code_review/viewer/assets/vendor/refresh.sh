@@ -11,13 +11,15 @@ set -eu -o pipefail
 cd "$(dirname "$0")"
 
 HLJS_VERSION="11.11.1"
-HLJS_BASE="https://raw.githubusercontent.com/highlightjs/cdn-release/${HLJS_VERSION}/build"
+HLJS_CDN_BASE="https://raw.githubusercontent.com/highlightjs/cdn-release/${HLJS_VERSION}/build"
+HLJS_SRC_BASE="https://raw.githubusercontent.com/highlightjs/highlight.js/${HLJS_VERSION}"
 
-# file:remote-relative-path:expected-sha256
+# local-name:source-url:expected-sha256
 FILES=(
-  "highlight.min.js:highlight.min.js:c4a399dd6f488bc97a3546e3476747b3e714c99c57b9473154c6fb8d259b9381"
-  "github.min.css:styles/github.min.css:3a9a5def8b9c311e5ae43abde85c63133185eed4f0d9f67fea4b00a8308cf066"
-  "github-dark.min.css:styles/github-dark.min.css:9f208d022102b1d0c7aebfecd8e42ca7997d5de636649d2b31ea63093d809019"
+  "highlight.min.js:${HLJS_CDN_BASE}/highlight.min.js:c4a399dd6f488bc97a3546e3476747b3e714c99c57b9473154c6fb8d259b9381"
+  "github.min.css:${HLJS_CDN_BASE}/styles/github.min.css:3a9a5def8b9c311e5ae43abde85c63133185eed4f0d9f67fea4b00a8308cf066"
+  "github-dark.min.css:${HLJS_CDN_BASE}/styles/github-dark.min.css:9f208d022102b1d0c7aebfecd8e42ca7997d5de636649d2b31ea63093d809019"
+  "LICENSE:${HLJS_SRC_BASE}/LICENSE:6c081431591d9df696c82dc598fe1423765b8a299b200ed00b281afd0f64c490"
 )
 
 shasum_cmd() {
@@ -29,11 +31,13 @@ fail=0
 for entry in "${FILES[@]}"; do
   local_name="${entry%%:*}"
   rest="${entry#*:}"
-  remote_rel="${rest%%:*}"
+  # Split the rest on the LAST colon: everything before is the URL (which
+  # itself contains colons), everything after is the expected hash.
+  url="${rest%:*}"
   expected="${rest##*:}"
 
-  echo "fetch $local_name  <-  $HLJS_BASE/$remote_rel"
-  curl -fsSL "$HLJS_BASE/$remote_rel" -o "$local_name"
+  echo "fetch $local_name  <-  $url"
+  curl -fsSL "$url" -o "$local_name"
 
   got=$(shasum_cmd "$local_name")
   if [ "$got" != "$expected" ]; then

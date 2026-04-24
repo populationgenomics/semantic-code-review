@@ -38,9 +38,9 @@ PYPROJECT="$CLAUDE_PLUGIN_ROOT/pyproject.toml"
 LOCKFILE="$CLAUDE_PLUGIN_ROOT/requirements.lock"
 BUILD_LOCKFILE="$CLAUDE_PLUGIN_ROOT/build-requirements.lock"
 
-[ -f "$PYPROJECT" ]       || die "pyproject.toml not found at $PYPROJECT"
-[ -f "$LOCKFILE" ]        || die "requirements.lock not found at $LOCKFILE (run 'uv pip compile pyproject.toml -o requirements.lock --generate-hashes')"
-[ -f "$BUILD_LOCKFILE" ]  || die "build-requirements.lock not found at $BUILD_LOCKFILE"
+[ -f "$PYPROJECT" ]      || die "pyproject.toml missing from plugin tree at $PYPROJECT"
+[ -f "$LOCKFILE" ]       || die "requirements.lock missing from plugin tree at $LOCKFILE"
+[ -f "$BUILD_LOCKFILE" ] || die "build-requirements.lock missing from plugin tree at $BUILD_LOCKFILE"
 
 # --- preflight --------------------------------------------------------------
 
