@@ -5,12 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   {% if session_endpoint %}<meta name="scr-session-endpoint" content="{{ session_endpoint|e }}">{% endif %}
   <title>{{ pr_title|e }}</title>
-  {% if offline %}
-  <style>{{ hljs_css|safe }}</style>
-  {% else %}
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release/build/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release/build/styles/github.min.css" media="(prefers-color-scheme: light)">
-  {% endif %}
+  {# highlight.js is always loaded from vendored, version-pinned bytes — see
+     semantic_code_review/viewer/assets/vendor/VENDOR.md for provenance +
+     SHA-256 hashes. We no longer fetch from a CDN to eliminate a supply-
+     chain hop. The dark stylesheet is gated by prefers-color-scheme so
+     both themes ship in a single HTML file. #}
+  <style media="(prefers-color-scheme: dark)">{{ hljs_css_dark|safe }}</style>
+  <style media="(prefers-color-scheme: light)">{{ hljs_css_light|safe }}</style>
   <style>{{ viewer_css|safe }}</style>
 </head>
 <body>
@@ -43,11 +44,7 @@
     </div>
   </div>
 
-  {% if offline %}
   <script>{{ hljs_js|safe }}</script>
-  {% else %}
-  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release/build/highlight.min.js"></script>
-  {% endif %}
   <script type="application/json" id="scr-data">{{ data_json|safe }}</script>
   <script>{{ viewer_js|safe }}</script>
 </body>

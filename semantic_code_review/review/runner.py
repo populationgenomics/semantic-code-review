@@ -45,7 +45,6 @@ class ReviewOptions:
     concurrency: int = 8
     no_cache: bool = False
     cache_dir: Path | None = None
-    offline_html: bool = False
     open_browser: bool = True
     port: int = 0
     timeout: int = 3600
@@ -106,7 +105,6 @@ def run_review(opts: ReviewOptions) -> int:
     try:
         render_run_dir(
             run_dir, html_path,
-            offline=opts.offline_html,
             session_endpoint=srv.url(),
         )
         log.info("review server at %s", srv.url())

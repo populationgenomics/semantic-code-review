@@ -188,13 +188,12 @@ def augment(
 def render(
     run_dir: Path = typer.Argument(...),
     out: Path = typer.Option(None, help="Output HTML path (default <run_dir>/review.html)."),
-    offline: bool = typer.Option(False, help="Inline diff2html + highlight.js assets for offline use."),
 ) -> None:
     """Render an augmented run directory as a self-contained HTML viewer."""
     from .viewer.render_html import render_run_dir
 
     out_path = out or (run_dir / "review.html")
-    render_run_dir(run_dir, out_path, offline=offline)
+    render_run_dir(run_dir, out_path)
     typer.echo(f"wrote {out_path}")
 
 
@@ -205,7 +204,6 @@ def run(
     model: str = typer.Option("claude-opus-4-7"),
     concurrency: int = typer.Option(8),
     no_cache: bool = typer.Option(False),
-    offline: bool = typer.Option(False),
     backend: str = typer.Option("auto"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
@@ -228,7 +226,7 @@ def run(
         )
     )
     out = fetch_result.run_dir / "review.html"
-    render_run_dir(fetch_result.run_dir, out, offline=offline)
+    render_run_dir(fetch_result.run_dir, out)
     typer.echo(f"done: {out}")
 
 
@@ -289,7 +287,6 @@ def review(
     concurrency: int = typer.Option(8),
     no_cache: bool = typer.Option(False),
     cache_dir: Path = typer.Option(None),
-    offline: bool = typer.Option(False, help="Inline highlight.js into the HTML."),
     no_open: bool = typer.Option(False, help="Skip opening the browser (for CI / SSH)."),
     port: int = typer.Option(0, help="Server port (0 = kernel-assigned)."),
     timeout: int = typer.Option(3600, help="Server idle timeout in seconds."),
@@ -318,7 +315,6 @@ def review(
         concurrency=concurrency,
         no_cache=no_cache,
         cache_dir=cache_dir,
-        offline_html=offline,
         open_browser=not no_open,
         port=port,
         timeout=timeout,

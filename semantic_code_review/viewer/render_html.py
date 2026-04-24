@@ -1,4 +1,12 @@
-"""Render a run directory as a self-contained HTML viewer."""
+"""Render a run directory as a self-contained HTML viewer.
+
+Every asset — highlight.js, its stylesheets, our own CSS/JS — is
+inlined into the output file. No CDN fetches, no relative-path
+references. The bytes shipped to the browser are the bytes committed
+to this repo, so a supply-chain attack on a third-party origin cannot
+reach the viewer. See `assets/vendor/VENDOR.md` for provenance and
+SHA-256 hashes of the vendored files.
+"""
 
 from __future__ import annotations
 
@@ -14,13 +22,13 @@ from .build_json import build_viewer_json
 
 
 ASSETS_DIR = Path(__file__).parent / "assets"
+VENDOR_DIR = ASSETS_DIR / "vendor"
 
 
 def render_run_dir(
     run_dir: Path,
     out_path: Path,
     *,
-    offline: bool = False,
     session_endpoint: str | None = None,
 ) -> Path:
     meta_path = run_dir / "meta.json"
@@ -32,7 +40,7 @@ def render_run_dir(
         diff = parse_augmented_diff((run_dir / "augmented.diff").read_text(encoding="utf-8"))
     head_dir = run_dir / "head"
     data = build_viewer_json(diff, meta, head_dir=head_dir if head_dir.exists() else None)
-    html = render_html(data, offline=offline, session_endpoint=session_endpoint)
+    html = render_html(data, session_endpoint=session_endpoint)
     out_path.write_text(html, encoding="utf-8")
     return out_path
 
@@ -40,7 +48,6 @@ def render_run_dir(
 def render_html(
     data: dict[str, Any],
     *,
-    offline: bool = False,
     session_endpoint: str | None = None,
 ) -> str:
     env = Environment(
@@ -70,12 +77,27 @@ def render_html(
         "pr_meta": pr_meta,
         "viewer_css": viewer_css,
         "viewer_js": viewer_js,
+        "hljs_js": _read_vendor("highlight.min.js"),
+        "hljs_css_light": _read_vendor("github.min.css"),
+        "hljs_css_dark": _read_vendor("github-dark.min.css"),
         "data_json": json.dumps(data, ensure_ascii=False).replace("</", "<\\/"),
-        "offline": offline,
         "session_endpoint": session_endpoint or "",
     }
-    if offline:
-        vendor = ASSETS_DIR / "vendor"
-        ctx["hljs_css"] = (vendor / "github-dark.min.css").read_text(encoding="utf-8") if (vendor / "github-dark.min.css").exists() else ""
-        ctx["hljs_js"]  = (vendor / "highlight.min.js").read_text(encoding="utf-8") if (vendor / "highlight.min.js").exists() else ""
     return tmpl.render(**ctx)
+
+
+def _read_vendor(name: str) -> str:
+    """Load a vendored asset or raise a clear error.
+
+    The files are committed to the repo and pinned by hash (see
+    VENDOR.md). If one is missing, that's a build-tree problem worth
+    surfacing loudly rather than silently shipping an empty asset.
+    """
+    path = VENDOR_DIR / name
+    if not path.exists():
+        raise FileNotFoundError(
+            f"vendored asset missing: {path}. "
+            "Run semantic_code_review/viewer/assets/vendor/refresh.sh to "
+            "restore it from the pinned upstream source."
+        )
+    return path.read_text(encoding="utf-8")

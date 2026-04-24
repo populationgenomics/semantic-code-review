@@ -35,8 +35,12 @@ mkdir -p "$CLAUDE_PLUGIN_DATA"
 
 VENV="$CLAUDE_PLUGIN_DATA/venv"
 PYPROJECT="$CLAUDE_PLUGIN_ROOT/pyproject.toml"
+LOCKFILE="$CLAUDE_PLUGIN_ROOT/requirements.lock"
+BUILD_LOCKFILE="$CLAUDE_PLUGIN_ROOT/build-requirements.lock"
 
-[ -f "$PYPROJECT" ] || die "pyproject.toml not found at $PYPROJECT"
+[ -f "$PYPROJECT" ]       || die "pyproject.toml not found at $PYPROJECT"
+[ -f "$LOCKFILE" ]        || die "requirements.lock not found at $LOCKFILE (run 'uv pip compile pyproject.toml -o requirements.lock --generate-hashes')"
+[ -f "$BUILD_LOCKFILE" ]  || die "build-requirements.lock not found at $BUILD_LOCKFILE"
 
 # --- preflight --------------------------------------------------------------
 
@@ -62,17 +66,17 @@ fi
 
 # --- venv install (idempotent) ---------------------------------------------
 
-# Cache key: hash the pyproject.toml so any edit to deps or metadata triggers
-# a reinstall. Avoids the common footgun of forgetting to bump plugin.version.
-hash_pyproject() {
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$PYPROJECT" | awk '{print $1}'
-  else
-    sha256sum "$PYPROJECT" | awk '{print $1}'
-  fi
+# Cache key: hash pyproject.toml (package metadata) + both lockfiles
+# (exact transitive pins + SHA-256 hashes). Any change in any of them
+# triggers a reinstall.
+hash_inputs() {
+  local shacmd
+  if command -v shasum >/dev/null 2>&1; then shacmd="shasum -a 256";
+  else shacmd="sha256sum"; fi
+  $shacmd "$PYPROJECT" "$LOCKFILE" "$BUILD_LOCKFILE" | awk '{print $1}' | $shacmd | awk '{print $1}'
 }
 
-want_hash=$(hash_pyproject)
+want_hash=$(hash_inputs)
 stamp="$CLAUDE_PLUGIN_DATA/installed-${want_hash}"
 
 if [ ! -x "$VENV/bin/scr" ] || [ ! -f "$stamp" ]; then
@@ -82,8 +86,19 @@ if [ ! -x "$VENV/bin/scr" ] || [ ! -f "$stamp" ]; then
   fi
   python3 -m venv "$VENV"
   # shellcheck disable=SC1090,SC1091
-  "$VENV/bin/pip" install --quiet --upgrade pip
-  "$VENV/bin/pip" install --quiet "$CLAUDE_PLUGIN_ROOT"
+  # Every install step uses --require-hashes, so pip refuses any package
+  # whose on-disk SHA-256 doesn't match the lockfile. A compromised PyPI
+  # release, typo-squat, or mirror MITM will fail the install rather
+  # than silently land. Ordering:
+  #   1. Build backend (setuptools, wheel) from build-requirements.lock.
+  #   2. Runtime deps from requirements.lock.
+  #   3. The local package itself with --no-deps (nothing to resolve)
+  #      and --no-build-isolation (use the setuptools we just pinned
+  #      instead of letting pip fetch a fresh unpinned copy into an
+  #      isolated build env).
+  "$VENV/bin/pip" install --quiet --require-hashes -r "$BUILD_LOCKFILE"
+  "$VENV/bin/pip" install --quiet --require-hashes -r "$LOCKFILE"
+  "$VENV/bin/pip" install --quiet --no-deps --no-build-isolation "$CLAUDE_PLUGIN_ROOT"
   # Clear any previous stamps so a rolled-back install doesn't look fresh.
   find "$CLAUDE_PLUGIN_DATA" -maxdepth 1 -name 'installed-*' -print0 2>/dev/null | xargs -0 rm -f || true
   printf '%s\n' "$want_hash" > "$stamp"

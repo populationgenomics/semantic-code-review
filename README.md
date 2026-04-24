@@ -69,8 +69,43 @@ Subcommands:
 
 ```
 python3 -m venv .venv
-.venv/bin/pip install -e '.[dev]'
+.venv/bin/pip install --require-hashes -r build-requirements.lock
+.venv/bin/pip install --require-hashes -r requirements-dev.lock
+.venv/bin/pip install --no-deps --no-build-isolation -e .
 .venv/bin/python -m pytest
 ```
+
+## Supply-chain hygiene
+
+Every external dependency is pinned by exact version and SHA-256 hash.
+The `bin/scr` bootstrap installs with `pip install --require-hashes`,
+so any on-disk artifact whose hash doesn't match the lockfile fails the
+install rather than silently landing.
+
+Lockfiles (all committed to the repo):
+
+- `build-requirements.lock` — PEP 517 build backend (`setuptools`, `wheel`).
+- `requirements.lock` — runtime deps (`anthropic`, `pydantic`, `typer`, …).
+- `requirements-dev.lock` — runtime + `pytest` + `pytest-asyncio` for local dev / CI.
+
+Frontend assets (`highlight.js` + stylesheets) are vendored under
+`semantic_code_review/viewer/assets/vendor/` at a pinned upstream
+version; see `VENDOR.md` there for provenance and hashes. The viewer
+HTML inlines those bytes and never loads anything from a CDN.
+
+Refreshing:
+
+```
+# Python
+uv pip compile pyproject.toml -o requirements.lock --generate-hashes
+uv pip compile pyproject.toml --extra dev -o requirements-dev.lock --generate-hashes
+printf 'setuptools>=68\nwheel\n' | uv pip compile - --generate-hashes -o build-requirements.lock
+
+# Frontend (edit version constants in refresh.sh first if bumping)
+./semantic_code_review/viewer/assets/vendor/refresh.sh
+```
+
+The frontend refresh script verifies every downloaded file against the
+SHA-256 recorded in `vendor/VENDOR.md`; a mismatch fails the refresh.
 
 The design plan lives in `/Users/tjs/.claude/plans/plan-a-tool-that-bubbly-treehouse.md`.
