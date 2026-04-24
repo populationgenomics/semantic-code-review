@@ -34,13 +34,18 @@ fi
 mkdir -p "$CLAUDE_PLUGIN_DATA"
 
 VENV="$CLAUDE_PLUGIN_DATA/venv"
-NODE_MODULES="$CLAUDE_PLUGIN_DATA/node_modules"
 PYPROJECT="$CLAUDE_PLUGIN_ROOT/pyproject.toml"
 LOCKFILE="$CLAUDE_PLUGIN_ROOT/requirements.lock"
 BUILD_LOCKFILE="$CLAUDE_PLUGIN_ROOT/build-requirements.lock"
 PACKAGE_LOCK="$CLAUDE_PLUGIN_ROOT/package-lock.json"
 TS_ASSETS_DIR="$CLAUDE_PLUGIN_ROOT/semantic_code_review/viewer/assets"
-ANNOT_JS="$TS_ASSETS_DIR/annotations.js"
+# Compiled viewer JS lives under the data dir, NOT in the plugin tree
+# or site-packages. render_html.py reads from SCR_VIEWER_BUILD_DIR if
+# set (that's where this bootstrap points it), falling back to the
+# package's assets/ directory for future wheel-installed setups that
+# ship prebuilt JS as package_data.
+BUILD_DIR="$CLAUDE_PLUGIN_DATA/viewer-build"
+ANNOT_JS="$BUILD_DIR/annotations.js"
 
 [ -f "$PYPROJECT" ]      || die "pyproject.toml missing from plugin tree at $PYPROJECT"
 [ -f "$LOCKFILE" ]       || die "requirements.lock missing from plugin tree at $LOCKFILE"
@@ -137,6 +142,7 @@ node_stamp="$CLAUDE_PLUGIN_DATA/node-built-${node_want_hash}"
 
 if [ ! -f "$node_stamp" ] || [ ! -f "$ANNOT_JS" ]; then
   printf 'scr: building viewer TypeScript module (first run / sources changed)\n' >&2
+  mkdir -p "$BUILD_DIR"
   (
     cd "$CLAUDE_PLUGIN_ROOT"
     # `--ignore-scripts` keeps any package's install hooks from running
@@ -146,10 +152,17 @@ if [ ! -f "$node_stamp" ] || [ ! -f "$ANNOT_JS" ]; then
     if [ ! -d "node_modules" ] || ! node -e 'process.exit(require("fs").existsSync("node_modules/.bin/tsc") ? 0 : 1)'; then
       npm ci --ignore-scripts --no-audit --no-fund >&2
     fi
-    "$CLAUDE_PLUGIN_ROOT/node_modules/.bin/tsc"
+    # `--outDir` overrides tsconfig.json so the compiled JS lands in
+    # the data-dir build directory instead of the (gitignored) source
+    # tree. That keeps the source checkout clean and lets the Python
+    # install stay non-editable.
+    "$CLAUDE_PLUGIN_ROOT/node_modules/.bin/tsc" --outDir "$BUILD_DIR"
   )
   find "$CLAUDE_PLUGIN_DATA" -maxdepth 1 -name 'node-built-*' -print0 2>/dev/null | xargs -0 rm -f || true
   printf '%s\n' "$node_want_hash" > "$node_stamp"
 fi
+
+# Let render_html.py find the compiled JS under the data dir.
+export SCR_VIEWER_BUILD_DIR="$BUILD_DIR"
 
 exec "$VENV/bin/scr" "$@"

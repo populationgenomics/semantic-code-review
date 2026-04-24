@@ -11,6 +11,7 @@ SHA-256 hashes of the vendored files.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,29 @@ from .build_json import build_viewer_json
 
 ASSETS_DIR = Path(__file__).parent / "assets"
 VENDOR_DIR = ASSETS_DIR / "vendor"
+
+
+def _locate_annotations_js() -> Path:
+    """Find the tsc-compiled annotations module.
+
+    The bootstrap wrapper builds into a data-dir and points us at it
+    via SCR_VIEWER_BUILD_DIR. If that env var isn't set (e.g. a future
+    pip-installed wheel where the JS ships as package_data), fall back
+    to the in-tree assets directory.
+    """
+    build_dir = os.environ.get("SCR_VIEWER_BUILD_DIR")
+    candidates: list[Path] = []
+    if build_dir:
+        candidates.append(Path(build_dir) / "annotations.js")
+    candidates.append(ASSETS_DIR / "annotations.js")
+    for p in candidates:
+        if p.exists():
+            return p
+    raise FileNotFoundError(
+        "compiled annotations.js not found. Checked: "
+        + ", ".join(str(c) for c in candidates)
+        + ". Run `bin/scr` (auto-builds) or `npm run build` to compile from annotations.ts."
+    )
 
 
 def render_run_dir(
@@ -72,17 +96,11 @@ def render_html(
     viewer_css = (ASSETS_DIR / "viewer.css").read_text(encoding="utf-8")
     # Concatenate the compiled annotations module before viewer.js.
     # annotations.ts is the source of truth; tsc emits annotations.js
-    # (either via `npm run build` or the bin/scr bootstrap). If the
-    # compiled artifact is missing, fail loudly with a clear hint
-    # rather than silently shipping a viewer whose annotation pipeline
-    # is `undefined`.
-    annotations_path = ASSETS_DIR / "annotations.js"
-    if not annotations_path.exists():
-        raise FileNotFoundError(
-            f"compiled annotations module missing at {annotations_path}. "
-            "Run `bin/scr` (which auto-builds) or `npm run build` to "
-            "compile it from annotations.ts."
-        )
+    # into a build directory. The bin/scr bootstrap points us at its
+    # data-dir build location via $SCR_VIEWER_BUILD_DIR; for future
+    # wheel-installed setups that ship prebuilt JS as package_data,
+    # we fall back to the package's own assets/ directory.
+    annotations_path = _locate_annotations_js()
     viewer_js = (
         annotations_path.read_text(encoding="utf-8")
         + "\n"

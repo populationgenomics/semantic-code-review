@@ -17,11 +17,16 @@
 // expose `window.ScrAnnotations` for the classic-script `viewer.js` to
 // reach (there is no module loader in the HTML).
 
-export type ColumnMode = "auto" | "absolute" | "explicit";
-export type StackPolicy = "auto" | "fixed" | "grouped";
-export type OverflowMode = "hidden" | "visible";
+// Top-level declarations use no `export` keyword so tsc with
+// `module: "none"` emits classic-script output (no CommonJS wrapper).
+// Types are internal to this file; callers that want to reference
+// them import from `annotations.types.ts` which re-exports.
 
-export interface ColumnSpec {
+type ColumnMode = "auto" | "absolute" | "explicit";
+type StackPolicy = "auto" | "fixed" | "grouped";
+type OverflowMode = "hidden" | "visible";
+
+interface ColumnSpec {
   mode: ColumnMode;
   // For `absolute`: 0-based character index from the first printing glyph
   // on the anchor's content cell. For `explicit`: raw pixel offset from
@@ -29,18 +34,18 @@ export interface ColumnSpec {
   value?: number;
 }
 
-export interface StackSpec {
+interface StackSpec {
   policy: StackPolicy;
 }
 
-export interface LayoutOptions {
+interface LayoutOptions {
   maxWidth?: string | null;          // CSS length or null for no cap
   maxHeight?: string | null;         // CSS length or null (e.g. "3.9em")
   overflow?: OverflowMode;           // applies when maxHeight clamps
   wrap?: boolean;                    // false → nowrap, true (default) → normal
 }
 
-export interface AttachOptions {
+interface AttachOptions {
   anchor: HTMLElement;               // row to anchor the annotation under
   shadowAnchor?: HTMLElement | null; // opposite-layout row for placeholder sync
   variant?: string;                  // "fold" | "note" | "comment" | "editor" | custom
@@ -51,7 +56,7 @@ export interface AttachOptions {
   onInsert?: (el: HTMLElement) => void;
 }
 
-export interface AnnotationHandle {
+interface AnnotationHandle {
   element: HTMLElement;
   placeholder: HTMLElement | null;
   resize(): void;
@@ -93,7 +98,7 @@ const ARROW_MIN_OVERRUN = 6;
 type RectProvider = (target: Element | Range) => DOMRect;
 let rectProvider: RectProvider = (t) => t.getBoundingClientRect();
 
-export function setRectProvider(fn: RectProvider | null): void {
+function setRectProvider(fn: RectProvider | null): void {
   rectProvider = fn ?? ((t) => t.getBoundingClientRect());
 }
 
@@ -524,30 +529,26 @@ function insertAfter(node: Node, ref: Node): void {
 // Facade
 // ---------------------------------------------------------------------------
 
-export const Annotations = {
+// The single runtime surface: assigned to window.ScrAnnotations below
+// and the only thing viewer.js reaches for. tsc's `module: "none"`
+// strips no code; the file is a classic script that runs top-to-bottom
+// when inlined into the viewer HTML.
+const Annotations = {
   attach,
   detach,
   reflow,
   reflowAll,
   watchViewport,
   charRectInRow,
-  // Test-only hooks; not part of the public API contract but exposed
+  // Test-only hook; not part of the public API contract but exposed
   // for Vitest specs that want to inject canned geometry.
   _setRectProvider: setRectProvider,
 };
 
-// Globals for the classic-script viewer to pick up. The tsconfig uses
-// `module: "none"`, so `export` statements are type-only; these globals
-// are the actual runtime surface.
-declare global {
-  interface Window {
-    ScrAnnotations: typeof Annotations;
-  }
+// Register on the global. The cast to `unknown` sidesteps the need
+// for a `declare global` Window augmentation (which requires a
+// module context, which tsc with `module: "none"` refuses to give us).
+if (typeof window !== "undefined") {
+  (window as unknown as { ScrAnnotations: typeof Annotations }).ScrAnnotations = Annotations;
 }
-
-(function registerGlobals(): void {
-  if (typeof window !== "undefined") {
-    window.ScrAnnotations = Annotations;
-  }
-})();
 

@@ -1,7 +1,41 @@
-import { describe, test, expect, beforeEach, afterEach } from "vitest";
-import { Annotations, type AttachOptions } from "../../semantic_code_review/viewer/assets/annotations";
+import { describe, test, expect, afterEach } from "vitest";
+// annotations.ts is a classic-script module (no exports) that
+// registers window.ScrAnnotations for the viewer to consume. Import
+// it for side effect only; the public surface is the global.
+import "../../semantic_code_review/viewer/assets/annotations";
 import { makeAnchorRow, makeHunkFixture } from "./fixtures/hunk-dom";
 import { flushRaf } from "./setup";
+
+// Type-only shape used in tests. Matches the runtime facade exposed
+// on window.ScrAnnotations by annotations.ts. Kept narrow — tests
+// only need the methods they exercise.
+interface AttachOptions {
+  anchor: HTMLElement;
+  shadowAnchor?: HTMLElement | null;
+  variant?: string;
+  content: Node | string;
+  column?: { mode: "auto" | "absolute" | "explicit"; value?: number };
+  stack?: { policy: "auto" | "fixed" | "grouped" };
+  layout?: { maxWidth?: string | null; maxHeight?: string | null; overflow?: "hidden" | "visible"; wrap?: boolean };
+  onInsert?: (el: HTMLElement) => void;
+}
+interface AnnotationHandle {
+  element: HTMLElement;
+  placeholder: HTMLElement | null;
+  resize(): void;
+  remove(): void;
+  setContent(body: Node | string): void;
+}
+interface AnnotationsFacade {
+  attach(opts: AttachOptions): AnnotationHandle;
+  detach(row: HTMLElement): void;
+  reflow(anchor: HTMLElement): void;
+  reflowAll(): void;
+  watchViewport(): void;
+  charRectInRow(row: HTMLElement, col: number): DOMRect | null;
+  _setRectProvider(fn: ((t: Element | Range) => DOMRect) | null): void;
+}
+const Annotations = (globalThis as unknown as { ScrAnnotations: AnnotationsFacade }).ScrAnnotations;
 
 // Tests exercise the DOM-construction and choreography parts of the
 // annotation module. Geometry-math tests inject canned rects via the
