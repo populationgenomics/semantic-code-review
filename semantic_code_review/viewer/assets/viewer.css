@@ -357,9 +357,11 @@ body {
   font-weight: 400;
   white-space: normal;
   max-width: 64ch;
-  /* Fold summaries stay compact (max ~2 lines); line-notes and comments
-   * get to wrap freely — see the per-variant overrides below. */
-  max-height: 3.9em;
+  /* Fold summaries clamp to ~3 lines; line-notes and comments get to
+   * wrap freely. The annotations module applies the actual per-variant
+   * sizing inline via `layout.maxHeight`; this CSS default is only a
+   * pre-JS fallback. */
+  max-height: 5em;
   overflow: hidden;
 }
 .diff .annot-box.missing {

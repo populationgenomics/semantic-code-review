@@ -110,7 +110,10 @@ function resolveLayoutDefaults(variant: string | undefined, caller: LayoutOption
     wrap: true,
   };
   // Per-variant defaults — any explicit caller value wins.
-  if (variant === "fold") base.maxHeight = "3.9em";
+  // Fold summaries clamp to ~3 lines (13px × 1.4 × 3 + padding ≈ 5em)
+  // so they stay a glanceable hint while still fitting a longer
+  // sentence than the old 2-line cap allowed.
+  if (variant === "fold") base.maxHeight = "5em";
   return { ...base, ...(caller ?? {}) };
 }
 

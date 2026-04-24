@@ -11,7 +11,7 @@ from typing import Any
 from .tools import ANTHROPIC_TOOL_SCHEMAS
 
 
-PROMPT_VERSION = "p4"
+PROMPT_VERSION = "p5"
 
 
 # --- Submission tools -------------------------------------------------------
@@ -204,7 +204,7 @@ HUNK_SYSTEM = (
     "- `line_notes`: {line, body} for notes too specific for intent. `line` is post-image.\n"
     "- `fold_descriptions`: the viewer supports indent-based code folding inside the "
     "diff. The prompt lists the nested fold regions in this hunk that contain changed "
-    "lines. For EACH region, return a one-line hint (<= 15 words, present tense, "
+    "lines. For EACH region, return a short hint (<= 25 words, present tense, "
     "lowercase) that tells a reviewer who has the fold collapsed what the WHOLE folded "
     "block DOES as a unit. Describe behaviour, not structure; describe the effect, not "
     "the control flow. If the folded block REPLACES existing code, describe the "

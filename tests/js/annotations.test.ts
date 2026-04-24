@@ -145,7 +145,8 @@ describe("layout overrides", () => {
     const anchor = mountAnchor();
     const handle = Annotations.attach(baseOpts(anchor, { variant: "fold" }));
     const box = handle.element.querySelector<HTMLElement>(".annot-box")!;
-    expect(box.style.maxHeight).toBe("3.9em");
+    // ~3 lines at 13px/1.4 line-height. See annotations.ts variant default.
+    expect(box.style.maxHeight).toBe("5em");
   });
 
   test("non-fold variants leave maxHeight unset", () => {
