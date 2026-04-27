@@ -1,13 +1,13 @@
 {
-  "name": "semantic-code-review",
+  "name": "scr",
   "owner": {
     "name": "Toby Sargeant"
   },
   "plugins": [
     {
-      "name": "semantic-code-review",
+      "name": "scr",
       "source": "./",
-      "description": "LLM-augmented local-diff reviewer with a /review slash command that round-trips inline comments back into the session."
+      "description": "LLM-augmented local-diff reviewer with a /scr:review slash command that round-trips inline comments back into the session."
     }
   ]
 }

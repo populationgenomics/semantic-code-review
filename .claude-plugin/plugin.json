@@ -1,7 +1,7 @@
 {
-  "name": "semantic-code-review",
-  "version": "0.1.0",
-  "description": "LLM-augmented local-diff reviewer. /review opens an interactive side-by-side viewer with fold annotations and round-trips inline comments back into the session.",
+  "name": "scr",
+  "version": "0.6.0",
+  "description": "LLM-augmented local-diff reviewer. /scr:review opens an interactive side-by-side viewer with fold annotations, semantic-group sidebar, and round-trips inline comments back into the session.",
   "author": {
     "name": "Toby Sargeant",
     "email": "toby.sargeant@populationgenomics.org.au"

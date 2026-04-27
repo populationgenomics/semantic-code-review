@@ -28,7 +28,7 @@ if [ -z "${CLAUDE_PLUGIN_ROOT:-}" ]; then
   CLAUDE_PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 fi
 if [ -z "${CLAUDE_PLUGIN_DATA:-}" ]; then
-  CLAUDE_PLUGIN_DATA="${XDG_DATA_HOME:-$HOME/.local/share}/claude-plugins/semantic-code-review"
+  CLAUDE_PLUGIN_DATA="${XDG_DATA_HOME:-$HOME/.local/share}/claude-plugins/scr"
 fi
 
 mkdir -p "$CLAUDE_PLUGIN_DATA"
