@@ -324,5 +324,162 @@ def review(
     raise typer.Exit(code=code)
 
 
+@app.command()
+def pr(
+    repo: str = typer.Argument(..., help="GitHub repo as `owner/name`."),
+    number: int = typer.Argument(
+        None,
+        help=(
+            "PR number. Omit to enumerate open PRs requesting your review; "
+            "if exactly one matches it's used, otherwise a picker prompts."
+        ),
+    ),
+    runs_root: Path = typer.Option(DEFAULT_RUNS_ROOT),
+    augment: bool = typer.Option(True, help="Run the LLM augmentation pass before rendering."),
+    model: str = typer.Option("claude-opus-4-7"),
+    concurrency: int = typer.Option(8),
+    no_cache: bool = typer.Option(False),
+    cache_dir: Path = typer.Option(None),
+    no_open: bool = typer.Option(False, help="Skip opening the browser (for CI / SSH)."),
+    port: int = typer.Option(0, help="Server port (0 = kernel-assigned)."),
+    timeout: int = typer.Option(3600, help="Server idle timeout in seconds."),
+    backend: str = typer.Option(
+        "auto", help="LLM backend: auto|api|cli (cli shells out to `claude -p`)."
+    ),
+    yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt before posting comments to GitHub."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Review a GitHub PR; round-trip reviewer comments back as a single review."""
+    _configure_logging(verbose)
+    import asyncio
+    import json as _json
+    from .augment.prompts import PROMPT_VERSION
+    from .cache.store import CacheStore
+    from .review.github import (
+        GhError, list_review_requested_prs, pick_pr_interactive, post_inline_review, require_gh,
+    )
+    from .review.runner import serve_review
+    from .fetch import fetch as fetch_pr
+
+    # Preflight `gh` once — both PR resolution and the post step need it,
+    # and a missing-tool error here is more informative than the same
+    # error fired from inside fetch_pr.
+    try:
+        require_gh()
+    except GhError as e:
+        typer.echo(f"scr pr: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    # Resolve the PR.
+    if number is None:
+        try:
+            prs = list_review_requested_prs(repo)
+        except GhError as e:
+            typer.echo(f"scr pr: {e}", err=True)
+            raise typer.Exit(code=1)
+        if not prs:
+            typer.echo(
+                f"scr pr: no open PRs in {repo} are requesting your review. "
+                "Pass an explicit PR number, or open the list on github.com.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        if len(prs) == 1:
+            number = prs[0].number
+            sys.stderr.write(f"scr pr: reviewing {repo}#{number} — {prs[0].title}\n")
+            sys.stderr.flush()
+        else:
+            picked = pick_pr_interactive(repo, prs)
+            if picked is None:
+                typer.echo("scr pr: no PR selected", err=True)
+                raise typer.Exit(code=1)
+            number = picked
+
+    pr_url = f"https://github.com/{repo}/pull/{number}"
+
+    client = _select_client(backend) if augment else None
+
+    fetch_result = fetch_pr(pr_url, runs_root)
+    run_dir = fetch_result.run_dir
+
+    if augment:
+        from .augment.pipeline import augment_run_dir
+
+        cache = None if no_cache else CacheStore(root=cache_dir, prompt_version=PROMPT_VERSION)
+        asyncio.run(
+            augment_run_dir(
+                run_dir,
+                model=model,
+                concurrency=concurrency,
+                cache=cache,
+                client=client,
+            )
+        )
+    else:
+        # Mirror cli.review's behaviour: copy raw → augmented so render has
+        # something to parse when augment is skipped.
+        (run_dir / "augmented.diff").write_text(
+            (run_dir / "raw.diff").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+    result = serve_review(
+        run_dir,
+        port=port,
+        timeout=timeout,
+        open_browser=not no_open,
+    )
+
+    # Markdown to stdout for parity with `scr review` (the slash-command
+    # downstream expects to read it). GitHub posting is in addition to,
+    # not instead of, this.
+    from .review.comments import format_markdown
+    sys.stdout.write(format_markdown(result.comments, run_slug=run_dir.name))
+    sys.stdout.flush()
+
+    if not result.comments:
+        # Nothing to post; exit clean.
+        raise typer.Exit(code=0 if result.clean else 2)
+
+    # Need the head SHA from meta.json so GitHub anchors the review at
+    # the commit the reviewer actually saw.
+    meta = _json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    head_sha = meta.get("headRefOid", "")
+    if not head_sha:
+        typer.echo("scr pr: meta.json is missing headRefOid; can't anchor review", err=True)
+        raise typer.Exit(code=2)
+
+    if not yes:
+        sys.stderr.write(
+            f"\nAbout to post {len(result.comments)} inline comment(s) as a "
+            f"COMMENT review on {repo}#{number} (commit {head_sha[:8]}…).\n"
+            f"Continue? [y/N] "
+        )
+        sys.stderr.flush()
+        answer = (sys.stdin.readline() or "").strip().lower()
+        if answer != "y":
+            sys.stderr.write(
+                "scr pr: aborted; comments are still in "
+                f"{run_dir / 'comments.json'} — re-run with --no-augment "
+                "to retry.\n"
+            )
+            raise typer.Exit(code=1)
+
+    try:
+        post = post_inline_review(repo, number, head_sha, result.comments)
+    except GhError as e:
+        typer.echo(f"scr pr: posting failed: {e}", err=True)
+        sys.stderr.write(
+            f"comments are still in {run_dir / 'comments.json'} — "
+            "re-run with --no-augment to retry.\n"
+        )
+        raise typer.Exit(code=2)
+
+    sys.stderr.write(
+        f"scr pr: posted {post.posted} comment(s) — {post.review_url}\n"
+    )
+    raise typer.Exit(code=0 if result.clean else 2)
+
+
 if __name__ == "__main__":
     app()

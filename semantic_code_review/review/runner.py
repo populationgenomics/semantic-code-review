@@ -89,43 +89,70 @@ def run_review(opts: ReviewOptions) -> int:
             encoding="utf-8",
         )
 
-    # Render HTML with a placeholder endpoint, then rebuild once the server
-    # chose its port. (Cheap: a few KB of template.)
-    html_path = run_dir / "review.html"
+    result = serve_review(
+        run_dir,
+        port=opts.port,
+        timeout=opts.timeout,
+        open_browser=opts.open_browser,
+    )
+    markdown = format_markdown(result.comments, run_slug=diff.slug)
+    sys.stdout.write(markdown)
+    sys.stdout.flush()
+    return 0 if result.clean else 2
 
-    # Start the server first so we can thread the URL into the HTML.
+
+@dataclass
+class ServeResult:
+    """Outcome of `serve_review`. Returned in addition to the side
+    effect of `comments.json` on disk so callers don't have to re-load
+    it (and so each caller can decide what to do with the comments —
+    `scr review` prints markdown, `scr pr` posts to GitHub)."""
+    comments: list  # list[Comment] — kept loose to avoid an import cycle
+    clean: bool     # True iff the viewer signalled Done within the timeout
+
+
+def serve_review(
+    run_dir: "Path",
+    *,
+    port: int = 0,
+    timeout: int = 3600,
+    open_browser: bool = True,
+) -> ServeResult:
+    """Render the viewer for a populated run dir, host the back-channel
+    server, block on the user clicking Done, and return the comments
+    they left.
+
+    Both `cli.review` (local diff) and `cli.pr` (GitHub PR) call this
+    with a run dir whose `augmented.diff`, `meta.json`, and worktrees
+    are already in place. The function is intentionally diff-source-
+    agnostic: it doesn't know whether the run dir came from
+    `build_local_diff` or `fetch_pr`.
+    """
+    html_path = run_dir / "review.html"
     viewer_json = _load_viewer_json(run_dir)
     srv = ReviewServer(
         run_dir=run_dir,
         html_path=html_path,
         viewer_json=viewer_json,
-        port=opts.port,
+        port=port,
     )
     srv.start()
     try:
-        render_run_dir(
-            run_dir, html_path,
-            session_endpoint=srv.url(),
-        )
+        render_run_dir(run_dir, html_path, session_endpoint=srv.url())
         log.info("review server at %s", srv.url())
         sys.stderr.write(f"scr review: listening on {srv.url()}\n")
         sys.stderr.flush()
-        if opts.open_browser:
+        if open_browser:
             try:
                 webbrowser.open(srv.url())
             except Exception as e:  # noqa: BLE001
                 log.warning("could not open browser: %s", e)
-        clean = srv.wait_until_done(timeout=opts.timeout)
+        clean = srv.wait_until_done(timeout=timeout)
     finally:
         srv.stop()
 
-    # Drain comments
     store = CommentStore(run_dir / "comments.json")
-    markdown = format_markdown(store.all(), run_slug=diff.slug)
-    sys.stdout.write(markdown)
-    sys.stdout.flush()
-
-    return 0 if clean else 2
+    return ServeResult(comments=store.all(), clean=clean)
 
 
 def _populate_run_dir(run_dir: Path, diff: LocalDiff, *, spec_md: Path | None) -> None:
