@@ -96,16 +96,27 @@ scr review HEAD~1..HEAD --spec SPEC.md
 
 Subcommands:
 
-- `scr review <ref-or-range>` — local git diff, runs LLM augment,
-  opens viewer
-- `scr fetch <pr-url>` — fetch a GitHub PR into a run directory
+- `scr review <ref-or-range> [--spec SPEC.md]` — local git diff,
+  runs LLM augment, opens viewer, prints reviewer comments as
+  markdown when you click Done.
+- `scr pr <owner/repo> [<number>]` — same flow against a GitHub PR.
+  Omit the number to enumerate open PRs requesting your review;
+  on Done, posts the inline comments back to GitHub as a single
+  COMMENT-event review. Confirms before posting unless `--yes`.
+- `scr fetch <pr-url>` — fetch a GitHub PR into a run directory.
 - `scr augment <run-dir>` — run the LLM augmentation pass on a run
-  directory
+  directory.
 - `scr render <run-dir>` — render the HTML viewer from an augmented
-  run
-- `scr run <pr-url>` — fetch + augment + render (no viewer server)
-- `scr strip <augmented.diff>` — write a plain unified diff to stdout
-- `scr lint <augmented.diff>` — validate the augmented-diff format
+  run.
+- `scr run <pr-url>` — fetch + augment + render (no viewer server).
+- `scr show <run-dir>` — print the augmented diff to stdout.
+- `scr strip <augmented.diff>` — write a plain unified diff to stdout.
+- `scr lint <augmented.diff>` — validate the augmented-diff format.
+
+`scr pr` reuses everything `scr review` does (same fetch, augment,
+viewer, server, comment store) plus a thin GitHub-side helper that
+groups the inline comments into one review object via `gh api`. The
+`gh` CLI must be on `PATH` and authenticated.
 
 ## Development
 
@@ -134,8 +145,11 @@ checkout (provided Node is available).
   `viewer.js`, `viewer.css`, `template.html.j2`, the typed
   `annotations.ts` module, and vendored `highlight.js` under
   `assets/vendor/`.
-- `semantic_code_review/review/` — the local HTTP server that
-  back-channels reviewer comments to the calling process.
+- `semantic_code_review/review/` — local HTTP server that
+  back-channels reviewer comments to the calling process, the
+  shared `serve_review` helper used by both `scr review` and
+  `scr pr`, and `github.py` for the GitHub-PR round-trip via
+  `gh api`.
 - `commands/review.md` — the Claude Code slash-command prompt.
 - `bin/scr` — bootstrap wrapper; preflights deps, maintains the
   Python venv + Node build cache, execs the real `scr`.
