@@ -1,0 +1,88 @@
+name: release
+
+# Triggers on tag push (vX.Y.Z). Builds the wheel + sdist (with the
+# TypeScript annotations module compiled into the package) and uploads
+# them to CPG's Artifact Registry Python repository, where end users
+# can install via:
+#
+#   curl -fsSL https://raw.githubusercontent.com/populationgenomics/semantic-code-review/<tag>/install.sh | bash
+#
+# Auth: Workload Identity Federation. No long-lived SA keys live in
+# GitHub secrets; the workflow exchanges its OIDC token for a GCP
+# access token at run time.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write   # required by google-github-actions/auth for OIDC
+
+env:
+  AR_LOCATION: australia-southeast1
+  AR_PROJECT: aasgard-dev
+  AR_REPO: scr-python
+  WIF_PROVIDER: projects/244378007039/locations/global/workloadIdentityPools/github-actions/providers/github
+  WIF_SERVICE_ACCOUNT: scr-publisher@aasgard-dev.iam.gserviceaccount.com
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Verify tag matches pyproject version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(python - <<'PY'
+          import tomllib, pathlib
+          print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])
+          PY
+          )
+          if [ "$tag" != "$pkg" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match pyproject version $pkg"
+              exit 1
+          fi
+
+      - name: Compile annotations.ts → annotations.js
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+          test -f semantic_code_review/viewer/assets/annotations.js
+
+      - name: Build wheel + sdist
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+          ls -lh dist/
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+
+      - name: Publish to Artifact Registry
+        run: |
+          python -m pip install twine keyring keyrings.google-artifactregistry-auth
+          python -m twine upload \
+              --repository-url https://${AR_LOCATION}-python.pkg.dev/${AR_PROJECT}/${AR_REPO}/ \
+              --non-interactive \
+              dist/*
+
+      - name: Attach artifacts to the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
