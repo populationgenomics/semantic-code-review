@@ -23,7 +23,11 @@ set -euo pipefail
 AR_LOCATION="australia-southeast1"
 AR_PROJECT="aasgard-dev"
 AR_REPO="scr-python"
-INDEX_URL="https://${AR_LOCATION}-python.pkg.dev/${AR_PROJECT}/${AR_REPO}/simple/"
+# The `oauth2accesstoken` username is a placeholder GCP recognises; uv will
+# only invoke the keyring backend when the URL contains a username, so this
+# is what flips the auth path on. The actual access token is fetched from
+# ADC by `keyrings.google-artifactregistry-auth` at request time.
+INDEX_URL="https://oauth2accesstoken@${AR_LOCATION}-python.pkg.dev/${AR_PROJECT}/${AR_REPO}/simple/"
 WRAPPER_PATH="${SCR_INSTALL_DIR:-$HOME/.local/bin}/scr"
 
 # ---------------------------------------------------------------------------
