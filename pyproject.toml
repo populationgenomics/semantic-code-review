@@ -4,22 +4,28 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "semantic-code-review"
-version = "0.7.1"
+version = "0.7.2"
 description = "LLM-augmented GitHub PR viewer with foldable semantic diffs."
 requires-python = ">=3.11"
 authors = [{name = "Toby Sargeant", email = "toby.sargeant@populationgenomics.org.au"}]
+# Direct deps pinned exactly. The full transitive closure is pinned with
+# hashes in requirements.lock; these top-level == constraints make sure
+# any wheel-only install (uv tool run, pip install) resolves to the same
+# direct versions the lockfile was generated against. When bumping, regen
+# both: edit here, then `uv pip compile pyproject.toml -o requirements.lock
+# --generate-hashes`.
 dependencies = [
-  "anthropic>=0.40.0",
-  "unidiff>=0.7.5",
-  "typer>=0.12.0",
-  "pydantic>=2.6",
-  "jinja2>=3.1",
+  "anthropic==0.97.0",
+  "jinja2==3.1.6",
+  "pydantic==2.13.3",
+  "typer==0.24.2",
+  "unidiff==0.7.5",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8",
-  "pytest-asyncio>=0.23",
+  "pytest==9.0.3",
+  "pytest-asyncio==1.3.0",
 ]
 
 [project.scripts]

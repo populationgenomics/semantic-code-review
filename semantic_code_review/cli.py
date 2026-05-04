@@ -29,6 +29,25 @@ app = typer.Typer(
 from .paths import default_runs_root as _default_runs_root
 
 
+def _version_callback(value: bool) -> None:
+    if value:
+        from importlib.metadata import version
+        typer.echo(version("semantic-code-review"))
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: bool = typer.Option(
+        False, "--version", "-V",
+        callback=_version_callback,
+        is_eager=True,
+        help="Print version and exit.",
+    ),
+) -> None:
+    """Semantic Code Review — LLM-augmented PR diff viewer."""
+
+
 def _load_dotenv(path: Path = Path(".env")) -> None:
     """Minimal .env loader: KEY=value lines, optional quotes, # comments.
 

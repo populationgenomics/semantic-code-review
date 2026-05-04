@@ -25,3 +25,4 @@ semantic_code_review/viewer/assets/*.d.ts
 .tsbuildinfo
 playwright-report/
 test-results/
+uv.lock
