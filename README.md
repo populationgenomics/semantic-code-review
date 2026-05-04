@@ -112,11 +112,33 @@ Subcommands:
 - `scr show <run-dir>` — print the augmented diff to stdout.
 - `scr strip <augmented.diff>` — write a plain unified diff to stdout.
 - `scr lint <augmented.diff>` — validate the augmented-diff format.
+- `scr runs path` — print the runs root resolved for the current cwd.
 
 `scr pr` reuses everything `scr review` does (same fetch, augment,
 viewer, server, comment store) plus a thin GitHub-side helper that
 groups the inline comments into one review object via `gh api`. The
 `gh` CLI must be on `PATH` and authenticated.
+
+### Where run artefacts live
+
+`scr` writes per-review state — a `meta.json`, the raw and augmented
+diffs, and `base/` / `head/` worktrees so the LLM (and the viewer)
+can read pre- and post-change files — to a per-repo directory under
+your XDG cache:
+
+```
+~/.cache/scr/runs/<sha256-of-git-common-dir>/<run-slug>/
+```
+
+Worktrees of the same repo share the directory; different repos get
+different ones. Runs live outside the repo on purpose — a `.scr/` at
+the repo root is a deploy-tool footgun (gcloud, docker, tar tend to
+upload it unless every project remembers to ignore it), and the
+worktrees inside contain real git history that no one wants to
+upload by accident.
+
+Override with `--runs-root <path>` on any command that creates runs
+(`review`, `pr`, `fetch`, `run`).
 
 ## Development
 

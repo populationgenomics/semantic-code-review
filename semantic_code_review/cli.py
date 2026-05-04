@@ -26,7 +26,7 @@ app = typer.Typer(
 )
 
 
-DEFAULT_RUNS_ROOT = Path(".scr/runs")
+from .paths import default_runs_root as _default_runs_root
 
 
 def _load_dotenv(path: Path = Path(".env")) -> None:
@@ -134,11 +134,14 @@ def _warn_cli_fallback() -> None:
 @app.command()
 def fetch(
     pr_url: str = typer.Argument(..., help="https://github.com/owner/repo/pull/N"),
-    runs_root: Path = typer.Option(DEFAULT_RUNS_ROOT, help="Root directory for run artefacts."),
+    runs_root: Path = typer.Option(
+        None, help="Root directory for run artefacts (default: ~/.cache/scr/runs/<repo-fingerprint>/)."
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Fetch PR metadata, diff, and base/head worktrees into a run directory."""
     _configure_logging(verbose)
+    runs_root = runs_root or _default_runs_root()
     result = fetch_pr(pr_url, runs_root)
     typer.echo(f"run directory: {result.run_dir}")
 
@@ -200,7 +203,9 @@ def render(
 @app.command()
 def run(
     pr_url: str = typer.Argument(...),
-    runs_root: Path = typer.Option(DEFAULT_RUNS_ROOT),
+    runs_root: Path = typer.Option(
+        None, help="Root directory for run artefacts (default: ~/.cache/scr/runs/<repo-fingerprint>/)."
+    ),
     model: str = typer.Option("claude-opus-4-7"),
     concurrency: int = typer.Option(8),
     no_cache: bool = typer.Option(False),
@@ -213,6 +218,7 @@ def run(
     from .augment.prompts import PROMPT_VERSION
     from .viewer.render_html import render_run_dir
 
+    runs_root = runs_root or _default_runs_root()
     fetch_result = fetch_pr(pr_url, runs_root)
     cache = None if no_cache else CacheStore(prompt_version=PROMPT_VERSION)
     client = _select_client(backend)
@@ -278,7 +284,9 @@ def review(
     spec_md: Path = typer.Option(
         None, "--spec", help="Markdown file with the spec/intent for this change."
     ),
-    runs_root: Path = typer.Option(DEFAULT_RUNS_ROOT),
+    runs_root: Path = typer.Option(
+        None, help="Root directory for run artefacts (default: ~/.cache/scr/runs/<repo-fingerprint>/)."
+    ),
     repo_root: Path = typer.Option(None, help="Repo root (defaults to walking up from cwd)."),
     no_staged: bool = typer.Option(False, help="With a single ref: exclude staged changes."),
     no_unstaged: bool = typer.Option(False, help="With a single ref: exclude unstaged changes."),
@@ -299,6 +307,7 @@ def review(
     _configure_logging(verbose)
     from .review.runner import ReviewOptions, run_review
 
+    runs_root = runs_root or _default_runs_root()
     # Resolve the backend up-front so a misconfiguration fails fast, before
     # we spend time building the diff / worktrees.
     client = _select_client(backend) if augment else None
@@ -334,7 +343,9 @@ def pr(
             "if exactly one matches it's used, otherwise a picker prompts."
         ),
     ),
-    runs_root: Path = typer.Option(DEFAULT_RUNS_ROOT),
+    runs_root: Path = typer.Option(
+        None, help="Root directory for run artefacts (default: ~/.cache/scr/runs/<repo-fingerprint>/)."
+    ),
     augment: bool = typer.Option(True, help="Run the LLM augmentation pass before rendering."),
     model: str = typer.Option("claude-opus-4-7"),
     concurrency: int = typer.Option(8),
@@ -399,6 +410,7 @@ def pr(
 
     client = _select_client(backend) if augment else None
 
+    runs_root = runs_root or _default_runs_root()
     fetch_result = fetch_pr(pr_url, runs_root)
     run_dir = fetch_result.run_dir
 
@@ -479,6 +491,16 @@ def pr(
         f"scr pr: posted {post.posted} comment(s) — {post.review_url}\n"
     )
     raise typer.Exit(code=0 if result.clean else 2)
+
+
+runs_app = typer.Typer(help="Inspect or manage scr's per-repo run-artefact directory.")
+app.add_typer(runs_app, name="runs")
+
+
+@runs_app.command("path")
+def runs_path() -> None:
+    """Print the runs root resolved for the current cwd."""
+    typer.echo(str(_default_runs_root()))
 
 
 if __name__ == "__main__":

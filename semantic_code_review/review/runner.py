@@ -15,13 +15,14 @@ import logging
 import sys
 import time
 import webbrowser
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..augment.prompts import PROMPT_VERSION
 from ..augment.runner import ClaudeClient
 from ..cache.store import CacheStore
 from ..format.parse import parse_augmented_diff
+from ..paths import default_runs_root as _default_runs_root
 from ..viewer.build_json import build_viewer_json
 from ..viewer.render_html import render_run_dir
 from .comments import CommentStore, format_markdown
@@ -36,7 +37,7 @@ log = logging.getLogger(__name__)
 class ReviewOptions:
     spec: str                       # git ref or range, user-supplied
     spec_markdown: Path | None = None
-    runs_root: Path = Path(".scr/runs")
+    runs_root: Path = field(default_factory=_default_runs_root)
     repo_root: Path | None = None
     no_staged: bool = False
     no_unstaged: bool = False
