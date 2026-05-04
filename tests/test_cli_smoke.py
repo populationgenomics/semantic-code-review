@@ -28,6 +28,14 @@ def test_lint_ok_on_fixture() -> None:
     assert result.exit_code == 0, result.stdout + "\n" + (result.stderr or "")
 
 
+def test_version_flag_prints_pyproject_version() -> None:
+    from importlib.metadata import version as pkg_version
+    runner = CliRunner()
+    result = runner.invoke(app, ["--version"])
+    assert result.exit_code == 0
+    assert result.stdout.strip() == pkg_version("semantic-code-review")
+
+
 def test_lint_fails_on_bad_smell(tmp_path: Path) -> None:
     p = tmp_path / "bad.diff"
     p.write_text(FIXTURE.read_text().replace("string-sql", "made-up-smell"))
