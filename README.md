@@ -83,7 +83,30 @@ See `commands/review.md` for the full slash-command prompt.
   Claude Code installation.
 - Neither available → fails fast with a clear error.
 
-Force a backend with `--backend api|cli|auto`.
+Force a backend with `--backend api|cli|gemini|gemini-api|auto`.
+
+Both Gemini backends are opt-in only — never picked by `auto`.
+
+- `--backend=gemini-api` uses Google's official `google-genai` SDK
+  directly. Auth ladder: `GOOGLE_CLOUD_PROJECT` set → Vertex AI
+  via Application Default Credentials; else `GEMINI_API_KEY` /
+  `GOOGLE_API_KEY` → AI Studio. Native concurrency, full structured
+  tool use, Gemini's implicit prompt caching surfaces as
+  `cache_read_input_tokens` in our usage stats. Best Gemini path
+  for production work.
+- `--backend=gemini` shells out to `gemini -p` (Google's CLI,
+  install via `npm install -g @google/gemini-cli`) with our MCP
+  server injected via a temp system-settings file
+  (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`) and
+  `--allowed-mcp-server-names scr` to suppress whatever else the
+  user has configured. The CLI doesn't expose
+  `--json-schema`/`responseSchema`, so we embed the schema in the
+  prompt and validate client-side; one retry on validation failure
+  with the error fed back, then we fail the call. Auth: either
+  `GEMINI_API_KEY` / `GOOGLE_API_KEY` in the environment, or a
+  previously-completed interactive `gemini` OAuth login (creds at
+  `~/.gemini/`). Useful when you want to drive Gemini through the
+  same subprocess shape as `claude -p`.
 
 ## Usage as a standalone CLI
 

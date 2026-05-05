@@ -18,6 +18,11 @@ log = logging.getLogger(__name__)
 
 class ClaudeClient(Protocol):
     async def create_message(self, **kwargs: Any) -> dict: ...
+    # All clients implement aclose so callers can drive the lifecycle
+    # uniformly via `contextlib.aclosing` without duck-typing checks.
+    # Clients with nothing to release (e.g. AnthropicClient) provide
+    # a no-op.
+    async def aclose(self) -> None: ...
 
 
 class AnthropicClient:
@@ -32,6 +37,12 @@ class AnthropicClient:
     async def create_message(self, **kwargs: Any) -> dict:
         msg = await self._inner.messages.create(**kwargs)
         return _message_to_dict(msg)
+
+    async def aclose(self) -> None:
+        # The Anthropic SDK manages its own httpx client lifetime; we
+        # don't allocate any per-client resources, so this is a no-op.
+        # Present so the lifecycle hook is uniform across clients.
+        return None
 
 
 def _message_to_dict(msg: Any) -> dict:
