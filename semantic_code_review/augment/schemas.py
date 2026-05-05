@@ -47,10 +47,15 @@ SMELL_CATALOGUE: dict[str, SmellDef] = {
 }
 
 SMELL_TAGS: frozenset[str] = frozenset(SMELL_CATALOGUE)
+# Insertion-ordered comma-separated list, suitable for embedding in
+# prompt text and JSON-schema descriptions. SMELL_TAGS (frozenset) is
+# the right thing for membership checks; SMELL_TAGS_TEXT is the right
+# thing for "tell the model the closed vocabulary".
+SMELL_TAGS_TEXT: str = ", ".join(SMELL_CATALOGUE.keys())
 
 
 class Smell(BaseModel):
-    tag: str
+    tag: str = Field(description=f"One of: {SMELL_TAGS_TEXT}")
     note: str = ""
 
 
@@ -196,3 +201,86 @@ class AugmentedDiff(BaseModel):
     pr: PRInfo
     overview: Overview | None = None
     files: list[FilePatch] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Submission shapes — what the LLM is asked to emit.
+#
+# These models represent the wire format of `submit_overview` /
+# `submit_annotations`. Their JSON schemas (via `model_json_schema`)
+# replace the hand-written tool input_schemas in `prompts.py`, giving
+# us one source of truth for "what we ask the model for" and "how we
+# parse it back". A submission is a strict subset of the parsing-side
+# state above: post-processing splits / merges / drops fields as
+# needed in `apply_overview_to_diff` / `apply_hunk_annotations`.
+# ---------------------------------------------------------------------------
+
+
+class OverviewFileSubmission(BaseModel):
+    """Per-file annotations the LLM submits as part of the overview pass."""
+
+    path: str
+    summary: str = Field(default="", description="One sentence per file.")
+    lang: str | None = Field(default=None, description="Only when the extension is ambiguous.")
+    symbols: FileSymbols | None = None
+
+
+class OverviewSubmission(BaseModel):
+    """Wire format of `submit_overview`. Consumed by `apply_overview_to_diff`."""
+
+    summary: str = Field(description="1-3 sentence summary of the PR's intent.")
+    symbols_added: list[OverviewSymbol] = Field(default_factory=list)
+    symbols_modified: list[OverviewSymbol] = Field(default_factory=list)
+    symbols_removed: list[OverviewSymbol] = Field(default_factory=list)
+    callgraph_edges: list[OverviewEdge] = Field(
+        default_factory=list,
+        description="Introduced or modified calls (best-effort — omit if unsure).",
+    )
+    themes: list[str] = Field(
+        default_factory=list,
+        description="Short keyword tags (e.g. 'pagination', 'api-surface').",
+    )
+    files: list[OverviewFileSubmission] = Field(
+        default_factory=list,
+        description="Per-file summaries; one entry per changed file in the diff.",
+    )
+    groups: list[OverviewGroup] = Field(
+        default_factory=list,
+        description=(
+            "Semantic clusters of hunks the reviewer can filter by. Each "
+            "hunk may appear in 0+ groups — overlap is expected when a hunk "
+            "serves multiple purposes. Aim for 2–6 groups on a typical PR "
+            "(more for large ones). A group need not cover every hunk; "
+            "leave genuinely standalone hunks out."
+        ),
+    )
+
+
+class HunkAnnotations(BaseModel):
+    """Wire format of `submit_annotations`. Consumed by `apply_hunk_annotations`."""
+
+    intent: str = Field(description="1-2 sentences of MOTIVE, not mechanics.")
+    segments: list[Segment] = Field(
+        default_factory=list,
+        description=(
+            "Split the hunk into semantically distinct edits when present "
+            "(e.g. a refactor plus an unrelated fix). Each segment carries "
+            "post-image new_start/new_count and its own intent. Omit if "
+            "the hunk is single-intent."
+        ),
+    )
+    smells: list[Smell] = Field(default_factory=list)
+    context: str = Field(
+        default="",
+        description="Cross-file dependencies the reviewer can't see from the diff.",
+    )
+    refs: list[Ref] = Field(default_factory=list)
+    confidence: int | None = Field(default=None, ge=0, le=100)
+    line_notes: list[LineNote] = Field(default_factory=list)
+    fold_descriptions: list[FoldDescription] = Field(
+        default_factory=list,
+        description=(
+            "One short sentence per indent fold region containing changes. "
+            "Match each region's new_start/new_count exactly."
+        ),
+    )
