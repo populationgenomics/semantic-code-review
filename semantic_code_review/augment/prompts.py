@@ -2,197 +2,67 @@
 
 Bump `PROMPT_VERSION` when either prompt or a schema changes — the cache
 layer keys on it so a bump forces a full re-run.
+
+The submit-tool input schemas are derived from the Pydantic models in
+`schemas.py` (`OverviewSubmission`, `HunkAnnotations`) so there's a
+single source of truth for "what we ask the model to emit" and "how
+we parse it back". Adding or renaming a field is one edit, not two.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from .schemas import HunkAnnotations, OverviewSubmission, SMELL_TAGS_TEXT
 from .tools import ANTHROPIC_TOOL_SCHEMAS
 
 
-PROMPT_VERSION = "p6"
+PROMPT_VERSION = "p7"
 
 
 # --- Submission tools -------------------------------------------------------
+#
+# `by_alias=True` matters here: OverviewEdge uses Field(alias="from") /
+# Field(alias="to") because `from` is a Python keyword. The schema
+# emitted to the model must use the JSON aliases (`from` / `to`), not
+# the Python field names (`src` / `dst`); the parsing side accepts
+# both via populate_by_name=True.
+#
+# `_force_required` re-asserts fields that the original hand-written
+# schemas marked required but Pydantic relaxes because they have
+# defaults (e.g. list fields with `default_factory=list`). We keep
+# the Python-side defaults so test fixtures and apply_*_to_diff stay
+# permissive; the schema sent to the model stays strict.
 
-_SMELL_TAGS = (
-    "duplication, string-sql, no-input-validation, missing-test, "
-    "security-sensitive, performance-regression, backward-incompatible, "
-    "todo-left-behind, dead-code, unscoped-exception, resource-leak, race-condition"
-)
+def _force_required(schema: dict[str, Any], *fields: str) -> dict[str, Any]:
+    req = list(schema.get("required", []))
+    for f in fields:
+        if f not in req:
+            req.append(f)
+    schema["required"] = req
+    return schema
+
 
 SUBMIT_OVERVIEW_TOOL: dict[str, Any] = {
     "name": "submit_overview",
-    "description": "Submit the final PR overview. Call this exactly once when you have the complete structure.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "summary": {"type": "string", "description": "1-3 sentence summary of the PR's intent."},
-            "symbols_added": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "kind": {"type": "string", "description": "function, method, class, constant"},
-                        "name": {"type": "string"},
-                    },
-                    "required": ["path", "kind", "name"],
-                },
-            },
-            "symbols_modified": {"type": "array", "items": {"$ref": "#/properties/symbols_added/items"}},
-            "symbols_removed": {"type": "array", "items": {"$ref": "#/properties/symbols_added/items"}},
-            "callgraph_edges": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "from": {"type": "string", "description": "<path>:<name>"},
-                        "to": {"type": "string", "description": "<path>:<name>"},
-                    },
-                    "required": ["from", "to"],
-                },
-            },
-            "themes": {"type": "array", "items": {"type": "string"}},
-            "files": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "summary": {"type": "string"},
-                        "lang": {"type": "string"},
-                        "symbols": {
-                            "type": "object",
-                            "properties": {
-                                "added": {"type": "array", "items": {"type": "string"}},
-                                "modified": {"type": "array", "items": {"type": "string"}},
-                                "removed": {"type": "array", "items": {"type": "string"}},
-                            },
-                        },
-                    },
-                    "required": ["path"],
-                },
-            },
-            "groups": {
-                "type": "array",
-                "description": (
-                    "Semantic clusters of hunks the reviewer can filter by. Each hunk "
-                    "may appear in 0+ groups — overlap is expected when a hunk serves "
-                    "multiple purposes. Aim for 2–6 groups on a typical PR (more for "
-                    "large ones). A group need not cover every hunk; leave genuinely "
-                    "standalone hunks out."
-                ),
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "title": {
-                            "type": "string",
-                            "description": "Short noun phrase, ≤ 6 words. e.g. 'annotation arrow geometry', 'node toolchain setup'. Lowercase; no trailing period.",
-                        },
-                        "rationale": {
-                            "type": "string",
-                            "description": "1 sentence: why these hunks cluster.",
-                        },
-                        "members": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "path": {"type": "string", "description": "Post-image file path."},
-                                    "hunk_index": {
-                                        "type": "integer",
-                                        "description": "0-based index within the file's hunk list, as shown in the '# Hunk headers' section.",
-                                    },
-                                },
-                                "required": ["path", "hunk_index"],
-                            },
-                        },
-                    },
-                    "required": ["title", "members"],
-                },
-            },
-        },
-        "required": ["summary", "files"],
-    },
+    "description": (
+        "Submit the final PR overview. Call this exactly once when "
+        "you have the complete structure."
+    ),
+    "input_schema": _force_required(
+        OverviewSubmission.model_json_schema(by_alias=True),
+        "files",
+    ),
 }
 
 
 SUBMIT_ANNOTATIONS_TOOL: dict[str, Any] = {
     "name": "submit_annotations",
-    "description": "Submit the final annotations for this hunk. Call exactly once when you are ready.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "intent": {"type": "string", "description": "1-2 sentences of MOTIVE, not mechanics."},
-            "segments": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "new_start": {"type": "integer", "description": "Post-image line where the segment starts."},
-                        "new_count": {"type": "integer", "description": "Number of post-image lines covered."},
-                        "intent": {"type": "string"},
-                        "smells": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "tag": {"type": "string", "description": f"One of: {_SMELL_TAGS}"},
-                                    "note": {"type": "string"},
-                                },
-                                "required": ["tag"],
-                            },
-                        },
-                        "context": {"type": "string"},
-                        "refs": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "path": {"type": "string"},
-                                    "line": {"type": "integer"},
-                                    "reason": {"type": "string"},
-                                },
-                                "required": ["path", "line"],
-                            },
-                        },
-                    },
-                    "required": ["new_start", "new_count", "intent"],
-                },
-            },
-            "smells": {"$ref": "#/properties/segments/items/properties/smells"},
-            "context": {"type": "string"},
-            "refs": {"$ref": "#/properties/segments/items/properties/refs"},
-            "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
-            "line_notes": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "line": {"type": "integer", "description": "Post-image line number."},
-                        "body": {"type": "string"},
-                    },
-                    "required": ["line", "body"],
-                },
-            },
-            "fold_descriptions": {
-                "type": "array",
-                "description": "One-line summary per indent fold region containing changes.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "new_start": {"type": "integer"},
-                        "new_count": {"type": "integer"},
-                        "summary": {"type": "string", "description": "Short sentence, <= 12 words, plain text."},
-                    },
-                    "required": ["new_start", "new_count", "summary"],
-                },
-            },
-        },
-        "required": ["intent"],
-    },
+    "description": (
+        "Submit the final annotations for this hunk. Call exactly "
+        "once when you are ready."
+    ),
+    "input_schema": HunkAnnotations.model_json_schema(by_alias=True),
 }
 
 
@@ -256,7 +126,7 @@ HUNK_SYSTEM = (
     "them. Each segment has POST-IMAGE `new_start`/`new_count` and its own intent. Omit "
     "segments if the hunk is single-intent.\n"
     "- `smells`: list of {tag, note}. Tags are from the closed vocabulary: "
-    f"{_SMELL_TAGS}. Attach each smell to a segment when it's segment-local, or to the "
+    f"{SMELL_TAGS_TEXT}. Attach each smell to a segment when it's segment-local, or to the "
     "hunk when it spans the whole change.\n"
     "- `context`: cross-file dependencies the reviewer can't see from the diff.\n"
     "- `refs`: {path, line, reason} for other files the reviewer should look at.\n"
