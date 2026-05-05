@@ -35,6 +35,9 @@ class CannedClient:
             raise AssertionError("CannedClient ran out of hunk payloads")
         return _wrap("submit_annotations", self._hunks.pop(0))
 
+    async def aclose(self) -> None:
+        return None
+
 
 def _wrap(tool_name: str, args: dict) -> dict[str, Any]:
     return {

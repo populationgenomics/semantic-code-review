@@ -8,6 +8,7 @@ over the head worktree.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from dataclasses import dataclass
@@ -74,13 +75,6 @@ async def augment_run_dir(
         client = AnthropicClient()
     # cache=None means "no disk caching"; callers pass a CacheStore to enable.
 
-    # Subprocess-backed clients (claude -p fallback) are much more expensive
-    # per call than one warm HTTP client; cap concurrency when the caller
-    # left the default in place.
-    if getattr(client, "is_subprocess_backend", False) and concurrency >= 8:
-        log.info("CLI backend active: reducing concurrency %d -> 2", concurrency)
-        concurrency = 2
-
     raw_diff_path = run_dir / "raw.diff"
     meta_path = run_dir / "meta.json"
     augmented_path = run_dir / "augmented.diff"
@@ -139,57 +133,62 @@ async def augment_run_dir(
 
     overview_json = overview_to_prompt_json(diff)
 
-    sem = asyncio.Semaphore(concurrency)
-    tasks: list[asyncio.Task] = []
-    stats = _HunkStats()
-    hunks_seen = 0
-    for fp in diff.files:
-        if fp.path in skipped_files:
-            continue
-        file_summary = (fp.summary or "").strip()
-        for h in fp.hunks:
+    # Subprocess clients allocate temp config files at first use;
+    # `aclosing` calls `client.aclose()` on exit so /tmp doesn't
+    # accumulate them across runs. AnthropicClient's aclose is a
+    # no-op so this is uniform across backends.
+    async with contextlib.aclosing(client):
+        sem = asyncio.Semaphore(concurrency)
+        tasks: list[asyncio.Task] = []
+        stats = _HunkStats()
+        hunks_seen = 0
+        for fp in diff.files:
+            if fp.path in skipped_files:
+                continue
+            file_summary = (fp.summary or "").strip()
+            for h in fp.hunks:
+                if max_hunks is not None and hunks_seen >= max_hunks:
+                    break
+                hunks_seen += 1
+                tasks.append(asyncio.create_task(
+                    _augment_one_hunk(sem, client, fp, h, overview_json, file_summary,
+                                      repo_tools, model, cache, trace_dir, stats)
+                ))
             if max_hunks is not None and hunks_seen >= max_hunks:
                 break
-            hunks_seen += 1
-            tasks.append(asyncio.create_task(
-                _augment_one_hunk(sem, client, fp, h, overview_json, file_summary,
-                                  repo_tools, model, cache, trace_dir, stats)
-            ))
-        if max_hunks is not None and hunks_seen >= max_hunks:
-            break
 
-    log.info("per-hunk pass: %d hunks queued (concurrency=%d)", len(tasks), concurrency)
-    await asyncio.gather(*tasks)
+        log.info("per-hunk pass: %d hunks queued (concurrency=%d)", len(tasks), concurrency)
+        await asyncio.gather(*tasks)
 
-    backend_tag = (
-        "cli" if getattr(client, "is_subprocess_backend", False) else "api"
-    )
-    summary = (
-        f"scr augment: backend={backend_tag} model={model} hunks={len(tasks)} "
-        f"ok={stats.ok} failed={stats.failed}"
-    )
-    log.info(summary)
-    # Also emit to stderr directly so users who missed the log stream
-    # still see a one-liner summary before the viewer opens.
-    import sys as _sys
-    _sys.stderr.write(summary + "\n")
-    _sys.stderr.flush()
-
-    if stats.failed and stats.ok == 0:
-        log.error(
-            "augmentation produced ZERO annotations: all %d hunks failed. "
-            "See per-hunk warnings and trace files under %s. "
-            "Common cause in --backend=cli: `claude -p` not logged in or "
-            "refused to emit structured JSON within --max-turns.",
-            stats.failed, trace_dir,
+        backend_tag = (
+            "cli" if getattr(client, "is_subprocess_backend", False) else "api"
         )
+        summary = (
+            f"scr augment: backend={backend_tag} model={model} hunks={len(tasks)} "
+            f"ok={stats.ok} failed={stats.failed}"
+        )
+        log.info(summary)
+        # Also emit to stderr directly so users who missed the log stream
+        # still see a one-liner summary before the viewer opens.
+        import sys as _sys
+        _sys.stderr.write(summary + "\n")
+        _sys.stderr.flush()
 
-    # --- Emit --------------------------------------------------------------
-    augmented_text = emit_augmented_diff(diff)
-    augmented_path.write_text(augmented_text, encoding="utf-8")
-    dump_sidecar(diff, sidecar_path)
-    log.info("wrote %s (%d bytes) + sidecar", augmented_path.name, len(augmented_text))
-    return augmented_path
+        if stats.failed and stats.ok == 0:
+            log.error(
+                "augmentation produced ZERO annotations: all %d hunks failed. "
+                "See per-hunk warnings and trace files under %s. "
+                "Common cause in --backend=cli: `claude -p` not logged in or "
+                "refused to emit structured JSON within --max-turns.",
+                stats.failed, trace_dir,
+            )
+
+        # --- Emit ----------------------------------------------------------
+        augmented_text = emit_augmented_diff(diff)
+        augmented_path.write_text(augmented_text, encoding="utf-8")
+        dump_sidecar(diff, sidecar_path)
+        log.info("wrote %s (%d bytes) + sidecar", augmented_path.name, len(augmented_text))
+        return augmented_path
 
 
 @dataclass

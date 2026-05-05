@@ -78,14 +78,7 @@ class ClaudeCLIClient:
         injection and reverts to single-shot mode.
         """
         self._repo_tools = repo_tools
-        # Invalidate any prior config file; it will be rewritten on next
-        # create_message if MCP is still active.
-        if self._mcp_config_path is not None and self._mcp_config_path.exists():
-            try:
-                self._mcp_config_path.unlink()
-            except OSError:
-                pass
-        self._mcp_config_path = None
+        self._unlink_mcp_config()
 
     def _ensure_mcp_config(self) -> Path:
         if self._mcp_config_path is not None and self._mcp_config_path.exists():
@@ -127,13 +120,18 @@ class ClaudeCLIClient:
         self._mcp_config_path = Path(path)
         return self._mcp_config_path
 
-    async def aclose(self) -> None:
-        if self._mcp_config_path is not None and self._mcp_config_path.exists():
+    def _unlink_mcp_config(self) -> None:
+        if self._mcp_config_path is not None:
             try:
                 self._mcp_config_path.unlink()
             except OSError:
                 pass
-        self._mcp_config_path = None
+            self._mcp_config_path = None
+
+    async def aclose(self) -> None:
+        # Pipeline calls this in a try/finally so the temp config file
+        # is removed deterministically at end-of-pass. Idempotent.
+        self._unlink_mcp_config()
 
     async def create_message(self, **kwargs: Any) -> dict:
         model: str = kwargs["model"]

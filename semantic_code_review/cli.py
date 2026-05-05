@@ -89,15 +89,19 @@ def _configure_logging(verbose: bool) -> None:
 
 
 def _select_client(backend: str):  # -> ClaudeClient, but keep import lazy
-    """Pick a `ClaudeClient` based on env + explicit choice.
+    """Pick a `ClaudeClient`-shaped client based on env + explicit choice.
 
-    backend ∈ {"auto","api","cli"}. "auto" picks API if the key is set,
-    else CLI if `claude` is on PATH, else raises.
+    backend ∈ {"auto","api","cli","gemini"}. "auto" picks API if the
+    Anthropic key is set, else `claude -p` if on PATH, else raises.
+    `gemini` is opt-in only — it's never picked by auto, since its
+    output quality and cost profile are different enough that we
+    don't want to surprise users with it.
     """
     import shutil as _shutil
 
     has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
     has_claude = bool(_shutil.which("claude"))
+    has_gemini = bool(_shutil.which("gemini"))
 
     if backend == "api":
         if not has_key:
@@ -118,6 +122,27 @@ def _select_client(backend: str):  # -> ClaudeClient, but keep import lazy
         _warn_cli_fallback()
         return ClaudeCLIClient()
 
+    if backend == "gemini":
+        if not has_gemini:
+            raise typer.BadParameter(
+                "--backend=gemini but `gemini` is not on PATH "
+                "(install via `npm install -g @google/gemini-cli`)."
+            )
+        if not (
+            os.environ.get("GEMINI_API_KEY")
+            or os.environ.get("GOOGLE_API_KEY")
+            or (Path.home() / ".gemini" / "oauth_creds.json").exists()
+        ):
+            raise typer.BadParameter(
+                "--backend=gemini but no Gemini credentials found. Set "
+                "GEMINI_API_KEY (AI Studio) or GOOGLE_API_KEY (Vertex), "
+                "or run `gemini` once interactively to complete the "
+                "OAuth flow."
+            )
+        from .augment.gemini_cli_client import GeminiCLIClient
+        _warn_gemini_fallback()
+        return GeminiCLIClient()
+
     # auto
     if has_key:
         from .augment.runner import AnthropicClient
@@ -129,8 +154,9 @@ def _select_client(backend: str):  # -> ClaudeClient, but keep import lazy
 
     raise typer.BadParameter(
         "No Anthropic credentials available: set ANTHROPIC_API_KEY "
-        "(or ANTHROPIC_API_TOKEN in .env), or install the `claude` CLI "
-        "for subscription-based fallback."
+        "(or ANTHROPIC_API_TOKEN in .env), install the `claude` CLI "
+        "for subscription-based fallback, or pass --backend=gemini "
+        "to opt into the Gemini CLI backend."
     )
 
 
@@ -146,6 +172,22 @@ def _warn_cli_fallback() -> None:
         "scr: no ANTHROPIC_API_KEY; falling back to `claude -p` subprocess. "
         "Note: no prompt caching, reduced concurrency, no in-loop repo tools "
         "(annotation quality will be lower).\n"
+    )
+    sys.stderr.flush()
+
+
+_GEMINI_WARNED = False
+
+
+def _warn_gemini_fallback() -> None:
+    global _GEMINI_WARNED
+    if _GEMINI_WARNED:
+        return
+    _GEMINI_WARNED = True
+    sys.stderr.write(
+        "scr: using `gemini -p` subprocess backend. Note: no prompt caching, "
+        "no JSON-schema-constrained output (we validate client-side and retry "
+        "once on failure), reduced concurrency.\n"
     )
     sys.stderr.flush()
 
