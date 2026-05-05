@@ -91,17 +91,22 @@ def _configure_logging(verbose: bool) -> None:
 def _select_client(backend: str):  # -> ClaudeClient, but keep import lazy
     """Pick a `ClaudeClient`-shaped client based on env + explicit choice.
 
-    backend ∈ {"auto","api","cli","gemini"}. "auto" picks API if the
-    Anthropic key is set, else `claude -p` if on PATH, else raises.
-    `gemini` is opt-in only — it's never picked by auto, since its
-    output quality and cost profile are different enough that we
-    don't want to surprise users with it.
+    backend ∈ {"auto","api","cli","gemini","gemini-api"}. "auto" picks
+    Anthropic API if its key is set, else `claude -p` if on PATH, else
+    raises. Both Gemini backends are opt-in only — they're never picked
+    by auto, since their output quality and cost profile are different
+    enough that we don't want to surprise users with them.
     """
     import shutil as _shutil
 
     has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
     has_claude = bool(_shutil.which("claude"))
     has_gemini = bool(_shutil.which("gemini"))
+    has_gemini_creds = bool(
+        os.environ.get("GEMINI_API_KEY")
+        or os.environ.get("GOOGLE_API_KEY")
+        or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    )
 
     if backend == "api":
         if not has_key:
@@ -143,6 +148,16 @@ def _select_client(backend: str):  # -> ClaudeClient, but keep import lazy
         _warn_gemini_fallback()
         return GeminiCLIClient()
 
+    if backend == "gemini-api":
+        if not has_gemini_creds:
+            raise typer.BadParameter(
+                "--backend=gemini-api but no Gemini credentials found. "
+                "Set GEMINI_API_KEY (AI Studio), GOOGLE_API_KEY (Vertex), "
+                "or GOOGLE_CLOUD_PROJECT (Vertex via ADC)."
+            )
+        from .augment.gemini_sdk_client import GeminiSDKClient
+        return GeminiSDKClient()
+
     # auto
     if has_key:
         from .augment.runner import AnthropicClient
@@ -156,7 +171,8 @@ def _select_client(backend: str):  # -> ClaudeClient, but keep import lazy
         "No Anthropic credentials available: set ANTHROPIC_API_KEY "
         "(or ANTHROPIC_API_TOKEN in .env), install the `claude` CLI "
         "for subscription-based fallback, or pass --backend=gemini "
-        "to opt into the Gemini CLI backend."
+        "(CLI subprocess) / --backend=gemini-api (Google SDK) to opt "
+        "into a Gemini backend."
     )
 
 
