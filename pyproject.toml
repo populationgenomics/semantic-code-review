@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "semantic-code-review"
-version = "0.12.0"
+version = "0.13.0"
 description = "LLM-augmented GitHub PR viewer with foldable semantic diffs."
 requires-python = ">=3.11"
 authors = [{name = "Toby Sargeant", email = "toby.sargeant@populationgenomics.org.au"}]

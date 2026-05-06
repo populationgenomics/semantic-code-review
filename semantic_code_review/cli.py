@@ -11,6 +11,7 @@ from pathlib import Path
 import typer
 
 from .cache.store import CacheStore
+from .config import ConfigError, ScrConfig
 from .fetch import fetch as fetch_pr
 from .format.lint import lint_text
 from .format.parse import parse_augmented_diff
@@ -76,6 +77,19 @@ def _load_dotenv(path: Path = Path(".env")) -> None:
 _load_dotenv()
 
 
+# Load the user / per-repo config and apply its `[env]` block. Order:
+# shell env > .env > config[env]. Each layer uses `setdefault` so the
+# closer one wins. `_CONFIG` itself drives backend/model resolution
+# (per-flag, see `_select_client` and command bodies).
+try:
+    _CONFIG = ScrConfig.load()
+except ConfigError as e:
+    sys.stderr.write(f"scr: {e}\n")
+    sys.stderr.flush()
+    raise SystemExit(1)
+_CONFIG.apply_env()
+
+
 def _configure_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     # force=True so we take over even if a library (anthropic SDK, typer,
@@ -91,7 +105,7 @@ def _configure_logging(verbose: bool) -> None:
 _DEFAULT_GEMINI_API_MODEL = "gemini-2.5-pro"
 
 
-def _select_client(backend: str, *, model: str = "claude-opus-4-7"):
+def _select_client(backend: str, *, model: str):
     """Pick a backend handle based on env + explicit choice.
 
     Returns a `Backend` regardless of the path: SDK backends carry a
@@ -240,7 +254,7 @@ def fetch(
 @app.command()
 def augment(
     run_dir: Path = typer.Argument(..., help="Path to a run directory from 'scr fetch'."),
-    model: str = typer.Option("claude-opus-4-7", help="Anthropic model id."),
+    model: str = typer.Option(None, help="LLM model id (default from config or 'claude-opus-4-7')."),
     concurrency: int = typer.Option(8, help="Per-hunk call concurrency."),
     max_hunks: int = typer.Option(None, help="Cap hunk calls (smoke tests)."),
     only_files: list[str] = typer.Option(None, help="Restrict to these post-image paths (repeatable)."),
@@ -249,7 +263,7 @@ def augment(
     no_cache: bool = typer.Option(False, help="Disable disk cache of LLM calls."),
     cache_dir: Path = typer.Option(None, help="Cache root (default ~/.cache/scr/v1)."),
     backend: str = typer.Option(
-        "auto", help="LLM backend: auto|api|cli (cli shells out to `claude -p`)."
+        None, help="LLM backend: auto|api|cli|gemini|gemini-api (default from config or 'auto')."
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
@@ -259,6 +273,8 @@ def augment(
     from .augment.pipeline import augment_run_dir
     from .augment.prompts import PROMPT_VERSION
 
+    backend = _CONFIG.resolve_backend(backend)
+    model = _CONFIG.resolve_model(backend=backend, cli_value=model)
     cache = None if no_cache else CacheStore(root=cache_dir, prompt_version=PROMPT_VERSION)
     client = _select_client(backend, model=model)
 
@@ -297,10 +313,10 @@ def run(
     runs_root: Path = typer.Option(
         None, help="Root directory for run artefacts (default: ~/.cache/scr/runs/<repo-fingerprint>/)."
     ),
-    model: str = typer.Option("claude-opus-4-7"),
+    model: str = typer.Option(None),
     concurrency: int = typer.Option(8),
     no_cache: bool = typer.Option(False),
-    backend: str = typer.Option("auto"),
+    backend: str = typer.Option(None),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Fetch + augment + render in one shot."""
@@ -309,6 +325,8 @@ def run(
     from .augment.prompts import PROMPT_VERSION
     from .viewer.render_html import render_run_dir
 
+    backend = _CONFIG.resolve_backend(backend)
+    model = _CONFIG.resolve_model(backend=backend, cli_value=model)
     runs_root = runs_root or _default_runs_root()
     fetch_result = fetch_pr(pr_url, runs_root)
     cache = None if no_cache else CacheStore(prompt_version=PROMPT_VERSION)
@@ -382,7 +400,7 @@ def review(
     no_staged: bool = typer.Option(False, help="With a single ref: exclude staged changes."),
     no_unstaged: bool = typer.Option(False, help="With a single ref: exclude unstaged changes."),
     augment: bool = typer.Option(True, help="Run the LLM augmentation pass before rendering."),
-    model: str = typer.Option("claude-opus-4-7"),
+    model: str = typer.Option(None),
     concurrency: int = typer.Option(8),
     no_cache: bool = typer.Option(False),
     cache_dir: Path = typer.Option(None),
@@ -390,7 +408,7 @@ def review(
     port: int = typer.Option(0, help="Server port (0 = kernel-assigned)."),
     timeout: int = typer.Option(3600, help="Server idle timeout in seconds."),
     backend: str = typer.Option(
-        "auto", help="LLM backend: auto|api|cli (cli shells out to `claude -p`)."
+        None, help="LLM backend: auto|api|cli|gemini|gemini-api (default from config or 'auto')."
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
@@ -398,6 +416,8 @@ def review(
     _configure_logging(verbose)
     from .review.runner import ReviewOptions, run_review
 
+    backend = _CONFIG.resolve_backend(backend)
+    model = _CONFIG.resolve_model(backend=backend, cli_value=model)
     runs_root = runs_root or _default_runs_root()
     # Resolve the backend up-front so a misconfiguration fails fast, before
     # we spend time building the diff / worktrees.
@@ -438,7 +458,7 @@ def pr(
         None, help="Root directory for run artefacts (default: ~/.cache/scr/runs/<repo-fingerprint>/)."
     ),
     augment: bool = typer.Option(True, help="Run the LLM augmentation pass before rendering."),
-    model: str = typer.Option("claude-opus-4-7"),
+    model: str = typer.Option(None),
     concurrency: int = typer.Option(8),
     no_cache: bool = typer.Option(False),
     cache_dir: Path = typer.Option(None),
@@ -446,7 +466,7 @@ def pr(
     port: int = typer.Option(0, help="Server port (0 = kernel-assigned)."),
     timeout: int = typer.Option(3600, help="Server idle timeout in seconds."),
     backend: str = typer.Option(
-        "auto", help="LLM backend: auto|api|cli (cli shells out to `claude -p`)."
+        None, help="LLM backend: auto|api|cli|gemini|gemini-api (default from config or 'auto')."
     ),
     yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt before posting comments to GitHub."),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
@@ -462,6 +482,9 @@ def pr(
     )
     from .review.runner import serve_review
     from .fetch import fetch as fetch_pr
+
+    backend = _CONFIG.resolve_backend(backend)
+    model = _CONFIG.resolve_model(backend=backend, cli_value=model)
 
     # Preflight `gh` once — both PR resolution and the post step need it,
     # and a missing-tool error here is more informative than the same
@@ -592,6 +615,82 @@ app.add_typer(runs_app, name="runs")
 def runs_path() -> None:
     """Print the runs root resolved for the current cwd."""
     typer.echo(str(_default_runs_root()))
+
+
+config_app = typer.Typer(help="Inspect or edit scr's user/per-repo config.")
+app.add_typer(config_app, name="config")
+
+
+@config_app.command("path")
+def config_path() -> None:
+    """Print the user-level config path (creates the directory if missing)."""
+    from .paths import default_config_path
+
+    typer.echo(str(default_config_path()))
+
+
+@config_app.command("show")
+def config_show() -> None:
+    """Print the resolved config (user + per-repo merged) and where each setting came from."""
+    from .paths import default_config_path, find_repo_config_path
+
+    user = default_config_path()
+    repo = find_repo_config_path()
+    typer.echo(f"# user config: {user} ({'present' if user.is_file() else 'absent'})")
+    typer.echo(
+        f"# per-repo config: {repo or '(none found)'}"
+        f"{' (present)' if repo and repo.is_file() else ''}"
+    )
+    typer.echo("")
+    typer.echo(f"backend = {_CONFIG.backend!r} (from {_CONFIG.sources.get('backend', 'default')})")
+    if _CONFIG.model:
+        typer.echo("[model]")
+        for k, v in _CONFIG.model.items():
+            typer.echo(f'  "{k}" = {v!r} (from {_CONFIG.sources.get(f"model.{k}", "?")})')
+    if _CONFIG.env:
+        typer.echo("[env]")
+        for k, v in _CONFIG.env.items():
+            applied = "applied" if os.environ.get(k) == v else "overridden by shell/.env"
+            typer.echo(f"  {k} = {v!r} (from {_CONFIG.sources.get(f'env.{k}', '?')}, {applied})")
+
+
+@config_app.command("edit")
+def config_edit() -> None:
+    """Open the user-level config in $EDITOR (or `vi`)."""
+    import subprocess as _sp
+
+    from .paths import default_config_path
+
+    path = default_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text(_CONFIG_TEMPLATE, encoding="utf-8")
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
+    _sp.run([editor, str(path)], check=False)
+
+
+_CONFIG_TEMPLATE = """\
+# scr config — non-secret defaults. CLI flags and env vars override.
+#
+# Do NOT put API keys here. Config files leak too easily (accidental
+# commits, dotfile repos, screen-shares). Use a `.env` or your shell.
+
+# Default backend used when --backend isn't passed.
+# One of: auto, api, cli, gemini, gemini-api
+# backend = "api"
+
+# Per-backend model defaults. Keys are backend names; "default" is a
+# fallback when the more-specific entry is missing.
+# [model]
+# default = "claude-opus-4-7"
+# "gemini-api" = "gemini-2.5-pro"
+
+# Environment variables to set if not already in the parent env.
+# Useful for non-secrets like GCP project / location.
+# [env]
+# GOOGLE_CLOUD_PROJECT = "aasgard-dev"
+# GOOGLE_CLOUD_LOCATION = "global"
+"""
 
 
 if __name__ == "__main__":
