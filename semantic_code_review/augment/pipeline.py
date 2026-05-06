@@ -161,7 +161,7 @@ async def augment_run_dir(
         log.info("per-hunk pass: %d hunks queued (concurrency=%d)", len(tasks), concurrency)
         await asyncio.gather(*tasks)
 
-        backend_tag = "cli" if client.is_subprocess_backend else "api"
+        backend_tag = "subprocess" if client.is_subprocess_backend else "sdk"
         summary = (
             f"scr augment: backend={backend_tag} model={model} hunks={len(tasks)} "
             f"ok={stats.ok} failed={stats.failed}"
@@ -177,7 +177,7 @@ async def augment_run_dir(
             log.error(
                 "augmentation produced ZERO annotations: all %d hunks failed. "
                 "See per-hunk warnings and trace files under %s. "
-                "Common cause in --backend=cli: `claude -p` not logged in or "
+                "Common cause in --backend=claude-cli: `claude -p` not logged in or "
                 "refused to emit structured JSON within --max-turns.",
                 stats.failed, trace_dir,
             )

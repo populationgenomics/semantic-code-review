@@ -372,7 +372,7 @@ class ClaudeCLIModel(Model):
                 raise ClaudeCLIError(
                     "claude is not logged in; run `claude /login` (or "
                     "`claude setup-token` for a long-lived token) before "
-                    "using --backend=cli."
+                    "using --backend=claude-cli."
                 )
             raise ClaudeCLIError(
                 f"claude -p returned error (exit {proc.returncode}, "

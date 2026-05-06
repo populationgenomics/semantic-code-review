@@ -12,6 +12,34 @@ import subprocess
 from pathlib import Path
 
 
+def default_config_path() -> Path:
+    """Path to the user-level scr config.
+
+    `~/.config/scr/config.toml`, or `$XDG_CONFIG_HOME/scr/config.toml`
+    when set. The file is optional — its absence is the same as an
+    empty config.
+    """
+    config_root = Path(
+        os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
+    ) / "scr"
+    return config_root / "config.toml"
+
+
+def find_repo_config_path(start: Path | None = None) -> Path | None:
+    """Walk up from `start` (cwd by default) looking for `.scr/config.toml`.
+
+    Stops at the filesystem root or the first match. Returns None when
+    no per-repo override exists. The walk is bounded by the parent
+    chain — symlinks are followed by `Path.resolve()`.
+    """
+    here = (start or Path.cwd()).resolve()
+    for d in (here, *here.parents):
+        candidate = d / ".scr" / "config.toml"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def default_runs_root() -> Path:
     """Resolve the per-repo run-artefacts root for the current cwd.
 

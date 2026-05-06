@@ -36,6 +36,25 @@ def test_version_flag_prints_pyproject_version() -> None:
     assert result.stdout.strip() == pkg_version("semantic-code-review")
 
 
+def test_config_path_prints_xdg_path(tmp_path: Path, monkeypatch) -> None:
+    """`scr config path` should reflect $XDG_CONFIG_HOME when set."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "path"])
+    assert result.exit_code == 0, result.stdout
+    assert result.stdout.strip().endswith("/xdg/scr/config.toml")
+
+
+def test_config_show_reports_absent_user_config(tmp_path: Path, monkeypatch) -> None:
+    """When no config files exist, `scr config show` still runs cleanly."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "show"])
+    assert result.exit_code == 0, result.stdout
+    assert "absent" in result.stdout
+    assert "backend = None" in result.stdout
+
+
 def test_lint_fails_on_bad_smell(tmp_path: Path) -> None:
     p = tmp_path / "bad.diff"
     p.write_text(FIXTURE.read_text().replace("string-sql", "made-up-smell"))
