@@ -94,16 +94,18 @@ _DEFAULT_GEMINI_API_MODEL = "gemini-2.5-pro"
 def _select_client(backend: str, *, model: str = "claude-opus-4-7"):
     """Pick a backend handle based on env + explicit choice.
 
-    SDK backends (`api`, `gemini-api`) return an `SDKBackend` carrying
-    a fully-qualified pydantic-ai model id; CLI backends return their
-    existing subprocess client. The pipeline branches on
-    `isinstance(client, SDKBackend)`.
+    Returns a `Backend` regardless of the path: SDK backends carry a
+    pydantic-ai model id string, CLI backends carry a `Model` subclass
+    that wraps the `claude -p` / `gemini -p` subprocess client. The
+    pipeline calls `make_*_agent(backend.model)` either way.
 
     backend ∈ {"auto","api","cli","gemini","gemini-api"}. "auto" picks
     the Anthropic SDK if `ANTHROPIC_API_KEY` is set, else `claude -p`
     if on PATH, else raises. Both Gemini backends are opt-in only.
     """
     import shutil as _shutil
+
+    from .augment.agents import Backend
 
     has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
     has_claude = bool(_shutil.which("claude"))
@@ -120,8 +122,7 @@ def _select_client(backend: str, *, model: str = "claude-opus-4-7"):
                 "--backend=api but ANTHROPIC_API_KEY is not set "
                 "(load a .env or export the variable)."
             )
-        from .augment.agents import SDKBackend
-        return SDKBackend(model_id=f"anthropic:{model}")
+        return Backend(model=f"anthropic:{model}")
 
     if backend == "cli":
         if not has_claude:
@@ -129,9 +130,9 @@ def _select_client(backend: str, *, model: str = "claude-opus-4-7"):
                 "--backend=cli but `claude` is not on PATH "
                 "(install Claude Code CLI or set ANTHROPIC_API_KEY)."
             )
-        from .augment.claude_cli_client import ClaudeCLIClient
+        from .augment.cli_models import ClaudeCLIModel
         _warn_cli_fallback()
-        return ClaudeCLIClient()
+        return Backend(model=ClaudeCLIModel(model=model), is_subprocess_backend=True)
 
     if backend == "gemini":
         if not has_gemini:
@@ -150,9 +151,13 @@ def _select_client(backend: str, *, model: str = "claude-opus-4-7"):
                 "or run `gemini` once interactively to complete the "
                 "OAuth flow."
             )
-        from .augment.gemini_cli_client import GeminiCLIClient
+        from .augment.cli_models import GeminiCLIModel
         _warn_gemini_fallback()
-        return GeminiCLIClient()
+        gem_model = _DEFAULT_GEMINI_API_MODEL if model.startswith("claude") else model
+        return Backend(
+            model=GeminiCLIModel(model=gem_model),
+            is_subprocess_backend=True,
+        )
 
     if backend == "gemini-api":
         if not has_gemini_creds:
@@ -161,22 +166,20 @@ def _select_client(backend: str, *, model: str = "claude-opus-4-7"):
                 "Set GEMINI_API_KEY (AI Studio), GOOGLE_API_KEY (Vertex), "
                 "or GOOGLE_CLOUD_PROJECT (Vertex via ADC)."
             )
-        from .augment.agents import SDKBackend
         # GOOGLE_CLOUD_PROJECT triggers Vertex via ADC; otherwise the
         # API-key path (AI Studio) wins.
         gem_model = _DEFAULT_GEMINI_API_MODEL if model.startswith("claude") else model
         if os.environ.get("GOOGLE_CLOUD_PROJECT"):
-            return SDKBackend(model_id=f"google-vertex:{gem_model}")
-        return SDKBackend(model_id=f"google-gla:{gem_model}")
+            return Backend(model=f"google-vertex:{gem_model}")
+        return Backend(model=f"google-gla:{gem_model}")
 
     # auto
     if has_key:
-        from .augment.agents import SDKBackend
-        return SDKBackend(model_id=f"anthropic:{model}")
+        return Backend(model=f"anthropic:{model}")
     if has_claude:
-        from .augment.claude_cli_client import ClaudeCLIClient
+        from .augment.cli_models import ClaudeCLIModel
         _warn_cli_fallback()
-        return ClaudeCLIClient()
+        return Backend(model=ClaudeCLIModel(model=model), is_subprocess_backend=True)
 
     raise typer.BadParameter(
         "No Anthropic credentials available: set ANTHROPIC_API_KEY "

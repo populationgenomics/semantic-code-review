@@ -1,9 +1,9 @@
 """Translate a pydantic-ai `AgentRunResult` to the per-iteration trace
-JSON shape `run_agentic` writes today.
+JSON shape `run_agentic` (now retired) used to write.
 
-Every consumer of `trace/*.json` reads the existing shape (the viewer's
-trace tab, ad-hoc tooling, support diagnostics). Keeping that shape
-stable across the SDK migration means downstream code doesn't notice
+Every consumer of `trace/*.json` reads this shape (the viewer's
+trace tab, ad-hoc tooling, support diagnostics). Keeping it stable
+across the SDK / CLI migration means downstream code doesn't notice
 which loop driver produced the run.
 
 The shape:
@@ -53,7 +53,7 @@ def _request_to_sent(req: ModelRequest) -> list[dict[str, Any]]:
     """Translate a ModelRequest's parts into the legacy `messages_sent` shape.
 
     System prompts are intentionally dropped — the trace records the
-    system prompt once at the top level, mirroring `run_agentic`.
+    system prompt once at the top level.
     """
     out: list[dict[str, Any]] = []
     for part in req.parts:

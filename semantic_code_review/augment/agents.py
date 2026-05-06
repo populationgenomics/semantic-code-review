@@ -1,13 +1,15 @@
-"""Pydantic-ai Agent factories for the SDK-backed passes.
+"""Pydantic-ai Agent factories for both SDK and CLI backends.
 
 Two factories — one per pass — that wire the right `output_type`,
 instructions, and tool set. The Agent itself is stateless across runs;
 the per-run `RepoTools` is supplied via `deps=` to `Agent.run`.
 
-Both factories take a fully-qualified pydantic-ai model id (e.g.
-`anthropic:claude-opus-4-7` or `google-vertex:gemini-2.5-pro`); the
-caller in `cli._select_client` is the single place that decides which
-provider an unqualified model name maps to.
+`model` accepts either a fully-qualified pydantic-ai model id string
+(e.g. `anthropic:claude-opus-4-7` or `google-vertex:gemini-2.5-pro`)
+*or* a `pydantic_ai.models.Model` instance — the CLI subprocess
+backends in `cli_models.py` are Model subclasses that wrap the
+`claude -p` / `gemini -p` clients. `cli._select_client` is the single
+place that decides which form an unqualified model name maps to.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from pydantic_ai import Agent
+from pydantic_ai.models import Model
 from pydantic_ai.output import ToolOutput
 
 from .prompts import HUNK_SYSTEM, OVERVIEW_SYSTEM
@@ -23,36 +26,31 @@ from .schemas import HunkAnnotations, OverviewSubmission
 from .tools import RepoTools
 
 
-# The output-tool names match what `run_agentic` exposes to CLI clients
-# (`submit_overview`, `submit_annotations`) so the shared system prompts
-# can keep referring to them by name. The CLI path receives the same
-# named tool from `prompts.SUBMIT_*_TOOL`; the SDK path receives one
-# constructed by pydantic-ai from the Pydantic model.
-
-def make_overview_agent(model_id: str) -> Agent[None, OverviewSubmission]:
+def make_overview_agent(model: str | Model) -> Agent[None, OverviewSubmission]:
     """Agent for the PR-level overview pass.
 
     No repo tools are registered — the overview pass works purely from
     the diffstat + hunk headers in its prompt. Output is constrained
-    via `ToolOutput(OverviewSubmission, name='submit_overview')`, the
-    same wire name the CLI path's `submit_overview` tool uses.
+    via `ToolOutput(OverviewSubmission, name='submit_overview')`.
     """
     return Agent(
-        model=model_id,
+        model=model,
         output_type=ToolOutput(OverviewSubmission, name="submit_overview"),
         instructions=OVERVIEW_SYSTEM,
     )
 
 
-def make_hunk_agent(model_id: str) -> Agent[RepoTools, HunkAnnotations]:
+def make_hunk_agent(model: str | Model) -> Agent[RepoTools, HunkAnnotations]:
     """Agent for the per-hunk annotation pass.
 
-    Registers the repo tool functions so the model can `read_file`,
-    `grep`, etc. against the run's worktree. Output is constrained
-    via `ToolOutput(HunkAnnotations, name='submit_annotations')`.
+    Registers the repo tool functions so the SDK Agent can `read_file`,
+    `grep`, etc. against the run's worktree. CLI backends ignore
+    `function_tools` — they expose the same tools to the underlying
+    subprocess via the MCP server. Output is constrained via
+    `ToolOutput(HunkAnnotations, name='submit_annotations')`.
     """
     return Agent(
-        model=model_id,
+        model=model,
         deps_type=RepoTools,
         output_type=ToolOutput(HunkAnnotations, name="submit_annotations"),
         instructions=HUNK_SYSTEM,
@@ -61,29 +59,38 @@ def make_hunk_agent(model_id: str) -> Agent[RepoTools, HunkAnnotations]:
 
 
 @dataclass
-class SDKBackend:
-    """Pipeline-side stand-in for an SDK-driven Agent.
+class Backend:
+    """Pipeline-side handle for an LLM backend.
 
-    `pipeline.augment_run_dir` and the per-pass functions in
-    `overview.py` / `hunks.py` branch on `isinstance(client, SDKBackend)`
-    to pick between the pydantic-ai path (this) and the CLI subprocess
-    `ClaudeClient` path. The `model_id` is a fully-qualified
-    pydantic-ai model id (e.g. `anthropic:claude-opus-4-7` or
-    `google-vertex:gemini-2.5-pro`).
+    Holds either a pydantic-ai model id string (for SDK backends) or
+    a `pydantic_ai.models.Model` instance (for CLI subprocess backends,
+    see `cli_models.py`). The pipeline calls `make_*_agent(backend.model)`
+    to build pass-specific agents.
 
-    `repo_tools` is mutated by the pipeline once the run directory is
-    known so the per-hunk agent can pass it as `deps` at run time. The
-    overview agent doesn't need repo tools.
+    `set_repo_tools` proxies to the inner CLI Model when present so the
+    subprocess can spawn an MCP server bound to the run's worktree;
+    SDK string models have no repo-tool concept here — the SDK Agent
+    receives `deps=repo_tools` at `Agent.run` call time. The pipeline
+    calls both: `backend.set_repo_tools(rt)` for the CLI side, and
+    passes `rt` as `deps=` for the SDK side.
 
-    `aclose()` is a no-op so `contextlib.aclosing` can drive the
-    lifecycle uniformly across SDK and CLI clients in
-    `augment_run_dir`. v0.12 collapses this dispatcher.
+    `aclose()` is delegated to the inner Model. SDK string models have
+    no per-run resources to release; the no-op fallthrough is fine.
     """
 
-    model_id: str
-    repo_tools: RepoTools | None = None
+    model: str | Model
     is_subprocess_backend: bool = False
 
+    def set_repo_tools(self, repo_tools: RepoTools | None) -> None:
+        if isinstance(self.model, Model):
+            setter = getattr(self.model, "set_repo_tools", None)
+            if callable(setter):
+                setter(repo_tools)
+
     async def aclose(self) -> None:
-        return None
+        if isinstance(self.model, Model):
+            close = getattr(self.model, "aclose", None)
+            if callable(close):
+                await close()
+
 

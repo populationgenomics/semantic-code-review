@@ -2,8 +2,8 @@
 
 Builds a synthetic AgentRunResult-shaped object whose `all_messages()`
 returns hand-crafted ModelRequest/ModelResponse pairs, runs the
-adapter, and asserts the on-disk trace matches the shape `run_agentic`
-emits today.
+adapter, and asserts the on-disk trace matches the shape that
+existed before the pydantic-ai migration.
 """
 
 from __future__ import annotations

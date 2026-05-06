@@ -1,84 +1,35 @@
-"""System prompts and tool schemas for the two LLM passes.
+"""System prompts for the two LLM passes.
 
-Bump `PROMPT_VERSION` when either prompt or a schema changes — the cache
-layer keys on it so a bump forces a full re-run.
+Bump `PROMPT_VERSION` when a prompt changes — the cache layer keys on
+it so a bump forces a full re-run.
 
-The submit-tool input schemas are derived from the Pydantic models in
-`schemas.py` (`OverviewSubmission`, `HunkAnnotations`) so there's a
-single source of truth for "what we ask the model to emit" and "how
-we parse it back". Adding or renaming a field is one edit, not two.
+The wire format the model emits is constrained by the Pydantic models
+in `schemas.py` (`OverviewSubmission`, `HunkAnnotations`) via
+pydantic-ai's `output_type=ToolOutput(...)`. The prompts describe
+*what* fields to populate; the schema enforces *how* they're shaped.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
-from .schemas import HunkAnnotations, OverviewSubmission, SMELL_TAGS_TEXT
+from .schemas import SMELL_TAGS_TEXT
 
 
-PROMPT_VERSION = "p7"
+PROMPT_VERSION = "p8"
 
-
-# --- Submission tools -------------------------------------------------------
-#
-# `by_alias=True` matters here: OverviewEdge uses Field(alias="from") /
-# Field(alias="to") because `from` is a Python keyword. The schema
-# emitted to the model must use the JSON aliases (`from` / `to`), not
-# the Python field names (`src` / `dst`); the parsing side accepts
-# both via populate_by_name=True.
-#
-# `_force_required` re-asserts fields that the original hand-written
-# schemas marked required but Pydantic relaxes because they have
-# defaults (e.g. list fields with `default_factory=list`). We keep
-# the Python-side defaults so test fixtures and apply_*_to_diff stay
-# permissive; the schema sent to the model stays strict.
-
-def _force_required(schema: dict[str, Any], *fields: str) -> dict[str, Any]:
-    req = list(schema.get("required", []))
-    for f in fields:
-        if f not in req:
-            req.append(f)
-    schema["required"] = req
-    return schema
-
-
-SUBMIT_OVERVIEW_TOOL: dict[str, Any] = {
-    "name": "submit_overview",
-    "description": (
-        "Submit the final PR overview. Call this exactly once when "
-        "you have the complete structure."
-    ),
-    "input_schema": _force_required(
-        OverviewSubmission.model_json_schema(by_alias=True),
-        "files",
-    ),
-}
-
-
-SUBMIT_ANNOTATIONS_TOOL: dict[str, Any] = {
-    "name": "submit_annotations",
-    "description": (
-        "Submit the final annotations for this hunk. Call exactly "
-        "once when you are ready."
-    ),
-    "input_schema": HunkAnnotations.model_json_schema(by_alias=True),
-}
-
-
-# --- System prompts ---------------------------------------------------------
 
 OVERVIEW_SYSTEM = (
     "You are preparing a structured overview of a pull request (or a local diff) to "
     "help a human reviewer understand its shape at a glance.\n\n"
     "You receive the PR title and body, a diffstat, and the hunk headers of each "
     "changed file (no bodies), each numbered by its `hunk_index` within its file. "
-    "Produce a concise overview by calling `submit_overview`.\n\n"
+    "Produce a concise overview.\n\n"
     "Guidelines:\n"
     "- Lead with WHY, not WHAT.\n"
     "- Symbol kinds are: function, method, class, constant.\n"
     "- `callgraph_edges` are introduced or modified calls (best-effort — omit if unsure).\n"
     "- `themes` are short keyword tags (e.g. 'pagination', 'api-surface').\n"
     "- Per-file `summary` is one sentence; `lang` only when the extension is ambiguous.\n"
+    "- `files` must include one entry per changed file in the diff.\n"
     "- Favour clarity over completeness: the reviewer uses this to decide where to look.\n"
     "- If the PR body contains a specification markdown block (look for a `# Spec` "
     "  heading or similar), treat it as GROUND TRUTH for what the change was meant to "
@@ -116,7 +67,7 @@ HUNK_SYSTEM = (
     "You have tools to read other files in the head worktree and at the base SHA, to "
     "grep, to list directories, and to check git history. Use them when the hunk depends "
     "on code outside the diff; skip them if the hunk is self-contained.\n\n"
-    "When done, call `submit_annotations` with:\n"
+    "Populate the following fields:\n"
     "- `intent`: 1-2 sentences. MOTIVE, not mechanics. Name the exact change (what was "
     "X, is now Y), not 'probably'. Bad: 'one-line tweak to the compose file (likely an "
     "image bump)'. Good: 'bumps the postgres image tag from 15.3 to 15.5'.\n"
@@ -148,17 +99,3 @@ HUNK_SYSTEM = (
     "omit the field.\n\n"
     "Tone: explanatory, not evaluative. Comprehension first."
 )
-
-
-# --- Tool sets exposed to each pass ----------------------------------------
-
-def overview_tools() -> list[dict[str, Any]]:
-    return [SUBMIT_OVERVIEW_TOOL]
-
-
-def hunk_tools() -> list[dict[str, Any]]:
-    # The CLI clients only consult this list for the submit-tool — repo
-    # tools (`read_file`, `grep`, ...) reach the model out-of-band via
-    # the MCP server those clients spawn. The SDK Agent registers its
-    # repo tools directly via `@agent.tool`.
-    return [SUBMIT_ANNOTATIONS_TOOL]
