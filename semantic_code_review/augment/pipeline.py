@@ -21,12 +21,13 @@ from ..cache.store import CacheStore
 from ..format.emit import emit_augmented_diff
 from ..format.parse import parse_augmented_diff
 from ..format.sidecar import dump_sidecar
+from .agents import SDKBackend
 from .hunks import (
     apply_hunk_annotations, overview_to_prompt_json, run_hunk_pass,
 )
 from .overview import apply_overview_to_diff, run_overview_pass
 from .prompts import PROMPT_VERSION
-from .runner import AnthropicClient, ClaudeClient
+from .runner import ClaudeClient
 from .schemas import AugmentedDiff, FileRole, PRInfo
 from .tools import RepoTools
 
@@ -63,7 +64,7 @@ async def augment_run_dir(
     *,
     model: str = "claude-opus-4-7",
     concurrency: int = 8,
-    client: ClaudeClient | None = None,
+    client: ClaudeClient | SDKBackend | None = None,
     cache: CacheStore | None = None,
     only_files: list[str] | None = None,
     max_hunks: int | None = None,
@@ -72,7 +73,10 @@ async def augment_run_dir(
 ) -> Path:
     """Augment a fetch run directory. Returns the augmented.diff path."""
     if client is None:
-        client = AnthropicClient()
+        # Default to the Anthropic SDK path via pydantic-ai. Callers that
+        # need a different backend (CLI, Gemini, tests) construct the
+        # client explicitly via `_select_client` or a stub.
+        client = SDKBackend(model_id=f"anthropic:{model}")
     # cache=None means "no disk caching"; callers pass a CacheStore to enable.
 
     raw_diff_path = run_dir / "raw.diff"
@@ -126,17 +130,22 @@ async def augment_run_dir(
 
     # CLI backend: hand the RepoTools to the client so it can inject a
     # stdio MCP server into `claude -p` and preserve the tool-exploration
-    # loop. `AnthropicClient` has no such hook so we duck-type.
-    setter = getattr(client, "set_repo_tools", None)
-    if callable(setter):
-        setter(repo_tools)
+    # loop. SDK backends store it on themselves so `run_hunk_pass` can
+    # forward it as `deps=` to the Agent. Both honour the same "set me
+    # the per-run tools before you start" contract via duck-typing.
+    if isinstance(client, SDKBackend):
+        client.repo_tools = repo_tools
+    else:
+        setter = getattr(client, "set_repo_tools", None)
+        if callable(setter):
+            setter(repo_tools)
 
     overview_json = overview_to_prompt_json(diff)
 
     # Subprocess clients allocate temp config files at first use;
     # `aclosing` calls `client.aclose()` on exit so /tmp doesn't
-    # accumulate them across runs. AnthropicClient's aclose is a
-    # no-op so this is uniform across backends.
+    # accumulate them across runs. SDKBackend's aclose is a no-op
+    # so this is uniform across backends.
     async with contextlib.aclosing(client):
         sem = asyncio.Semaphore(concurrency)
         tasks: list[asyncio.Task] = []
@@ -199,7 +208,7 @@ class _HunkStats:
 
 async def _augment_one_hunk(
     sem: asyncio.Semaphore,
-    client: ClaudeClient,
+    client: ClaudeClient | SDKBackend,
     fp: Any,
     h: Any,
     overview_json: str,

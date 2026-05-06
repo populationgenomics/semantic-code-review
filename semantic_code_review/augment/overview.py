@@ -16,8 +16,10 @@ from ..augment.schemas import (
     OverviewGroup, OverviewGroupMember, OverviewSymbol,
 )
 from ..cache.store import CacheStore
+from .agents import SDKBackend, make_overview_agent
 from .prompts import OVERVIEW_SYSTEM, PROMPT_VERSION, overview_tools
 from .runner import ClaudeClient, run_agentic
+from .trace_adapter import submit_args_from_result, write_pydantic_ai_trace
 
 
 def format_overview_prompt(diff: AugmentedDiff, meta: dict[str, Any]) -> str:
@@ -54,7 +56,7 @@ def format_overview_prompt(diff: AugmentedDiff, meta: dict[str, Any]) -> str:
 
 
 async def run_overview_pass(
-    client: ClaudeClient,
+    client: ClaudeClient | SDKBackend,
     *,
     diff: AugmentedDiff,
     meta: dict[str, Any],
@@ -73,25 +75,46 @@ async def run_overview_pass(
                 _write_cache_hit_marker(trace_dir / "overview.json", "overview", entry)
             return entry["response"]
 
-    user_content = [{"type": "text", "text": user_text}]
     trace_path = (trace_dir / "overview.json") if trace_dir is not None else None
-    result = await run_agentic(
-        client,
-        model=model,
-        system=OVERVIEW_SYSTEM,
-        user_content=user_content,
-        tools=overview_tools(),
-        submit_tool_name="submit_overview",
-        trace_path=trace_path,
-    )
+
+    if isinstance(client, SDKBackend):
+        agent = make_overview_agent(client.model_id)
+        run_result = await agent.run(user_text)
+        submit_args = submit_args_from_result(run_result)
+        if trace_path is not None:
+            write_pydantic_ai_trace(
+                run_result,
+                trace_path=trace_path,
+                model=client.model_id,
+                system=OVERVIEW_SYSTEM,
+                tool_names=[],
+                submit_tool="submit_overview",
+            )
+        usage = run_result.usage()
+        tokens_in = usage.input_tokens or 0
+        tokens_out = usage.output_tokens or 0
+    else:
+        user_content = [{"type": "text", "text": user_text}]
+        result = await run_agentic(
+            client,
+            model=model,
+            system=OVERVIEW_SYSTEM,
+            user_content=user_content,
+            tools=overview_tools(),
+            submit_tool_name="submit_overview",
+            trace_path=trace_path,
+        )
+        submit_args = result.submit_args
+        tokens_in = result.input_tokens
+        tokens_out = result.output_tokens
 
     if cache is not None:
         cache.put(
             key, request={"system": OVERVIEW_SYSTEM, "user": user_text},
-            response=result.submit_args,
-            tokens_in=result.input_tokens, tokens_out=result.output_tokens,
+            response=submit_args,
+            tokens_in=tokens_in, tokens_out=tokens_out,
         )
-    return result.submit_args
+    return submit_args
 
 
 def _write_cache_hit_marker(path: Path, pass_name: str, entry: dict[str, Any]) -> None:

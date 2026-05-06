@@ -1,4 +1,10 @@
-"""Async orchestrator: tool-use loop, prompt caching, disk cache, backoff."""
+"""Async tool-use loop for the CLI subprocess backends.
+
+`run_agentic` drives `claude -p` and `gemini -p` style clients that
+expose a `create_message(...)` Anthropic-shaped wire surface. The SDK
+backends (Anthropic API, Vertex / AI Studio) are now driven by
+pydantic-ai through `agents.py`; they don't go through here.
+"""
 
 from __future__ import annotations
 
@@ -10,64 +16,25 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from .tools import RepoTools, dispatch
+from .repo_tool_fns import mcp_dispatch
+from .tools import RepoTools
 
 
 log = logging.getLogger(__name__)
 
 
 class ClaudeClient(Protocol):
+    """Wire surface the CLI subprocess clients implement.
+
+    The SDK backends do NOT implement this — they go through the
+    pydantic-ai `Agent` path via `agents.py`. Callers branch on
+    `isinstance(client, SDKBackend)` in the pipeline.
+    """
+
     async def create_message(self, **kwargs: Any) -> dict: ...
     # All clients implement aclose so callers can drive the lifecycle
     # uniformly via `contextlib.aclosing` without duck-typing checks.
-    # Clients with nothing to release (e.g. AnthropicClient) provide
-    # a no-op.
     async def aclose(self) -> None: ...
-
-
-class AnthropicClient:
-    """Default adapter over `anthropic.AsyncAnthropic`."""
-
-    def __init__(self, inner: Any | None = None) -> None:
-        if inner is None:
-            from anthropic import AsyncAnthropic  # lazy import
-            inner = AsyncAnthropic()
-        self._inner = inner
-
-    async def create_message(self, **kwargs: Any) -> dict:
-        msg = await self._inner.messages.create(**kwargs)
-        return _message_to_dict(msg)
-
-    async def aclose(self) -> None:
-        # The Anthropic SDK manages its own httpx client lifetime; we
-        # don't allocate any per-client resources, so this is a no-op.
-        # Present so the lifecycle hook is uniform across clients.
-        return None
-
-
-def _message_to_dict(msg: Any) -> dict:
-    return {
-        "id": getattr(msg, "id", ""),
-        "model": getattr(msg, "model", ""),
-        "role": getattr(msg, "role", "assistant"),
-        "stop_reason": getattr(msg, "stop_reason", ""),
-        "usage": {
-            "input_tokens": getattr(msg.usage, "input_tokens", 0),
-            "output_tokens": getattr(msg.usage, "output_tokens", 0),
-            "cache_creation_input_tokens": getattr(msg.usage, "cache_creation_input_tokens", 0),
-            "cache_read_input_tokens": getattr(msg.usage, "cache_read_input_tokens", 0),
-        } if getattr(msg, "usage", None) else {},
-        "content": [_block_to_dict(b) for b in msg.content],
-    }
-
-
-def _block_to_dict(b: Any) -> dict:
-    t = getattr(b, "type", None)
-    if t == "text":
-        return {"type": "text", "text": b.text}
-    if t == "tool_use":
-        return {"type": "tool_use", "id": b.id, "name": b.name, "input": b.input}
-    return {"type": t or "unknown"}
 
 
 @dataclass
@@ -154,7 +121,7 @@ async def run_agentic(
                     out = "error: no repo tools configured for this pass"
                 else:
                     try:
-                        out = dispatch(repo_tools, block["name"], block["input"])
+                        out = mcp_dispatch(repo_tools, block["name"], block["input"])
                     except Exception as e:  # noqa: BLE001
                         out = f"error: tool {block['name']} raised: {e}"
                 result.tool_calls.append(

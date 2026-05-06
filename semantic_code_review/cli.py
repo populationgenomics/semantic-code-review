@@ -88,14 +88,20 @@ def _configure_logging(verbose: bool) -> None:
     )
 
 
-def _select_client(backend: str):  # -> ClaudeClient, but keep import lazy
-    """Pick a `ClaudeClient`-shaped client based on env + explicit choice.
+_DEFAULT_GEMINI_API_MODEL = "gemini-2.5-pro"
+
+
+def _select_client(backend: str, *, model: str = "claude-opus-4-7"):
+    """Pick a backend handle based on env + explicit choice.
+
+    SDK backends (`api`, `gemini-api`) return an `SDKBackend` carrying
+    a fully-qualified pydantic-ai model id; CLI backends return their
+    existing subprocess client. The pipeline branches on
+    `isinstance(client, SDKBackend)`.
 
     backend ∈ {"auto","api","cli","gemini","gemini-api"}. "auto" picks
-    Anthropic API if its key is set, else `claude -p` if on PATH, else
-    raises. Both Gemini backends are opt-in only — they're never picked
-    by auto, since their output quality and cost profile are different
-    enough that we don't want to surprise users with them.
+    the Anthropic SDK if `ANTHROPIC_API_KEY` is set, else `claude -p`
+    if on PATH, else raises. Both Gemini backends are opt-in only.
     """
     import shutil as _shutil
 
@@ -114,8 +120,8 @@ def _select_client(backend: str):  # -> ClaudeClient, but keep import lazy
                 "--backend=api but ANTHROPIC_API_KEY is not set "
                 "(load a .env or export the variable)."
             )
-        from .augment.runner import AnthropicClient
-        return AnthropicClient()
+        from .augment.agents import SDKBackend
+        return SDKBackend(model_id=f"anthropic:{model}")
 
     if backend == "cli":
         if not has_claude:
@@ -155,13 +161,18 @@ def _select_client(backend: str):  # -> ClaudeClient, but keep import lazy
                 "Set GEMINI_API_KEY (AI Studio), GOOGLE_API_KEY (Vertex), "
                 "or GOOGLE_CLOUD_PROJECT (Vertex via ADC)."
             )
-        from .augment.gemini_sdk_client import GeminiSDKClient
-        return GeminiSDKClient()
+        from .augment.agents import SDKBackend
+        # GOOGLE_CLOUD_PROJECT triggers Vertex via ADC; otherwise the
+        # API-key path (AI Studio) wins.
+        gem_model = _DEFAULT_GEMINI_API_MODEL if model.startswith("claude") else model
+        if os.environ.get("GOOGLE_CLOUD_PROJECT"):
+            return SDKBackend(model_id=f"google-vertex:{gem_model}")
+        return SDKBackend(model_id=f"google-gla:{gem_model}")
 
     # auto
     if has_key:
-        from .augment.runner import AnthropicClient
-        return AnthropicClient()
+        from .augment.agents import SDKBackend
+        return SDKBackend(model_id=f"anthropic:{model}")
     if has_claude:
         from .augment.claude_cli_client import ClaudeCLIClient
         _warn_cli_fallback()
@@ -246,7 +257,7 @@ def augment(
     from .augment.prompts import PROMPT_VERSION
 
     cache = None if no_cache else CacheStore(root=cache_dir, prompt_version=PROMPT_VERSION)
-    client = _select_client(backend)
+    client = _select_client(backend, model=model)
 
     path = asyncio.run(
         augment_run_dir(
@@ -298,7 +309,7 @@ def run(
     runs_root = runs_root or _default_runs_root()
     fetch_result = fetch_pr(pr_url, runs_root)
     cache = None if no_cache else CacheStore(prompt_version=PROMPT_VERSION)
-    client = _select_client(backend)
+    client = _select_client(backend, model=model)
     asyncio.run(
         augment_run_dir(
             fetch_result.run_dir,
@@ -387,7 +398,7 @@ def review(
     runs_root = runs_root or _default_runs_root()
     # Resolve the backend up-front so a misconfiguration fails fast, before
     # we spend time building the diff / worktrees.
-    client = _select_client(backend) if augment else None
+    client = _select_client(backend, model=model) if augment else None
 
     opts = ReviewOptions(
         spec=spec,
@@ -485,7 +496,7 @@ def pr(
 
     pr_url = f"https://github.com/{repo}/pull/{number}"
 
-    client = _select_client(backend) if augment else None
+    client = _select_client(backend, model=model) if augment else None
 
     runs_root = runs_root or _default_runs_root()
     fetch_result = fetch_pr(pr_url, runs_root)

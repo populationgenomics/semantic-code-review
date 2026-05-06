@@ -14,7 +14,6 @@ from __future__ import annotations
 from typing import Any
 
 from .schemas import HunkAnnotations, OverviewSubmission, SMELL_TAGS_TEXT
-from .tools import ANTHROPIC_TOOL_SCHEMAS
 
 
 PROMPT_VERSION = "p7"
@@ -158,4 +157,8 @@ def overview_tools() -> list[dict[str, Any]]:
 
 
 def hunk_tools() -> list[dict[str, Any]]:
-    return [*ANTHROPIC_TOOL_SCHEMAS, SUBMIT_ANNOTATIONS_TOOL]
+    # The CLI clients only consult this list for the submit-tool — repo
+    # tools (`read_file`, `grep`, ...) reach the model out-of-band via
+    # the MCP server those clients spawn. The SDK Agent registers its
+    # repo tools directly via `@agent.tool`.
+    return [SUBMIT_ANNOTATIONS_TOOL]

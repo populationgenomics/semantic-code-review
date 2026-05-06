@@ -33,7 +33,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .tools import ANTHROPIC_TOOL_SCHEMAS, RepoTools, dispatch
+from .repo_tool_fns import mcp_dispatch, mcp_tool_schemas
+from .tools import RepoTools
 
 
 log = logging.getLogger("scr.mcp_server")
@@ -42,22 +43,6 @@ log = logging.getLogger("scr.mcp_server")
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "scr"
 SERVER_VERSION = "0.1.0"
-
-
-def _tools_for_mcp() -> list[dict[str, Any]]:
-    """Reshape Anthropic schemas into MCP's `tools/list` format.
-
-    MCP uses `inputSchema` (camelCase) where Anthropic uses
-    `input_schema`. Everything else is identical.
-    """
-    out: list[dict[str, Any]] = []
-    for t in ANTHROPIC_TOOL_SCHEMAS:
-        out.append({
-            "name": t["name"],
-            "description": t.get("description", ""),
-            "inputSchema": t["input_schema"],
-        })
-    return out
 
 
 def _make_error(req_id: Any, code: int, message: str) -> dict[str, Any]:
@@ -87,13 +72,13 @@ def _handle(req: dict[str, Any], repo_tools: RepoTools) -> dict[str, Any] | None
         return None
 
     if method == "tools/list":
-        return _make_result(req_id, {"tools": _tools_for_mcp()})
+        return _make_result(req_id, {"tools": mcp_tool_schemas()})
 
     if method == "tools/call":
         name = params.get("name", "")
         args = params.get("arguments") or {}
         try:
-            output = dispatch(repo_tools, name, args)
+            output = mcp_dispatch(repo_tools, name, args)
             return _make_result(req_id, {
                 "content": [{"type": "text", "text": output}],
                 "isError": output.startswith("error:"),

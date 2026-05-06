@@ -12,7 +12,6 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 
 TOOL_RESULT_CAP_BYTES = 20 * 1024
@@ -151,83 +150,3 @@ def _slice_and_cap(text: str, start_line: int | None, end_line: int | None) -> s
     return _cap("".join(lines[s:e]))
 
 
-# --- Anthropic tool schemas -------------------------------------------------
-
-ANTHROPIC_TOOL_SCHEMAS: list[dict[str, Any]] = [
-    {
-        "name": "read_file",
-        "description": "Read a file from the head worktree. Returns up to 20 KB of text.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Path relative to repo root."},
-                "start_line": {"type": "integer", "description": "1-indexed start line (optional)."},
-                "end_line": {"type": "integer", "description": "1-indexed end line inclusive (optional)."},
-            },
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "read_file_at",
-        "description": "Read a file at a specific commit SHA (e.g. the PR base). Use for pre-change content.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "sha": {"type": "string", "description": "Commit SHA."},
-                "path": {"type": "string"},
-                "start_line": {"type": "integer"},
-                "end_line": {"type": "integer"},
-            },
-            "required": ["sha", "path"],
-        },
-    },
-    {
-        "name": "grep",
-        "description": "Search the head worktree with ripgrep. Returns path:line:text matches, capped at 50 by default.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "pattern": {"type": "string"},
-                "path_glob": {"type": "string", "description": "Restrict to matching files (e.g. 'src/**/*.py')."},
-                "max_hits": {"type": "integer"},
-            },
-            "required": ["pattern"],
-        },
-    },
-    {
-        "name": "list_dir",
-        "description": "List a directory in the head worktree (shallow, hidden files skipped).",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Path relative to repo root (empty for root)."},
-            },
-        },
-    },
-    {
-        "name": "git_log",
-        "description": "Recent commits touching a path (short form).",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "limit": {"type": "integer"},
-            },
-            "required": ["path"],
-        },
-    },
-]
-
-
-def dispatch(tools: RepoTools, name: str, input_args: dict[str, Any]) -> str:
-    if name == "read_file":
-        return tools.read_file(**input_args)
-    if name == "read_file_at":
-        return tools.read_file_at(**input_args)
-    if name == "grep":
-        return tools.grep(**input_args)
-    if name == "list_dir":
-        return tools.list_dir(**input_args)
-    if name == "git_log":
-        return tools.git_log(**input_args)
-    return f"error: unknown tool {name!r}"

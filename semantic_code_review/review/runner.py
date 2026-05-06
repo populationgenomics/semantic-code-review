@@ -18,6 +18,7 @@ import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..augment.agents import SDKBackend
 from ..augment.prompts import PROMPT_VERSION
 from ..augment.runner import ClaudeClient
 from ..cache.store import CacheStore
@@ -49,9 +50,9 @@ class ReviewOptions:
     open_browser: bool = True
     port: int = 0
     timeout: int = 3600
-    # Optional preselected LLM client. None → augment_run_dir builds an
-    # AnthropicClient itself (legacy behavior).
-    client: ClaudeClient | None = None
+    # Optional preselected LLM backend handle. None → augment_run_dir
+    # defaults to an `SDKBackend` for the Anthropic SDK path.
+    client: ClaudeClient | SDKBackend | None = None
 
 
 def run_review(opts: ReviewOptions) -> int:
