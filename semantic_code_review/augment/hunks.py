@@ -19,9 +19,11 @@ from ..augment.schemas import (
 )
 from ..cache.store import CacheStore
 from ..viewer.rows import build_rows, compute_fold_regions
-from .prompts import HUNK_SYSTEM, PROMPT_VERSION, hunk_tools
-from .runner import ClaudeClient, run_agentic
+from .agents import Backend, make_hunk_agent
+from .prompts import HUNK_SYSTEM, PROMPT_VERSION
+from .repo_tool_fns import TOOL_FUNCTIONS
 from .tools import RepoTools
+from .trace_adapter import submit_args_from_result, write_pydantic_ai_trace
 
 
 def format_hunk_prompt(fp: FilePatch, hunk: Hunk, overview_json: str, file_summary: str) -> list[dict[str, Any]]:
@@ -66,7 +68,7 @@ def format_hunk_prompt(fp: FilePatch, hunk: Hunk, overview_json: str, file_summa
 
 
 async def run_hunk_pass(
-    client: ClaudeClient,
+    backend: Backend,
     *,
     fp: FilePatch,
     hunk: Hunk,
@@ -109,25 +111,35 @@ async def run_hunk_pass(
                 )
             return entry["response"]
 
-    result = await run_agentic(
-        client,
-        model=model,
-        system=HUNK_SYSTEM,
-        user_content=user_content,
-        tools=hunk_tools(),
-        submit_tool_name="submit_annotations",
-        repo_tools=repo_tools,
-        trace_path=trace_path,
-    )
+    # Concatenate the three cache-segmented blocks into a single user
+    # prompt — pydantic-ai's message format doesn't surface Anthropic
+    # prompt-caching breakpoints. Provider-side caching is a v0.13
+    # follow-up; correctness comes first.
+    user_text = "\n\n".join(b["text"] for b in user_content)
+    agent = make_hunk_agent(backend.model)
+    run_result = await agent.run(user_text, deps=repo_tools)
+    submit_args = submit_args_from_result(run_result)
+    if trace_path is not None:
+        write_pydantic_ai_trace(
+            run_result,
+            trace_path=trace_path,
+            model=str(backend.model),
+            system=HUNK_SYSTEM,
+            tool_names=[fn.__name__ for fn in TOOL_FUNCTIONS],
+            submit_tool="submit_annotations",
+        )
+    usage = run_result.usage()
+    tokens_in = usage.input_tokens or 0
+    tokens_out = usage.output_tokens or 0
 
     if cache is not None:
         cache.put(
             key,
             request={"file": fp.path, "header": hunk.header, "body_len": len(hunk.body)},
-            response=result.submit_args,
-            tokens_in=result.input_tokens, tokens_out=result.output_tokens,
+            response=submit_args,
+            tokens_in=tokens_in, tokens_out=tokens_out,
         )
-    return result.submit_args
+    return submit_args
 
 
 def apply_hunk_annotations(hunk: Hunk, submit_args: dict[str, Any]) -> None:

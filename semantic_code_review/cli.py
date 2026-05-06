@@ -88,16 +88,24 @@ def _configure_logging(verbose: bool) -> None:
     )
 
 
-def _select_client(backend: str):  # -> ClaudeClient, but keep import lazy
-    """Pick a `ClaudeClient`-shaped client based on env + explicit choice.
+_DEFAULT_GEMINI_API_MODEL = "gemini-2.5-pro"
+
+
+def _select_client(backend: str, *, model: str = "claude-opus-4-7"):
+    """Pick a backend handle based on env + explicit choice.
+
+    Returns a `Backend` regardless of the path: SDK backends carry a
+    pydantic-ai model id string, CLI backends carry a `Model` subclass
+    that wraps the `claude -p` / `gemini -p` subprocess client. The
+    pipeline calls `make_*_agent(backend.model)` either way.
 
     backend ∈ {"auto","api","cli","gemini","gemini-api"}. "auto" picks
-    Anthropic API if its key is set, else `claude -p` if on PATH, else
-    raises. Both Gemini backends are opt-in only — they're never picked
-    by auto, since their output quality and cost profile are different
-    enough that we don't want to surprise users with them.
+    the Anthropic SDK if `ANTHROPIC_API_KEY` is set, else `claude -p`
+    if on PATH, else raises. Both Gemini backends are opt-in only.
     """
     import shutil as _shutil
+
+    from .augment.agents import Backend
 
     has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
     has_claude = bool(_shutil.which("claude"))
@@ -114,8 +122,7 @@ def _select_client(backend: str):  # -> ClaudeClient, but keep import lazy
                 "--backend=api but ANTHROPIC_API_KEY is not set "
                 "(load a .env or export the variable)."
             )
-        from .augment.runner import AnthropicClient
-        return AnthropicClient()
+        return Backend(model=f"anthropic:{model}")
 
     if backend == "cli":
         if not has_claude:
@@ -123,9 +130,9 @@ def _select_client(backend: str):  # -> ClaudeClient, but keep import lazy
                 "--backend=cli but `claude` is not on PATH "
                 "(install Claude Code CLI or set ANTHROPIC_API_KEY)."
             )
-        from .augment.claude_cli_client import ClaudeCLIClient
+        from .augment.cli_models import ClaudeCLIModel
         _warn_cli_fallback()
-        return ClaudeCLIClient()
+        return Backend(model=ClaudeCLIModel(model=model), is_subprocess_backend=True)
 
     if backend == "gemini":
         if not has_gemini:
@@ -144,9 +151,13 @@ def _select_client(backend: str):  # -> ClaudeClient, but keep import lazy
                 "or run `gemini` once interactively to complete the "
                 "OAuth flow."
             )
-        from .augment.gemini_cli_client import GeminiCLIClient
+        from .augment.cli_models import GeminiCLIModel
         _warn_gemini_fallback()
-        return GeminiCLIClient()
+        gem_model = _DEFAULT_GEMINI_API_MODEL if model.startswith("claude") else model
+        return Backend(
+            model=GeminiCLIModel(model=gem_model),
+            is_subprocess_backend=True,
+        )
 
     if backend == "gemini-api":
         if not has_gemini_creds:
@@ -155,17 +166,20 @@ def _select_client(backend: str):  # -> ClaudeClient, but keep import lazy
                 "Set GEMINI_API_KEY (AI Studio), GOOGLE_API_KEY (Vertex), "
                 "or GOOGLE_CLOUD_PROJECT (Vertex via ADC)."
             )
-        from .augment.gemini_sdk_client import GeminiSDKClient
-        return GeminiSDKClient()
+        # GOOGLE_CLOUD_PROJECT triggers Vertex via ADC; otherwise the
+        # API-key path (AI Studio) wins.
+        gem_model = _DEFAULT_GEMINI_API_MODEL if model.startswith("claude") else model
+        if os.environ.get("GOOGLE_CLOUD_PROJECT"):
+            return Backend(model=f"google-vertex:{gem_model}")
+        return Backend(model=f"google-gla:{gem_model}")
 
     # auto
     if has_key:
-        from .augment.runner import AnthropicClient
-        return AnthropicClient()
+        return Backend(model=f"anthropic:{model}")
     if has_claude:
-        from .augment.claude_cli_client import ClaudeCLIClient
+        from .augment.cli_models import ClaudeCLIModel
         _warn_cli_fallback()
-        return ClaudeCLIClient()
+        return Backend(model=ClaudeCLIModel(model=model), is_subprocess_backend=True)
 
     raise typer.BadParameter(
         "No Anthropic credentials available: set ANTHROPIC_API_KEY "
@@ -246,7 +260,7 @@ def augment(
     from .augment.prompts import PROMPT_VERSION
 
     cache = None if no_cache else CacheStore(root=cache_dir, prompt_version=PROMPT_VERSION)
-    client = _select_client(backend)
+    client = _select_client(backend, model=model)
 
     path = asyncio.run(
         augment_run_dir(
@@ -298,7 +312,7 @@ def run(
     runs_root = runs_root or _default_runs_root()
     fetch_result = fetch_pr(pr_url, runs_root)
     cache = None if no_cache else CacheStore(prompt_version=PROMPT_VERSION)
-    client = _select_client(backend)
+    client = _select_client(backend, model=model)
     asyncio.run(
         augment_run_dir(
             fetch_result.run_dir,
@@ -387,7 +401,7 @@ def review(
     runs_root = runs_root or _default_runs_root()
     # Resolve the backend up-front so a misconfiguration fails fast, before
     # we spend time building the diff / worktrees.
-    client = _select_client(backend) if augment else None
+    client = _select_client(backend, model=model) if augment else None
 
     opts = ReviewOptions(
         spec=spec,
@@ -485,7 +499,7 @@ def pr(
 
     pr_url = f"https://github.com/{repo}/pull/{number}"
 
-    client = _select_client(backend) if augment else None
+    client = _select_client(backend, model=model) if augment else None
 
     runs_root = runs_root or _default_runs_root()
     fetch_result = fetch_pr(pr_url, runs_root)

@@ -8,6 +8,16 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelResponse,
+    ToolCallPart,
+)
+from pydantic_ai.models import Model, ModelRequestParameters
+from pydantic_ai.settings import ModelSettings
+from pydantic_ai.usage import RequestUsage
+
+from semantic_code_review.augment.agents import Backend
 from semantic_code_review.augment.pipeline import augment_run_dir
 from semantic_code_review.format.parse import parse_augmented_diff
 
@@ -16,35 +26,62 @@ def _sh(cwd: Path, *args: str) -> None:
     subprocess.run(args, cwd=cwd, check=True, capture_output=True)
 
 
-class CannedClient:
-    """Returns overview then hunk-annotation payloads in order."""
+class _CannedModel(Model):
+    """Pydantic-ai Model that returns pre-baked tool calls per pass.
+
+    The discriminator is the output tool name pydantic-ai puts in
+    `model_request_parameters.output_tools[0].name` — `submit_overview`
+    or `submit_annotations`. Hunk payloads are popped off in order so
+    tests can assert call ordering, mirroring the v0.10 CannedClient.
+    """
+
+    _provider = None  # type: ignore[assignment]
 
     def __init__(self, overview_args: dict, hunk_args_list: list[dict]) -> None:
+        super().__init__()
         self._overview = overview_args
         self._hunks = list(hunk_args_list)
         self.calls = 0
 
-    async def create_message(self, **kwargs: Any) -> dict[str, Any]:
+    @property
+    def model_name(self) -> str:
+        return "canned"
+
+    @property
+    def system(self) -> str:
+        return "canned"
+
+    async def request(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+    ) -> ModelResponse:
         self.calls += 1
-        tools = kwargs.get("tools") or []
-        names = {t["name"] for t in tools}
-        if "submit_overview" in names:
-            return _wrap("submit_overview", self._overview)
-        # per-hunk call
-        if not self._hunks:
-            raise AssertionError("CannedClient ran out of hunk payloads")
-        return _wrap("submit_annotations", self._hunks.pop(0))
+        if not model_request_parameters.output_tools:
+            raise AssertionError(
+                "_CannedModel expects a ToolOutput-driven Agent — no output_tools present"
+            )
+        tool_name = model_request_parameters.output_tools[0].name
+        if tool_name == "submit_overview":
+            args = self._overview
+        elif tool_name == "submit_annotations":
+            if not self._hunks:
+                raise AssertionError("_CannedModel ran out of hunk payloads")
+            args = self._hunks.pop(0)
+        else:
+            raise AssertionError(f"unexpected output tool: {tool_name!r}")
+        return ModelResponse(
+            parts=[ToolCallPart(tool_name=tool_name, args=args, tool_call_id="c1")],
+            usage=RequestUsage(input_tokens=1, output_tokens=1),
+            model_name="canned",
+            finish_reason="tool_call",
+        )
 
-    async def aclose(self) -> None:
-        return None
 
-
-def _wrap(tool_name: str, args: dict) -> dict[str, Any]:
-    return {
-        "id": "m", "model": "t", "role": "assistant", "stop_reason": "tool_use",
-        "usage": {"input_tokens": 1, "output_tokens": 1},
-        "content": [{"type": "tool_use", "id": "u1", "name": tool_name, "input": args}],
-    }
+def _make_canned_backend(overview_args: dict, hunk_args_list: list[dict]) -> tuple[Backend, _CannedModel]:
+    model = _CannedModel(overview_args, hunk_args_list)
+    return Backend(model=model), model
 
 
 def _make_run_dir(tmp_path: Path) -> Path:
@@ -86,7 +123,7 @@ def _make_run_dir(tmp_path: Path) -> Path:
 
 async def test_augment_produces_parseable_output(tmp_path: Path) -> None:
     run = _make_run_dir(tmp_path)
-    client = CannedClient(
+    backend, canned = _make_canned_backend(
         overview_args={
             "summary": "Bumps two constants.",
             "themes": ["constants"],
@@ -100,7 +137,7 @@ async def test_augment_produces_parseable_output(tmp_path: Path) -> None:
             {"intent": "Bump y from 1 to 2", "confidence": 90, "smells": []},
         ],
     )
-    await augment_run_dir(run, model="t", concurrency=1, client=client, cache=None)
+    await augment_run_dir(run, model="t", concurrency=1, client=backend, cache=None)
 
     augmented_path = run / "augmented.diff"
     sidecar_path = run / "augmented.scr.json"
@@ -116,17 +153,17 @@ async def test_augment_produces_parseable_output(tmp_path: Path) -> None:
     assert len(reparsed.files[0].hunks) == 2
     assert reparsed.files[0].hunks[0].intent.startswith("Bump x")
     assert reparsed.files[0].hunks[1].intent.startswith("Bump y")
-    assert client.calls == 3  # 1 overview + 2 hunks
+    assert canned.calls == 3  # 1 overview + 2 hunks
 
 
 async def test_augment_only_files_filters(tmp_path: Path) -> None:
     run = _make_run_dir(tmp_path)
-    client = CannedClient(
+    backend, _ = _make_canned_backend(
         overview_args={"summary": "", "files": []},
         hunk_args_list=[{"intent": "ok"}, {"intent": "ok"}],
     )
     await augment_run_dir(
-        run, model="t", concurrency=1, client=client, cache=None,
+        run, model="t", concurrency=1, client=backend, cache=None,
         only_files=["does-not-exist.py"],
     )
     text = (run / "augmented.diff").read_text(encoding="utf-8")
@@ -136,11 +173,11 @@ async def test_augment_only_files_filters(tmp_path: Path) -> None:
 
 async def test_augment_max_hunks_caps_calls(tmp_path: Path) -> None:
     run = _make_run_dir(tmp_path)
-    client = CannedClient(
+    backend, canned = _make_canned_backend(
         overview_args={"summary": "", "files": []},
         hunk_args_list=[{"intent": "first"}],
     )
     await augment_run_dir(
-        run, model="t", concurrency=1, client=client, cache=None, max_hunks=1,
+        run, model="t", concurrency=1, client=backend, cache=None, max_hunks=1,
     )
-    assert client.calls == 2  # overview + 1 hunk
+    assert canned.calls == 2  # overview + 1 hunk

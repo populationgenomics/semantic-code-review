@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
+from semantic_code_review.augment.repo_tool_fns import mcp_dispatch
 from semantic_code_review.augment.tools import (
     TOOL_RESULT_CAP_BYTES,
     RepoTools,
-    dispatch,
 )
 
 
@@ -115,7 +115,7 @@ def test_truncation() -> None:
     assert len(out.encode("utf-8")) <= TOOL_RESULT_CAP_BYTES + 200
 
 
-def test_dispatch(repo: RepoTools) -> None:
-    out = dispatch(repo, "read_file", {"path": "a.py"})
+def test_mcp_dispatch(repo: RepoTools) -> None:
+    out = mcp_dispatch(repo, "read_file", {"path": "a.py"})
     assert "def foo" in out
-    assert "unknown tool" in dispatch(repo, "nonexistent", {})
+    assert "unknown tool" in mcp_dispatch(repo, "nonexistent", {})

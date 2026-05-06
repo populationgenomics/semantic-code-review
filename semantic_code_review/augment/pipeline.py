@@ -21,12 +21,12 @@ from ..cache.store import CacheStore
 from ..format.emit import emit_augmented_diff
 from ..format.parse import parse_augmented_diff
 from ..format.sidecar import dump_sidecar
+from .agents import Backend
 from .hunks import (
     apply_hunk_annotations, overview_to_prompt_json, run_hunk_pass,
 )
 from .overview import apply_overview_to_diff, run_overview_pass
 from .prompts import PROMPT_VERSION
-from .runner import AnthropicClient, ClaudeClient
 from .schemas import AugmentedDiff, FileRole, PRInfo
 from .tools import RepoTools
 
@@ -63,7 +63,7 @@ async def augment_run_dir(
     *,
     model: str = "claude-opus-4-7",
     concurrency: int = 8,
-    client: ClaudeClient | None = None,
+    client: Backend | None = None,
     cache: CacheStore | None = None,
     only_files: list[str] | None = None,
     max_hunks: int | None = None,
@@ -72,7 +72,10 @@ async def augment_run_dir(
 ) -> Path:
     """Augment a fetch run directory. Returns the augmented.diff path."""
     if client is None:
-        client = AnthropicClient()
+        # Default to the Anthropic SDK path via pydantic-ai. Callers that
+        # need a different backend (CLI, Gemini, tests) construct the
+        # backend explicitly via `_select_client` or a stub.
+        client = Backend(model=f"anthropic:{model}")
     # cache=None means "no disk caching"; callers pass a CacheStore to enable.
 
     raw_diff_path = run_dir / "raw.diff"
@@ -124,19 +127,17 @@ async def augment_run_dir(
         head_sha=diff.pr.head_sha,
     ) if not skip_context else None
 
-    # CLI backend: hand the RepoTools to the client so it can inject a
-    # stdio MCP server into `claude -p` and preserve the tool-exploration
-    # loop. `AnthropicClient` has no such hook so we duck-type.
-    setter = getattr(client, "set_repo_tools", None)
-    if callable(setter):
-        setter(repo_tools)
+    # CLI subprocess backends use this to spawn an MCP server bound to
+    # the run's worktree. SDK backends are no-ops; the SDK Agent gets
+    # `deps=repo_tools` directly via `Agent.run` in `run_hunk_pass`.
+    client.set_repo_tools(repo_tools)
 
     overview_json = overview_to_prompt_json(diff)
 
     # Subprocess clients allocate temp config files at first use;
     # `aclosing` calls `client.aclose()` on exit so /tmp doesn't
-    # accumulate them across runs. AnthropicClient's aclose is a
-    # no-op so this is uniform across backends.
+    # accumulate them across runs. SDKBackend's aclose is a no-op
+    # so this is uniform across backends.
     async with contextlib.aclosing(client):
         sem = asyncio.Semaphore(concurrency)
         tasks: list[asyncio.Task] = []
@@ -160,9 +161,7 @@ async def augment_run_dir(
         log.info("per-hunk pass: %d hunks queued (concurrency=%d)", len(tasks), concurrency)
         await asyncio.gather(*tasks)
 
-        backend_tag = (
-            "cli" if getattr(client, "is_subprocess_backend", False) else "api"
-        )
+        backend_tag = "cli" if client.is_subprocess_backend else "api"
         summary = (
             f"scr augment: backend={backend_tag} model={model} hunks={len(tasks)} "
             f"ok={stats.ok} failed={stats.failed}"
@@ -199,7 +198,7 @@ class _HunkStats:
 
 async def _augment_one_hunk(
     sem: asyncio.Semaphore,
-    client: ClaudeClient,
+    client: Backend,
     fp: Any,
     h: Any,
     overview_json: str,
