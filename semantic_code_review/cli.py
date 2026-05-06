@@ -113,9 +113,10 @@ def _select_client(backend: str, *, model: str):
     that wraps the `claude -p` / `gemini -p` subprocess client. The
     pipeline calls `make_*_agent(backend.model)` either way.
 
-    backend ∈ {"auto","api","cli","gemini","gemini-api"}. "auto" picks
-    the Anthropic SDK if `ANTHROPIC_API_KEY` is set, else `claude -p`
-    if on PATH, else raises. Both Gemini backends are opt-in only.
+    backend ∈ {"auto","claude-api","claude-cli","gemini-api","gemini-cli"}.
+    "auto" picks claude-api if `ANTHROPIC_API_KEY` is set, else
+    claude-cli if `claude` is on PATH, else raises. Both Gemini
+    backends are opt-in only.
     """
     import shutil as _shutil
 
@@ -130,28 +131,28 @@ def _select_client(backend: str, *, model: str):
         or os.environ.get("GOOGLE_CLOUD_PROJECT")
     )
 
-    if backend == "api":
+    if backend == "claude-api":
         if not has_key:
             raise typer.BadParameter(
-                "--backend=api but ANTHROPIC_API_KEY is not set "
+                "--backend=claude-api but ANTHROPIC_API_KEY is not set "
                 "(load a .env or export the variable)."
             )
         return Backend(model=f"anthropic:{model}")
 
-    if backend == "cli":
+    if backend == "claude-cli":
         if not has_claude:
             raise typer.BadParameter(
-                "--backend=cli but `claude` is not on PATH "
+                "--backend=claude-cli but `claude` is not on PATH "
                 "(install Claude Code CLI or set ANTHROPIC_API_KEY)."
             )
         from .augment.cli_models import ClaudeCLIModel
         _warn_cli_fallback()
         return Backend(model=ClaudeCLIModel(model=model), is_subprocess_backend=True)
 
-    if backend == "gemini":
+    if backend == "gemini-cli":
         if not has_gemini:
             raise typer.BadParameter(
-                "--backend=gemini but `gemini` is not on PATH "
+                "--backend=gemini-cli but `gemini` is not on PATH "
                 "(install via `npm install -g @google/gemini-cli`)."
             )
         if not (
@@ -160,7 +161,7 @@ def _select_client(backend: str, *, model: str):
             or (Path.home() / ".gemini" / "oauth_creds.json").exists()
         ):
             raise typer.BadParameter(
-                "--backend=gemini but no Gemini credentials found. Set "
+                "--backend=gemini-cli but no Gemini credentials found. Set "
                 "GEMINI_API_KEY (AI Studio) or GOOGLE_API_KEY (Vertex), "
                 "or run `gemini` once interactively to complete the "
                 "OAuth flow."
@@ -177,8 +178,8 @@ def _select_client(backend: str, *, model: str):
         if not has_gemini_creds:
             raise typer.BadParameter(
                 "--backend=gemini-api but no Gemini credentials found. "
-                "Set GEMINI_API_KEY (AI Studio), GOOGLE_API_KEY (Vertex), "
-                "or GOOGLE_CLOUD_PROJECT (Vertex via ADC)."
+                "Set GEMINI_API_KEY (AI Studio), GOOGLE_API_KEY, or "
+                "GOOGLE_CLOUD_PROJECT (Vertex via ADC)."
             )
         # GOOGLE_CLOUD_PROJECT triggers Vertex via ADC; otherwise the
         # API-key path (AI Studio) wins.
@@ -187,7 +188,12 @@ def _select_client(backend: str, *, model: str):
             return Backend(model=f"google-vertex:{gem_model}")
         return Backend(model=f"google-gla:{gem_model}")
 
-    # auto
+    if backend != "auto":
+        raise typer.BadParameter(
+            f"unknown backend {backend!r}; expected one of: "
+            "auto, claude-api, claude-cli, gemini-api, gemini-cli."
+        )
+
     if has_key:
         return Backend(model=f"anthropic:{model}")
     if has_claude:
@@ -198,7 +204,7 @@ def _select_client(backend: str, *, model: str):
     raise typer.BadParameter(
         "No Anthropic credentials available: set ANTHROPIC_API_KEY "
         "(or ANTHROPIC_API_TOKEN in .env), install the `claude` CLI "
-        "for subscription-based fallback, or pass --backend=gemini "
+        "for subscription-based fallback, or pass --backend=gemini-cli "
         "(CLI subprocess) / --backend=gemini-api (Google SDK) to opt "
         "into a Gemini backend."
     )
@@ -263,7 +269,7 @@ def augment(
     no_cache: bool = typer.Option(False, help="Disable disk cache of LLM calls."),
     cache_dir: Path = typer.Option(None, help="Cache root (default ~/.cache/scr/v1)."),
     backend: str = typer.Option(
-        None, help="LLM backend: auto|api|cli|gemini|gemini-api (default from config or 'auto')."
+        None, help="LLM backend: auto|claude-api|claude-cli|gemini-api|gemini-cli (default from config or 'auto')."
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
@@ -408,7 +414,7 @@ def review(
     port: int = typer.Option(0, help="Server port (0 = kernel-assigned)."),
     timeout: int = typer.Option(3600, help="Server idle timeout in seconds."),
     backend: str = typer.Option(
-        None, help="LLM backend: auto|api|cli|gemini|gemini-api (default from config or 'auto')."
+        None, help="LLM backend: auto|claude-api|claude-cli|gemini-api|gemini-cli (default from config or 'auto')."
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
@@ -466,7 +472,7 @@ def pr(
     port: int = typer.Option(0, help="Server port (0 = kernel-assigned)."),
     timeout: int = typer.Option(3600, help="Server idle timeout in seconds."),
     backend: str = typer.Option(
-        None, help="LLM backend: auto|api|cli|gemini|gemini-api (default from config or 'auto')."
+        None, help="LLM backend: auto|claude-api|claude-cli|gemini-api|gemini-cli (default from config or 'auto')."
     ),
     yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt before posting comments to GitHub."),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
@@ -676,8 +682,8 @@ _CONFIG_TEMPLATE = """\
 # commits, dotfile repos, screen-shares). Use a `.env` or your shell.
 
 # Default backend used when --backend isn't passed.
-# One of: auto, api, cli, gemini, gemini-api
-# backend = "api"
+# One of: auto, claude-api, claude-cli, gemini-api, gemini-cli
+# backend = "claude-api"
 
 # Per-backend model defaults. Keys are backend names; "default" is a
 # fallback when the more-specific entry is missing.

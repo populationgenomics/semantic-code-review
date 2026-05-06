@@ -12,7 +12,7 @@ the same as an empty config.
 
 Schema (all top-level fields optional):
 
-    backend = "api"            # default backend if --backend not passed
+    backend = "claude-api"     # default backend if --backend not passed
 
     [model]
     default      = "claude-opus-4-7"
@@ -42,7 +42,7 @@ from typing import Any
 from .paths import default_config_path, find_repo_config_path
 
 
-VALID_BACKENDS = frozenset({"auto", "api", "cli", "gemini", "gemini-api"})
+VALID_BACKENDS = frozenset({"auto", "claude-api", "claude-cli", "gemini-api", "gemini-cli"})
 
 
 @dataclass

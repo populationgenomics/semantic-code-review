@@ -75,7 +75,7 @@ GOOGLE_CLOUD_PROJECT = "aasgard-dev"
 def test_repo_overrides_user(tmp_path: Path) -> None:
     """Per-repo config takes precedence on conflicting keys."""
     user = _write(tmp_path / "user.toml", '''
-backend = "api"
+backend = "claude-api"
 [model]
 default = "user-model"
 [env]
@@ -123,7 +123,7 @@ def test_non_string_model_value_raises(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def test_resolve_backend_cli_wins_over_config() -> None:
-    cfg = ScrConfig(backend="api")
+    cfg = ScrConfig(backend="claude-api")
     assert cfg.resolve_backend("gemini-api") == "gemini-api"
 
 
@@ -133,19 +133,19 @@ def test_resolve_backend_falls_back_to_auto() -> None:
 
 
 def test_resolve_model_cli_wins() -> None:
-    cfg = ScrConfig(model={"default": "x", "api": "y"})
-    assert cfg.resolve_model(backend="api", cli_value="cli-pick") == "cli-pick"
+    cfg = ScrConfig(model={"default": "x", "claude-api": "y"})
+    assert cfg.resolve_model(backend="claude-api", cli_value="cli-pick") == "cli-pick"
 
 
 def test_resolve_model_per_backend_wins_over_default() -> None:
     cfg = ScrConfig(model={"default": "claude-opus-4-7", "gemini-api": "gemini-3-pro"})
     assert cfg.resolve_model(backend="gemini-api", cli_value=None) == "gemini-3-pro"
-    assert cfg.resolve_model(backend="api", cli_value=None) == "claude-opus-4-7"
+    assert cfg.resolve_model(backend="claude-api", cli_value=None) == "claude-opus-4-7"
 
 
 def test_resolve_model_falls_back_to_hardcoded_default() -> None:
     cfg = ScrConfig()
-    assert cfg.resolve_model(backend="api", cli_value=None) == "claude-opus-4-7"
+    assert cfg.resolve_model(backend="claude-api", cli_value=None) == "claude-opus-4-7"
 
 
 # ---------------------------------------------------------------------------
