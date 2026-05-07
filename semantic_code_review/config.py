@@ -84,6 +84,11 @@ class BackendDef:
 # Code-side preset table. Users can override any entry's `model` (and
 # any other field, for power users) via `[backends.<name>]` in their
 # TOML, or add brand-new named backends.
+#
+# Multi-transport vendors keep a `-api` / `-cli` suffix because the
+# vendor name alone is ambiguous; single-transport providers use the
+# bare vendor name. All non-Anthropic / non-Google entries reach the
+# provider via the OpenAI Chat Completions wire format.
 BUILTIN_BACKENDS: dict[str, BackendDef] = {
     "claude-api": BackendDef(
         type=BackendType.ANTHROPIC_SDK,
@@ -100,6 +105,48 @@ BUILTIN_BACKENDS: dict[str, BackendDef] = {
     "gemini-cli": BackendDef(
         type=BackendType.GEMINI_CLI,
         default_model="gemini-2.5-pro",
+    ),
+    # Free tier with generous daily token quota; tool use works.
+    "groq": BackendDef(
+        type=BackendType.OPENAI_COMPAT,
+        base_url="https://api.groq.com/openai/v1",
+        api_key_env="GROQ_API_KEY",
+        default_model="llama-3.3-70b-versatile",
+    ),
+    # Any GitHub account → free quota across multiple model families.
+    # GitHub Models requires publisher-prefixed model ids ("openai/...").
+    "github": BackendDef(
+        type=BackendType.OPENAI_COMPAT,
+        base_url="https://models.github.ai/inference",
+        api_key_env="GITHUB_TOKEN",
+        default_model="openai/gpt-4o-mini",
+    ),
+    # Free tier; very fast inference. Model id needs to be passed
+    # explicitly because Cerebras' catalogue rotates.
+    "cerebras": BackendDef(
+        type=BackendType.OPENAI_COMPAT,
+        base_url="https://api.cerebras.ai/v1",
+        api_key_env="CEREBRAS_API_KEY",
+    ),
+    # Hundreds of models including some free tiers; pass --model to
+    # pick. e.g. `meta-llama/llama-3.3-70b-instruct:free`.
+    "openrouter": BackendDef(
+        type=BackendType.OPENAI_COMPAT,
+        base_url="https://openrouter.ai/api/v1",
+        api_key_env="OPENROUTER_API_KEY",
+    ),
+    # La Plateforme free tier; Codestral is Mistral's code-tuned model.
+    "mistral": BackendDef(
+        type=BackendType.OPENAI_COMPAT,
+        base_url="https://api.mistral.ai/v1",
+        api_key_env="MISTRAL_API_KEY",
+        default_model="codestral-latest",
+    ),
+    # Local llama.cpp/Ollama; no credentials needed. Pass --model to
+    # name a model you've pulled (e.g. `qwen2.5-coder:14b`).
+    "ollama": BackendDef(
+        type=BackendType.OPENAI_COMPAT,
+        base_url="http://localhost:11434/v1",
     ),
 }
 

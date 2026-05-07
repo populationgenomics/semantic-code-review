@@ -63,6 +63,19 @@ def test_load_empty_config_starts_with_builtins(tmp_path: Path) -> None:
     assert set(cfg.backends) == set(BUILTIN_BACKENDS)
 
 
+def test_openai_compat_presets_registered() -> None:
+    """The free-tier-friendly providers ship as builtins."""
+    expected = {"groq", "github", "cerebras", "openrouter", "mistral", "ollama"}
+    for name in expected:
+        assert name in BUILTIN_BACKENDS, f"missing builtin: {name}"
+        bdef = BUILTIN_BACKENDS[name]
+        assert bdef.type is BackendType.OPENAI_COMPAT
+        assert bdef.base_url, f"{name}: base_url is required"
+    # Ollama is the only one without an api_key_env.
+    assert BUILTIN_BACKENDS["ollama"].api_key_env is None
+    assert BUILTIN_BACKENDS["groq"].api_key_env == "GROQ_API_KEY"
+
+
 def test_load_user_only(tmp_path: Path) -> None:
     user = _write(tmp_path / "user.toml", '''
 backend = "gemini-api"
