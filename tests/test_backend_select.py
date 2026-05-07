@@ -169,6 +169,69 @@ def test_api_key_command_missing_binary_raises(
         cli_module._resolve_api_key("gh-style", bdef)
 
 
+def test_claude_api_resolves_key_via_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The user's stated case: Anthropic key fetched from a gcloud secret."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    fake_cmd = tmp_path / "secret-fetcher"
+    fake_cmd.write_text("#!/bin/sh\nprintf 'sk-ant-from-secret\\n'\n")
+    fake_cmd.chmod(0o755)
+    _set_config(monkeypatch, {
+        "claude-api": BackendDef(
+            type=BackendType.ANTHROPIC_SDK,
+            default_model="claude-opus-4-7",
+            api_key_env="ANTHROPIC_API_KEY",
+            api_key_command=(str(fake_cmd),),
+        ),
+    })
+    backend = cli_module._select_client("claude-api", model="claude-opus-4-7")
+    assert backend.model == "anthropic:claude-opus-4-7"
+    # Side effect: helper writes through to the env var so pydantic-ai's
+    # anthropic provider reads it on first call.
+    assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-from-secret"
+
+
+def test_auto_picks_claude_api_when_command_resolves(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    fake_cmd = tmp_path / "secret-fetcher"
+    fake_cmd.write_text("#!/bin/sh\nprintf 'sk-ant-x\\n'\n")
+    fake_cmd.chmod(0o755)
+    _set_config(monkeypatch, {
+        "claude-api": BackendDef(
+            type=BackendType.ANTHROPIC_SDK,
+            default_model="claude-opus-4-7",
+            api_key_env="ANTHROPIC_API_KEY",
+            api_key_command=(str(fake_cmd),),
+        ),
+    })
+    assert cli_module._resolve_auto_backend() == "claude-api"
+
+
+def test_auto_falls_through_when_neither_env_nor_command_works(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    fake_cmd = tmp_path / "fail-fetcher"
+    fake_cmd.write_text("#!/bin/sh\nexit 1\n")
+    fake_cmd.chmod(0o755)
+    # No `claude` on PATH either: error path with the helpful message.
+    fake_bin = tmp_path / "empty-bin"
+    fake_bin.mkdir()
+    monkeypatch.setenv("PATH", str(fake_bin))
+    _set_config(monkeypatch, {
+        "claude-api": BackendDef(
+            type=BackendType.ANTHROPIC_SDK,
+            api_key_env="ANTHROPIC_API_KEY",
+            api_key_command=(str(fake_cmd),),
+        ),
+    })
+    with pytest.raises(typer.BadParameter, match="No Anthropic credentials"):
+        cli_module._resolve_auto_backend()
+
+
 def test_github_builtin_falls_back_to_gh_auth_token(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:

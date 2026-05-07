@@ -100,6 +100,7 @@ BUILTIN_BACKENDS: dict[str, BackendDef] = {
     "claude-api": BackendDef(
         type=BackendType.ANTHROPIC_SDK,
         default_model="claude-opus-4-7",
+        api_key_env="ANTHROPIC_API_KEY",
     ),
     "claude-cli": BackendDef(
         type=BackendType.CLAUDE_CLI,

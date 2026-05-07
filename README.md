@@ -132,6 +132,18 @@ the OpenAI Chat Completions wire format (`type = "openai-compat"`).
 Override any builtin's model — or add a new provider — with a
 `[backends.<name>]` block in your config; see `scr config edit`.
 
+If your bearer lives in a secret store rather than a long-lived env
+var, use `api_key_command`: it runs a shell-free argv command and
+reads the bearer from stdout. Built-in example: `--backend=github`
+falls back to `gh auth token` when `GITHUB_TOKEN` isn't set. Custom
+example, Anthropic key in a GCP Secret Manager entry:
+
+```toml
+[backends.claude-api]
+api_key_command = ["gcloud", "secrets", "versions", "access",
+                   "latest", "--secret=anthropic-api-key"]
+```
+
 Quality caveat: any non-frontier backend produces shallower hunk
 intents and more spurious `refs[]`. The output is still useful as a
 draft you skim, especially for small PRs, but it isn't a Claude /

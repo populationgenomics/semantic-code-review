@@ -133,7 +133,7 @@ def _select_client(backend: str, *, model: str):
 
     btype = bdef.type
     if btype is BackendType.ANTHROPIC_SDK:
-        return _make_anthropic_sdk_backend(backend, model)
+        return _make_anthropic_sdk_backend(backend, model, bdef)
     if btype is BackendType.CLAUDE_CLI:
         return _make_claude_cli_backend(backend, model)
     if btype is BackendType.GOOGLE_SDK:
@@ -148,8 +148,14 @@ def _select_client(backend: str, *, model: str):
 def _resolve_auto_backend() -> str:
     import shutil as _shutil
 
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        return "claude-api"
+    bdef = _CONFIG.backends.get("claude-api")
+    if bdef is not None and (bdef.api_key_env or bdef.api_key_command):
+        try:
+            _resolve_api_key("claude-api", bdef)
+        except typer.BadParameter:
+            pass
+        else:
+            return "claude-api"
     if _shutil.which("claude"):
         return "claude-cli"
     raise typer.BadParameter(
@@ -161,10 +167,23 @@ def _resolve_auto_backend() -> str:
     )
 
 
-def _make_anthropic_sdk_backend(name: str, model: str):
+def _make_anthropic_sdk_backend(name: str, model: str, bdef):
     from .augment.agents import Backend
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    if bdef.api_key_env or bdef.api_key_command:
+        # Resolve via env-or-command. Inject the result back into the
+        # env var pydantic-ai's anthropic provider reads, so the magic
+        # `anthropic:<model>` string keeps working unchanged. When the
+        # value came from `os.environ.get(...)`, this is a no-op.
+        key = _resolve_api_key(name, bdef)
+        if bdef.api_key_env:
+            os.environ[bdef.api_key_env] = key
+        else:
+            # User defined api_key_command without api_key_env (unusual).
+            # The Anthropic SDK only reads ANTHROPIC_API_KEY, so honour
+            # the resolution by setting that explicitly.
+            os.environ["ANTHROPIC_API_KEY"] = key
+    elif not os.environ.get("ANTHROPIC_API_KEY"):
         raise typer.BadParameter(
             f"--backend={name} but ANTHROPIC_API_KEY is not set "
             "(load a .env or export the variable)."
