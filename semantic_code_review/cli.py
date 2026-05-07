@@ -248,13 +248,8 @@ def _make_openai_compat_backend(name: str, model: str, bdef):
             f"--backend={name} (type=openai-compat) has no base_url; "
             f"set [backends.{name}] base_url in config."
         )
-    api_key: str | None = None
-    if bdef.api_key_env:
-        api_key = os.environ.get(bdef.api_key_env)
-        if not api_key:
-            raise typer.BadParameter(
-                f"--backend={name} but ${bdef.api_key_env} is not set."
-            )
+    if bdef.api_key_env or bdef.api_key_command:
+        api_key = _resolve_api_key(name, bdef)
     else:
         # Local servers (Ollama, llama.cpp) typically require *some*
         # non-empty bearer; use a sentinel that's clearly not a key.
@@ -271,6 +266,72 @@ def _make_openai_compat_backend(name: str, model: str, bdef):
         # Not a CLI subprocess — this stays False so the in-loop repo
         # tools and full pydantic-ai message flow remain enabled.
         is_subprocess_backend=False,
+    )
+
+
+def _resolve_api_key(name: str, bdef) -> str:
+    """Resolve a backend's bearer credential.
+
+    Order: `api_key_env` (if set and non-empty) → `api_key_command`
+    stdout (if set and exits 0 with non-empty output) → BadParameter
+    explaining what's missing. The command runs without shell
+    interpretation (argv list) so commands like `gh auth token` and
+    `gcloud secrets versions access ...` are safe to embed in config.
+    """
+    import subprocess as _sp
+
+    from .config import BackendDef
+
+    assert isinstance(bdef, BackendDef)
+
+    if bdef.api_key_env:
+        v = os.environ.get(bdef.api_key_env)
+        if v:
+            return v
+
+    if bdef.api_key_command:
+        cmd_str = " ".join(bdef.api_key_command)
+        fallback_hint = (
+            f" (or set ${bdef.api_key_env} directly)" if bdef.api_key_env else ""
+        )
+        try:
+            proc = _sp.run(
+                list(bdef.api_key_command),
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except FileNotFoundError:
+            raise typer.BadParameter(
+                f"--backend={name}: api_key_command not on PATH: "
+                f"{bdef.api_key_command[0]}{fallback_hint}"
+            ) from None
+        except _sp.TimeoutExpired:
+            raise typer.BadParameter(
+                f"--backend={name}: api_key_command timed out: {cmd_str}"
+            ) from None
+        if proc.returncode != 0:
+            stderr = (proc.stderr or "").strip()
+            tail = f"\n{stderr}" if stderr else ""
+            raise typer.BadParameter(
+                f"--backend={name}: api_key_command exited "
+                f"{proc.returncode}: {cmd_str}{tail}{fallback_hint}"
+            )
+        key = (proc.stdout or "").strip()
+        if not key:
+            raise typer.BadParameter(
+                f"--backend={name}: api_key_command produced empty "
+                f"output: {cmd_str}{fallback_hint}"
+            )
+        return key
+
+    # Reached only when api_key_env was set but the var was empty and
+    # there's no api_key_command fallback (callers gate on
+    # `api_key_env or api_key_command` before calling, so the
+    # "neither configured" form is unreachable).
+    raise typer.BadParameter(
+        f"--backend={name} but ${bdef.api_key_env} is not set."
     )
 
 
@@ -740,6 +801,8 @@ def config_show() -> None:
             typer.echo(f"    base_url    = {bdef.base_url!r}")
         if bdef.api_key_env is not None:
             typer.echo(f"    api_key_env = {bdef.api_key_env!r}")
+        if bdef.api_key_command is not None:
+            typer.echo(f"    api_key_command = {list(bdef.api_key_command)!r}")
     if _CONFIG.env:
         typer.echo("[env]")
         for k, v in _CONFIG.env.items():

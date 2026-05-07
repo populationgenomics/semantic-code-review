@@ -152,6 +152,42 @@ model = "qwen2.5-coder:32b"
     assert bdef.api_key_env is None
 
 
+def test_api_key_command_parses_from_toml(tmp_path: Path) -> None:
+    user = _write(tmp_path / "user.toml", '''
+[backends.gcloud-secret]
+type = "openai-compat"
+base_url = "https://example.com/v1"
+api_key_command = ["gcloud", "secrets", "versions", "access", "latest", "--secret=anth"]
+''')
+    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    bdef = cfg.backends["gcloud-secret"]
+    assert bdef.api_key_command == (
+        "gcloud", "secrets", "versions", "access", "latest", "--secret=anth",
+    )
+
+
+def test_api_key_command_must_be_list_of_strings(tmp_path: Path) -> None:
+    user = _write(tmp_path / "user.toml", '''
+[backends.bad]
+type = "openai-compat"
+base_url = "https://example.com/v1"
+api_key_command = "not-a-list"
+''')
+    with pytest.raises(ConfigError, match="must be a list of strings"):
+        ScrConfig.load(user_path=user, repo_path=None)
+
+
+def test_api_key_command_must_not_be_empty(tmp_path: Path) -> None:
+    user = _write(tmp_path / "user.toml", '''
+[backends.bad]
+type = "openai-compat"
+base_url = "https://example.com/v1"
+api_key_command = []
+''')
+    with pytest.raises(ConfigError, match="must not be empty"):
+        ScrConfig.load(user_path=user, repo_path=None)
+
+
 def test_backends_table_overrides_builtin_field_by_field(tmp_path: Path) -> None:
     user = _write(tmp_path / "user.toml", '''
 [backends.claude-api]

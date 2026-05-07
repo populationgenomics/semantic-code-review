@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 import typer
 
@@ -82,3 +84,106 @@ def test_unknown_backend_lists_known_choices(monkeypatch: pytest.MonkeyPatch) ->
     })
     with pytest.raises(typer.BadParameter, match="auto, groq"):
         cli_module._select_client("does-not-exist", model="anything")
+
+
+# ---------------------------------------------------------------------------
+# api_key_command fallback (used by github → gh auth token, by users for
+# gcloud-secrets-stored bearers, etc.).
+# ---------------------------------------------------------------------------
+
+def test_api_key_command_runs_when_env_unset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.delenv("FAKE_KEY", raising=False)
+    fake_cmd = tmp_path / "fake-token-printer"
+    fake_cmd.write_text("#!/bin/sh\nprintf 'sk-from-cmd\\n'\n")
+    fake_cmd.chmod(0o755)
+    bdef = BackendDef(
+        type=BackendType.OPENAI_COMPAT,
+        base_url="https://x",
+        api_key_env="FAKE_KEY",
+        api_key_command=(str(fake_cmd),),
+    )
+    assert cli_module._resolve_api_key("gh-style", bdef) == "sk-from-cmd"
+
+
+def test_api_key_env_wins_over_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FAKE_KEY", "sk-from-env")
+    bdef = BackendDef(
+        type=BackendType.OPENAI_COMPAT,
+        base_url="https://x",
+        api_key_env="FAKE_KEY",
+        # If env wins, this nonexistent command must never be invoked.
+        api_key_command=("/nonexistent/path/should-not-run",),
+    )
+    assert cli_module._resolve_api_key("gh-style", bdef) == "sk-from-env"
+
+
+def test_api_key_command_failure_includes_stderr(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.delenv("FAKE_KEY", raising=False)
+    fake_cmd = tmp_path / "fail-cmd"
+    fake_cmd.write_text(
+        "#!/bin/sh\necho 'auth: not logged in' 1>&2\nexit 4\n"
+    )
+    fake_cmd.chmod(0o755)
+    bdef = BackendDef(
+        type=BackendType.OPENAI_COMPAT,
+        base_url="https://x",
+        api_key_env="FAKE_KEY",
+        api_key_command=(str(fake_cmd),),
+    )
+    with pytest.raises(typer.BadParameter, match="not logged in"):
+        cli_module._resolve_api_key("gh-style", bdef)
+
+
+def test_api_key_command_empty_output_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.delenv("FAKE_KEY", raising=False)
+    fake_cmd = tmp_path / "empty-cmd"
+    fake_cmd.write_text("#!/bin/sh\nexit 0\n")
+    fake_cmd.chmod(0o755)
+    bdef = BackendDef(
+        type=BackendType.OPENAI_COMPAT,
+        base_url="https://x",
+        api_key_env="FAKE_KEY",
+        api_key_command=(str(fake_cmd),),
+    )
+    with pytest.raises(typer.BadParameter, match="empty output"):
+        cli_module._resolve_api_key("gh-style", bdef)
+
+
+def test_api_key_command_missing_binary_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("FAKE_KEY", raising=False)
+    bdef = BackendDef(
+        type=BackendType.OPENAI_COMPAT,
+        base_url="https://x",
+        api_key_env="FAKE_KEY",
+        api_key_command=("/no/such/binary/exists",),
+    )
+    with pytest.raises(typer.BadParameter, match="not on PATH"):
+        cli_module._resolve_api_key("gh-style", bdef)
+
+
+def test_github_builtin_falls_back_to_gh_auth_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """End-to-end: the shipped github preset uses gh auth token when
+    GITHUB_TOKEN is unset. We stub `gh` on PATH to verify the wiring."""
+    from semantic_code_review.config import BUILTIN_BACKENDS
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text("#!/bin/sh\nprintf 'ghp_stubtoken\\n'\n")
+    fake_gh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ.get('PATH','')}")
+
+    _set_config(monkeypatch, {"github": BUILTIN_BACKENDS["github"]})
+    backend = cli_module._select_client("github", model="openai/gpt-4o-mini")
+    assert isinstance(backend.model, OpenAIChatModel)

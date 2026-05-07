@@ -72,13 +72,20 @@ class BackendDef:
 
     `type` selects the dispatch branch. `default_model` is the model
     used when neither `--model` nor `[model] default` resolves first.
-    `base_url` and `api_key_env` are only meaningful for
-    `BackendType.OPENAI_COMPAT`.
+
+    Credential resolution order is `api_key_env` → `api_key_command`
+    → error. The command is invoked with no shell interpretation
+    (argv list, not a string) and its stdout becomes the bearer; this
+    is how `gh auth token` and `gcloud secrets versions access ...`
+    get plugged in.
+
+    `base_url` is only meaningful for `BackendType.OPENAI_COMPAT`.
     """
     type: BackendType
     default_model: str | None = None
     base_url: str | None = None
     api_key_env: str | None = None
+    api_key_command: tuple[str, ...] | None = None
 
 
 # Code-side preset table. Users can override any entry's `model` (and
@@ -114,11 +121,14 @@ BUILTIN_BACKENDS: dict[str, BackendDef] = {
         default_model="llama-3.3-70b-versatile",
     ),
     # Any GitHub account → free quota across multiple model families.
+    # Falls back to `gh auth token` if GITHUB_TOKEN isn't set, since
+    # this repo already requires `gh` for the `scr pr` flow.
     # GitHub Models requires publisher-prefixed model ids ("openai/...").
     "github": BackendDef(
         type=BackendType.OPENAI_COMPAT,
         base_url="https://models.github.ai/inference",
         api_key_env="GITHUB_TOKEN",
+        api_key_command=("gh", "auth", "token"),
         default_model="openai/gpt-4o-mini",
     ),
     # Free tier; very fast inference. Model id needs to be passed
@@ -261,10 +271,14 @@ class ScrConfig:
             default_model=_pick_str(body, "model", existing.default_model if existing else None),
             base_url=_pick_str(body, "base_url", existing.base_url if existing else None),
             api_key_env=_pick_str(body, "api_key_env", existing.api_key_env if existing else None),
+            api_key_command=_pick_strs(
+                body, "api_key_command",
+                existing.api_key_command if existing else None,
+            ),
         )
         self.backends[name] = merged
         self.sources[f"backends.{name}"] = source
-        for key in ("model", "base_url", "api_key_env"):
+        for key in ("model", "base_url", "api_key_env", "api_key_command"):
             if key in body:
                 self.sources[f"backends.{name}.{key}"] = source
 
@@ -345,6 +359,23 @@ def _pick_str(body: dict[str, Any], key: str, fallback: str | None) -> str | Non
     if not isinstance(v, str):
         raise ConfigError(f"backend field {key!r} must be a string, got {type(v).__name__}")
     return v
+
+
+def _pick_strs(
+    body: dict[str, Any], key: str, fallback: tuple[str, ...] | None
+) -> tuple[str, ...] | None:
+    if key not in body:
+        return fallback
+    v = body[key]
+    if v is None:
+        return None
+    if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+        raise ConfigError(
+            f"backend field {key!r} must be a list of strings, got {type(v).__name__}"
+        )
+    if not v:
+        raise ConfigError(f"backend field {key!r} must not be empty")
+    return tuple(v)
 
 
 __all__ = ["BackendDef", "BackendType", "BUILTIN_BACKENDS", "ConfigError", "ScrConfig"]
