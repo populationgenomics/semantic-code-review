@@ -104,6 +104,13 @@ def _configure_logging(verbose: bool) -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         force=True,
     )
+    # basicConfig sets the *logger* level but leaves the StreamHandler
+    # at NOTSET (passes everything). _attach_file_log later raises the
+    # package logger to INFO so the trace file captures progress —
+    # without an explicit handler level here, those INFO records leak
+    # up to the root's stderr handler and undo the quiet default.
+    for h in logging.getLogger().handlers:
+        h.setLevel(level)
 
 
 _DEFAULT_GEMINI_API_MODEL = "gemini-2.5-pro"
