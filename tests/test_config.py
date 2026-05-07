@@ -76,6 +76,20 @@ def test_openai_compat_presets_registered() -> None:
     assert BUILTIN_BACKENDS["groq"].api_key_env == "GROQ_API_KEY"
 
 
+def test_every_builtin_has_a_description() -> None:
+    """The template renderer leans on description for the lead comment."""
+    for name, bdef in BUILTIN_BACKENDS.items():
+        assert bdef.description, f"{name} is missing a description"
+
+
+def test_field_doc_extracts_annotated_metadata() -> None:
+    from semantic_code_review.config import field_doc
+
+    assert field_doc("default_model").startswith("Model used")
+    assert "shell-quoted" in field_doc("api_key_command")
+    assert field_doc("nonexistent") == ""
+
+
 def test_load_user_only(tmp_path: Path) -> None:
     user = _write(tmp_path / "user.toml", '''
 backend = "gemini-api"
