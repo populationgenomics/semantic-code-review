@@ -29,6 +29,8 @@ from typing import Any, Callable
 from pydantic_ai import RunContext
 from pydantic_ai.tools import Tool
 
+from .. import git_ops
+
 
 TOOL_RESULT_CAP_BYTES = 20 * 1024
 
@@ -87,13 +89,12 @@ class RepoTools:
             start_line: 1-indexed start line (optional).
             end_line: 1-indexed end line inclusive (optional).
         """
-        result = subprocess.run(
-            ["git", "show", f"{sha}:{path}"],
-            cwd=self.repo_git, capture_output=True, text=True, check=False,
+        rc, stdout, stderr = git_ops.git_capture(
+            self.repo_git, "show", f"{sha}:{path}",
         )
-        if result.returncode != 0:
-            return f"error: git show {sha}:{path} failed: {result.stderr.strip()}"
-        return _slice_and_cap(result.stdout, start_line, end_line)
+        if rc != 0:
+            return f"error: git show {sha}:{path} failed: {stderr.strip()}"
+        return _slice_and_cap(stdout, start_line, end_line)
 
     # --- search -----------------------------------------------------------
 
@@ -131,17 +132,10 @@ class RepoTools:
     def _grep_git(self, pattern: str, path_glob: str | None, max_hits: int) -> str:
         """Fallback search via ``git grep`` — always available since git is a
         hard requirement. Respects .gitignore; only searches tracked files."""
-        args = ["git", "grep", "-n", "-I", "--max-count", str(max_hits), "-e", pattern]
-        if path_glob:
-            # git grep wants pathspecs after ``--``.
-            args += ["--", path_glob]
-        result = subprocess.run(
-            args, cwd=self.head_worktree, capture_output=True, text=True, check=False,
-        )
-        # git grep exits 1 on no matches, like rg; 128+ on error.
-        if result.returncode not in (0, 1):
-            return f"error: git grep failed: {result.stderr.strip()}"
-        return _cap(result.stdout)
+        try:
+            return _cap(git_ops.grep(self.head_worktree, pattern, path_glob, max_hits))
+        except git_ops.GitError as e:
+            return f"error: {e}"
 
     # --- listing ----------------------------------------------------------
 
@@ -175,13 +169,10 @@ class RepoTools:
             path: Path relative to repo root.
             limit: Maximum commits to return.
         """
-        result = subprocess.run(
-            ["git", "log", f"-n{limit}", "--oneline", "--", path],
-            cwd=self.repo_git, capture_output=True, text=True, check=False,
-        )
-        if result.returncode != 0:
-            return f"error: git log failed: {result.stderr.strip()}"
-        return _cap(result.stdout)
+        try:
+            return _cap(git_ops.log_oneline(self.repo_git, path, limit))
+        except git_ops.GitError as e:
+            return f"error: {e}"
 
 
 def _is_inside(child: Path, parent: Path) -> bool:

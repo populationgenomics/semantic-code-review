@@ -18,6 +18,7 @@ import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .. import git_ops
 from ..augment.agents import Client
 from ..augment.prompts import PROMPT_VERSION
 from ..cache.store import CacheStore
@@ -215,14 +216,16 @@ def _setup_worktrees(run_dir: Path, diff: LocalDiff) -> None:
     else:
         # Committed-only mode — create a detached worktree at the resolved head SHA.
         if not head_link.exists():
-            _git(diff.repo_git.parent, "worktree", "add", "--detach",
-                 str(head_link.resolve()), diff.head_sha)
+            git_ops.worktree_add(
+                diff.repo_git.parent, head_link.resolve(), diff.head_sha,
+            )
 
     # Base worktree (always real — we want the LLM to read pre-change code).
     if not base_dir.exists():
         # Strip synthetic suffixes from dirty head; base_sha is always real.
-        _git(diff.repo_git.parent, "worktree", "add", "--detach",
-             str(base_dir.resolve()), diff.base_sha)
+        git_ops.worktree_add(
+            diff.repo_git.parent, base_dir.resolve(), diff.base_sha,
+        )
 
 
 def _symlink(link: Path, target: Path) -> None:
@@ -233,14 +236,6 @@ def _symlink(link: Path, target: Path) -> None:
         # marker file with the target path. Tools that rely on the path will
         # fail more loudly and the user can switch modes.
         link.write_text(str(target.resolve()) + "\n", encoding="utf-8")
-
-
-def _git(cwd: Path, *args: str) -> str:
-    import subprocess
-    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
-    if r.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} failed: {r.stderr.strip()}")
-    return r.stdout
 
 
 def _load_viewer_json(run_dir: Path) -> dict:

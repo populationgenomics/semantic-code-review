@@ -71,7 +71,7 @@ def test_old_gh_unknown_field_translates_to_clear_message() -> None:
         ),
         returncode=1,
     )
-    with patch("semantic_code_review.fetch.gh.subprocess.run", side_effect=fake):
+    with patch("semantic_code_review.git_ops.subprocess.run", side_effect=fake):
         with pytest.raises(GhFetchError, match="gh is too old"):
             fetch_pr_meta(ref)
 
@@ -83,7 +83,7 @@ def test_other_gh_failures_pass_through() -> None:
         stderr="HTTP 401: Bad credentials",
         returncode=1,
     )
-    with patch("semantic_code_review.fetch.gh.subprocess.run", side_effect=fake):
+    with patch("semantic_code_review.git_ops.subprocess.run", side_effect=fake):
         with pytest.raises(GhFetchError, match="Bad credentials"):
             fetch_pr_meta(ref)
 
@@ -94,36 +94,36 @@ def test_other_gh_failures_pass_through() -> None:
 
 
 def test_preflight_missing_gh_raises() -> None:
-    with patch("semantic_code_review.fetch.gh.shutil.which", return_value=None):
+    with patch("semantic_code_review.git_ops.shutil.which", return_value=None):
         with pytest.raises(GhFetchError, match="not found on PATH"):
             preflight_gh()
 
 
 def test_preflight_too_old_raises() -> None:
     fake = _fake_run(stdout="gh version 2.10.0 (2022-08-22)\n", returncode=0)
-    with patch("semantic_code_review.fetch.gh.shutil.which", return_value="/u/bin/gh"):
-        with patch("semantic_code_review.fetch.gh.subprocess.run", side_effect=fake):
+    with patch("semantic_code_review.git_ops.shutil.which", return_value="/u/bin/gh"):
+        with patch("semantic_code_review.git_ops.subprocess.run", side_effect=fake):
             with pytest.raises(GhFetchError, match="2.10.0 is too old"):
                 preflight_gh()
 
 
 def test_preflight_recent_passes() -> None:
     fake = _fake_run(stdout="gh version 2.40.1 (2024-01-08)\n", returncode=0)
-    with patch("semantic_code_review.fetch.gh.shutil.which", return_value="/u/bin/gh"):
-        with patch("semantic_code_review.fetch.gh.subprocess.run", side_effect=fake):
+    with patch("semantic_code_review.git_ops.shutil.which", return_value="/u/bin/gh"):
+        with patch("semantic_code_review.git_ops.subprocess.run", side_effect=fake):
             assert preflight_gh() == "/u/bin/gh"
 
 
 def test_preflight_unparseable_version_does_not_block() -> None:
     """Don't break working setups whose --version output we can't parse."""
     fake = _fake_run(stdout="some other gh fork v9001\n", returncode=0)
-    with patch("semantic_code_review.fetch.gh.shutil.which", return_value="/u/bin/gh"):
-        with patch("semantic_code_review.fetch.gh.subprocess.run", side_effect=fake):
+    with patch("semantic_code_review.git_ops.shutil.which", return_value="/u/bin/gh"):
+        with patch("semantic_code_review.git_ops.subprocess.run", side_effect=fake):
             assert preflight_gh() == "/u/bin/gh"
 
 
 def test_preflight_at_minimum_version_passes() -> None:
     fake = _fake_run(stdout="gh version 2.21.0 (2023-01-19)\n", returncode=0)
-    with patch("semantic_code_review.fetch.gh.shutil.which", return_value="/u/bin/gh"):
-        with patch("semantic_code_review.fetch.gh.subprocess.run", side_effect=fake):
+    with patch("semantic_code_review.git_ops.shutil.which", return_value="/u/bin/gh"):
+        with patch("semantic_code_review.git_ops.subprocess.run", side_effect=fake):
             assert preflight_gh() == "/u/bin/gh"

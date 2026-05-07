@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import hashlib
 import re
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+from .. import git_ops
 
 
 _RANGE_RE = re.compile(r"^(?P<a>[^.]+)\.\.\.?(?P<b>.+)$")
@@ -121,16 +122,16 @@ def _find_repo_root(start: Path) -> Path:
 def _diff_committed_range(
     cwd: Path, base_ref: str, head_ref: str, sep: str
 ) -> tuple[str, str, str]:
-    base_sha = _rev_parse(cwd, base_ref)
-    head_sha = _rev_parse(cwd, head_ref)
+    base_sha = _safe_rev_parse(cwd, base_ref)
+    head_sha = _safe_rev_parse(cwd, head_ref)
     # Use the resolved SHAs in the diff command so rename/symbol churn in the
     # interim (another checkout, etc.) can't change what we show.
     if sep == "...":
-        merge_base = _merge_base(cwd, base_sha, head_sha)
-        raw = _git(cwd, "diff", f"{merge_base}..{head_sha}")
-        base_sha = merge_base
+        merge_base_sha = _safe_merge_base(cwd, base_sha, head_sha)
+        raw = _safe_diff(cwd, f"{merge_base_sha}..{head_sha}")
+        base_sha = merge_base_sha
     else:
-        raw = _git(cwd, "diff", f"{base_sha}..{head_sha}")
+        raw = _safe_diff(cwd, f"{base_sha}..{head_sha}")
     return raw, base_sha, head_sha
 
 
@@ -142,12 +143,12 @@ def _diff_single_ref(
     no_unstaged: bool,
 ) -> tuple[str, str, str, str, bool]:
     """Return (raw_diff, base_sha, head_sha, mode, head_is_working)."""
-    base_sha = _rev_parse(cwd, ref)
+    base_sha = _safe_rev_parse(cwd, ref)
 
     if no_staged and no_unstaged:
         # <ref>..HEAD (pure committed diff)
-        head_sha = _rev_parse(cwd, "HEAD")
-        raw = _git(cwd, "diff", f"{base_sha}..{head_sha}")
+        head_sha = _safe_rev_parse(cwd, "HEAD")
+        raw = _safe_diff(cwd, f"{base_sha}..{head_sha}")
         return raw, base_sha, head_sha, "ref..HEAD", False
 
     if no_staged:
@@ -155,9 +156,9 @@ def _diff_single_ref(
         # `git diff <ref>` gives ref vs working; subtracting staged would
         # require two-pass plumbing. Simpler: combine `ref..HEAD` with
         # unstaged-only (HEAD vs working tree, excluding staged).
-        head_committed = _rev_parse(cwd, "HEAD")
-        committed_part = _git(cwd, "diff", f"{base_sha}..{head_committed}")
-        unstaged_part = _git(cwd, "diff")  # HEAD vs working (approx); see note
+        head_committed = _safe_rev_parse(cwd, "HEAD")
+        committed_part = _safe_diff(cwd, f"{base_sha}..{head_committed}")
+        unstaged_part = _safe_diff(cwd)  # HEAD vs working (approx); see note
         # Concatenation of two independent diffs can touch the same file twice;
         # that's fine for our viewer (rare enough to ignore) but warn:
         raw = _concat_diffs(committed_part, unstaged_part)
@@ -167,35 +168,51 @@ def _diff_single_ref(
     if no_unstaged:
         # <ref> vs (HEAD + staged). That's `git diff --cached <ref>` inverted:
         # actually `git diff <ref> --cached` gives ref vs index.
-        raw = _git(cwd, "diff", "--cached", base_sha)
-        head_committed = _rev_parse(cwd, "HEAD")
+        raw = _safe_diff(cwd, "--cached", base_sha)
+        head_committed = _safe_rev_parse(cwd, "HEAD")
         head_sha = _synthesise_head_sha(head_committed, raw, tag="staged")
         return raw, base_sha, head_sha, "ref-working-no-unstaged", True
 
     # Default: <ref> vs current working state (includes staged + unstaged).
-    raw = _git(cwd, "diff", base_sha)
-    head_committed = _rev_parse(cwd, "HEAD")
-    is_dirty = bool(_git(cwd, "status", "--porcelain").strip())
+    raw = _safe_diff(cwd, base_sha)
+    head_committed = _safe_rev_parse(cwd, "HEAD")
+    is_dirty = bool(_safe_status(cwd).strip())
     head_sha = _synthesise_head_sha(head_committed, raw) if is_dirty else head_committed
     mode = "ref-working" if is_dirty else "ref..HEAD"
     return raw, base_sha, head_sha, mode, True
 
 
-def _rev_parse(cwd: Path, ref: str) -> str:
-    return _git(cwd, "rev-parse", "--verify", f"{ref}^{{commit}}").strip()
+# Thin shims that re-raise GitError as LocalDiffError so callers of
+# build_local_diff catch a single domain exception. Keeping them as
+# small named helpers (rather than inlined try/except blocks) keeps
+# the call-site flow readable.
+
+def _safe_rev_parse(cwd: Path, ref: str) -> str:
+    try:
+        return git_ops.rev_parse(cwd, ref)
+    except git_ops.GitError as e:
+        raise LocalDiffError(str(e)) from e
 
 
-def _merge_base(cwd: Path, a: str, b: str) -> str:
-    return _git(cwd, "merge-base", a, b).strip()
+def _safe_merge_base(cwd: Path, a: str, b: str) -> str:
+    try:
+        return git_ops.merge_base(cwd, a, b)
+    except git_ops.GitError as e:
+        raise LocalDiffError(str(e)) from e
 
 
-def _git(cwd: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, check=False
-    )
-    if result.returncode != 0:
-        raise LocalDiffError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
-    return result.stdout
+def _safe_diff(cwd: Path, *args: str) -> str:
+    try:
+        return git_ops.diff(cwd, *args)
+    except git_ops.GitError as e:
+        raise LocalDiffError(str(e)) from e
+
+
+def _safe_status(cwd: Path) -> str:
+    try:
+        return git_ops.status_porcelain(cwd)
+    except git_ops.GitError as e:
+        raise LocalDiffError(str(e)) from e
 
 
 def _concat_diffs(*parts: str) -> str:

@@ -1,17 +1,21 @@
-"""Wrappers around the `gh` CLI for PR metadata and diff retrieval."""
+"""PR URL parsing and `gh`-based PR metadata/diff retrieval.
+
+Subprocess invocations live in :mod:`semantic_code_review.git_ops`; this
+module owns the wire-format models (`PRRef`, `_PR_FIELDS`) and the
+error-message translation specific to PR fetch.
+"""
 
 from __future__ import annotations
 
 import json
 import re
-import shutil
-import subprocess
 from dataclasses import dataclass
+
+from .. import git_ops
+from ..git_ops import GhError, GhMissingError
 
 
 _PR_URL_RE = re.compile(r"https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)/?")
-_GH_VERSION_RE = re.compile(r"gh version (\d+)\.(\d+)\.(\d+)")
-_MIN_GH_VERSION_TUPLE = (2, 21, 0)
 
 
 @dataclass(frozen=True)
@@ -58,96 +62,56 @@ _PR_FIELDS = [
 ]
 
 
-class GhFetchError(RuntimeError):
-    """Any non-zero exit from a `gh` subprocess used during PR fetch.
-
-    Also covers preflight failures (missing gh, too-old gh) so a
-    single CLI catch handler covers all gh-related environment errors.
-    """
-
-
-# baseRefOid and headRefOid landed in gh 2.21 (Jan 2023). Older
-# releases reject them at flag-parse time with "Unknown JSON field".
-_MIN_GH_VERSION = "2.21"
+# Public alias kept for callers that catch the PR-fetch failure mode by
+# name. `git_ops.GhMissingError` (preflight failures) is a subclass of
+# `GhError`, so a single `except GhFetchError` covers all gh-related
+# environment errors as before.
+GhFetchError = GhError
 
 
 def preflight_gh() -> str:
-    """Verify gh is installed and recent enough; return the binary path.
+    """Verify `gh` is installed and recent enough; return the binary path.
 
-    Run once at the top of any command that calls a gh subprocess so
-    a missing-gh / too-old-gh diagnosis surfaces before we spend time
-    fetching, parsing, or contacting any backend. Raises GhFetchError
-    on either failure mode; the message is actionable on its own.
+    Run once at the top of any command that calls a gh subprocess so a
+    missing-gh / too-old-gh diagnosis surfaces before we spend time
+    fetching, parsing, or contacting any backend.
     """
-    path = shutil.which("gh")
-    if not path:
-        raise GhFetchError(
-            "`gh` (GitHub CLI) not found on PATH. Install it from "
-            "https://cli.github.com/ or via your package manager."
-        )
-    result = subprocess.run(
-        [path, "--version"],
-        capture_output=True, text=True, check=False,
-    )
-    if result.returncode != 0:
-        # gh is on PATH but `gh --version` fails — surface the actual
-        # error rather than swallow it; something's seriously wrong.
-        msg = (result.stderr or result.stdout or "").strip()
-        raise GhFetchError(f"`gh --version` failed: {msg}")
-    m = _GH_VERSION_RE.search(result.stdout)
-    if not m:
-        # Unknown output format — don't block. If a real call later
-        # fails on Unknown JSON field, the runtime translation will
-        # still produce a clear error.
-        return path
-    ver = tuple(int(x) for x in m.groups())
-    if ver < _MIN_GH_VERSION_TUPLE:
-        version_str = ".".join(str(x) for x in ver)
-        raise GhFetchError(
-            f"gh {version_str} is too old for scr (need >= "
-            f"{_MIN_GH_VERSION}, released Jan 2023). Upgrade gh — "
-            f"`brew upgrade gh` on macOS, or see "
-            f"https://cli.github.com/ for other platforms."
-        )
-    return path
+    return git_ops.preflight_gh()
 
 
 def fetch_pr_meta(ref: PRRef) -> dict:
-    result = subprocess.run(
-        ["gh", "pr", "view", str(ref.number), "--repo", ref.slug, "--json", ",".join(_PR_FIELDS)],
-        capture_output=True, text=True, check=False,
-    )
-    if result.returncode != 0:
-        stderr = result.stderr.strip()
-        if "Unknown JSON field" in stderr:
+    rc, stdout, stderr = git_ops.gh_pr_view(ref.slug, ref.number, _PR_FIELDS)
+    if rc != 0:
+        msg = stderr.strip()
+        if "Unknown JSON field" in msg:
             raise GhFetchError(
                 f"gh is too old to expose baseRefOid/headRefOid (need >= "
-                f"{_MIN_GH_VERSION}, released Jan 2023). Upgrade gh — "
+                f"{git_ops.MIN_GH_VERSION}, released Jan 2023). Upgrade gh — "
                 f"`brew upgrade gh` on macOS, or see "
                 f"https://cli.github.com/ for other platforms."
             )
-        raise GhFetchError(f"gh pr view failed: {stderr}")
-    return json.loads(result.stdout)
+        raise GhFetchError(f"gh pr view failed: {msg}")
+    return json.loads(stdout)
 
 
 def fetch_pr_diff(ref: PRRef) -> str:
-    result = subprocess.run(
-        ["gh", "pr", "diff", str(ref.number), "--repo", ref.slug],
-        capture_output=True, text=True, check=False,
-    )
-    if result.returncode != 0:
-        raise GhFetchError(f"gh pr diff failed: {result.stderr.strip()}")
-    return result.stdout
+    rc, stdout, stderr = git_ops.gh_pr_diff(ref.slug, ref.number)
+    if rc != 0:
+        raise GhFetchError(f"gh pr diff failed: {stderr.strip()}")
+    return stdout
 
 
 def fetch_pr_files(ref: PRRef) -> list[str]:
     """Return the list of changed file paths (post-image)."""
-    # gh pr view ... --json files returns {path, additions, deletions}
-    result = subprocess.run(
-        ["gh", "pr", "view", str(ref.number), "--repo", ref.slug, "--json", "files"],
-        capture_output=True, text=True, check=False,
-    )
-    if result.returncode != 0:
-        raise GhFetchError(f"gh pr view --json files failed: {result.stderr.strip()}")
-    data = json.loads(result.stdout)
+    rc, stdout, stderr = git_ops.gh_pr_view(ref.slug, ref.number, ["files"])
+    if rc != 0:
+        raise GhFetchError(f"gh pr view --json files failed: {stderr.strip()}")
+    data = json.loads(stdout)
     return [f["path"] for f in data.get("files", [])]
+
+
+__all__ = [
+    "GhFetchError", "GhMissingError",
+    "PRRef", "parse_pr_url", "preflight_gh",
+    "fetch_pr_meta", "fetch_pr_diff", "fetch_pr_files",
+]

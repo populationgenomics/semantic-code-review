@@ -77,7 +77,6 @@ def test_post_inline_review_shells_gh_api(monkeypatch) -> None:
         captured["input"] = input
         return _FakeProc(stdout=json.dumps({"id": 999, "html_url": "https://github.com/o/r/pull/1#pullrequestreview-999"}))
 
-    monkeypatch.setattr(gh, "require_gh", lambda: "/usr/bin/gh")
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     comments = [_comment(side="new", line=42, body="nit"),
@@ -85,7 +84,7 @@ def test_post_inline_review_shells_gh_api(monkeypatch) -> None:
     result = gh.post_inline_review("o/r", 1, "ff2ab91deadbeef", comments)
 
     cmd = captured["cmd"]
-    assert cmd[:5] == ["/usr/bin/gh", "api", "-X", "POST", "repos/o/r/pulls/1/reviews"]
+    assert cmd[:5] == ["gh", "api", "-X", "POST", "repos/o/r/pulls/1/reviews"]
     assert "--input" in cmd and cmd[-1] == "-"
 
     payload = json.loads(captured["input"])
@@ -102,7 +101,6 @@ def test_post_inline_review_shells_gh_api(monkeypatch) -> None:
 
 
 def test_post_inline_review_raises_when_no_postable(monkeypatch) -> None:
-    monkeypatch.setattr(gh, "require_gh", lambda: "/usr/bin/gh")
     called = {"n": 0}
 
     def fake_run(*a, **kw):  # pragma: no cover — should not be called
@@ -117,8 +115,6 @@ def test_post_inline_review_raises_when_no_postable(monkeypatch) -> None:
 
 
 def test_post_inline_review_propagates_gh_failure(monkeypatch) -> None:
-    monkeypatch.setattr(gh, "require_gh", lambda: "/usr/bin/gh")
-
     def fake_run(*a, **kw):
         return _FakeProc(stderr="HTTP 422: line not in diff hunk", returncode=1)
 
@@ -134,7 +130,6 @@ def test_post_inline_review_propagates_gh_failure(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 def test_list_review_requested_prs_parses_json(monkeypatch) -> None:
-    monkeypatch.setattr(gh, "require_gh", lambda: "/usr/bin/gh")
     payload = [
         {
             "number": 42,

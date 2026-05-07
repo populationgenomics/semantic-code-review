@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import os
-import subprocess
 from pathlib import Path
+
+from . import git_ops
 
 
 def default_config_path() -> Path:
@@ -57,12 +58,8 @@ def default_runs_root() -> Path:
         os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")
     ) / "scr" / "runs"
     try:
-        r = subprocess.run(
-            ["git", "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, check=True,
-        )
-        identity = str(Path(r.stdout.strip()).resolve())
-    except (subprocess.CalledProcessError, FileNotFoundError):
+        identity = str(Path(git_ops.common_dir()).resolve())
+    except (git_ops.GitError, FileNotFoundError):
         identity = str(Path.cwd().resolve())
     fp = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
     return cache_root / fp

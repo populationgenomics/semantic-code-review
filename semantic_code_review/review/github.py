@@ -9,19 +9,19 @@ Three responsibilities:
 3. Post the inline comments collected by the viewer back to GitHub
    as a single `COMMENT`-event review.
 
-All GitHub I/O goes through the `gh` CLI subprocess so we don't take
-on a Python GitHub-client dependency. Auth and host config piggy-back
-on whatever `gh auth status` reports.
+All GitHub I/O goes through `git_ops`'s `gh` wrappers; auth and host
+config piggy-back on whatever `gh auth status` reports. Callers
+preflight `gh` once at the CLI boundary (`fetch.preflight_gh`).
 """
 
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess
 import sys
 from dataclasses import dataclass
 from typing import Any, Iterable
+
+from .. import git_ops
 
 
 @dataclass(frozen=True)
@@ -67,24 +67,19 @@ class PostResult:
     posted: int
 
 
-class GhError(RuntimeError):
-    """Any non-zero exit from a `gh` subprocess we can't handle."""
-
-
-def require_gh() -> str:
-    """Resolve the `gh` binary path or raise GhError."""
-    path = shutil.which("gh")
-    if not path:
-        raise GhError(
-            "`gh` (GitHub CLI) not found on PATH. Install it from "
-            "https://cli.github.com/ or via your package manager."
-        )
-    return path
+# Public alias kept so callers that catch posting failures by name
+# don't need to import from git_ops.
+GhError = git_ops.GhError
 
 
 # ---------------------------------------------------------------------------
 # PR resolution
 # ---------------------------------------------------------------------------
+
+_LIST_FIELDS = [
+    "number", "title", "author", "headRefName", "baseRefName", "updatedAt", "url",
+]
+
 
 def list_review_requested_prs(repo: str) -> list[OpenPR]:
     """Open PRs in `repo` where the gh user is a requested reviewer.
@@ -93,18 +88,12 @@ def list_review_requested_prs(repo: str) -> list[OpenPR]:
     `review-requested:@me` which is exactly the filter we want and
     keeps the auth/host story inside `gh`.
     """
-    gh = require_gh()
-    cmd = [
-        gh, "pr", "list",
-        "--repo", repo,
-        "--search", "is:open review-requested:@me",
-        "--json", "number,title,author,headRefName,baseRefName,updatedAt,url",
-        "--limit", "100",
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    if proc.returncode != 0:
-        raise GhError(f"`gh pr list` failed: {proc.stderr.strip() or proc.stdout.strip()}")
-    raw = json.loads(proc.stdout or "[]")
+    rc, stdout, stderr = git_ops.gh_pr_list(
+        repo, "is:open review-requested:@me", _LIST_FIELDS, limit=100,
+    )
+    if rc != 0:
+        raise GhError(f"`gh pr list` failed: {stderr.strip() or stdout.strip()}")
+    raw = json.loads(stdout or "[]")
     return [_open_pr_from_json(item) for item in raw]
 
 
@@ -202,7 +191,6 @@ def post_inline_review(
     github.com — see plan non-goals); the parameter exists so future
     flags can flip it without touching this signature.
     """
-    gh = require_gh()
     posted = comments_to_github(comments)
     if not posted:
         raise GhError("no postable comments after mapping (all entries malformed?)")
@@ -215,25 +203,16 @@ def post_inline_review(
             for c in posted
         ],
     }
-    cmd = [
-        gh, "api", "-X", "POST",
-        f"repos/{repo}/pulls/{number}/reviews",
-        "--input", "-",
-    ]
-    proc = subprocess.run(
-        cmd,
-        input=json.dumps(payload),
-        capture_output=True,
-        text=True,
-        check=False,
+    rc, stdout, stderr = git_ops.gh_api_post(
+        f"repos/{repo}/pulls/{number}/reviews", payload,
     )
-    if proc.returncode != 0:
+    if rc != 0:
         # gh's stderr is usually informative; pass it through verbatim.
         raise GhError(
-            f"`gh api` POST review failed (exit {proc.returncode}): "
-            f"{proc.stderr.strip() or proc.stdout.strip()}"
+            f"`gh api` POST review failed (exit {rc}): "
+            f"{stderr.strip() or stdout.strip()}"
         )
-    response = json.loads(proc.stdout or "{}")
+    response = json.loads(stdout or "{}")
     return PostResult(
         review_id=int(response.get("id", 0)),
         review_url=str(response.get("html_url", "")),

@@ -36,8 +36,7 @@ as one PR; tests must pass before the next step starts.
 - **#6 is independent** but easiest to do once the augment pipeline's
   input type is settled.
 
-**Status**: #3, #2, #1, #4, and #5 are done. #6 is independent and can
-land alongside.
+**Status**: all six steps done.
 
 ---
 
@@ -236,40 +235,68 @@ unused by the viewer JS).
 
 ---
 
-## Step 6 — `GitOps` module (#6)
+## Step 6 — `git_ops` module (#6) — DONE
 
-**Files**: `semantic_code_review/fetch/gh.py` (153),
-`semantic_code_review/fetch/worktree.py` (54),
-`semantic_code_review/fetch/__init__.py` (70),
-`semantic_code_review/review/git.py` (247),
-`semantic_code_review/review/github.py` (241).
+**Outcome**: every git/gh subprocess invocation in the library now
+goes through `semantic_code_review/git_ops.py`. The module exposes
+two layers:
 
-**Goal**: one git surface. `fetch/` and `review/` adapt to it instead
-of running their own helpers.
+- Generic escape hatches `git()`, `gh()`, `git_capture()`,
+  `gh_capture()` for one-off invocations — capture variants return
+  `(rc, stdout, stderr)` for callers that need to translate specific
+  stderr (e.g. `fetch_pr_meta` keying on "Unknown JSON field") or
+  treat `rc=1` as success (e.g. `git grep` no-matches).
+- Named helpers (`rev_parse`, `merge_base`, `diff`,
+  `status_porcelain`, `common_dir`, `show`, `log_oneline`, `grep`,
+  `init_dir`, `remote_add`, `fetch_depth1`, `worktree_add`,
+  `gh_path`, `preflight_gh`, `gh_pr_view`, `gh_pr_diff`,
+  `gh_pr_list`, `gh_api_post`) for the call patterns that already
+  appear at two or more sites.
 
-**Steps**
+Errors are typed: `GitError`, `GhError`, and `GhMissingError` (a
+`GhError` subclass for missing-binary / too-old-binary, so the CLI
+can print an install hint without separate catches). Domain modules
+keep their own typed wrappers (`LocalDiffError`, `GhFetchError`)
+that re-raise from `GitError` / `GhError`; callers don't need to
+know about `git_ops` exceptions.
 
-1. Inventory every `subprocess.run(["git", ...])` call across both
-   trees. Catalogue: repo root, diff, sha resolution, worktree create/
-   destroy, log, show.
-2. Create `semantic_code_review/git_ops.py` with one class or namespace
-   exposing the catalogued operations as methods. Use a single `GitError`
-   typed exception (subclasses for the cases callers actually care about).
-3. Migrate `review/git.py` to use `GitOps`. Delete its private
-   `_git`, `_slug`, `_synthesise_head_sha` helpers (or move them into
-   `GitOps`).
-4. Migrate `fetch/worktree.py` to use `GitOps`. Likewise delete
-   private helpers.
-5. Harmonise the result types: `FetchResult` and `LocalDiff` should
-   share a base (e.g., `DiffSource`) with `worktree_path`, `base_sha`,
-   `head_sha`, `raw_diff_path`, plus a stage-specific `provenance`
-   field.
-6. Confirm the runner, the `pr` command, and tests in
-   `tests/test_local_diff.py`, `tests/test_fetch_url.py`,
-   `tests/test_github_pr_review.py` still work.
+**Migrated call sites**: `fetch/gh.py`, `fetch/worktree.py`,
+`review/git.py`, `review/github.py`, `review/runner.py`,
+`paths.py`, `augment/tools.py`. The remaining `subprocess.run`
+usages in the library are non-git/gh: `augment/tools.py` runs `rg`
+(ripgrep) for the fast-path search, `backends/base.py` spawns the
+CLI-backend subprocess, and `cli.py` invokes `$EDITOR` for `scr
+config edit`.
 
-**Done when**: `subprocess.run(["git", ...])` and
-`subprocess.run(["gh", ...])` appear only inside `git_ops.py`.
+**Skipped** — `LocalDiff` / `FetchResult` harmonisation. The two
+types live at different layers: `LocalDiff` is the pre-write output
+of `build_local_diff` (carries the raw diff text in memory),
+`FetchResult` is the post-write output of `fetch()` (carries paths
+to artefacts already on disk). The shared "post-populated run dir"
+shape that step 5 of this plan gestured at is already the
+`run_dir: Path` that `serve_review` consumes — promoting it to a
+typed value object would add a layer with one consumer. Left as
+parked work; revisit if a third diff source (e.g. a Gerrit
+fetcher) ever needs the same shape.
+
+**Test surface**: existing `tests/test_local_diff.py`,
+`tests/test_fetch_url.py`, and `tests/test_github_pr_review.py`
+continue to cover the public API. Two adjustments:
+- `test_fetch_url.py` now patches `git_ops.subprocess.run` /
+  `git_ops.shutil.which` instead of the corresponding attrs in
+  `fetch.gh` (the patches followed the moved code).
+- `test_github_pr_review.py` dropped the `require_gh` shim that
+  used to pre-resolve `/usr/bin/gh`; argv now starts with the bare
+  `"gh"` since `subprocess.run` does its own PATH resolution. The
+  cli-level `preflight_gh()` still gates the friendly missing-tool
+  message before any other gh invocation.
+
+**Retro**: `git_ops.py` adds ~260 lines; the seven migrated files
+shrink by ~230 lines combined. Net library code roughly flat —
+matches step 2's lesson that "collapse N-way duplication" usually
+trades a thin layer for centralised typing/testability rather than
+raw line count. The structural goal — one place to mock, one place
+to add a new git subcommand — is met.
 
 ---
 
