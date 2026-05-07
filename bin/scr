@@ -5,9 +5,14 @@
 #
 # 1. Preflight system dependencies. python3 (>= 3.11) and git are hard
 #    requirements; gh and rg are optional and we only warn if missing.
-# 2. Maintain a per-plugin virtualenv under $CLAUDE_PLUGIN_DATA/venv, keyed by
-#    sha256(pyproject.toml). Any change to pyproject.toml — including a new
-#    transitive dep after a plugin update — triggers a reinstall automatically.
+# 2. Maintain a per-plugin virtualenv under $CLAUDE_PLUGIN_DATA/venv. Two
+#    cache keys gate the work:
+#      - deps stamp : sha256(requirements.lock, build-requirements.lock)
+#                     → gates the slow `pip install --require-hashes` steps.
+#      - pkg stamp  : sha256(pyproject.toml)
+#                     → gates only the fast `pip install --no-deps .` step.
+#    A pyproject-only change (version bump, entry-point tweak) reinstalls
+#    the local package in ~1s instead of re-running the full deps install.
 # 3. Exec the real `scr` out of that venv, passing through all argv.
 #
 # The script is idempotent and cheap on the hot path (one sha256 check, one
@@ -76,44 +81,68 @@ if ! command -v rg >/dev/null 2>&1; then
   warn "ripgrep (rg) not found — falling back to 'git grep' for LLM tool-use searches."
 fi
 
-# --- venv install (idempotent) ---------------------------------------------
+# --- venv install (split-stamp, idempotent) -------------------------------
 
-# Cache key: hash pyproject.toml (package metadata) + both lockfiles
-# (exact transitive pins + SHA-256 hashes). Any change in any of them
-# triggers a reinstall.
-hash_inputs() {
+# Two cache keys: a pyproject-only change (version bump, entry-point tweak)
+# only re-runs the fast local-package install, not the slow deps install.
+hash_files() {
   local shacmd
   if command -v shasum >/dev/null 2>&1; then shacmd="shasum -a 256";
   else shacmd="sha256sum"; fi
-  $shacmd "$PYPROJECT" "$LOCKFILE" "$BUILD_LOCKFILE" | awk '{print $1}' | $shacmd | awk '{print $1}'
+  $shacmd "$@" | awk '{print $1}' | $shacmd | awk '{print $1}'
 }
 
-want_hash=$(hash_inputs)
-stamp="$CLAUDE_PLUGIN_DATA/installed-${want_hash}"
+deps_hash=$(hash_files "$LOCKFILE" "$BUILD_LOCKFILE")
+pkg_hash=$(hash_files "$PYPROJECT")
+deps_stamp="$CLAUDE_PLUGIN_DATA/deps-${deps_hash}"
+pkg_stamp="$CLAUDE_PLUGIN_DATA/pkg-${pkg_hash}"
 
-if [ ! -x "$VENV/bin/scr" ] || [ ! -f "$stamp" ]; then
-  printf 'scr: setting up python environment under %s (first run / deps changed)\n' "$VENV" >&2
+did_install=0
+
+# Slow path: lockfile changed (or fresh install). Every install step uses
+# --require-hashes, so pip refuses any package whose on-disk SHA-256
+# doesn't match the lockfile. A compromised PyPI release, typo-squat, or
+# mirror MITM will fail the install rather than silently land. Ordering:
+#   1. Build backend (setuptools, wheel) from build-requirements.lock.
+#   2. Runtime deps from requirements.lock.
+# The local package itself is installed below in the (always-run when
+# pkg stamp is stale) fast path.
+if [ ! -x "$VENV/bin/python" ] || [ ! -f "$deps_stamp" ]; then
+  printf 'scr: installing python dependencies under %s (first run / lockfiles changed)\n' "$VENV" >&2
   if [ -d "$VENV" ]; then
     rm -rf "$VENV"
   fi
   python3 -m venv "$VENV"
   # shellcheck disable=SC1090,SC1091
-  # Every install step uses --require-hashes, so pip refuses any package
-  # whose on-disk SHA-256 doesn't match the lockfile. A compromised PyPI
-  # release, typo-squat, or mirror MITM will fail the install rather
-  # than silently land. Ordering:
-  #   1. Build backend (setuptools, wheel) from build-requirements.lock.
-  #   2. Runtime deps from requirements.lock.
-  #   3. The local package itself with --no-deps (nothing to resolve)
-  #      and --no-build-isolation (use the setuptools we just pinned
-  #      instead of letting pip fetch a fresh unpinned copy into an
-  #      isolated build env).
   "$VENV/bin/pip" install --quiet --require-hashes -r "$BUILD_LOCKFILE"
   "$VENV/bin/pip" install --quiet --require-hashes -r "$LOCKFILE"
+  find "$CLAUDE_PLUGIN_DATA" -maxdepth 1 -name 'deps-*' -print0 2>/dev/null | xargs -0 rm -f || true
+  printf '%s\n' "$deps_hash" > "$deps_stamp"
+  # Fresh venv → force the local-package reinstall below regardless of
+  # pkg stamp (the venv has no `scr` binary yet).
+  find "$CLAUDE_PLUGIN_DATA" -maxdepth 1 -name 'pkg-*' -print0 2>/dev/null | xargs -0 rm -f || true
+  did_install=1
+fi
+
+# Fast path: pyproject changed but lockfiles didn't — only the local
+# package needs reinstalling. --no-deps (nothing to resolve) and
+# --no-build-isolation (use the setuptools already pinned in the venv
+# instead of letting pip fetch a fresh unpinned copy into an isolated
+# build env).
+if [ ! -x "$VENV/bin/scr" ] || [ ! -f "$pkg_stamp" ]; then
+  if [ "$did_install" -eq 0 ]; then
+    printf 'scr: reinstalling local package (pyproject.toml changed)\n' >&2
+  fi
   "$VENV/bin/pip" install --quiet --no-deps --no-build-isolation "$CLAUDE_PLUGIN_ROOT"
-  # Clear any previous stamps so a rolled-back install doesn't look fresh.
+  find "$CLAUDE_PLUGIN_DATA" -maxdepth 1 -name 'pkg-*' -print0 2>/dev/null | xargs -0 rm -f || true
+  printf '%s\n' "$pkg_hash" > "$pkg_stamp"
+  did_install=1
+fi
+
+if [ "$did_install" -eq 1 ]; then
+  # One-time migration: clear stamps from the pre-split format so they
+  # don't accumulate.
   find "$CLAUDE_PLUGIN_DATA" -maxdepth 1 -name 'installed-*' -print0 2>/dev/null | xargs -0 rm -f || true
-  printf '%s\n' "$want_hash" > "$stamp"
   printf 'scr: ready\n' >&2
 fi
 
