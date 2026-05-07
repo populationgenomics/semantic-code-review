@@ -18,9 +18,8 @@ from semantic_code_review.augment.agents import (
     make_hunk_agent,
     make_overview_agent,
 )
-from semantic_code_review.augment.repo_tool_fns import TOOL_FUNCTIONS
 from semantic_code_review.augment.schemas import HunkAnnotations, OverviewSubmission
-from semantic_code_review.augment.tools import RepoTools
+from semantic_code_review.augment.tools import TOOL_FUNCTIONS, RepoTools
 
 
 @pytest.fixture(autouse=True)

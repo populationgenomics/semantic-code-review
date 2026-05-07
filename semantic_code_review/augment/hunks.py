@@ -21,8 +21,7 @@ from ..cache.store import CacheStore
 from ..viewer.rows import build_rows, compute_fold_regions
 from .agents import Backend, make_hunk_agent
 from .prompts import HUNK_SYSTEM, PROMPT_VERSION
-from .repo_tool_fns import TOOL_FUNCTIONS
-from .tools import RepoTools
+from .tools import TOOL_FUNCTIONS, RepoTools
 from .trace_adapter import submit_args_from_result, write_pydantic_ai_trace
 
 

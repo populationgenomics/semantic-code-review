@@ -21,9 +21,8 @@ from pydantic_ai.models import Model
 from pydantic_ai.output import ToolOutput
 
 from .prompts import HUNK_SYSTEM, OVERVIEW_SYSTEM
-from .repo_tool_fns import TOOL_FUNCTIONS
 from .schemas import HunkAnnotations, OverviewSubmission
-from .tools import RepoTools
+from .tools import TOOL_FUNCTIONS, RepoTools
 
 
 def make_overview_agent(model: str | Model) -> Agent[None, OverviewSubmission]:

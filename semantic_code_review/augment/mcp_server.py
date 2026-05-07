@@ -33,8 +33,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .repo_tool_fns import mcp_dispatch, mcp_tool_schemas
-from .tools import RepoTools
+from .tools import RepoTools, mcp_dispatch, mcp_tool_schemas
 
 
 log = logging.getLogger("scr.mcp_server")

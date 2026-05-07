@@ -1,18 +1,19 @@
-"""Direct tests for the typed tool functions and the MCP bridge."""
+"""Direct tests for the introspected tool surface and the MCP bridge."""
 
 from __future__ import annotations
 
+import inspect
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from semantic_code_review.augment.repo_tool_fns import (
+from semantic_code_review.augment.tools import (
     TOOL_FUNCTIONS,
+    RepoTools,
     mcp_dispatch,
     mcp_tool_schemas,
 )
-from semantic_code_review.augment.tools import RepoTools
 
 
 def _sh(cwd: Path, *args: str) -> None:
@@ -49,6 +50,46 @@ def test_each_schema_uses_input_schema_camelcase() -> None:
     for s in schemas:
         assert "inputSchema" in s
         assert "input_schema" not in s
+
+
+def test_pydantic_ai_and_mcp_surfaces_match() -> None:
+    """The two surfaces are derived from the same `RepoTools` methods.
+
+    Same names, same parameter shapes (modulo the `RunContext` injected
+    on the pydantic-ai side, which doesn't appear in the MCP schema).
+    """
+    schemas = {s["name"]: s for s in mcp_tool_schemas()}
+    fns = {fn.__name__: fn for fn in TOOL_FUNCTIONS}
+
+    assert set(schemas) == set(fns)
+
+    for name, fn in fns.items():
+        sig = inspect.signature(fn)
+        # Drop the RunContext parameter; everything else should match the schema.
+        fn_params = [p for p in sig.parameters.values() if p.name != "ctx"]
+        schema_props = schemas[name]["inputSchema"].get("properties", {})
+        schema_required = set(schemas[name]["inputSchema"].get("required", []))
+
+        assert {p.name for p in fn_params} == set(schema_props), name
+        # Required params on each side must match: positional-with-no-default
+        # in the function ↔ listed in `required` in the JSON schema.
+        fn_required = {
+            p.name for p in fn_params if p.default is inspect.Parameter.empty
+        }
+        assert fn_required == schema_required, name
+
+
+def test_surface_matches_marked_repo_tools_methods() -> None:
+    """Every exported function corresponds to an `@_tool`-marked method."""
+    from semantic_code_review.augment.tools import _TOOL_EXPORT_ATTR
+
+    marked = {
+        name
+        for name, attr in vars(RepoTools).items()
+        if callable(attr) and getattr(attr, _TOOL_EXPORT_ATTR, False)
+    }
+    assert {fn.__name__ for fn in TOOL_FUNCTIONS} == marked
+    assert {s["name"] for s in mcp_tool_schemas()} == marked
 
 
 def test_read_file_schema_marks_path_required() -> None:
