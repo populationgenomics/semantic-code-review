@@ -42,6 +42,15 @@ class LocalDiffError(ValueError):
     """Raised when the requested diff input is malformed or empty."""
 
 
+class EmptyDiff(LocalDiffError):
+    """The spec resolved cleanly but produced no changes.
+
+    Distinct from the malformed-input cases so the CLI can exit 0
+    with a friendly message instead of treating "nothing to review"
+    as an error.
+    """
+
+
 def build_local_diff(
     spec: str,
     *,
@@ -78,7 +87,7 @@ def build_local_diff(
         slug_source = spec
 
     if not raw.strip():
-        raise LocalDiffError(f"no diff for {spec!r}")
+        raise EmptyDiff(f"no changes to review for {spec!r}")
 
     files = _changed_files(raw)
     slug = _slug(slug_source, head_sha, head_is_working)

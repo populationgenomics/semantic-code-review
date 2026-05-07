@@ -587,6 +587,7 @@ def review(
 ) -> None:
     """Review a local git diff; round-trip reviewer comments to stdout."""
     _configure_logging(verbose)
+    from .review.git import EmptyDiff, LocalDiffError
     from .review.runner import ReviewOptions, run_review
 
     backend = _CONFIG.resolve_backend(backend)
@@ -613,7 +614,17 @@ def review(
         timeout=timeout,
         client=client,
     )
-    code = run_review(opts)
+    try:
+        code = run_review(opts)
+    except EmptyDiff as e:
+        # Empty-diff isn't an error — exit cleanly so calling scripts
+        # ("review every commit on this branch") don't have to special-
+        # case "this commit changed nothing".
+        typer.echo(f"scr: {e}", err=True)
+        raise typer.Exit(code=0)
+    except LocalDiffError as e:
+        typer.echo(f"scr: {e}", err=True)
+        raise typer.Exit(code=2)
     raise typer.Exit(code=code)
 
 
