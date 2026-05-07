@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from semantic_code_review.augment.schemas import ParsedHunk
-from semantic_code_review.viewer.rows import build_rows, compute_fold_regions
+from semantic_code_review.viewer.hunk_layout import build_rows, compute_fold_regions
 
 
 def _hunk(body: str, *, old_start: int = 1, old_count: int = 1, new_start: int = 1, new_count: int = 1) -> ParsedHunk:

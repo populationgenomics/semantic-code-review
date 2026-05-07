@@ -36,8 +36,8 @@ as one PR; tests must pass before the next step starts.
 - **#6 is independent** but easiest to do once the augment pipeline's
   input type is settled.
 
-**Status**: #3, #2, #1, and #4 are done. #5 follows #4; #6 is
-independent and can land alongside.
+**Status**: #3, #2, #1, #4, and #5 are done. #6 is independent and can
+land alongside.
 
 ---
 
@@ -206,36 +206,33 @@ x.model_dump()`.
 
 ---
 
-## Step 5 — Collapse the viewer hunk transform (#5)
+## Step 5 — Collapse the viewer hunk transform (#5) — DONE
 
-**Files**: `semantic_code_review/viewer/build_json.py` (221),
-`semantic_code_review/viewer/rows.py` (227),
-`semantic_code_review/viewer/render_html.py` (138).
+**Outcome**: `viewer/hunk_layout.py` owns hunk → viewer-block.
+`build_rows` and `compute_fold_regions` stay public (the augment-side
+hunk prompt at `augment/hunks.py:43-44` walks fold regions to label
+changed ones for the LLM); `_Row` and `_FoldRegion` are module-private
+value types — no caller imports them.
 
-**Goal**: one module owns hunk → viewer-block. `Row` and `FoldRegion`
-become internal; `build_json.py` becomes a thin file/hunk loop.
+`build_hunk_viewer_block(h, file_idx, hunk_idx) -> dict` does row
+construction + fold detection + per-hunk add/del counting + segment +
+fold-region-to-line-range mapping + output-block assembly. Per-hunk
+`adds`/`dels` ride on the returned block; `_file_block` sums them.
 
-**Steps**
+`build_json.py` shrank from 227 → ~165 lines (38 lines of hunk-shaping
+moved into `hunk_layout.py`). The plan's "<~80 lines" target wasn't
+met — `build_json.py` still owns `_pr_block`, `_group_blocks`,
+`_load_head_lines`, language detection, and the URL parsers, all of
+which are file/PR-level concerns that don't belong in `hunk_layout.py`.
+The structural goal (one module owns hunk → block) is met.
 
-1. Move `build_rows` and `compute_fold_regions` into a new
-   `viewer/hunk_layout.py` (or rename `rows.py`); make `Row`,
-   `FoldRegion` module-private.
-2. Introduce `build_hunk_viewer_block(hunk, file_idx, hunk_idx, meta)
-   -> dict` that does row construction + fold detection + addition/
-   deletion counting + output-block assembly.
-3. Move the addition/deletion scan currently in `build_json.py:97-98`
-   and the fold-region-to-line-range mapping in `build_json.py:141-149`
-   into `build_hunk_viewer_block`.
-4. `build_viewer_json` becomes `for file in diff.files: for hunk in
-   file.hunks: blocks.append(build_hunk_viewer_block(...))`.
-5. `render_html.py` keeps using `build_viewer_json`; no caller of
-   `Row`/`FoldRegion` should remain.
-6. Update `tests/test_viewer_json.py` and `tests/test_rows.py`. The
-   `Row` tests survive as private-module tests of `hunk_layout.py`;
-   the public tests target the block shape only.
-
-**Done when**: `Row`/`FoldRegion` are imported only inside
-`viewer/hunk_layout.py`. `build_json.py` is under ~80 lines.
+**Test surface**: `tests/test_rows.py` renamed to
+`tests/test_hunk_layout.py` and re-pointed at the new module — the
+existing `build_rows`/`compute_fold_regions` tests still cover the
+private value types via the public functions' return shapes.
+`tests/test_viewer_json.py` unchanged; the wire JSON is identical
+except per-hunk blocks now carry `adds`/`dels` counts (additive,
+unused by the viewer JS).
 
 ---
 

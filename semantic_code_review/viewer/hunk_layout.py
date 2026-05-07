@@ -1,4 +1,4 @@
-r"""Build a side-by-side row stream from a unified-diff hunk body.
+r"""Hunk → viewer block: row pairing, fold detection, output assembly.
 
 Each row carries old/new line numbers and the text to display on each side.
 Consecutive `-` / `+` runs are paired positionally (sequential pairing, not
@@ -13,21 +13,27 @@ Row kinds:
 
 The hunk body's "\ No newline at end of file" marker is silently dropped
 for v1 rendering (it doesn't affect side-by-side layout).
+
+`Row` and `FoldRegion` are module-private value types; callers consume the
+shape returned by ``build_hunk_viewer_block`` (a JSON-friendly dict). The
+``build_rows`` and ``compute_fold_regions`` functions remain public because
+the augment-side hunk prompt also walks fold regions (it only reads
+attributes off the returned values, never imports the type names).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
-from ..augment.schemas import ParsedHunk
+from ..augment.schemas import AnnotatedHunk, ParsedHunk, Segment
 
 
-RowKind = Literal["ctx", "ins", "del", "pair"]
+_RowKind = Literal["ctx", "ins", "del", "pair"]
 
 
 @dataclass
-class FoldRegion:
+class _FoldRegion:
     """An indent-based fold region within a hunk's row sequence.
 
     `header_idx` is the row whose content opens the block (the `def foo():`
@@ -47,8 +53,8 @@ class FoldRegion:
 
 
 @dataclass
-class Row:
-    kind: RowKind
+class _Row:
+    kind: _RowKind
     old_line: int | None
     new_line: int | None
     old_text: str
@@ -64,8 +70,8 @@ class Row:
         }
 
 
-def build_rows(hunk: ParsedHunk) -> list[Row]:
-    rows: list[Row] = []
+def build_rows(hunk: ParsedHunk) -> list[_Row]:
+    rows: list[_Row] = []
     old_line = hunk.old_start
     new_line = hunk.new_start
     dels_buf: list[str] = []  # text of pending '-' lines (without marker)
@@ -73,7 +79,7 @@ def build_rows(hunk: ParsedHunk) -> list[Row]:
     def flush_dels_as_solo() -> None:
         nonlocal old_line
         for text in dels_buf:
-            rows.append(Row(
+            rows.append(_Row(
                 kind="del", old_line=old_line, new_line=None,
                 old_text=text, new_text="",
             ))
@@ -93,7 +99,7 @@ def build_rows(hunk: ParsedHunk) -> list[Row]:
         if line == "" or line.startswith(" "):
             flush_dels_as_solo()
             text = "" if line == "" else line[1:]
-            rows.append(Row(
+            rows.append(_Row(
                 kind="ctx", old_line=old_line, new_line=new_line,
                 old_text=text, new_text=text,
             ))
@@ -115,20 +121,20 @@ def build_rows(hunk: ParsedHunk) -> list[Row]:
                 i += 1
             paired = min(len(dels_buf), len(adds))
             for j in range(paired):
-                rows.append(Row(
+                rows.append(_Row(
                     kind="pair", old_line=old_line, new_line=new_line,
                     old_text=dels_buf[j], new_text=adds[j],
                 ))
                 old_line += 1
                 new_line += 1
             for j in range(paired, len(dels_buf)):
-                rows.append(Row(
+                rows.append(_Row(
                     kind="del", old_line=old_line, new_line=None,
                     old_text=dels_buf[j], new_text="",
                 ))
                 old_line += 1
             for j in range(paired, len(adds)):
-                rows.append(Row(
+                rows.append(_Row(
                     kind="ins", old_line=None, new_line=new_line,
                     old_text="", new_text=adds[j],
                 ))
@@ -143,7 +149,7 @@ def build_rows(hunk: ParsedHunk) -> list[Row]:
     return rows
 
 
-def _row_indent(row: Row) -> int:
+def _row_indent(row: _Row) -> int:
     """Indent level (in spaces; tab = 4). -1 means blank/whitespace-only."""
     text = row.old_text if row.kind == "del" else row.new_text
     if not text or not text.strip():
@@ -159,7 +165,7 @@ def _row_indent(row: Row) -> int:
     return ind
 
 
-def compute_fold_regions(rows: list[Row]) -> list[FoldRegion]:
+def compute_fold_regions(rows: list[_Row]) -> list[_FoldRegion]:
     """Return indent-based fold regions over the row sequence.
 
     A region opens at a non-blank row whose next non-blank neighbour has
@@ -190,8 +196,7 @@ def compute_fold_regions(rows: list[Row]) -> list[FoldRegion]:
         top_ind, top_idx = stack.pop()
         raw.append((top_idx, len(indents) - 1))
 
-    # Convert to FoldRegion records, ordered by header_idx ascending.
-    regions: list[FoldRegion] = []
+    regions: list[_FoldRegion] = []
     for header_idx, body_end in sorted(raw):
         body_start = header_idx + 1
         if body_start > body_end:
@@ -202,7 +207,7 @@ def compute_fold_regions(rows: list[Row]) -> list[FoldRegion]:
         )
         new_start = _first_new_line(rows, header_idx, body_end)
         new_end = _last_new_line(rows, header_idx, body_end)
-        regions.append(FoldRegion(
+        regions.append(_FoldRegion(
             header_idx=header_idx,
             body_start_idx=body_start,
             body_end_idx=body_end,
@@ -213,15 +218,76 @@ def compute_fold_regions(rows: list[Row]) -> list[FoldRegion]:
     return regions
 
 
-def _first_new_line(rows: list[Row], start: int, end: int) -> int | None:
+def _first_new_line(rows: list[_Row], start: int, end: int) -> int | None:
     for i in range(start, end + 1):
         if rows[i].new_line is not None:
             return rows[i].new_line
     return None
 
 
-def _last_new_line(rows: list[Row], start: int, end: int) -> int | None:
+def _last_new_line(rows: list[_Row], start: int, end: int) -> int | None:
     for i in range(end, start - 1, -1):
         if rows[i].new_line is not None:
             return rows[i].new_line
     return None
+
+
+def build_hunk_viewer_block(
+    h: AnnotatedHunk, file_idx: int, hunk_idx: int,
+) -> dict[str, Any]:
+    """Build one hunk's viewer-JSON block: rows, folds, segments, counts."""
+    hunk_id = f"H{file_idx}_{hunk_idx}"
+    parsed = h.parsed
+    ann = h.ann
+    rows = build_rows(parsed)
+    regions = compute_fold_regions(rows)
+    summary_by_range = {
+        (fd.new_start, fd.new_count): fd.summary for fd in ann.fold_descriptions
+    }
+    fold_region_blocks: list[dict[str, Any]] = []
+    for reg in regions:
+        summary = ""
+        if reg.new_start is not None and reg.new_end is not None:
+            count = reg.new_end - reg.new_start + 1
+            summary = summary_by_range.get((reg.new_start, count), "")
+        fold_region_blocks.append({
+            "header_idx": reg.header_idx,
+            "body_start_idx": reg.body_start_idx,
+            "body_end_idx": reg.body_end_idx,
+            "new_start": reg.new_start,
+            "new_end": reg.new_end,
+            "has_changes": reg.has_changes,
+            "summary": summary,
+        })
+    body_lines = parsed.body.splitlines()
+    adds = sum(1 for ln in body_lines if ln.startswith("+"))
+    dels = sum(1 for ln in body_lines if ln.startswith("-"))
+    return {
+        "id": hunk_id,
+        "header": parsed.header,
+        "old_start": parsed.old_start, "old_count": parsed.old_count,
+        "new_start": parsed.new_start, "new_count": parsed.new_count,
+        "adds": adds,
+        "dels": dels,
+        "intent": ann.intent,
+        "smells": [s.model_dump() for s in ann.smells],
+        "confidence": ann.confidence,
+        "context": ann.context,
+        "refs": [r.model_dump() for r in ann.refs],
+        "line_notes": [ln.model_dump() for ln in ann.line_notes],
+        "segments": [_segment_block(s, hunk_id, si) for si, s in enumerate(ann.segments)],
+        "rows": [r.to_dict() for r in rows],
+        "fold_regions": fold_region_blocks,
+    }
+
+
+def _segment_block(s: Segment, parent_id: str, si: int) -> dict[str, Any]:
+    return {
+        "id": f"{parent_id}_S{si}",
+        "new_start": s.new_start,
+        "new_count": s.new_count,
+        "intent": s.intent,
+        "smells": [sm.model_dump() for sm in s.smells],
+        "context": s.context,
+        "refs": [r.model_dump() for r in s.refs],
+    }

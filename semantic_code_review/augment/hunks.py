@@ -20,7 +20,7 @@ from ..augment.schemas import (
     SkippedOverview,
 )
 from ..cache.store import CacheStore
-from ..viewer.rows import build_rows, compute_fold_regions
+from ..viewer.hunk_layout import build_rows, compute_fold_regions
 from .agents import Client, make_hunk_agent
 from .prompts import HUNK_SYSTEM, PROMPT_VERSION
 from .tools import TOOL_FUNCTIONS, RepoTools

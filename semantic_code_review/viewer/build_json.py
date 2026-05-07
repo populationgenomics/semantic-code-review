@@ -1,22 +1,21 @@
 """Transform an AnnotatedDiff + run metadata into the viewer JSON schema.
 
 The viewer's JS consumes this structure directly; it does not re-parse
-the unified diff. Per-hunk `rows` are pre-paired here (sequential `-`/`+`
-matching) so the renderer can emit the side-by-side DOM without running
-a diff algorithm in the browser.
+the unified diff. Per-hunk `rows` are pre-paired in
+``viewer/hunk_layout.py`` (sequential `-`/`+` matching) so the renderer
+can emit the side-by-side DOM without running a diff algorithm in the
+browser.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 from ..augment.schemas import (
-    SMELL_CATALOGUE, AnnotatedDiff, AnnotatedFile, AnnotatedHunk, Overview,
-    Segment,
+    SMELL_CATALOGUE, AnnotatedDiff, AnnotatedFile, Overview,
 )
-from .rows import build_rows, compute_fold_regions
+from .hunk_layout import build_hunk_viewer_block
 
 
 #: cap — files with more than this many lines don't bundle head_lines.
@@ -48,7 +47,7 @@ def _group_blocks(diff: AnnotatedDiff) -> list[dict[str, Any]]:
     """Translate Overview.groups into viewer-friendly blocks.
 
     Each member's (path, hunk_index) becomes a stable viewer hunk id
-    of the form "H{fileIdx}_{hunkIdx}", matching _hunk_block below.
+    of the form "H{fileIdx}_{hunkIdx}", matching the per-hunk block.
     Members whose path isn't in the diff (e.g. the file got filtered
     after the overview ran) are silently dropped.
     """
@@ -95,8 +94,9 @@ def _pr_block(diff: AnnotatedDiff, meta: dict[str, Any]) -> dict[str, Any]:
 
 
 def _file_block(f: AnnotatedFile, idx: int, head_dir: Path | None = None) -> dict[str, Any]:
-    adds = sum(sum(1 for ln in h.parsed.body.splitlines() if ln.startswith("+")) for h in f.hunks)
-    dels = sum(sum(1 for ln in h.parsed.body.splitlines() if ln.startswith("-")) for h in f.hunks)
+    hunks = [build_hunk_viewer_block(h, idx, hi) for hi, h in enumerate(f.hunks)]
+    adds = sum(h["adds"] for h in hunks)
+    dels = sum(h["dels"] for h in hunks)
     head_lines = _load_head_lines(f, head_dir)
     ann = f.ann
     return {
@@ -110,7 +110,7 @@ def _file_block(f: AnnotatedFile, idx: int, head_dir: Path | None = None) -> dic
         "summary": ann.summary,
         "symbols": ann.symbols.model_dump() if ann.symbols else {"added": [], "modified": [], "removed": []},
         "head_lines": head_lines,
-        "hunks": [_hunk_block(h, idx, hi, f) for hi, h in enumerate(f.hunks)],
+        "hunks": hunks,
     }
 
 
@@ -136,58 +136,6 @@ def _load_head_lines(f: AnnotatedFile, head_dir: Path | None) -> list[str] | Non
     if len(lines) > _HEAD_LINES_CAP:
         return None
     return lines
-
-
-def _hunk_block(h: AnnotatedHunk, fi: int, hi: int, f: AnnotatedFile) -> dict[str, Any]:
-    hunk_id = f"H{fi}_{hi}"
-    parsed = h.parsed
-    ann = h.ann
-    rows = build_rows(parsed)
-    regions = compute_fold_regions(rows)
-    # Match LLM-generated summaries to regions by (new_start, new_count).
-    summary_by_range = {(fd.new_start, fd.new_count): fd.summary for fd in ann.fold_descriptions}
-    fold_region_blocks: list[dict[str, Any]] = []
-    for reg in regions:
-        summary = ""
-        if reg.new_start is not None and reg.new_end is not None:
-            count = reg.new_end - reg.new_start + 1
-            summary = summary_by_range.get((reg.new_start, count), "")
-        fold_region_blocks.append({
-            "header_idx": reg.header_idx,
-            "body_start_idx": reg.body_start_idx,
-            "body_end_idx": reg.body_end_idx,
-            "new_start": reg.new_start,
-            "new_end": reg.new_end,
-            "has_changes": reg.has_changes,
-            "summary": summary,
-        })
-    return {
-        "id": hunk_id,
-        "header": parsed.header,
-        "old_start": parsed.old_start, "old_count": parsed.old_count,
-        "new_start": parsed.new_start, "new_count": parsed.new_count,
-        "intent": ann.intent,
-        "smells": [s.model_dump() for s in ann.smells],
-        "confidence": ann.confidence,
-        "context": ann.context,
-        "refs": [r.model_dump() for r in ann.refs],
-        "line_notes": [ln.model_dump() for ln in ann.line_notes],
-        "segments": [_segment_block(s, hunk_id, si) for si, s in enumerate(ann.segments)],
-        "rows": [r.to_dict() for r in rows],
-        "fold_regions": fold_region_blocks,
-    }
-
-
-def _segment_block(s: Segment, parent_id: str, si: int) -> dict[str, Any]:
-    return {
-        "id": f"{parent_id}_S{si}",
-        "new_start": s.new_start,
-        "new_count": s.new_count,
-        "intent": s.intent,
-        "smells": [sm.model_dump() for sm in s.smells],
-        "context": s.context,
-        "refs": [r.model_dump() for r in s.refs],
-    }
 
 
 _LANG_BY_EXT = {
