@@ -423,10 +423,11 @@ def fetch(
 ) -> None:
     """Fetch PR metadata, diff, and base/head worktrees into a run directory."""
     _configure_logging(verbose)
-    from .fetch import GhFetchError
+    from .fetch import GhFetchError, preflight_gh
 
     runs_root = runs_root or _default_runs_root()
     try:
+        preflight_gh()
         result = fetch_pr(pr_url, runs_root)
     except GhFetchError as e:
         typer.echo(f"scr: {e}", err=True)
@@ -507,13 +508,14 @@ def run(
     _configure_logging(verbose)
     from .augment.pipeline import augment_run_dir
     from .augment.prompts import PROMPT_VERSION
-    from .fetch import GhFetchError
+    from .fetch import GhFetchError, preflight_gh
     from .viewer.render_html import render_run_dir
 
     backend = _CONFIG.resolve_backend(backend)
     model = _CONFIG.resolve_model(backend=backend, cli_value=model)
     runs_root = runs_root or _default_runs_root()
     try:
+        preflight_gh()
         fetch_result = fetch_pr(pr_url, runs_root)
     except GhFetchError as e:
         typer.echo(f"scr: {e}", err=True)
@@ -680,22 +682,22 @@ def pr(
     from .augment.prompts import PROMPT_VERSION
     from .cache.store import CacheStore
     from .review.github import (
-        GhError, list_review_requested_prs, pick_pr_interactive, post_inline_review, require_gh,
+        GhError, list_review_requested_prs, pick_pr_interactive, post_inline_review,
     )
     from .review.runner import serve_review
-    from .fetch import fetch as fetch_pr
+    from .fetch import GhFetchError, fetch as fetch_pr, preflight_gh
 
     backend = _CONFIG.resolve_backend(backend)
     model = _CONFIG.resolve_model(backend=backend, cli_value=model)
 
-    # Preflight `gh` once — both PR resolution and the post step need it,
-    # and a missing-tool error here is more informative than the same
-    # error fired from inside fetch_pr.
+    # Preflight `gh` once — both PR resolution and the post step need
+    # it, and a missing-tool / too-old error here is more informative
+    # than the same error fired from a downstream subprocess.
     try:
-        require_gh()
-    except GhError as e:
+        preflight_gh()
+    except GhFetchError as e:
         typer.echo(f"scr pr: {e}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=2)
 
     # Resolve the PR.
     if number is None:
@@ -725,8 +727,6 @@ def pr(
     pr_url = f"https://github.com/{repo}/pull/{number}"
 
     client = _select_client(backend, model=model) if augment else None
-
-    from .fetch import GhFetchError
 
     runs_root = runs_root or _default_runs_root()
     try:

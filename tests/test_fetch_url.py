@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from semantic_code_review.fetch.gh import (
-    GhFetchError, PRRef, fetch_pr_meta, parse_pr_url,
+    GhFetchError, PRRef, fetch_pr_meta, parse_pr_url, preflight_gh,
 )
 
 
@@ -86,3 +86,44 @@ def test_other_gh_failures_pass_through() -> None:
     with patch("semantic_code_review.fetch.gh.subprocess.run", side_effect=fake):
         with pytest.raises(GhFetchError, match="Bad credentials"):
             fetch_pr_meta(ref)
+
+
+# ---------------------------------------------------------------------------
+# preflight_gh: PATH + version
+# ---------------------------------------------------------------------------
+
+
+def test_preflight_missing_gh_raises() -> None:
+    with patch("semantic_code_review.fetch.gh.shutil.which", return_value=None):
+        with pytest.raises(GhFetchError, match="not found on PATH"):
+            preflight_gh()
+
+
+def test_preflight_too_old_raises() -> None:
+    fake = _fake_run(stdout="gh version 2.10.0 (2022-08-22)\n", returncode=0)
+    with patch("semantic_code_review.fetch.gh.shutil.which", return_value="/u/bin/gh"):
+        with patch("semantic_code_review.fetch.gh.subprocess.run", side_effect=fake):
+            with pytest.raises(GhFetchError, match="2.10.0 is too old"):
+                preflight_gh()
+
+
+def test_preflight_recent_passes() -> None:
+    fake = _fake_run(stdout="gh version 2.40.1 (2024-01-08)\n", returncode=0)
+    with patch("semantic_code_review.fetch.gh.shutil.which", return_value="/u/bin/gh"):
+        with patch("semantic_code_review.fetch.gh.subprocess.run", side_effect=fake):
+            assert preflight_gh() == "/u/bin/gh"
+
+
+def test_preflight_unparseable_version_does_not_block() -> None:
+    """Don't break working setups whose --version output we can't parse."""
+    fake = _fake_run(stdout="some other gh fork v9001\n", returncode=0)
+    with patch("semantic_code_review.fetch.gh.shutil.which", return_value="/u/bin/gh"):
+        with patch("semantic_code_review.fetch.gh.subprocess.run", side_effect=fake):
+            assert preflight_gh() == "/u/bin/gh"
+
+
+def test_preflight_at_minimum_version_passes() -> None:
+    fake = _fake_run(stdout="gh version 2.21.0 (2023-01-19)\n", returncode=0)
+    with patch("semantic_code_review.fetch.gh.shutil.which", return_value="/u/bin/gh"):
+        with patch("semantic_code_review.fetch.gh.subprocess.run", side_effect=fake):
+            assert preflight_gh() == "/u/bin/gh"
