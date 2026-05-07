@@ -39,8 +39,12 @@ git fetch "$UPSTREAM" --tags --prune --force
 git pull --ff-only "$ORIGIN" main
 
 # Upstream tags that don't already have a corresponding cpg-v* tag,
-# and aren't older than FLOOR_TAG.
-mapfile -t pending < <(
+# and aren't older than FLOOR_TAG. Use a while-read loop instead of
+# `mapfile` so the script works under macOS's stock bash 3.2.
+pending=()
+while IFS= read -r tag; do
+    pending+=("$tag")
+done < <(
     git ls-remote --tags --refs "$UPSTREAM" \
         | awk '{print $2}' | sed 's@^refs/tags/@@' \
         | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V \
