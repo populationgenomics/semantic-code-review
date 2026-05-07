@@ -141,10 +141,7 @@ def _select_client(backend: str, *, model: str):
     if btype is BackendType.GEMINI_CLI:
         return _make_gemini_cli_backend(backend, model, bdef.default_model)
     if btype is BackendType.OPENAI_COMPAT:
-        raise typer.BadParameter(
-            f"--backend={backend} (type=openai-compat) is not yet "
-            "wired up in this build."
-        )
+        return _make_openai_compat_backend(backend, model, bdef)
     raise typer.BadParameter(f"backend {backend!r} has unknown type {btype!r}")
 
 
@@ -238,6 +235,42 @@ def _make_gemini_cli_backend(name: str, model: str, default_model: str | None):
     return Backend(
         model=GeminiCLIModel(model=gem_model),
         is_subprocess_backend=True,
+    )
+
+
+def _make_openai_compat_backend(name: str, model: str, bdef):
+    from .augment.agents import Backend
+    from .config import BackendDef
+
+    assert isinstance(bdef, BackendDef)
+    if not bdef.base_url:
+        raise typer.BadParameter(
+            f"--backend={name} (type=openai-compat) has no base_url; "
+            f"set [backends.{name}] base_url in config."
+        )
+    api_key: str | None = None
+    if bdef.api_key_env:
+        api_key = os.environ.get(bdef.api_key_env)
+        if not api_key:
+            raise typer.BadParameter(
+                f"--backend={name} but ${bdef.api_key_env} is not set."
+            )
+    else:
+        # Local servers (Ollama, llama.cpp) typically require *some*
+        # non-empty bearer; use a sentinel that's clearly not a key.
+        api_key = "not-needed"
+
+    from pydantic_ai.models.openai import OpenAIChatModel
+    from pydantic_ai.providers.openai import OpenAIProvider
+
+    return Backend(
+        model=OpenAIChatModel(
+            model_name=model,
+            provider=OpenAIProvider(base_url=bdef.base_url, api_key=api_key),
+        ),
+        # Not a CLI subprocess — this stays False so the in-loop repo
+        # tools and full pydantic-ai message flow remain enabled.
+        is_subprocess_backend=False,
     )
 
 
