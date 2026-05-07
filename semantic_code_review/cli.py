@@ -466,6 +466,7 @@ def augment(
             skip_context=skip_context,
             cache=cache,
             client=client,
+            show_progress=not verbose,
         )
     )
     typer.echo(f"wrote {path}")
@@ -515,6 +516,7 @@ def run(
             concurrency=concurrency,
             cache=cache,
             client=client,
+            show_progress=not verbose,
         )
     )
     out = fetch_result.run_dir / "review.html"
@@ -617,6 +619,7 @@ def review(
         port=port,
         timeout=timeout,
         client=client,
+        show_progress=not verbose,
     )
     try:
         code = run_review(opts)
@@ -727,6 +730,7 @@ def pr(
                 concurrency=concurrency,
                 cache=cache,
                 client=client,
+                show_progress=not verbose,
             )
         )
     else:
