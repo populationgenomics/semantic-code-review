@@ -76,6 +76,20 @@ def test_openai_compat_presets_registered() -> None:
     assert BUILTIN_BACKENDS["groq"].api_key_env == "GROQ_API_KEY"
 
 
+def test_every_builtin_has_a_description() -> None:
+    """The template renderer leans on description for the lead comment."""
+    for name, bdef in BUILTIN_BACKENDS.items():
+        assert bdef.description, f"{name} is missing a description"
+
+
+def test_field_doc_extracts_annotated_metadata() -> None:
+    from semantic_code_review.config import field_doc
+
+    assert field_doc("default_model").startswith("Model used")
+    assert "shell-quoted" in field_doc("api_key_command")
+    assert field_doc("nonexistent") == ""
+
+
 def test_load_user_only(tmp_path: Path) -> None:
     user = _write(tmp_path / "user.toml", '''
 backend = "gemini-api"
@@ -166,14 +180,67 @@ api_key_command = ["gcloud", "secrets", "versions", "access", "latest", "--secre
     )
 
 
-def test_api_key_command_must_be_list_of_strings(tmp_path: Path) -> None:
+def test_api_key_command_accepts_shell_quoted_string(tmp_path: Path) -> None:
+    user = _write(tmp_path / "user.toml", '''
+[backends.shell-string]
+type = "openai-compat"
+base_url = "https://example.com/v1"
+api_key_command = "gcloud secrets versions access latest --secret=anth"
+''')
+    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    bdef = cfg.backends["shell-string"]
+    assert bdef.api_key_command == (
+        "gcloud", "secrets", "versions", "access", "latest", "--secret=anth",
+    )
+
+
+def test_api_key_command_string_handles_quoting(tmp_path: Path) -> None:
+    """Embedded whitespace in args via shell-style quoting."""
+    user = _write(tmp_path / "user.toml", r'''
+[backends.quoting]
+type = "openai-compat"
+base_url = "https://example.com/v1"
+api_key_command = "fetch --header 'Auth: Bearer xyz' /path"
+''')
+    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    assert cfg.backends["quoting"].api_key_command == (
+        "fetch", "--header", "Auth: Bearer xyz", "/path",
+    )
+
+
+def test_api_key_command_list_still_works(tmp_path: Path) -> None:
+    """The list form remains the escape hatch for fiddly quoting."""
+    user = _write(tmp_path / "user.toml", '''
+[backends.list-form]
+type = "openai-compat"
+base_url = "https://example.com/v1"
+api_key_command = ["bash", "-c", "cat /tmp/key"]
+''')
+    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    assert cfg.backends["list-form"].api_key_command == (
+        "bash", "-c", "cat /tmp/key",
+    )
+
+
+def test_api_key_command_unbalanced_quotes_raises(tmp_path: Path) -> None:
     user = _write(tmp_path / "user.toml", '''
 [backends.bad]
 type = "openai-compat"
 base_url = "https://example.com/v1"
-api_key_command = "not-a-list"
+api_key_command = "echo 'unterminated"
 ''')
-    with pytest.raises(ConfigError, match="must be a list of strings"):
+    with pytest.raises(ConfigError, match="unbalanced quotes"):
+        ScrConfig.load(user_path=user, repo_path=None)
+
+
+def test_api_key_command_wrong_type_raises(tmp_path: Path) -> None:
+    user = _write(tmp_path / "user.toml", '''
+[backends.bad]
+type = "openai-compat"
+base_url = "https://example.com/v1"
+api_key_command = 42
+''')
+    with pytest.raises(ConfigError, match="must be a list of strings or a"):
         ScrConfig.load(user_path=user, repo_path=None)
 
 
@@ -183,6 +250,17 @@ def test_api_key_command_must_not_be_empty(tmp_path: Path) -> None:
 type = "openai-compat"
 base_url = "https://example.com/v1"
 api_key_command = []
+''')
+    with pytest.raises(ConfigError, match="must not be empty"):
+        ScrConfig.load(user_path=user, repo_path=None)
+
+
+def test_api_key_command_empty_string_raises(tmp_path: Path) -> None:
+    user = _write(tmp_path / "user.toml", '''
+[backends.bad]
+type = "openai-compat"
+base_url = "https://example.com/v1"
+api_key_command = ""
 ''')
     with pytest.raises(ConfigError, match="must not be empty"):
         ScrConfig.load(user_path=user, repo_path=None)

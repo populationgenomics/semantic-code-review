@@ -48,11 +48,74 @@ def test_config_path_prints_xdg_path(tmp_path: Path, monkeypatch) -> None:
 def test_config_show_reports_absent_user_config(tmp_path: Path, monkeypatch) -> None:
     """When no config files exist, `scr config show` still runs cleanly."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    # Reload _CONFIG so the XDG monkeypatch takes effect — the module-
+    # level singleton is otherwise bound to whatever the developer has
+    # in ~/.config/scr/config.toml.
+    from semantic_code_review import cli as cli_module
+    from semantic_code_review.config import ScrConfig
+    monkeypatch.setattr(cli_module, "_CONFIG", ScrConfig.load())
     runner = CliRunner()
     result = runner.invoke(app, ["config", "show"])
     assert result.exit_code == 0, result.stdout
     assert "absent" in result.stdout
     assert "backend = None" in result.stdout
+
+
+def test_config_edit_template_appends_block(tmp_path: Path, monkeypatch) -> None:
+    """`scr config edit --template groq` appends a [backends.groq] block.
+
+    EDITOR is set to a no-op so the editor never actually opens.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("EDITOR", "true")  # `true` exits 0, prints nothing
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "edit", "--template", "groq"])
+    assert result.exit_code == 0, result.stdout
+
+    cfg_path = tmp_path / "xdg" / "scr" / "config.toml"
+    body = cfg_path.read_text(encoding="utf-8")
+    assert "[backends.groq]" in body
+    assert "$GROQ_API_KEY" in body  # auth hint
+
+
+def test_config_edit_template_skips_existing(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("EDITOR", "true")
+    cfg_path = tmp_path / "xdg" / "scr" / "config.toml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text(
+        '[backends.groq]\nmodel = "llama-3.3-70b-versatile"\n',
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "edit", "--template", "groq"])
+    assert result.exit_code == 0, result.stdout
+    # Existing block not duplicated; warning surfaced.
+    body = cfg_path.read_text(encoding="utf-8")
+    assert body.count("[backends.groq]") == 1
+    assert "already in" in (result.stderr or "")
+
+
+def test_config_edit_unknown_template_errors(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("EDITOR", "true")
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "edit", "--template", "carrier-pigeon"])
+    assert result.exit_code != 0
+    assert "unknown template" in (result.stderr or "") + result.stdout
+
+
+def test_config_edit_template_openai_compat_scaffold(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("EDITOR", "true")
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "edit", "--template", "openai-compat"])
+    assert result.exit_code == 0, result.stdout
+    body = (tmp_path / "xdg" / "scr" / "config.toml").read_text(encoding="utf-8")
+    assert "[backends.openai-compat]" in body
+    # Scaffold marks the four required fields uncommented.
+    assert 'type = "openai-compat"' in body
+    assert 'base_url = "https://api.example.com/v1"' in body
 
 
 def test_lint_fails_on_bad_smell(tmp_path: Path) -> None:

@@ -43,10 +43,11 @@ from __future__ import annotations
 
 import os
 import tomllib
+import typing
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from .paths import default_config_path, find_repo_config_path
 
@@ -70,22 +71,55 @@ class BackendType(str, Enum):
 class BackendDef:
     """One entry in the merged backend table.
 
-    `type` selects the dispatch branch. `default_model` is the model
-    used when neither `--model` nor `[model] default` resolves first.
+    Per-field docs live in `Annotated[..., "..."]` metadata so the
+    template renderer can extract them and emit them as TOML comments
+    above each line of `scr config edit --template <name>`. Read with
+    `field_doc(name)` below.
 
     Credential resolution order is `api_key_env` → `api_key_command`
     → error. The command is invoked with no shell interpretation
     (argv list, not a string) and its stdout becomes the bearer; this
     is how `gh auth token` and `gcloud secrets versions access ...`
     get plugged in.
-
-    `base_url` is only meaningful for `BackendType.OPENAI_COMPAT`.
     """
-    type: BackendType
-    default_model: str | None = None
-    base_url: str | None = None
-    api_key_env: str | None = None
-    api_key_command: tuple[str, ...] | None = None
+    type: Annotated[
+        BackendType,
+        "Handler family — selects which dispatch branch in _select_client.",
+    ]
+    default_model: Annotated[
+        str | None,
+        "Model used when neither --model nor [model] default resolves.",
+    ] = None
+    base_url: Annotated[
+        str | None,
+        "Endpoint URL. Only meaningful for openai-compat backends.",
+    ] = None
+    api_key_env: Annotated[
+        str | None,
+        "Env var holding the bearer; tried first.",
+    ] = None
+    api_key_command: Annotated[
+        tuple[str, ...] | None,
+        (
+            "Argv to fetch the bearer when env is unset. Either a list "
+            "of strings or a single shell-quoted string (shlex-split). "
+            "Run with no shell expansion."
+        ),
+    ] = None
+    description: Annotated[
+        str | None,
+        "Free-form blurb shown at the top of `scr config edit --template` output.",
+    ] = None
+
+
+def field_doc(name: str) -> str:
+    """Return the doc string attached to `BackendDef.<name>` via Annotated metadata."""
+    hints = typing.get_type_hints(BackendDef, include_extras=True)
+    annotated = hints.get(name)
+    if annotated is None:
+        return ""
+    args = typing.get_args(annotated)
+    return next((a for a in args[1:] if isinstance(a, str)), "")
 
 
 # Code-side preset table. Users can override any entry's `model` (and
@@ -101,64 +135,84 @@ BUILTIN_BACKENDS: dict[str, BackendDef] = {
         type=BackendType.ANTHROPIC_SDK,
         default_model="claude-opus-4-7",
         api_key_env="ANTHROPIC_API_KEY",
+        description="Anthropic SDK (paid). Best annotation quality and prompt caching.",
     ),
     "claude-cli": BackendDef(
         type=BackendType.CLAUDE_CLI,
         default_model="claude-opus-4-7",
+        description=(
+            "`claude -p` subprocess — uses your Claude Code subscription, "
+            "no API key needed. Lower concurrency, no in-loop repo tools."
+        ),
     ),
     "gemini-api": BackendDef(
         type=BackendType.GOOGLE_SDK,
         default_model="gemini-2.5-pro",
         api_key_env="GEMINI_API_KEY",
+        description=(
+            "Google SDK. Paid tier via API key; if GOOGLE_CLOUD_PROJECT "
+            "is set, uses Vertex AI via Application Default Credentials."
+        ),
     ),
     "gemini-cli": BackendDef(
         type=BackendType.GEMINI_CLI,
         default_model="gemini-2.5-pro",
+        description=(
+            "`gemini -p` subprocess. Free tier via `gemini auth login`. "
+            "Install: `npm install -g @google/gemini-cli`."
+        ),
     ),
-    # Free tier with generous daily token quota; tool use works.
     "groq": BackendDef(
         type=BackendType.OPENAI_COMPAT,
         base_url="https://api.groq.com/openai/v1",
         api_key_env="GROQ_API_KEY",
         default_model="llama-3.3-70b-versatile",
+        description="Free tier with generous daily token quota; tool use works.",
     ),
-    # Any GitHub account → free quota across multiple model families.
-    # Falls back to `gh auth token` if GITHUB_TOKEN isn't set, since
-    # this repo already requires `gh` for the `scr pr` flow.
-    # GitHub Models requires publisher-prefixed model ids ("openai/...").
     "github": BackendDef(
         type=BackendType.OPENAI_COMPAT,
         base_url="https://models.github.ai/inference",
         api_key_env="GITHUB_TOKEN",
         api_key_command=("gh", "auth", "token"),
         default_model="openai/gpt-4o-mini",
+        description=(
+            "Free quota for any GitHub account. Falls back to `gh auth "
+            "token` automatically. Model ids need a publisher prefix "
+            "(`openai/...`)."
+        ),
     ),
-    # Free tier; very fast inference. Model id needs to be passed
-    # explicitly because Cerebras' catalogue rotates.
     "cerebras": BackendDef(
         type=BackendType.OPENAI_COMPAT,
         base_url="https://api.cerebras.ai/v1",
         api_key_env="CEREBRAS_API_KEY",
+        description=(
+            "Free tier; very fast inference. Pass --model — Cerebras' "
+            "catalogue rotates so we don't pin a default."
+        ),
     ),
-    # Hundreds of models including some free tiers; pass --model to
-    # pick. e.g. `meta-llama/llama-3.3-70b-instruct:free`.
     "openrouter": BackendDef(
         type=BackendType.OPENAI_COMPAT,
         base_url="https://openrouter.ai/api/v1",
         api_key_env="OPENROUTER_API_KEY",
+        description=(
+            "Hundreds of models including free-tier variants; pass "
+            "--model (e.g. `meta-llama/llama-3.3-70b-instruct:free`)."
+        ),
     ),
-    # La Plateforme free tier; Codestral is Mistral's code-tuned model.
     "mistral": BackendDef(
         type=BackendType.OPENAI_COMPAT,
         base_url="https://api.mistral.ai/v1",
         api_key_env="MISTRAL_API_KEY",
         default_model="codestral-latest",
+        description="La Plateforme free tier; Codestral is Mistral's code-tuned model.",
     ),
-    # Local llama.cpp/Ollama; no credentials needed. Pass --model to
-    # name a model you've pulled (e.g. `qwen2.5-coder:14b`).
     "ollama": BackendDef(
         type=BackendType.OPENAI_COMPAT,
         base_url="http://localhost:11434/v1",
+        description=(
+            "Local llama.cpp/Ollama; no credentials needed. Pass --model "
+            "to name something you've pulled (e.g. `qwen2.5-coder:14b`)."
+        ),
     ),
 }
 
@@ -277,10 +331,14 @@ class ScrConfig:
                 body, "api_key_command",
                 existing.api_key_command if existing else None,
             ),
+            description=_pick_str(
+                body, "description",
+                existing.description if existing else None,
+            ),
         )
         self.backends[name] = merged
         self.sources[f"backends.{name}"] = source
-        for key in ("model", "base_url", "api_key_env", "api_key_command"):
+        for key in ("model", "base_url", "api_key_env", "api_key_command", "description"):
             if key in body:
                 self.sources[f"backends.{name}.{key}"] = source
 
@@ -366,18 +424,43 @@ def _pick_str(body: dict[str, Any], key: str, fallback: str | None) -> str | Non
 def _pick_strs(
     body: dict[str, Any], key: str, fallback: tuple[str, ...] | None
 ) -> tuple[str, ...] | None:
+    """Read an argv-style field. Accepts either a list of strings or
+    a single shell-quoted string (split via `shlex`). Same execution
+    semantics either way — `subprocess.run(argv, shell=False)`. The
+    string form is just a friendlier ergonomic for the common case.
+    """
     if key not in body:
         return fallback
     v = body[key]
     if v is None:
         return None
-    if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
-        raise ConfigError(
-            f"backend field {key!r} must be a list of strings, got {type(v).__name__}"
-        )
-    if not v:
-        raise ConfigError(f"backend field {key!r} must not be empty")
-    return tuple(v)
+    if isinstance(v, str):
+        import shlex
+
+        try:
+            parts = shlex.split(v)
+        except ValueError as e:
+            raise ConfigError(
+                f"backend field {key!r} has unbalanced quotes: {e}"
+            ) from None
+        if not parts:
+            raise ConfigError(f"backend field {key!r} must not be empty")
+        return tuple(parts)
+    if isinstance(v, list) and all(isinstance(x, str) for x in v):
+        if not v:
+            raise ConfigError(f"backend field {key!r} must not be empty")
+        return tuple(v)
+    raise ConfigError(
+        f"backend field {key!r} must be a list of strings or a "
+        f"shell-quoted string, got {type(v).__name__}"
+    )
 
 
-__all__ = ["BackendDef", "BackendType", "BUILTIN_BACKENDS", "ConfigError", "ScrConfig"]
+__all__ = [
+    "BUILTIN_BACKENDS",
+    "BackendDef",
+    "BackendType",
+    "ConfigError",
+    "ScrConfig",
+    "field_doc",
+]
