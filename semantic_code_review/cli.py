@@ -886,16 +886,49 @@ def config_show() -> None:
 
 
 @config_app.command("edit")
-def config_edit() -> None:
+def config_edit(
+    template: str = typer.Option(
+        None, "--template",
+        help=(
+            "Append a [backends.<name>] block before opening. "
+            "<name> is any builtin (run `scr config show` for the list) "
+            "or 'openai-compat' for a generic placeholder scaffold."
+        ),
+    ),
+) -> None:
     """Open the user-level config in $EDITOR (or `vi`)."""
     import subprocess as _sp
 
+    from .config import BUILTIN_BACKENDS
+    from .config_template import SCAFFOLD_SECTION_NAME, render_backend_template
     from .paths import default_config_path
 
     path = default_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         path.write_text(_CONFIG_TEMPLATE, encoding="utf-8")
+
+    if template is not None:
+        valid = sorted([SCAFFOLD_SECTION_NAME, *BUILTIN_BACKENDS])
+        if template not in valid:
+            raise typer.BadParameter(
+                f"unknown template {template!r}; expected one of: "
+                + ", ".join(valid)
+            )
+        existing = path.read_text(encoding="utf-8")
+        # Skip+warn if the section already exists; let the user resolve
+        # rather than risk clobbering hand-edited overrides.
+        if f"[backends.{template}]" in existing:
+            typer.echo(
+                f"scr: [backends.{template}] already in {path}; "
+                "skipping the template append. Edit it directly.",
+                err=True,
+            )
+        else:
+            block = render_backend_template(template)
+            sep = "" if existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
+            path.write_text(existing + sep + block, encoding="utf-8")
+
     editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
     _sp.run([editor, str(path)], check=False)
 
