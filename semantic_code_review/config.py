@@ -424,18 +424,36 @@ def _pick_str(body: dict[str, Any], key: str, fallback: str | None) -> str | Non
 def _pick_strs(
     body: dict[str, Any], key: str, fallback: tuple[str, ...] | None
 ) -> tuple[str, ...] | None:
+    """Read an argv-style field. Accepts either a list of strings or
+    a single shell-quoted string (split via `shlex`). Same execution
+    semantics either way — `subprocess.run(argv, shell=False)`. The
+    string form is just a friendlier ergonomic for the common case.
+    """
     if key not in body:
         return fallback
     v = body[key]
     if v is None:
         return None
-    if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
-        raise ConfigError(
-            f"backend field {key!r} must be a list of strings, got {type(v).__name__}"
-        )
-    if not v:
-        raise ConfigError(f"backend field {key!r} must not be empty")
-    return tuple(v)
+    if isinstance(v, str):
+        import shlex
+
+        try:
+            parts = shlex.split(v)
+        except ValueError as e:
+            raise ConfigError(
+                f"backend field {key!r} has unbalanced quotes: {e}"
+            ) from None
+        if not parts:
+            raise ConfigError(f"backend field {key!r} must not be empty")
+        return tuple(parts)
+    if isinstance(v, list) and all(isinstance(x, str) for x in v):
+        if not v:
+            raise ConfigError(f"backend field {key!r} must not be empty")
+        return tuple(v)
+    raise ConfigError(
+        f"backend field {key!r} must be a list of strings or a "
+        f"shell-quoted string, got {type(v).__name__}"
+    )
 
 
 __all__ = [
