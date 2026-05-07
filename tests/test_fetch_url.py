@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import subprocess
+from unittest.mock import patch
+
 import pytest
 
-from semantic_code_review.fetch.gh import parse_pr_url
+from semantic_code_review.fetch.gh import (
+    GhFetchError, PRRef, fetch_pr_meta, parse_pr_url,
+)
 
 
 def test_parses_standard_url() -> None:
@@ -40,3 +45,44 @@ def test_rejects_non_github_url() -> None:
 def test_rejects_garbage() -> None:
     with pytest.raises(ValueError):
         parse_pr_url("not a url")
+
+
+# ---------------------------------------------------------------------------
+# fetch_pr_meta error translation
+# ---------------------------------------------------------------------------
+
+
+def _fake_run(stdout: str = "", stderr: str = "", returncode: int = 0):
+    def runner(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0] if args else [], returncode=returncode,
+            stdout=stdout, stderr=stderr,
+        )
+    return runner
+
+
+def test_old_gh_unknown_field_translates_to_clear_message() -> None:
+    """Pre-2.21 gh rejects baseRefOid; we translate to a clear upgrade hint."""
+    ref = PRRef(owner="acme", repo="widgets", number=42)
+    fake = _fake_run(
+        stderr=(
+            'Unknown JSON field: "baseRefOid"\n'
+            'Available fields:\n  additions\n  assignees\n  ...\n'
+        ),
+        returncode=1,
+    )
+    with patch("semantic_code_review.fetch.gh.subprocess.run", side_effect=fake):
+        with pytest.raises(GhFetchError, match="gh is too old"):
+            fetch_pr_meta(ref)
+
+
+def test_other_gh_failures_pass_through() -> None:
+    """Non-version errors (auth, network) keep their original stderr."""
+    ref = PRRef(owner="acme", repo="widgets", number=42)
+    fake = _fake_run(
+        stderr="HTTP 401: Bad credentials",
+        returncode=1,
+    )
+    with patch("semantic_code_review.fetch.gh.subprocess.run", side_effect=fake):
+        with pytest.raises(GhFetchError, match="Bad credentials"):
+            fetch_pr_meta(ref)

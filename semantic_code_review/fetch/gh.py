@@ -55,13 +55,30 @@ _PR_FIELDS = [
 ]
 
 
+class GhFetchError(RuntimeError):
+    """Any non-zero exit from a `gh` subprocess used during PR fetch."""
+
+
+# baseRefOid and headRefOid landed in gh 2.21 (Jan 2023). Older
+# releases reject them at flag-parse time with "Unknown JSON field".
+_MIN_GH_VERSION = "2.21"
+
+
 def fetch_pr_meta(ref: PRRef) -> dict:
     result = subprocess.run(
         ["gh", "pr", "view", str(ref.number), "--repo", ref.slug, "--json", ",".join(_PR_FIELDS)],
         capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"gh pr view failed: {result.stderr.strip()}")
+        stderr = result.stderr.strip()
+        if "Unknown JSON field" in stderr:
+            raise GhFetchError(
+                f"gh is too old to expose baseRefOid/headRefOid (need >= "
+                f"{_MIN_GH_VERSION}, released Jan 2023). Upgrade gh — "
+                f"`brew upgrade gh` on macOS, or see "
+                f"https://cli.github.com/ for other platforms."
+            )
+        raise GhFetchError(f"gh pr view failed: {stderr}")
     return json.loads(result.stdout)
 
 
@@ -71,7 +88,7 @@ def fetch_pr_diff(ref: PRRef) -> str:
         capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"gh pr diff failed: {result.stderr.strip()}")
+        raise GhFetchError(f"gh pr diff failed: {result.stderr.strip()}")
     return result.stdout
 
 
@@ -83,6 +100,6 @@ def fetch_pr_files(ref: PRRef) -> list[str]:
         capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"gh pr view --json files failed: {result.stderr.strip()}")
+        raise GhFetchError(f"gh pr view --json files failed: {result.stderr.strip()}")
     data = json.loads(result.stdout)
     return [f["path"] for f in data.get("files", [])]

@@ -423,8 +423,14 @@ def fetch(
 ) -> None:
     """Fetch PR metadata, diff, and base/head worktrees into a run directory."""
     _configure_logging(verbose)
+    from .fetch import GhFetchError
+
     runs_root = runs_root or _default_runs_root()
-    result = fetch_pr(pr_url, runs_root)
+    try:
+        result = fetch_pr(pr_url, runs_root)
+    except GhFetchError as e:
+        typer.echo(f"scr: {e}", err=True)
+        raise typer.Exit(code=2)
     typer.echo(f"run directory: {result.run_dir}")
 
 
@@ -501,12 +507,17 @@ def run(
     _configure_logging(verbose)
     from .augment.pipeline import augment_run_dir
     from .augment.prompts import PROMPT_VERSION
+    from .fetch import GhFetchError
     from .viewer.render_html import render_run_dir
 
     backend = _CONFIG.resolve_backend(backend)
     model = _CONFIG.resolve_model(backend=backend, cli_value=model)
     runs_root = runs_root or _default_runs_root()
-    fetch_result = fetch_pr(pr_url, runs_root)
+    try:
+        fetch_result = fetch_pr(pr_url, runs_root)
+    except GhFetchError as e:
+        typer.echo(f"scr: {e}", err=True)
+        raise typer.Exit(code=2)
     cache = None if no_cache else CacheStore(prompt_version=PROMPT_VERSION)
     client = _select_client(backend, model=model)
     asyncio.run(
@@ -715,8 +726,14 @@ def pr(
 
     client = _select_client(backend, model=model) if augment else None
 
+    from .fetch import GhFetchError
+
     runs_root = runs_root or _default_runs_root()
-    fetch_result = fetch_pr(pr_url, runs_root)
+    try:
+        fetch_result = fetch_pr(pr_url, runs_root)
+    except GhFetchError as e:
+        typer.echo(f"scr pr: {e}", err=True)
+        raise typer.Exit(code=2)
     run_dir = fetch_result.run_dir
 
     if augment:
