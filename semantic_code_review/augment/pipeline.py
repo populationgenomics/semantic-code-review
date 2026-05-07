@@ -21,7 +21,7 @@ from ..cache.store import CacheStore
 from ..format.emit import emit_augmented_diff
 from ..format.parse import parse_augmented_diff
 from ..format.sidecar import dump_sidecar
-from .agents import Backend
+from .agents import Client
 from .hunks import (
     apply_hunk_annotations, overview_to_prompt_json, run_hunk_pass,
 )
@@ -64,7 +64,7 @@ async def augment_run_dir(
     *,
     model: str = "claude-opus-4-7",
     concurrency: int = 8,
-    client: Backend | None = None,
+    client: Client | None = None,
     cache: CacheStore | None = None,
     only_files: list[str] | None = None,
     max_hunks: int | None = None,
@@ -77,7 +77,7 @@ async def augment_run_dir(
         # Default to the Anthropic SDK path via pydantic-ai. Callers that
         # need a different backend (CLI, Gemini, tests) construct the
         # backend explicitly via `_select_client` or a stub.
-        client = Backend(model=f"anthropic:{model}")
+        client = Client(model=f"anthropic:{model}")
     # cache=None means "no disk caching"; callers pass a CacheStore to enable.
 
     raw_diff_path = run_dir / "raw.diff"
@@ -230,7 +230,7 @@ async def _augment_one_hunk(
     idx: int,
     meter: ProgressMeter,
     sem: asyncio.Semaphore,
-    client: Backend,
+    client: Client,
     fp: Any,
     h: Any,
     overview_json: str,

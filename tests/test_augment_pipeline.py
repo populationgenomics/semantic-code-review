@@ -17,7 +17,7 @@ from pydantic_ai.models import Model, ModelRequestParameters
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RequestUsage
 
-from semantic_code_review.augment.agents import Backend
+from semantic_code_review.augment.agents import Client
 from semantic_code_review.augment.pipeline import augment_run_dir
 from semantic_code_review.format.parse import parse_augmented_diff
 
@@ -79,9 +79,9 @@ class _CannedModel(Model):
         )
 
 
-def _make_canned_backend(overview_args: dict, hunk_args_list: list[dict]) -> tuple[Backend, _CannedModel]:
+def _make_canned_backend(overview_args: dict, hunk_args_list: list[dict]) -> tuple[Client, _CannedModel]:
     model = _CannedModel(overview_args, hunk_args_list)
-    return Backend(model=model), model
+    return Client(model=model), model
 
 
 def _make_run_dir(tmp_path: Path) -> Path:

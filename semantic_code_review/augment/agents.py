@@ -58,19 +58,19 @@ def make_hunk_agent(model: str | Model) -> Agent[RepoTools, HunkAnnotations]:
 
 
 @dataclass
-class Backend:
+class Client:
     """Pipeline-side handle for an LLM backend.
 
     Holds either a pydantic-ai model id string (for SDK backends) or
     a `pydantic_ai.models.Model` instance (for CLI subprocess backends,
-    see `cli_models.py`). The pipeline calls `make_*_agent(backend.model)`
+    see `cli_models.py`). The pipeline calls `make_*_agent(client.model)`
     to build pass-specific agents.
 
     `set_repo_tools` proxies to the inner CLI Model when present so the
     subprocess can spawn an MCP server bound to the run's worktree;
     SDK string models have no repo-tool concept here — the SDK Agent
     receives `deps=repo_tools` at `Agent.run` call time. The pipeline
-    calls both: `backend.set_repo_tools(rt)` for the CLI side, and
+    calls both: `client.set_repo_tools(rt)` for the CLI side, and
     passes `rt` as `deps=` for the SDK side.
 
     `aclose()` is delegated to the inner Model. SDK string models have

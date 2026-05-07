@@ -18,7 +18,7 @@ import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..augment.agents import Backend
+from ..augment.agents import Client
 from ..augment.prompts import PROMPT_VERSION
 from ..cache.store import CacheStore
 from ..format.parse import parse_augmented_diff
@@ -50,8 +50,8 @@ class ReviewOptions:
     port: int = 0
     timeout: int = 3600
     # Optional preselected backend handle. None → augment_run_dir
-    # defaults to a `Backend` for the Anthropic SDK path.
-    client: Backend | None = None
+    # defaults to a `Client` for the Anthropic SDK path.
+    client: Client | None = None
     show_progress: bool = True
 
 

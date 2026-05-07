@@ -16,7 +16,7 @@ from ..augment.schemas import (
     OverviewGroup, OverviewGroupMember, OverviewSymbol,
 )
 from ..cache.store import CacheStore
-from .agents import Backend, make_overview_agent
+from .agents import Client, make_overview_agent
 from .prompts import OVERVIEW_SYSTEM, PROMPT_VERSION
 from .trace_adapter import submit_args_from_result, write_pydantic_ai_trace
 
@@ -55,7 +55,7 @@ def format_overview_prompt(diff: AugmentedDiff, meta: dict[str, Any]) -> str:
 
 
 async def run_overview_pass(
-    backend: Backend,
+    client: Client,
     *,
     diff: AugmentedDiff,
     meta: dict[str, Any],
@@ -76,14 +76,14 @@ async def run_overview_pass(
 
     trace_path = (trace_dir / "overview.json") if trace_dir is not None else None
 
-    agent = make_overview_agent(backend.model)
+    agent = make_overview_agent(client.model)
     run_result = await agent.run(user_text)
     submit_args = submit_args_from_result(run_result)
     if trace_path is not None:
         write_pydantic_ai_trace(
             run_result,
             trace_path=trace_path,
-            model=str(backend.model),
+            model=str(client.model),
             system=OVERVIEW_SYSTEM,
             tool_names=[],
             submit_tool="submit_overview",

@@ -11,7 +11,7 @@ from pathlib import Path
 import typer
 
 from .cache.store import CacheStore
-from .config import BackendType, ConfigError, ScrConfig
+from .config import ConfigError, ScrConfig
 from .fetch import fetch as fetch_pr
 from .format.lint import lint_text
 from .format.parse import parse_augmented_diff
@@ -81,6 +81,8 @@ _load_dotenv()
 # shell env > .env > config[env]. Each layer uses `setdefault` so the
 # closer one wins. `_CONFIG` itself drives backend/model resolution
 # (per-flag, see `_select_client` and command bodies).
+# `_select_client` is a thin shim over `backends.get(...).resolve(...)` —
+# the dispatch lives in `semantic_code_review.backends`.
 try:
     _CONFIG = ScrConfig.load()
 except ConfigError as e:
@@ -113,311 +115,18 @@ def _configure_logging(verbose: bool) -> None:
         h.setLevel(level)
 
 
-_DEFAULT_GEMINI_API_MODEL = "gemini-2.5-pro"
-
-
-def _backend_choices() -> str:
-    return ", ".join(sorted(["auto", *_CONFIG.backends.keys()]))
-
-
 def _select_client(backend: str, *, model: str):
-    """Pick a backend handle based on env + explicit choice.
-
-    Returns a `Backend` regardless of the path: SDK backends carry a
-    pydantic-ai model id string, CLI backends carry a `Model` subclass
-    that wraps the `claude -p` / `gemini -p` subprocess client. The
-    pipeline calls `make_*_agent(backend.model)` either way.
+    """Resolve a backend name to a `Client` for the augment pipeline.
 
     `backend` is "auto" or any name in `_CONFIG.backends` (builtins +
-    user-defined `[backends.<name>]` entries). "auto" picks claude-api
-    if `ANTHROPIC_API_KEY` is set, else claude-cli if `claude` is on
-    PATH, else raises. Both Gemini backends are opt-in only.
+    user-defined `[backends.<name>]` entries). All dispatch lives in
+    `semantic_code_review.backends`; this is the CLI's only entry point.
     """
+    from . import backends as _backends
+
     if backend == "auto":
-        backend = _resolve_auto_backend()
-
-    bdef = _CONFIG.backends.get(backend)
-    if bdef is None:
-        raise typer.BadParameter(
-            f"unknown backend {backend!r}; expected one of: {_backend_choices()}."
-        )
-
-    btype = bdef.type
-    if btype is BackendType.ANTHROPIC_SDK:
-        return _make_anthropic_sdk_backend(backend, model, bdef)
-    if btype is BackendType.CLAUDE_CLI:
-        return _make_claude_cli_backend(backend, model)
-    if btype is BackendType.GOOGLE_SDK:
-        return _make_google_sdk_backend(backend, model, bdef)
-    if btype is BackendType.GEMINI_CLI:
-        return _make_gemini_cli_backend(backend, model, bdef.default_model)
-    if btype is BackendType.OPENAI_COMPAT:
-        return _make_openai_compat_backend(backend, model, bdef)
-    raise typer.BadParameter(f"backend {backend!r} has unknown type {btype!r}")
-
-
-def _resolve_auto_backend() -> str:
-    import shutil as _shutil
-
-    bdef = _CONFIG.backends.get("claude-api")
-    if bdef is not None and (bdef.api_key_env or bdef.api_key_command):
-        try:
-            _resolve_api_key("claude-api", bdef)
-        except typer.BadParameter:
-            pass
-        else:
-            return "claude-api"
-    if _shutil.which("claude"):
-        return "claude-cli"
-    raise typer.BadParameter(
-        "No Anthropic credentials available: set ANTHROPIC_API_KEY "
-        "(or ANTHROPIC_API_TOKEN in .env), install the `claude` CLI "
-        "for subscription-based fallback, or pass --backend=gemini-cli "
-        "(CLI subprocess) / --backend=gemini-api (Google SDK) to opt "
-        "into a Gemini backend."
-    )
-
-
-def _make_anthropic_sdk_backend(name: str, model: str, bdef):
-    from .augment.agents import Backend
-
-    _resolve_and_inject_key(name, bdef, sdk_env="ANTHROPIC_API_KEY")
-    return Backend(model=f"anthropic:{model}")
-
-
-def _make_claude_cli_backend(name: str, model: str):
-    import shutil as _shutil
-
-    from .augment.agents import Backend
-    from .augment.cli_models import ClaudeCLIModel
-
-    if not _shutil.which("claude"):
-        raise typer.BadParameter(
-            f"--backend={name} but `claude` is not on PATH "
-            "(install Claude Code CLI or set ANTHROPIC_API_KEY)."
-        )
-    _warn_cli_fallback()
-    return Backend(model=ClaudeCLIModel(model=model), is_subprocess_backend=True)
-
-
-def _make_google_sdk_backend(name: str, model: str, bdef):
-    from .augment.agents import Backend
-
-    gem_model = _coerce_gemini_model(model, bdef.default_model)
-    # GOOGLE_CLOUD_PROJECT short-circuits to Vertex via ADC and skips
-    # API-key resolution entirely — Vertex doesn't use a bearer token,
-    # ADC does. Only when there's no GCP project do we need a key.
-    if os.environ.get("GOOGLE_CLOUD_PROJECT"):
-        return Backend(model=f"google-vertex:{gem_model}")
-
-    if bdef.api_key_env or bdef.api_key_command:
-        _resolve_and_inject_key(name, bdef, sdk_env="GEMINI_API_KEY")
-    elif not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
-        raise typer.BadParameter(
-            f"--backend={name} but no Gemini credentials found. "
-            "Set GEMINI_API_KEY (AI Studio), GOOGLE_API_KEY, or "
-            "GOOGLE_CLOUD_PROJECT (Vertex via ADC)."
-        )
-    return Backend(model=f"google-gla:{gem_model}")
-
-
-def _make_gemini_cli_backend(name: str, model: str, default_model: str | None):
-    import shutil as _shutil
-
-    from .augment.agents import Backend
-    from .augment.cli_models import GeminiCLIModel
-
-    if not _shutil.which("gemini"):
-        raise typer.BadParameter(
-            f"--backend={name} but `gemini` is not on PATH "
-            "(install via `npm install -g @google/gemini-cli`)."
-        )
-    if not (
-        os.environ.get("GEMINI_API_KEY")
-        or os.environ.get("GOOGLE_API_KEY")
-        or (Path.home() / ".gemini" / "oauth_creds.json").exists()
-    ):
-        raise typer.BadParameter(
-            f"--backend={name} but no Gemini credentials found. Set "
-            "GEMINI_API_KEY (AI Studio) or GOOGLE_API_KEY (Vertex), "
-            "or run `gemini` once interactively to complete the "
-            "OAuth flow."
-        )
-    _warn_gemini_fallback()
-    gem_model = _coerce_gemini_model(model, default_model)
-    return Backend(
-        model=GeminiCLIModel(model=gem_model),
-        is_subprocess_backend=True,
-    )
-
-
-def _make_openai_compat_backend(name: str, model: str, bdef):
-    from .augment.agents import Backend
-    from .config import BackendDef
-
-    assert isinstance(bdef, BackendDef)
-    if not bdef.base_url:
-        raise typer.BadParameter(
-            f"--backend={name} (type=openai-compat) has no base_url; "
-            f"set [backends.{name}] base_url in config."
-        )
-    if bdef.api_key_env or bdef.api_key_command:
-        api_key = _resolve_api_key(name, bdef)
-    else:
-        # Local servers (Ollama, llama.cpp) typically require *some*
-        # non-empty bearer; use a sentinel that's clearly not a key.
-        api_key = "not-needed"
-
-    from pydantic_ai.models.openai import OpenAIChatModel
-    from pydantic_ai.providers.openai import OpenAIProvider
-
-    return Backend(
-        model=OpenAIChatModel(
-            model_name=model,
-            provider=OpenAIProvider(base_url=bdef.base_url, api_key=api_key),
-        ),
-        # Not a CLI subprocess — this stays False so the in-loop repo
-        # tools and full pydantic-ai message flow remain enabled.
-        is_subprocess_backend=False,
-    )
-
-
-def _resolve_and_inject_key(name: str, bdef, *, sdk_env: str) -> None:
-    """Resolve via env-or-command, then write into the env var the SDK reads.
-
-    SDK backends (Anthropic, Google SDK) read their credential from a
-    fixed env var on construction; pydantic-ai's `anthropic:<model>` /
-    `google-gla:<model>` strings give us no way to inject a key
-    explicitly, so we set the env var for them. When `bdef.api_key_env`
-    matches `sdk_env` (the common case, since the builtins set them
-    to the same name), the write is idempotent.
-
-    Raises if neither env nor command is configured AND `sdk_env` is
-    not already set in the environment — same precondition the legacy
-    inline code enforced.
-    """
-    if not (bdef.api_key_env or bdef.api_key_command):
-        if not os.environ.get(sdk_env):
-            raise typer.BadParameter(
-                f"--backend={name} but ${sdk_env} is not set "
-                "(load a .env or export the variable)."
-            )
-        return
-    key = _resolve_api_key(name, bdef)
-    target = bdef.api_key_env or sdk_env
-    os.environ[target] = key
-    # Also mirror to the canonical env var the SDK reads, in case the
-    # user pointed api_key_env at a custom name.
-    if target != sdk_env:
-        os.environ[sdk_env] = key
-
-
-def _resolve_api_key(name: str, bdef) -> str:
-    """Resolve a backend's bearer credential.
-
-    Order: `api_key_env` (if set and non-empty) → `api_key_command`
-    stdout (if set and exits 0 with non-empty output) → BadParameter
-    explaining what's missing. The command runs without shell
-    interpretation (argv list) so commands like `gh auth token` and
-    `gcloud secrets versions access ...` are safe to embed in config.
-    """
-    import subprocess as _sp
-
-    from .config import BackendDef
-
-    assert isinstance(bdef, BackendDef)
-
-    if bdef.api_key_env:
-        v = os.environ.get(bdef.api_key_env)
-        if v:
-            return v
-
-    if bdef.api_key_command:
-        cmd_str = " ".join(bdef.api_key_command)
-        fallback_hint = (
-            f" (or set ${bdef.api_key_env} directly)" if bdef.api_key_env else ""
-        )
-        try:
-            proc = _sp.run(
-                list(bdef.api_key_command),
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-        except FileNotFoundError:
-            raise typer.BadParameter(
-                f"--backend={name}: api_key_command not on PATH: "
-                f"{bdef.api_key_command[0]}{fallback_hint}"
-            ) from None
-        except _sp.TimeoutExpired:
-            raise typer.BadParameter(
-                f"--backend={name}: api_key_command timed out: {cmd_str}"
-            ) from None
-        if proc.returncode != 0:
-            stderr = (proc.stderr or "").strip()
-            tail = f"\n{stderr}" if stderr else ""
-            raise typer.BadParameter(
-                f"--backend={name}: api_key_command exited "
-                f"{proc.returncode}: {cmd_str}{tail}{fallback_hint}"
-            )
-        key = (proc.stdout or "").strip()
-        if not key:
-            raise typer.BadParameter(
-                f"--backend={name}: api_key_command produced empty "
-                f"output: {cmd_str}{fallback_hint}"
-            )
-        return key
-
-    # Reached only when api_key_env was set but the var was empty and
-    # there's no api_key_command fallback (callers gate on
-    # `api_key_env or api_key_command` before calling, so the
-    # "neither configured" form is unreachable).
-    raise typer.BadParameter(
-        f"--backend={name} but ${bdef.api_key_env} is not set."
-    )
-
-
-def _coerce_gemini_model(model: str, default_model: str | None) -> str:
-    """If a Gemini backend gets a Claude model id (because `[model] default`
-    was set globally for an Anthropic config), substitute the backend's
-    own default. Avoids surprising the user with a 404 on the wrong vendor.
-    """
-    if model.startswith("claude"):
-        return default_model or _DEFAULT_GEMINI_API_MODEL
-    return model
-
-
-_FALLBACK_WARNED = False
-
-
-def _warn_cli_fallback() -> None:
-    global _FALLBACK_WARNED
-    if _FALLBACK_WARNED:
-        return
-    _FALLBACK_WARNED = True
-    sys.stderr.write(
-        "scr: no ANTHROPIC_API_KEY; falling back to `claude -p` subprocess. "
-        "Note: no prompt caching, reduced concurrency, no in-loop repo tools "
-        "(annotation quality will be lower).\n"
-    )
-    sys.stderr.flush()
-
-
-_GEMINI_WARNED = False
-
-
-def _warn_gemini_fallback() -> None:
-    global _GEMINI_WARNED
-    if _GEMINI_WARNED:
-        return
-    _GEMINI_WARNED = True
-    sys.stderr.write(
-        "scr: using `gemini -p` subprocess backend. Note: no prompt caching, "
-        "no JSON-schema-constrained output (we validate client-side and retry "
-        "once on failure), reduced concurrency.\n"
-    )
-    sys.stderr.flush()
+        backend = _backends.resolve_auto(config=_CONFIG)
+    return _backends.get(backend, config=_CONFIG).resolve(model=model)
 
 
 @app.command()

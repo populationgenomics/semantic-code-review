@@ -19,7 +19,7 @@ from ..augment.schemas import (
 )
 from ..cache.store import CacheStore
 from ..viewer.rows import build_rows, compute_fold_regions
-from .agents import Backend, make_hunk_agent
+from .agents import Client, make_hunk_agent
 from .prompts import HUNK_SYSTEM, PROMPT_VERSION
 from .tools import TOOL_FUNCTIONS, RepoTools
 from .trace_adapter import submit_args_from_result, write_pydantic_ai_trace
@@ -67,7 +67,7 @@ def format_hunk_prompt(fp: FilePatch, hunk: Hunk, overview_json: str, file_summa
 
 
 async def run_hunk_pass(
-    backend: Backend,
+    client: Client,
     *,
     fp: FilePatch,
     hunk: Hunk,
@@ -115,14 +115,14 @@ async def run_hunk_pass(
     # prompt-caching breakpoints. Provider-side caching is a v0.13
     # follow-up; correctness comes first.
     user_text = "\n\n".join(b["text"] for b in user_content)
-    agent = make_hunk_agent(backend.model)
+    agent = make_hunk_agent(client.model)
     run_result = await agent.run(user_text, deps=repo_tools)
     submit_args = submit_args_from_result(run_result)
     if trace_path is not None:
         write_pydantic_ai_trace(
             run_result,
             trace_path=trace_path,
-            model=str(backend.model),
+            model=str(client.model),
             system=HUNK_SYSTEM,
             tool_names=[fn.__name__ for fn in TOOL_FUNCTIONS],
             submit_tool="submit_annotations",
