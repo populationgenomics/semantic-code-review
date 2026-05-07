@@ -97,42 +97,49 @@ to a publisher SA that has writer (and only writer) on the AR repo.
 
 ## Cutting a release (maintainers)
 
-1. Sync from upstream (if there are upstream changes worth pulling):
+The fork tracks upstream releases 1:1. When upstream publishes a
+new `vX.Y.Z`, the publish flow at CPG is:
 
-   ```sh
-   git fetch upstream
-   git merge upstream/main          # fast-forward most of the time
-   git push origin main
-   ```
+```sh
+scripts/sync-upstream.sh
+```
 
-2. Bump the version in `pyproject.toml` (and
-   `.claude-plugin/plugin.json` if it's also used as a Claude Code
-   plugin). Commit.
+That script:
 
-3. Tag and push:
+1. Fetches `upstream` and `origin`.
+2. For each upstream `vX.Y.Z` that doesn't yet have a corresponding
+   `cpg-vX.Y.Z` in the fork, merges the upstream tag into fork main
+   (`--no-ff`) and creates the `cpg-vX.Y.Z` tag at the merge commit.
+3. Pushes `main` and the new `cpg-v*` tags to `origin`.
 
-   ```sh
-   git tag v0.7.1
-   git push origin v0.7.1
-   ```
+The `release.yml` workflow fires on `cpg-v*` tag pushes. It compiles
+the TypeScript module, builds the wheel + sdist, authenticates to
+GCP via WIF, uploads to Artifact Registry, and attaches the
+artifacts to the GitHub release.
 
-   The `release.yml` workflow fires on `v*` tags. It compiles the
-   TypeScript module, builds the wheel + sdist, authenticates to GCP
-   via WIF, uploads to Artifact Registry, and attaches the artifacts
-   to the GitHub release.
+The first thing the workflow checks is that the tag's `X.Y.Z`
+suffix matches `pyproject.toml`'s `project.version`. Since
+`pyproject.toml` comes from upstream's release commit (which is part
+of the merge), the two will agree by construction.
 
-   The first thing the workflow checks is that the tag matches
-   `pyproject.toml`'s version — it'll fail fast if you forget step 2.
+Watch it:
 
-4. Watch it:
+```sh
+gh run watch --repo populationgenomics/semantic-code-review
+```
 
-   ```sh
-   gh run watch --repo populationgenomics/semantic-code-review
-   ```
+Once green, `uv tool run --from semantic-code-review scr` (which the
+wrapper does on every invocation) will resolve the new version
+automatically.
 
-   Once green, `uv tool run --from semantic-code-review scr` (which
-   the wrapper does on every invocation) will resolve the new
-   version automatically.
+### Why `cpg-v*` and not `v*`
+
+Earlier the fork moved the bare `v*` tag onto fork-side merge
+commits so the workflow file (which only exists in the fork) would
+be present at checkout. That worked but caused tag-name divergence
+between upstream and origin, and `git fetch --tags` refused the
+conflict on every sync. The `cpg-v*` prefix keeps the two namespaces
+separate. Upstream owns `v*`; the fork owns `cpg-v*`.
 
 If the workflow fails partway, you can re-run the failed step from
 the Actions UI; the AR upload step is the one that's idempotent-

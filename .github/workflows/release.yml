@@ -1,11 +1,17 @@
 name: release
 
-# Triggers on tag push (vX.Y.Z). Builds the wheel + sdist (with the
-# TypeScript annotations module compiled into the package) and uploads
-# them to CPG's Artifact Registry Python repository, where end users
-# can install via:
+# Triggers on fork-side tag push (cpg-vX.Y.Z). Builds the wheel +
+# sdist (with the TypeScript annotations module compiled into the
+# package) and uploads them to CPG's Artifact Registry Python
+# repository, where end users can install via:
 #
 #   curl -fsSL https://raw.githubusercontent.com/populationgenomics/semantic-code-review/<tag>/install.sh | bash
+#
+# Why cpg-v* and not v*: upstream owns the v* tag namespace. Mirroring
+# upstream tags onto fork-side merge commits caused the same tag name
+# to diverge between remotes and made `git fetch --tags` refuse the
+# conflict. The fork keeps its own cpg-v* namespace, anchored at the
+# merge commit so this workflow file is present at checkout.
 #
 # Auth: Workload Identity Federation. No long-lived SA keys live in
 # GitHub secrets; the workflow exchanges its OIDC token for a GCP
@@ -13,7 +19,7 @@ name: release
 
 on:
   push:
-    tags: ["v*"]
+    tags: ["cpg-v*"]
   workflow_dispatch:
 
 permissions:
@@ -44,7 +50,10 @@ jobs:
 
       - name: Verify tag matches pyproject version
         run: |
-          tag="${GITHUB_REF_NAME#v}"
+          # Strip the cpg-v prefix; we re-publish upstream's semver
+          # under the fork tag namespace, so the trailing X.Y.Z must
+          # equal pyproject.toml's project.version.
+          tag="${GITHUB_REF_NAME#cpg-v}"
           pkg=$(python - <<'PY'
           import tomllib, pathlib
           print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])
