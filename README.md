@@ -83,7 +83,9 @@ See `commands/review.md` for the full slash-command prompt.
   Claude Code installation.
 - Neither available → fails fast with a clear error.
 
-Force a backend with `--backend api|cli|gemini|gemini-api|auto`.
+Force a backend with `--backend <name>`. Run `scr config show` for
+the registered names — builtins plus anything you've added under
+`[backends.<name>]` in your config.
 
 Both Gemini backends are opt-in only — never picked by `auto`.
 
@@ -94,7 +96,7 @@ Both Gemini backends are opt-in only — never picked by `auto`.
   tool use, Gemini's implicit prompt caching surfaces as
   `cache_read_input_tokens` in our usage stats. Best Gemini path
   for production work.
-- `--backend=gemini` shells out to `gemini -p` (Google's CLI,
+- `--backend=gemini-cli` shells out to `gemini -p` (Google's CLI,
   install via `npm install -g @google/gemini-cli`) with our MCP
   server injected via a temp system-settings file
   (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`) and
@@ -107,6 +109,33 @@ Both Gemini backends are opt-in only — never picked by `auto`.
   previously-completed interactive `gemini` OAuth login (creds at
   `~/.gemini/`). Useful when you want to drive Gemini through the
   same subprocess shape as `claude -p`.
+
+### Trying it without paid API access
+
+`scr` ships builtin profiles for several free-tier providers. None
+require an Anthropic or Google paid plan. Pick one, set the listed
+env var, pass `--backend <name>`:
+
+| `--backend` | Auth | Notes |
+|---|---|---|
+| `gemini-cli` | `gemini auth login` (Google account, no API key) | Generous daily quota; needs the `gemini` CLI on `PATH` (`npm i -g @google/gemini-cli`). |
+| `gemini-api` | `GEMINI_API_KEY` from [aistudio.google.com](https://aistudio.google.com) | Free tier with rate limits; faster than `gemini-cli` because we hit the SDK directly. |
+| `groq` | `GROQ_API_KEY` from [console.groq.com](https://console.groq.com) | Free tier, very fast inference, Llama 3.3 70B by default. |
+| `github` | `GITHUB_TOKEN` (any GitHub account) | Free quota across multiple model families; default is `openai/gpt-4o-mini`. |
+| `cerebras` | `CEREBRAS_API_KEY` from [cloud.cerebras.ai](https://cloud.cerebras.ai) | Free tier; pass `--model` (catalogue rotates). |
+| `openrouter` | `OPENROUTER_API_KEY` from [openrouter.ai](https://openrouter.ai) | Mixed paid + free models; pass `--model` (e.g. `meta-llama/llama-3.3-70b-instruct:free`). |
+| `mistral` | `MISTRAL_API_KEY` from [console.mistral.ai](https://console.mistral.ai) | La Plateforme free tier; default is `codestral-latest`. |
+| `ollama` | none — runs against `localhost:11434` | Local llama.cpp/Ollama; pass `--model` to name something you've pulled (e.g. `qwen2.5-coder:14b`). |
+
+The non-Anthropic / non-Google entries all reach the provider via
+the OpenAI Chat Completions wire format (`type = "openai-compat"`).
+Override any builtin's model — or add a new provider — with a
+`[backends.<name>]` block in your config; see `scr config edit`.
+
+Quality caveat: any non-frontier backend produces shallower hunk
+intents and more spurious `refs[]`. The output is still useful as a
+draft you skim, especially for small PRs, but it isn't a Claude /
+Gemini Pro replacement.
 
 ## Usage as a standalone CLI
 
