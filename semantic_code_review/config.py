@@ -109,6 +109,7 @@ BUILTIN_BACKENDS: dict[str, BackendDef] = {
     "gemini-api": BackendDef(
         type=BackendType.GOOGLE_SDK,
         default_model="gemini-2.5-pro",
+        api_key_env="GEMINI_API_KEY",
     ),
     "gemini-cli": BackendDef(
         type=BackendType.GEMINI_CLI,

@@ -144,6 +144,11 @@ api_key_command = ["gcloud", "secrets", "versions", "access",
                    "latest", "--secret=anthropic-api-key"]
 ```
 
+The same hook works on `claude-api`, `gemini-api`, and any
+`openai-compat` backend. For `gemini-api`, `GOOGLE_CLOUD_PROJECT`
+takes precedence: when set, the Vertex/ADC path wins and
+`api_key_command` is skipped.
+
 Quality caveat: any non-frontier backend produces shallower hunk
 intents and more spurious `refs[]`. The output is still useful as a
 draft you skim, especially for small PRs, but it isn't a Claude /

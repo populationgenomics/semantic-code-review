@@ -137,7 +137,7 @@ def _select_client(backend: str, *, model: str):
     if btype is BackendType.CLAUDE_CLI:
         return _make_claude_cli_backend(backend, model)
     if btype is BackendType.GOOGLE_SDK:
-        return _make_google_sdk_backend(backend, model, bdef.default_model)
+        return _make_google_sdk_backend(backend, model, bdef)
     if btype is BackendType.GEMINI_CLI:
         return _make_gemini_cli_backend(backend, model, bdef.default_model)
     if btype is BackendType.OPENAI_COMPAT:
@@ -170,24 +170,7 @@ def _resolve_auto_backend() -> str:
 def _make_anthropic_sdk_backend(name: str, model: str, bdef):
     from .augment.agents import Backend
 
-    if bdef.api_key_env or bdef.api_key_command:
-        # Resolve via env-or-command. Inject the result back into the
-        # env var pydantic-ai's anthropic provider reads, so the magic
-        # `anthropic:<model>` string keeps working unchanged. When the
-        # value came from `os.environ.get(...)`, this is a no-op.
-        key = _resolve_api_key(name, bdef)
-        if bdef.api_key_env:
-            os.environ[bdef.api_key_env] = key
-        else:
-            # User defined api_key_command without api_key_env (unusual).
-            # The Anthropic SDK only reads ANTHROPIC_API_KEY, so honour
-            # the resolution by setting that explicitly.
-            os.environ["ANTHROPIC_API_KEY"] = key
-    elif not os.environ.get("ANTHROPIC_API_KEY"):
-        raise typer.BadParameter(
-            f"--backend={name} but ANTHROPIC_API_KEY is not set "
-            "(load a .env or export the variable)."
-        )
+    _resolve_and_inject_key(name, bdef, sdk_env="ANTHROPIC_API_KEY")
     return Backend(model=f"anthropic:{model}")
 
 
@@ -206,24 +189,24 @@ def _make_claude_cli_backend(name: str, model: str):
     return Backend(model=ClaudeCLIModel(model=model), is_subprocess_backend=True)
 
 
-def _make_google_sdk_backend(name: str, model: str, default_model: str | None):
+def _make_google_sdk_backend(name: str, model: str, bdef):
     from .augment.agents import Backend
 
-    if not (
-        os.environ.get("GEMINI_API_KEY")
-        or os.environ.get("GOOGLE_API_KEY")
-        or os.environ.get("GOOGLE_CLOUD_PROJECT")
-    ):
+    gem_model = _coerce_gemini_model(model, bdef.default_model)
+    # GOOGLE_CLOUD_PROJECT short-circuits to Vertex via ADC and skips
+    # API-key resolution entirely — Vertex doesn't use a bearer token,
+    # ADC does. Only when there's no GCP project do we need a key.
+    if os.environ.get("GOOGLE_CLOUD_PROJECT"):
+        return Backend(model=f"google-vertex:{gem_model}")
+
+    if bdef.api_key_env or bdef.api_key_command:
+        _resolve_and_inject_key(name, bdef, sdk_env="GEMINI_API_KEY")
+    elif not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
         raise typer.BadParameter(
             f"--backend={name} but no Gemini credentials found. "
             "Set GEMINI_API_KEY (AI Studio), GOOGLE_API_KEY, or "
             "GOOGLE_CLOUD_PROJECT (Vertex via ADC)."
         )
-    gem_model = _coerce_gemini_model(model, default_model)
-    # GOOGLE_CLOUD_PROJECT triggers Vertex via ADC; otherwise the
-    # API-key path (AI Studio) wins.
-    if os.environ.get("GOOGLE_CLOUD_PROJECT"):
-        return Backend(model=f"google-vertex:{gem_model}")
     return Backend(model=f"google-gla:{gem_model}")
 
 
@@ -286,6 +269,36 @@ def _make_openai_compat_backend(name: str, model: str, bdef):
         # tools and full pydantic-ai message flow remain enabled.
         is_subprocess_backend=False,
     )
+
+
+def _resolve_and_inject_key(name: str, bdef, *, sdk_env: str) -> None:
+    """Resolve via env-or-command, then write into the env var the SDK reads.
+
+    SDK backends (Anthropic, Google SDK) read their credential from a
+    fixed env var on construction; pydantic-ai's `anthropic:<model>` /
+    `google-gla:<model>` strings give us no way to inject a key
+    explicitly, so we set the env var for them. When `bdef.api_key_env`
+    matches `sdk_env` (the common case, since the builtins set them
+    to the same name), the write is idempotent.
+
+    Raises if neither env nor command is configured AND `sdk_env` is
+    not already set in the environment — same precondition the legacy
+    inline code enforced.
+    """
+    if not (bdef.api_key_env or bdef.api_key_command):
+        if not os.environ.get(sdk_env):
+            raise typer.BadParameter(
+                f"--backend={name} but ${sdk_env} is not set "
+                "(load a .env or export the variable)."
+            )
+        return
+    key = _resolve_api_key(name, bdef)
+    target = bdef.api_key_env or sdk_env
+    os.environ[target] = key
+    # Also mirror to the canonical env var the SDK reads, in case the
+    # user pointed api_key_env at a custom name.
+    if target != sdk_env:
+        os.environ[sdk_env] = key
 
 
 def _resolve_api_key(name: str, bdef) -> str:
