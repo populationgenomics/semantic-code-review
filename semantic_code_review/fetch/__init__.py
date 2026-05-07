@@ -6,7 +6,10 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from .gh import PRRef, fetch_pr_diff, fetch_pr_meta, parse_pr_url
+from .gh import (
+    GhFetchError, PRRef, fetch_pr_diff, fetch_pr_meta, parse_pr_url,
+    preflight_gh,
+)
 from .worktree import init_worktrees, run_dir_name
 
 
@@ -61,4 +64,7 @@ def fetch(pr_url: str, runs_root: Path) -> FetchResult:
     )
 
 
-__all__ = ["FetchResult", "fetch", "parse_pr_url", "PRRef"]
+__all__ = [
+    "FetchResult", "GhFetchError", "PRRef",
+    "fetch", "parse_pr_url", "preflight_gh",
+]

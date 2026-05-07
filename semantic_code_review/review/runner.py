@@ -52,6 +52,7 @@ class ReviewOptions:
     # Optional preselected backend handle. None → augment_run_dir
     # defaults to a `Backend` for the Anthropic SDK path.
     client: Backend | None = None
+    show_progress: bool = True
 
 
 def run_review(opts: ReviewOptions) -> int:
@@ -80,6 +81,7 @@ def run_review(opts: ReviewOptions) -> int:
                 concurrency=opts.concurrency,
                 cache=cache,
                 client=opts.client,
+                show_progress=opts.show_progress,
             )
         )
     else:

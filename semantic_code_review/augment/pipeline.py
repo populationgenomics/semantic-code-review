@@ -26,6 +26,7 @@ from .hunks import (
     apply_hunk_annotations, overview_to_prompt_json, run_hunk_pass,
 )
 from .overview import apply_overview_to_diff, run_overview_pass
+from .progress import ProgressMeter
 from .prompts import PROMPT_VERSION
 from .schemas import AugmentedDiff, FileRole, PRInfo
 from .tools import RepoTools
@@ -69,6 +70,7 @@ async def augment_run_dir(
     max_hunks: int | None = None,
     skip_overview: bool = False,
     skip_context: bool = False,
+    show_progress: bool = True,
 ) -> Path:
     """Augment a fetch run directory. Returns the augmented.diff path."""
     if client is None:
@@ -111,83 +113,111 @@ async def augment_run_dir(
     trace_dir.mkdir(parents=True, exist_ok=True)
     _attach_file_log(trace_dir / "augment.log")
 
-    # --- Overview pass -----------------------------------------------------
-    if not skip_overview:
-        log.info("overview pass for %d files", len(diff.files))
-        ov = await run_overview_pass(
-            client, diff=diff, meta=meta, model=model, cache=cache, trace_dir=trace_dir,
-        )
-        apply_overview_to_diff(diff, ov)
-
-    # --- Per-hunk pass -----------------------------------------------------
-    repo_tools = RepoTools(
-        head_worktree=run_dir / "head",
-        repo_git=run_dir / "repo.git",
-        base_sha=diff.pr.base_sha,
-        head_sha=diff.pr.head_sha,
-    ) if not skip_context else None
-
-    # CLI subprocess backends use this to spawn an MCP server bound to
-    # the run's worktree. SDK backends are no-ops; the SDK Agent gets
-    # `deps=repo_tools` directly via `Agent.run` in `run_hunk_pass`.
-    client.set_repo_tools(repo_tools)
-
-    overview_json = overview_to_prompt_json(diff)
-
-    # Subprocess clients allocate temp config files at first use;
-    # `aclosing` calls `client.aclose()` on exit so /tmp doesn't
-    # accumulate them across runs. SDKBackend's aclose is a no-op
-    # so this is uniform across backends.
-    async with contextlib.aclosing(client):
-        sem = asyncio.Semaphore(concurrency)
-        tasks: list[asyncio.Task] = []
-        stats = _HunkStats()
-        hunks_seen = 0
-        for fp in diff.files:
-            if fp.path in skipped_files:
-                continue
-            file_summary = (fp.summary or "").strip()
-            for h in fp.hunks:
-                if max_hunks is not None and hunks_seen >= max_hunks:
-                    break
-                hunks_seen += 1
-                tasks.append(asyncio.create_task(
-                    _augment_one_hunk(sem, client, fp, h, overview_json, file_summary,
-                                      repo_tools, model, cache, trace_dir, stats)
-                ))
-            if max_hunks is not None and hunks_seen >= max_hunks:
+    # Enumerate hunks ahead of dispatch so we know the total up front
+    # (the progress meter wants this; the dispatch loop wants ordinal
+    # indices to attribute start/finish events to the right square).
+    queued: list[tuple[Any, Any, int]] = []
+    for fp in diff.files:
+        if fp.path in skipped_files:
+            continue
+        for h in fp.hunks:
+            if max_hunks is not None and len(queued) >= max_hunks:
                 break
+            queued.append((fp, h, len(queued)))
+        if max_hunks is not None and len(queued) >= max_hunks:
+            break
 
-        log.info("per-hunk pass: %d hunks queued (concurrency=%d)", len(tasks), concurrency)
-        await asyncio.gather(*tasks)
+    # show_progress=False → meter is a no-op even on a truecolor TTY
+    # (caller is in --verbose mode, where the redraw line would fight
+    # the log stream). show_progress=True → meter still gates on TTY +
+    # truecolor advertising before drawing anything.
+    meter = ProgressMeter(
+        total=len(queued),
+        enabled=None if show_progress else False,
+    )
 
-        backend_tag = "subprocess" if client.is_subprocess_backend else "sdk"
-        summary = (
-            f"scr augment: backend={backend_tag} model={model} hunks={len(tasks)} "
-            f"ok={stats.ok} failed={stats.failed}"
-        )
-        log.info(summary)
-        # Also emit to stderr directly so users who missed the log stream
-        # still see a one-liner summary before the viewer opens.
-        import sys as _sys
-        _sys.stderr.write(summary + "\n")
-        _sys.stderr.flush()
+    async with meter:
+        # --- Overview pass -------------------------------------------------
+        if not skip_overview:
+            log.info("overview pass for %d files", len(diff.files))
+            meter.start_overview()
+            try:
+                ov = await run_overview_pass(
+                    client, diff=diff, meta=meta, model=model,
+                    cache=cache, trace_dir=trace_dir,
+                )
+                apply_overview_to_diff(diff, ov)
+                meter.finish_overview(ok=True)
+            except Exception:
+                meter.finish_overview(ok=False)
+                raise
 
-        if stats.failed and stats.ok == 0:
-            log.error(
-                "augmentation produced ZERO annotations: all %d hunks failed. "
-                "See per-hunk warnings and trace files under %s. "
-                "Common cause in --backend=claude-cli: `claude -p` not logged in or "
-                "refused to emit structured JSON within --max-turns.",
-                stats.failed, trace_dir,
-            )
+        # --- Per-hunk pass -------------------------------------------------
+        repo_tools = RepoTools(
+            head_worktree=run_dir / "head",
+            repo_git=run_dir / "repo.git",
+            base_sha=diff.pr.base_sha,
+            head_sha=diff.pr.head_sha,
+        ) if not skip_context else None
+
+        # CLI subprocess backends use this to spawn an MCP server bound
+        # to the run's worktree. SDK backends are no-ops; the SDK Agent
+        # gets `deps=repo_tools` directly via `Agent.run` in `run_hunk_pass`.
+        client.set_repo_tools(repo_tools)
+
+        overview_json = overview_to_prompt_json(diff)
+
+        # Subprocess clients allocate temp config files at first use;
+        # `aclosing` calls `client.aclose()` on exit so /tmp doesn't
+        # accumulate them across runs. SDKBackend's aclose is a no-op
+        # so this is uniform across backends.
+        async with contextlib.aclosing(client):
+            sem = asyncio.Semaphore(concurrency)
+            stats = _HunkStats()
+            tasks = [
+                asyncio.create_task(
+                    _augment_one_hunk(
+                        idx, meter, sem, client, fp, h, overview_json,
+                        (fp.summary or "").strip(), repo_tools, model,
+                        cache, trace_dir, stats,
+                    )
+                )
+                for fp, h, idx in queued
+            ]
+
+            log.info("per-hunk pass: %d hunks queued (concurrency=%d)",
+                     len(tasks), concurrency)
+            await asyncio.gather(*tasks)
 
         # --- Emit ----------------------------------------------------------
         augmented_text = emit_augmented_diff(diff)
         augmented_path.write_text(augmented_text, encoding="utf-8")
         dump_sidecar(diff, sidecar_path)
-        log.info("wrote %s (%d bytes) + sidecar", augmented_path.name, len(augmented_text))
-        return augmented_path
+        log.info("wrote %s (%d bytes) + sidecar",
+                 augmented_path.name, len(augmented_text))
+
+    # After the meter has finished its final repaint and dropped to a
+    # fresh line, emit the human-readable summary to stderr so the
+    # one-liner doesn't fight the meter's redraw window.
+    backend_tag = "subprocess" if client.is_subprocess_backend else "sdk"
+    summary = (
+        f"scr augment: backend={backend_tag} model={model} hunks={len(tasks)} "
+        f"ok={stats.ok} failed={stats.failed}"
+    )
+    log.info(summary)
+    import sys as _sys
+    _sys.stderr.write(summary + "\n")
+    _sys.stderr.flush()
+
+    if stats.failed and stats.ok == 0:
+        log.error(
+            "augmentation produced ZERO annotations: all %d hunks failed. "
+            "See per-hunk warnings and trace files under %s. "
+            "Common cause in --backend=claude-cli: `claude -p` not logged in or "
+            "refused to emit structured JSON within --max-turns.",
+            stats.failed, trace_dir,
+        )
+    return augmented_path
 
 
 @dataclass
@@ -197,6 +227,8 @@ class _HunkStats:
 
 
 async def _augment_one_hunk(
+    idx: int,
+    meter: ProgressMeter,
     sem: asyncio.Semaphore,
     client: Backend,
     fp: Any,
@@ -210,6 +242,9 @@ async def _augment_one_hunk(
     stats: _HunkStats,
 ) -> None:
     async with sem:
+        # Mark the square live only AFTER acquiring the semaphore so
+        # queued-but-unstarted hunks still render as pending dots.
+        meter.start_hunk(idx)
         try:
             if repo_tools is None:
                 repo_tools = RepoTools(
@@ -224,10 +259,12 @@ async def _augment_one_hunk(
             )
             apply_hunk_annotations(h, submit)
             stats.ok += 1
+            meter.finish_hunk(idx, ok=True)
             log.info("hunk %s @ %s: intent=%r smells=%d segs=%d",
                      fp.path, h.header, (h.intent or "")[:80], len(h.smells), len(h.segments))
         except Exception as e:  # noqa: BLE001
             stats.failed += 1
+            meter.finish_hunk(idx, ok=False)
             log.warning(
                 "hunk %s @ %s failed: %s: %s",
                 fp.path, h.header, type(e).__name__, e,

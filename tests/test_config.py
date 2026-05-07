@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from semantic_code_review.config import ConfigError, ScrConfig
+from semantic_code_review.config import (
+    BUILTIN_BACKENDS,
+    BackendDef,
+    BackendType,
+    ConfigError,
+    ScrConfig,
+)
 from semantic_code_review.paths import default_config_path, find_repo_config_path
 
 
@@ -48,11 +54,26 @@ def test_find_repo_config_returns_none_when_absent(tmp_path: Path) -> None:
 # Parsing + merge
 # ---------------------------------------------------------------------------
 
-def test_load_empty_config_is_empty(tmp_path: Path) -> None:
+def test_load_empty_config_starts_with_builtins(tmp_path: Path) -> None:
     cfg = ScrConfig.load(user_path=tmp_path / "missing.toml", repo_path=None)
     assert cfg.backend is None
-    assert cfg.model == {}
+    assert cfg.model_default is None
     assert cfg.env == {}
+    # Builtins are populated regardless of whether a config file exists.
+    assert set(cfg.backends) == set(BUILTIN_BACKENDS)
+
+
+def test_openai_compat_presets_registered() -> None:
+    """The free-tier-friendly providers ship as builtins."""
+    expected = {"groq", "github", "cerebras", "openrouter", "mistral", "ollama"}
+    for name in expected:
+        assert name in BUILTIN_BACKENDS, f"missing builtin: {name}"
+        bdef = BUILTIN_BACKENDS[name]
+        assert bdef.type is BackendType.OPENAI_COMPAT
+        assert bdef.base_url, f"{name}: base_url is required"
+    # Ollama is the only one without an api_key_env.
+    assert BUILTIN_BACKENDS["ollama"].api_key_env is None
+    assert BUILTIN_BACKENDS["groq"].api_key_env == "GROQ_API_KEY"
 
 
 def test_load_user_only(tmp_path: Path) -> None:
@@ -61,15 +82,30 @@ backend = "gemini-api"
 
 [model]
 default = "claude-opus-4-7"
-"gemini-api" = "gemini-2.5-pro"
+
+[backends.gemini-api]
+model = "gemini-2.5-pro"
 
 [env]
 GOOGLE_CLOUD_PROJECT = "aasgard-dev"
 ''')
     cfg = ScrConfig.load(user_path=user, repo_path=None)
     assert cfg.backend == "gemini-api"
-    assert cfg.model == {"default": "claude-opus-4-7", "gemini-api": "gemini-2.5-pro"}
+    assert cfg.model_default == "claude-opus-4-7"
+    assert cfg.backends["gemini-api"].default_model == "gemini-2.5-pro"
     assert cfg.env == {"GOOGLE_CLOUD_PROJECT": "aasgard-dev"}
+
+
+def test_legacy_model_table_folds_into_backend(tmp_path: Path) -> None:
+    """`[model] "claude-api" = ...` is sugar for `[backends.claude-api] model = ...`."""
+    user = _write(tmp_path / "user.toml", '''
+[model]
+"claude-api" = "claude-sonnet-4-7"
+''')
+    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    assert cfg.backends["claude-api"].default_model == "claude-sonnet-4-7"
+    # Builtin type preserved.
+    assert cfg.backends["claude-api"].type is BackendType.ANTHROPIC_SDK
 
 
 def test_repo_overrides_user(tmp_path: Path) -> None:
@@ -91,7 +127,7 @@ GOOGLE_CLOUD_PROJECT = "repo-project"
 ''')
     cfg = ScrConfig.load(user_path=user, repo_path=repo)
     assert cfg.backend == "gemini-api"
-    assert cfg.model["default"] == "repo-model"
+    assert cfg.model_default == "repo-model"
     # Repo overrode shared keys; user's exclusive keys survive.
     assert cfg.env["GOOGLE_CLOUD_PROJECT"] == "repo-project"
     assert cfg.env["GOOGLE_CLOUD_LOCATION"] == "us-central1"
@@ -100,15 +136,107 @@ GOOGLE_CLOUD_PROJECT = "repo-project"
     assert "user.toml" in cfg.sources["env.GOOGLE_CLOUD_LOCATION"]
 
 
+def test_backends_table_can_add_a_new_entry(tmp_path: Path) -> None:
+    user = _write(tmp_path / "user.toml", '''
+[backends.localollama]
+type = "openai-compat"
+base_url = "http://localhost:11434/v1"
+model = "qwen2.5-coder:32b"
+''')
+    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    assert "localollama" in cfg.backends
+    bdef = cfg.backends["localollama"]
+    assert bdef.type is BackendType.OPENAI_COMPAT
+    assert bdef.base_url == "http://localhost:11434/v1"
+    assert bdef.default_model == "qwen2.5-coder:32b"
+    assert bdef.api_key_env is None
+
+
+def test_api_key_command_parses_from_toml(tmp_path: Path) -> None:
+    user = _write(tmp_path / "user.toml", '''
+[backends.gcloud-secret]
+type = "openai-compat"
+base_url = "https://example.com/v1"
+api_key_command = ["gcloud", "secrets", "versions", "access", "latest", "--secret=anth"]
+''')
+    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    bdef = cfg.backends["gcloud-secret"]
+    assert bdef.api_key_command == (
+        "gcloud", "secrets", "versions", "access", "latest", "--secret=anth",
+    )
+
+
+def test_api_key_command_must_be_list_of_strings(tmp_path: Path) -> None:
+    user = _write(tmp_path / "user.toml", '''
+[backends.bad]
+type = "openai-compat"
+base_url = "https://example.com/v1"
+api_key_command = "not-a-list"
+''')
+    with pytest.raises(ConfigError, match="must be a list of strings"):
+        ScrConfig.load(user_path=user, repo_path=None)
+
+
+def test_api_key_command_must_not_be_empty(tmp_path: Path) -> None:
+    user = _write(tmp_path / "user.toml", '''
+[backends.bad]
+type = "openai-compat"
+base_url = "https://example.com/v1"
+api_key_command = []
+''')
+    with pytest.raises(ConfigError, match="must not be empty"):
+        ScrConfig.load(user_path=user, repo_path=None)
+
+
+def test_backends_table_overrides_builtin_field_by_field(tmp_path: Path) -> None:
+    user = _write(tmp_path / "user.toml", '''
+[backends.claude-api]
+model = "claude-sonnet-4-7"
+''')
+    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    bdef = cfg.backends["claude-api"]
+    # type unchanged from builtin
+    assert bdef.type is BackendType.ANTHROPIC_SDK
+    # model overridden
+    assert bdef.default_model == "claude-sonnet-4-7"
+
+
 def test_invalid_toml_raises_config_error(tmp_path: Path) -> None:
     bad = _write(tmp_path / "bad.toml", "this is = = not valid")
     with pytest.raises(ConfigError, match="invalid TOML"):
         ScrConfig.load(user_path=bad, repo_path=None)
 
 
-def test_unknown_backend_raises(tmp_path: Path) -> None:
+def test_unknown_backend_name_raises(tmp_path: Path) -> None:
     user = _write(tmp_path / "user.toml", 'backend = "telepathy"')
     with pytest.raises(ConfigError, match="not one of"):
+        ScrConfig.load(user_path=user, repo_path=None)
+
+
+def test_unknown_backend_type_raises(tmp_path: Path) -> None:
+    user = _write(tmp_path / "user.toml", '''
+[backends.weird]
+type = "carrier-pigeon"
+''')
+    with pytest.raises(ConfigError, match="carrier-pigeon"):
+        ScrConfig.load(user_path=user, repo_path=None)
+
+
+def test_new_backend_without_type_raises(tmp_path: Path) -> None:
+    user = _write(tmp_path / "user.toml", '''
+[backends.brand-new]
+model = "x"
+''')
+    with pytest.raises(ConfigError, match="`type` is required"):
+        ScrConfig.load(user_path=user, repo_path=None)
+
+
+def test_legacy_model_referencing_unknown_backend_raises(tmp_path: Path) -> None:
+    user = _write(tmp_path / "user.toml", '''
+[model]
+"made-up" = "x"
+''')
+    with pytest.raises(ConfigError, match="unknown backend"):
         ScrConfig.load(user_path=user, repo_path=None)
 
 
@@ -123,28 +251,48 @@ def test_non_string_model_value_raises(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def test_resolve_backend_cli_wins_over_config() -> None:
-    cfg = ScrConfig(backend="claude-api")
+    cfg = ScrConfig(backend="claude-api", backends=dict(BUILTIN_BACKENDS))
     assert cfg.resolve_backend("gemini-api") == "gemini-api"
 
 
 def test_resolve_backend_falls_back_to_auto() -> None:
-    cfg = ScrConfig()
+    cfg = ScrConfig(backends=dict(BUILTIN_BACKENDS))
     assert cfg.resolve_backend(None) == "auto"
 
 
 def test_resolve_model_cli_wins() -> None:
-    cfg = ScrConfig(model={"default": "x", "claude-api": "y"})
+    cfg = ScrConfig(
+        backends={
+            "claude-api": BackendDef(type=BackendType.ANTHROPIC_SDK, default_model="x"),
+        },
+    )
     assert cfg.resolve_model(backend="claude-api", cli_value="cli-pick") == "cli-pick"
 
 
 def test_resolve_model_per_backend_wins_over_default() -> None:
-    cfg = ScrConfig(model={"default": "claude-opus-4-7", "gemini-api": "gemini-3-pro"})
+    cfg = ScrConfig(
+        backends={
+            "claude-api": BackendDef(type=BackendType.ANTHROPIC_SDK, default_model="claude-opus-4-7"),
+            "gemini-api": BackendDef(type=BackendType.GOOGLE_SDK, default_model="gemini-3-pro"),
+        },
+        model_default="claude-fallback",
+    )
     assert cfg.resolve_model(backend="gemini-api", cli_value=None) == "gemini-3-pro"
     assert cfg.resolve_model(backend="claude-api", cli_value=None) == "claude-opus-4-7"
 
 
+def test_resolve_model_falls_back_to_global_default() -> None:
+    cfg = ScrConfig(
+        backends={
+            "no-model": BackendDef(type=BackendType.OPENAI_COMPAT, base_url="x"),
+        },
+        model_default="global-fallback",
+    )
+    assert cfg.resolve_model(backend="no-model", cli_value=None) == "global-fallback"
+
+
 def test_resolve_model_falls_back_to_hardcoded_default() -> None:
-    cfg = ScrConfig()
+    cfg = ScrConfig(backends={})
     assert cfg.resolve_model(backend="claude-api", cli_value=None) == "claude-opus-4-7"
 
 

@@ -104,7 +104,13 @@ def test_both_flags_equiv_to_range(repo: Path) -> None:
 
 
 def test_empty_diff_errors(repo: Path) -> None:
-    with pytest.raises(LocalDiffError, match="no diff"):
+    """EmptyDiff is a LocalDiffError subclass; old `match="no diff"`
+    callers still catch the parent class. The CLI distinguishes the
+    two so "nothing to review" exits 0 instead of crashing."""
+    from semantic_code_review.review.git import EmptyDiff
+    with pytest.raises(EmptyDiff, match="no changes to review"):
+        build_local_diff("HEAD..HEAD", repo_root=repo)
+    with pytest.raises(LocalDiffError):
         build_local_diff("HEAD..HEAD", repo_root=repo)
 
 
