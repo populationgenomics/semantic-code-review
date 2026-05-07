@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from ..augment.schemas import Hunk
+from ..augment.schemas import ParsedHunk
 
 
 RowKind = Literal["ctx", "ins", "del", "pair"]
@@ -64,7 +64,7 @@ class Row:
         }
 
 
-def build_rows(hunk: Hunk) -> list[Row]:
+def build_rows(hunk: ParsedHunk) -> list[Row]:
     rows: list[Row] = []
     old_line = hunk.old_start
     new_line = hunk.new_start

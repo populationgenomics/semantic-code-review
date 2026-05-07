@@ -36,9 +36,8 @@ as one PR; tests must pass before the next step starts.
 - **#6 is independent** but easiest to do once the augment pipeline's
   input type is settled.
 
-**Status**: #3, #2, and #1 are done. #4 is the next step on the
-augment-pipeline track. #5 follows #4; #6 is independent and can
-land alongside.
+**Status**: #3, #2, #1, and #4 are done. #5 follows #4; #6 is
+independent and can land alongside.
 
 ---
 
@@ -165,42 +164,45 @@ provider constructors.
 
 ---
 
-## Step 4 — Staged diff types (#4)
+## Step 4 — Staged diff types (#4) — DONE
 
-**Files**: `semantic_code_review/augment/schemas.py` (286),
-`semantic_code_review/augment/pipeline.py` (289),
-`semantic_code_review/format/parse.py` (417),
-`semantic_code_review/format/emit.py` (158).
+**Outcome**: composition-based stage tagging.
 
-**Goal**: stage-tagged types — `ParsedDiff` → `AnnotatedDiff`. The
-pipeline becomes a function, not a series of in-place mutations. `emit`
-takes only the annotated form.
+- `ParsedHunk`, `ParsedFile`, `ParsedDiff` carry only structural
+  fields.
+- `HunkAnnotations` (the wire-format type) and a new `FileAnnotations`
+  carry the LLM-produced payloads.
+- `AnnotatedHunk = {parsed: ParsedHunk, ann: HunkAnnotations}`;
+  `AnnotatedFile` carries flat structural fields plus
+  `ann: FileAnnotations` plus `hunks: list[AnnotatedHunk]`.
+- `AnnotatedDiff.overview: Overview | SkippedOverview` (typed sentinel,
+  no `None`).
+- `parse_augmented_diff(text) -> AnnotatedDiff` (universal parser);
+  `parse_raw_diff(text) -> ParsedDiff` (used by the pipeline; rejects
+  any non-PR-info `#scr:` directives).
+- `emit_augmented_diff` requires an `AnnotatedDiff`.
+- `apply_overview_to_diff` and `apply_hunk_annotations` are pure
+  functions returning new objects via `model_copy(update=...)`. The
+  pipeline gathers per-hunk results into a `dict[(file_idx, hunk_idx),
+  HunkAnnotations]` and folds them into a new `AnnotatedDiff` in one
+  pass.
 
-**Steps**
+**Why composition over inheritance**: an `AnnotatedHunk
+extends ParsedHunk` relationship would have been a DRY trick, not a
+real "is-a" — the pipeline isn't polymorphic over hunk-likes; it
+consumes a `ParsedHunk` and produces an `AnnotatedHunk`. Composition
+makes the layering honest at the cost of `h.parsed.header` /
+`h.ann.intent` accessors. The structural file fields stayed flat
+(`f.path`, `f.diff_git_line`) because file-level callers are many; the
+hunk-level extra hop is the bulk of the touching diff.
 
-1. Inventory every read/write of `AugmentedDiff.overview` and
-   per-hunk annotation fields. Record at which call site each becomes
-   non-None.
-2. Split the current dataclass:
-   - `ParsedDiff` — hunks present, annotations always absent.
-   - `AnnotatedDiff` — hunks plus required annotation fields. Overview
-     is optional but typed (`Overview | SkippedOverview`, not
-     `Overview | None`).
-3. Update `format/parse.py` to return `ParsedDiff`.
-4. Update `format/emit.py` to require `AnnotatedDiff` (or generalise
-   over both with an explicit `emit_parsed` / `emit_annotated` if both
-   are valid emit inputs).
-5. Rewrite `pipeline.apply_hunk_annotations` and
-   `apply_overview_to_diff` as pure functions returning a new
-   `AnnotatedDiff` (use `dataclasses.replace` per hunk). The pipeline
-   entry becomes `ParsedDiff -> AnnotatedDiff`.
-6. Update `tests/test_augment_pipeline.py` to construct typed inputs
-   instead of fabricating intermediate states by hand.
-7. Add a round-trip test: `emit(parse(x))` where `x` is a hand-written
-   AnnotatedDiff fixture, asserting the output equals the canonical form.
-
-**Done when**: no caller can pass a half-baked diff to `emit`; the
-pipeline doesn't mutate; tests don't reach into internal fields.
+**Test surface**: existing `tests/test_format_roundtrip.py`,
+`tests/test_segments.py`, `tests/test_overview_groups.py`,
+`tests/test_augment_pipeline.py`, and `tests/test_parse.py` updated to
+the new accessor pattern. New
+`test_handwritten_annotated_diff_round_trips` builds an
+`AnnotatedDiff` in code and asserts `parse(emit(x)).model_dump() ==
+x.model_dump()`.
 
 ---
 

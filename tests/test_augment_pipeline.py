@@ -144,15 +144,16 @@ async def test_augment_produces_parseable_output(tmp_path: Path) -> None:
     assert augmented_path.exists()
     assert sidecar_path.exists()
 
+    from semantic_code_review.augment.schemas import Overview
     text = augmented_path.read_text(encoding="utf-8")
     reparsed = parse_augmented_diff(text)
-    assert reparsed.overview is not None
+    assert isinstance(reparsed.overview, Overview)
     assert reparsed.overview.summary == "Bumps two constants."
     assert reparsed.files[0].path == "f.py"
-    assert reparsed.files[0].summary == "x and y bumped"
+    assert reparsed.files[0].ann.summary == "x and y bumped"
     assert len(reparsed.files[0].hunks) == 2
-    assert reparsed.files[0].hunks[0].intent.startswith("Bump x")
-    assert reparsed.files[0].hunks[1].intent.startswith("Bump y")
+    assert reparsed.files[0].hunks[0].ann.intent.startswith("Bump x")
+    assert reparsed.files[0].hunks[1].ann.intent.startswith("Bump y")
     assert canned.calls == 3  # 1 overview + 2 hunks
 
 

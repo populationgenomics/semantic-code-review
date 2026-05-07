@@ -12,30 +12,47 @@ Grammar, by zone:
 
 Within a trailer, `scr-segment-begin` ... `scr-segment-end` brackets enclose
 per-segment directives.
+
+Two entry points:
+
+- `parse_augmented_diff(text) -> AnnotatedDiff` — the universal parser.
+  Handles raw or annotated input; missing annotations are left at empty
+  defaults, with the diff-level `overview` defaulting to `SkippedOverview`.
+- `parse_raw_diff(text) -> ParsedDiff` — strict raw form. Errors if any
+  `#scr:` annotation directives are present beyond the bare PR-info
+  preamble.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterator
 
 from ..augment.schemas import (
-    AugmentedDiff,
-    FilePatch,
+    AnnotatedDiff,
+    AnnotatedFile,
+    AnnotatedHunk,
+    FileAnnotations,
     FileRole,
     FileSymbols,
     FoldDescription,
-    Hunk,
+    HunkAnnotations,
     LineNote,
     Overview,
     OverviewEdge,
     OverviewSymbol,
     PRInfo,
+    ParsedDiff,
+    ParsedFile,
+    ParsedHunk,
     Ref,
     Segment,
+    SkippedOverview,
     Smell,
+    lift_file,
+    lift_hunk,
 )
 
 
@@ -49,6 +66,14 @@ _SMELL_RE = re.compile(r'^\s*(\S+)(?:\s+"(.*)")?\s*$')
 _DIFF_GIT_RE = re.compile(r"^diff --git a/(.+?) b/(.+?)\s*$")
 
 
+# Directives that supply PRInfo. They are always allowed by `parse_raw_diff`
+# because the augment pipeline writes them onto the raw diff before the
+# annotation passes run.
+_PR_PREAMBLE_DIRECTIVES = frozenset(
+    {"scr-version", "scr-pr", "scr-base", "scr-head", "scr-model"}
+)
+
+
 class ParseError(ValueError):
     """Raised when the augmented diff is malformed."""
 
@@ -58,6 +83,17 @@ class _Directive:
     name: str
     value: str
     lineno: int  # 1-indexed original-file line for error messages
+
+
+@dataclass
+class _ParsedFileWithAnno:
+    """Raw parser output for one file: the structural ParsedFile plus the
+    raw directives observed in its header and per-hunk trailers, retained
+    in lineno order so we can either fold them into annotations or reject
+    them (parse_raw_diff)."""
+    parsed: ParsedFile
+    header_directives: list[_Directive] = field(default_factory=list)
+    hunk_directives: list[list[_Directive]] = field(default_factory=list)
 
 
 def _directives(annotation_lines: list[tuple[int, str]]) -> list[_Directive]:
@@ -143,7 +179,14 @@ def _parse_refs(value: str, lineno: int) -> list[Ref]:
     return [Ref(**r) for r in data]
 
 
-def _apply_preamble(directives: list[_Directive]) -> tuple[PRInfo, Overview | None, int]:
+@dataclass
+class _PreambleResult:
+    pr: PRInfo
+    overview: Overview | None
+    version: int
+
+
+def _apply_preamble(directives: list[_Directive]) -> _PreambleResult:
     pr_url = base_sha = head_sha = ""
     model = ""
     version = 1
@@ -168,7 +211,7 @@ def _apply_preamble(directives: list[_Directive]) -> tuple[PRInfo, Overview | No
         else:
             raise ParseError(f"line {d.lineno}: unknown preamble directive {d.name!r}")
     pr = PRInfo(pr_url=pr_url, base_sha=base_sha, head_sha=head_sha, model=model)
-    return pr, overview, version
+    return _PreambleResult(pr=pr, overview=overview, version=version)
 
 
 def _build_overview(data: dict) -> Overview:
@@ -182,43 +225,46 @@ def _build_overview(data: dict) -> Overview:
     )
 
 
-def _apply_file_header(fp: FilePatch, directives: list[_Directive]) -> None:
+def _file_annotations(directives: list[_Directive]) -> FileAnnotations:
+    ann = FileAnnotations()
     for d in directives:
         if d.name == "scr-file-summary":
-            fp.summary = d.value
+            ann.summary = d.value
         elif d.name == "scr-file-role":
-            fp.role = FileRole(d.value)
+            ann.role = FileRole(d.value)
         elif d.name == "scr-file-lang":
-            fp.lang = d.value
+            ann.lang = d.value
         elif d.name == "scr-file-symbols":
             try:
                 data = json.loads(d.value)
             except json.JSONDecodeError as e:
                 raise ParseError(f"line {d.lineno}: invalid JSON in scr-file-symbols: {e}") from e
-            fp.symbols = FileSymbols(**data)
+            ann.symbols = FileSymbols(**data)
         else:
             raise ParseError(f"line {d.lineno}: unknown file-header directive {d.name!r}")
+    return ann
 
 
-def _apply_hunk_trailer(hunk: Hunk, directives: list[_Directive]) -> None:
+def _hunk_annotations(parsed_hunk: ParsedHunk, directives: list[_Directive]) -> HunkAnnotations:
+    ann = HunkAnnotations(intent="")
     it = iter(directives)
     for d in it:
         if d.name == "scr-hunk-intent":
-            hunk.intent = d.value
+            ann.intent = d.value
         elif d.name == "scr-hunk-smell":
-            hunk.smells.append(_parse_smell(d.value, d.lineno))
+            ann.smells.append(_parse_smell(d.value, d.lineno))
         elif d.name == "scr-hunk-context":
-            hunk.context = d.value
+            ann.context = d.value
         elif d.name == "scr-hunk-refs":
-            hunk.refs = _parse_refs(d.value, d.lineno)
+            ann.refs = _parse_refs(d.value, d.lineno)
         elif d.name == "scr-hunk-confidence":
-            hunk.confidence = int(d.value)
+            ann.confidence = int(d.value)
         elif d.name == "scr-line":
-            hunk.line_notes.append(_parse_line_note(d.value, d.lineno))
+            ann.line_notes.append(_parse_line_note(d.value, d.lineno))
         elif d.name == "scr-fold":
-            hunk.fold_descriptions.append(_parse_fold(d.value, d.lineno))
+            ann.fold_descriptions.append(_parse_fold(d.value, d.lineno))
         elif d.name == "scr-segment-begin":
-            hunk.segments.append(_consume_segment(d, it, hunk))
+            ann.segments.append(_consume_segment(d, it, parsed_hunk))
         elif d.name in {"scr-segment-intent", "scr-segment-smell", "scr-segment-context",
                         "scr-segment-refs", "scr-segment-end"}:
             raise ParseError(f"line {d.lineno}: {d.name} outside of a scr-segment-begin/end block")
@@ -227,25 +273,26 @@ def _apply_hunk_trailer(hunk: Hunk, directives: list[_Directive]) -> None:
 
     # Validate segment non-overlap and ordering.
     last_end = -1
-    for s in hunk.segments:
+    for s in ann.segments:
         start, end = s.new_start, s.new_start + s.new_count - 1
         if start <= last_end:
             raise ParseError(f"segment +{start}..+{end} overlaps previous segment (ends +{last_end})")
         last_end = end
+    return ann
 
 
-def _consume_segment(begin: _Directive, it: Iterator[_Directive], hunk: Hunk) -> Segment:
+def _consume_segment(begin: _Directive, it: Iterator[_Directive], parsed_hunk: ParsedHunk) -> Segment:
     m = _SEGMENT_RANGE_RE.match(begin.value)
     if not m:
         raise ParseError(f"line {begin.lineno}: malformed segment range {begin.value!r}")
     start, end = int(m.group(1)), int(m.group(2))
     if end < start:
         raise ParseError(f"line {begin.lineno}: segment end +{end} before start +{start}")
-    hunk_new_end = hunk.new_start + hunk.new_count - 1
-    if start < hunk.new_start or end > hunk_new_end:
+    hunk_new_end = parsed_hunk.new_start + parsed_hunk.new_count - 1
+    if start < parsed_hunk.new_start or end > hunk_new_end:
         raise ParseError(
             f"line {begin.lineno}: segment +{start}..+{end} outside hunk range "
-            f"+{hunk.new_start}..+{hunk_new_end}"
+            f"+{parsed_hunk.new_start}..+{hunk_new_end}"
         )
     seg = Segment(new_start=start, new_count=end - start + 1)
     for d in it:
@@ -277,9 +324,15 @@ def _parse_hunk_header(line: str, lineno: int) -> tuple[int, int, int, int]:
     return os, oc, ns, nc
 
 
-def parse_augmented_diff(text: str) -> AugmentedDiff:
+@dataclass
+class _RawParse:
+    """Output of the line-level scanner, before annotations are interpreted."""
+    preamble: _PreambleResult
+    files: list[_ParsedFileWithAnno]
+
+
+def _scan(text: str) -> _RawParse:
     lines = text.split("\n")
-    # Strip a trailing empty string if text ended with newline, for convenience.
     if lines and lines[-1] == "":
         lines = lines[:-1]
 
@@ -298,32 +351,30 @@ def parse_augmented_diff(text: str) -> AugmentedDiff:
             raise ParseError(f"line {i + 1}: unexpected content before first diff: {line!r}")
         i += 1
 
-    pr, overview, _version = _apply_preamble(_directives(pre_annos))
+    preamble = _apply_preamble(_directives(pre_annos))
 
     # --- Files --------------------------------------------------------------
-    files: list[FilePatch] = []
+    files: list[_ParsedFileWithAnno] = []
     while i < n:
         if not lines[i].startswith("diff --git "):
-            # After a hunk body, trailing blank lines or unexpected noise — skip blanks.
             if lines[i].strip() == "":
                 i += 1
                 continue
             raise ParseError(f"line {i + 1}: expected 'diff --git', got {lines[i]!r}")
+        entry, i = _scan_file(lines, i)
+        files.append(entry)
 
-        fp, i = _parse_file(lines, i)
-        files.append(fp)
-
-    return AugmentedDiff(version=1, pr=pr, overview=overview, files=files)
+    return _RawParse(preamble=preamble, files=files)
 
 
-def _parse_file(lines: list[str], i: int) -> tuple[FilePatch, int]:
+def _scan_file(lines: list[str], i: int) -> tuple[_ParsedFileWithAnno, int]:
     n = len(lines)
     diff_git = lines[i]
     m = _DIFF_GIT_RE.match(diff_git)
     if not m:
         raise ParseError(f"line {i + 1}: malformed 'diff --git' line: {diff_git!r}")
     old_path, new_path = m.group(1), m.group(2)
-    fp = FilePatch(
+    parsed = ParsedFile(
         path=new_path,
         old_path=old_path if old_path != new_path else None,
         diff_git_line=diff_git,
@@ -340,30 +391,34 @@ def _parse_file(lines: list[str], i: int) -> tuple[FilePatch, int]:
         if _is_annotation(line):
             header_annos.append((i + 1, line))
         elif line.startswith("--- "):
-            fp.old_file_marker = line
+            parsed.old_file_marker = line
         elif line.startswith("+++ "):
-            fp.new_file_marker = line
+            parsed.new_file_marker = line
         else:
-            fp.extra_header_lines.append(line)
+            parsed.extra_header_lines.append(line)
         i += 1
 
-    _apply_file_header(fp, _directives(header_annos))
+    header_directives = _directives(header_annos)
 
+    hunk_directives: list[list[_Directive]] = []
     while i < n and lines[i].startswith("@@ "):
-        hunk, i = _parse_hunk(lines, i)
-        fp.hunks.append(hunk)
+        ph, ds, i = _scan_hunk(lines, i)
+        parsed.hunks.append(ph)
+        hunk_directives.append(ds)
 
-    return fp, i
+    return _ParsedFileWithAnno(
+        parsed=parsed,
+        header_directives=header_directives,
+        hunk_directives=hunk_directives,
+    ), i
 
 
-def _parse_hunk(lines: list[str], i: int) -> tuple[Hunk, int]:
+def _scan_hunk(lines: list[str], i: int) -> tuple[ParsedHunk, list[_Directive], int]:
     n = len(lines)
     header = lines[i]
     os, oc, ns, nc = _parse_hunk_header(header, i + 1)
-    hunk = Hunk(header=header, old_start=os, old_count=oc, new_start=ns, new_count=nc)
     i += 1
 
-    # Consume body lines until a transition trigger.
     body: list[str] = []
     old_consumed = 0
     new_consumed = 0
@@ -396,9 +451,13 @@ def _parse_hunk(lines: list[str], i: int) -> tuple[Hunk, int]:
             f"(got old={old_consumed}, new={new_consumed}; expected old={oc}, new={nc})"
         )
 
-    hunk.body = "\n".join(body) + ("\n" if body else "")
+    parsed_hunk = ParsedHunk(
+        header=header,
+        old_start=os, old_count=oc,
+        new_start=ns, new_count=nc,
+        body="\n".join(body) + ("\n" if body else ""),
+    )
 
-    # Trailer: annotations until next @@ / diff --git / EOF.
     trailer_annos: list[tuple[int, str]] = []
     while i < n:
         line = lines[i]
@@ -413,5 +472,59 @@ def _parse_hunk(lines: list[str], i: int) -> tuple[Hunk, int]:
             continue
         raise ParseError(f"line {i + 1}: unexpected content in hunk trailer: {line!r}")
 
-    _apply_hunk_trailer(hunk, _directives(trailer_annos))
-    return hunk, i
+    return parsed_hunk, _directives(trailer_annos), i
+
+
+def parse_augmented_diff(text: str) -> AnnotatedDiff:
+    """Parse augmented or raw diff text into an `AnnotatedDiff`.
+
+    Missing annotations are left at empty defaults; if the input has no
+    `scr-overview` directive, `overview` is `SkippedOverview()`.
+    """
+    raw = _scan(text)
+
+    files: list[AnnotatedFile] = []
+    for entry in raw.files:
+        file_ann = _file_annotations(entry.header_directives)
+        hunks = [
+            AnnotatedHunk(parsed=ph, ann=_hunk_annotations(ph, ds))
+            for ph, ds in zip(entry.parsed.hunks, entry.hunk_directives, strict=True)
+        ]
+        files.append(lift_file(entry.parsed, ann=file_ann, hunks=hunks))
+
+    overview = raw.preamble.overview if raw.preamble.overview is not None else SkippedOverview()
+    return AnnotatedDiff(
+        version=raw.preamble.version,
+        pr=raw.preamble.pr,
+        overview=overview,
+        files=files,
+    )
+
+
+def parse_raw_diff(text: str) -> ParsedDiff:
+    """Parse a raw git diff into a `ParsedDiff`.
+
+    The PR-info preamble (`scr-pr` / `scr-base` / `scr-head` / `scr-version`
+    / `scr-model`) is allowed and consumed because the augment pipeline
+    writes it onto the raw diff before the annotation passes run. Any
+    other `#scr:` directive is rejected — call `parse_augmented_diff`
+    for inputs carrying annotations.
+    """
+    raw = _scan(text)
+    if raw.preamble.overview is not None:
+        raise ParseError("parse_raw_diff: scr-overview directive present (use parse_augmented_diff)")
+    for entry in raw.files:
+        for d in entry.header_directives:
+            raise ParseError(
+                f"line {d.lineno}: unexpected file-level annotation {d.name!r} in raw diff"
+            )
+        for hunk_dirs in entry.hunk_directives:
+            for d in hunk_dirs:
+                raise ParseError(
+                    f"line {d.lineno}: unexpected hunk-level annotation {d.name!r} in raw diff"
+                )
+    return ParsedDiff(
+        version=raw.preamble.version,
+        pr=raw.preamble.pr,
+        files=[entry.parsed for entry in raw.files],
+    )

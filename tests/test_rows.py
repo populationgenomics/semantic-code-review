@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from semantic_code_review.augment.schemas import Hunk
+from semantic_code_review.augment.schemas import ParsedHunk
 from semantic_code_review.viewer.rows import build_rows, compute_fold_regions
 
 
-def _hunk(body: str, *, old_start: int = 1, old_count: int = 1, new_start: int = 1, new_count: int = 1) -> Hunk:
-    return Hunk(
+def _hunk(body: str, *, old_start: int = 1, old_count: int = 1, new_start: int = 1, new_count: int = 1) -> ParsedHunk:
+    return ParsedHunk(
         header=f"@@ -{old_start},{old_count} +{new_start},{new_count} @@",
         old_start=old_start, old_count=old_count,
         new_start=new_start, new_count=new_count,
