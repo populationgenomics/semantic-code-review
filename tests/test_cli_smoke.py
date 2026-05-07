@@ -48,6 +48,12 @@ def test_config_path_prints_xdg_path(tmp_path: Path, monkeypatch) -> None:
 def test_config_show_reports_absent_user_config(tmp_path: Path, monkeypatch) -> None:
     """When no config files exist, `scr config show` still runs cleanly."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    # Reload _CONFIG so the XDG monkeypatch takes effect — the module-
+    # level singleton is otherwise bound to whatever the developer has
+    # in ~/.config/scr/config.toml.
+    from semantic_code_review import cli as cli_module
+    from semantic_code_review.config import ScrConfig
+    monkeypatch.setattr(cli_module, "_CONFIG", ScrConfig.load())
     runner = CliRunner()
     result = runner.invoke(app, ["config", "show"])
     assert result.exit_code == 0, result.stdout
