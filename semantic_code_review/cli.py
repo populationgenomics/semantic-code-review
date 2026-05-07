@@ -91,10 +91,14 @@ _CONFIG.apply_env()
 
 
 def _configure_logging(verbose: bool) -> None:
-    level = logging.DEBUG if verbose else logging.INFO
+    # Default is WARNING — quiet by default, with `--verbose` switching
+    # to INFO so per-request httpx lines and per-hunk pipeline progress
+    # are visible. (Previous default of INFO produced ~50 stderr lines
+    # per medium PR; users couldn't see their own output through it.)
+    level = logging.INFO if verbose else logging.WARNING
     # force=True so we take over even if a library (anthropic SDK, typer,
     # etc.) already attached a root handler at WARNING — otherwise our
-    # INFO+ progress logs would be silently dropped.
+    # progress logs would be silently dropped.
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
