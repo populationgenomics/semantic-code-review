@@ -15,6 +15,7 @@ import logging
 import sys
 import time
 import webbrowser
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -24,7 +25,7 @@ from ..augment.prompts import PROMPT_VERSION
 from ..cache.store import CacheStore
 from ..format.parse import parse_augmented_diff
 from ..paths import default_runs_root as _default_runs_root
-from ..viewer.build_json import build_viewer_json
+from ..viewer.build_json import build_pending_viewer_json, build_viewer_json
 from ..viewer.render_html import render_run_dir
 from .comments import CommentStore, format_markdown
 from .git import LocalDiff, build_local_diff
@@ -69,22 +70,23 @@ def run_review(opts: ReviewOptions) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     _populate_run_dir(run_dir, diff, spec_md=opts.spec_markdown)
 
+    augment_task: Callable[[Path], Awaitable[None]] | None = None
     if opts.augment:
         from ..augment.pipeline import augment_run_dir  # lazy: anthropic SDK
 
         cache = None if opts.no_cache else CacheStore(
             root=opts.cache_dir, prompt_version=PROMPT_VERSION
         )
-        asyncio.run(
-            augment_run_dir(
-                run_dir,
+
+        async def augment_task(rd: Path) -> None:  # noqa: F811 — closes over opts
+            await augment_run_dir(
+                rd,
                 model=opts.model,
                 concurrency=opts.concurrency,
                 cache=cache,
                 client=opts.client,
                 show_progress=opts.show_progress,
             )
-        )
     else:
         # When augment is skipped, copy raw.diff to augmented.diff so render
         # has something to parse. It'll have no annotations.
@@ -95,6 +97,7 @@ def run_review(opts: ReviewOptions) -> int:
 
     result = serve_review(
         run_dir,
+        augment=augment_task,
         port=opts.port,
         timeout=opts.timeout,
         open_browser=opts.open_browser,
@@ -118,6 +121,7 @@ class ServeResult:
 def serve_review(
     run_dir: "Path",
     *,
+    augment: Callable[[Path], Awaitable[None]] | None = None,
     port: int = 0,
     timeout: int = 3600,
     open_browser: bool = True,
@@ -127,13 +131,23 @@ def serve_review(
     they left.
 
     Both `cli.review` (local diff) and `cli.pr` (GitHub PR) call this
-    with a run dir whose `augmented.diff`, `meta.json`, and worktrees
-    are already in place. The function is intentionally diff-source-
-    agnostic: it doesn't know whether the run dir came from
-    `build_local_diff` or `fetch_pr`.
+    with a run dir whose `meta.json`, `raw.diff`, and worktrees are
+    already in place. If ``augment`` is supplied, the server starts
+    immediately with a pending viewer (file/hunk structure visible,
+    no annotations yet); the augmentation coroutine then runs while
+    the page is live, and a ``reload`` SSE event flushes the completed
+    state to any connected clients. If ``augment`` is None, the run
+    dir is expected to already contain ``augmented.diff`` (the caller
+    skipped augmentation upstream).
     """
     html_path = run_dir / "review.html"
-    viewer_json = _load_viewer_json(run_dir)
+    if augment is not None:
+        # Pre-augment: render the file/hunk skeleton so the page is
+        # responsive while the LLM pass runs. The viewer JS sees
+        # `pending: true` and shows "analysing…" placeholders.
+        viewer_json = build_pending_viewer_json(run_dir)
+    else:
+        viewer_json = _load_viewer_json(run_dir)
     srv = ReviewServer(
         run_dir=run_dir,
         html_path=html_path,
@@ -142,7 +156,11 @@ def serve_review(
     )
     srv.start()
     try:
-        render_run_dir(run_dir, html_path, session_endpoint=srv.url())
+        render_run_dir(
+            run_dir, html_path,
+            session_endpoint=srv.url(),
+            override_data=viewer_json if augment is not None else None,
+        )
         log.info("review server at %s", srv.url())
         sys.stderr.write(f"scr review: listening on {srv.url()}\n")
         sys.stderr.flush()
@@ -151,6 +169,31 @@ def serve_review(
                 webbrowser.open(srv.url())
             except Exception as e:  # noqa: BLE001
                 log.warning("could not open browser: %s", e)
+
+        if augment is not None:
+            # Run augmentation while the server is live. If the pass
+            # writes augmented.diff (the normal path, even with some
+            # failed hunks), re-render and flush a `reload`. If it
+            # blew up before producing anything on disk, leave the
+            # page on the pending view — reloading into an empty
+            # viewer JSON is worse than honest "still analysing".
+            augment_error: BaseException | None = None
+            try:
+                asyncio.run(augment(run_dir))
+            except BaseException as e:  # noqa: BLE001
+                augment_error = e
+                log.exception("augmentation failed; page stays on pending view")
+                sys.stderr.write(f"scr review: augment failed: {e}\n")
+            if (run_dir / "augmented.diff").exists():
+                final_json = _load_viewer_json(run_dir)
+                render_run_dir(run_dir, html_path, session_endpoint=srv.url())
+                srv.update_viewer_json(final_json)
+                srv.publish("reload", {"reason": "augment-complete"})
+            if augment_error is not None and not isinstance(augment_error, Exception):
+                # KeyboardInterrupt / SystemExit shouldn't be swallowed —
+                # re-raise after the page has its latest state pushed.
+                raise augment_error
+
         clean = srv.wait_until_done(timeout=timeout)
     finally:
         srv.stop()

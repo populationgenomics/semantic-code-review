@@ -9,12 +9,15 @@ browser.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 from ..augment.schemas import (
-    SMELL_CATALOGUE, AnnotatedDiff, AnnotatedFile, Overview,
+    SMELL_CATALOGUE, AnnotatedDiff, AnnotatedFile, FileAnnotations, Overview,
+    PRInfo, lift_file,
 )
+from ..format.parse import parse_raw_diff
 from .hunk_layout import build_hunk_viewer_block
 
 
@@ -41,6 +44,33 @@ def build_viewer_json(
         "files": [_file_block(f, i, head_dir) for i, f in enumerate(diff.files)],
         "groups": _group_blocks(diff),
     }
+
+
+def build_pending_viewer_json(run_dir: Path) -> dict[str, Any]:
+    """Build viewer JSON from raw.diff alone, before augmentation runs.
+
+    All annotations are empty; the page renders the file/hunk structure
+    with the top-level `pending` flag set so the viewer JS shows
+    "analysing…" placeholders in each hunk's intent slot. Replaced by a
+    full re-render when the augmentation pass completes.
+    """
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    parsed = parse_raw_diff((run_dir / "raw.diff").read_text(encoding="utf-8"))
+    pr = PRInfo(
+        pr_url=meta.get("url", ""),
+        base_sha=meta.get("baseRefOid", ""),
+        head_sha=meta.get("headRefOid", ""),
+        model="",
+    )
+    diff = AnnotatedDiff(
+        version=parsed.version,
+        pr=pr,
+        files=[lift_file(pf, ann=FileAnnotations()) for pf in parsed.files],
+    )
+    head_dir = run_dir / "head"
+    data = build_viewer_json(diff, meta, head_dir=head_dir if head_dir.exists() else None)
+    data["pending"] = True
+    return data
 
 
 def _group_blocks(diff: AnnotatedDiff) -> list[dict[str, Any]]:

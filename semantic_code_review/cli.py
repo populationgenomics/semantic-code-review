@@ -393,7 +393,6 @@ def pr(
 ) -> None:
     """Review a GitHub PR; round-trip reviewer comments back as a single review."""
     _configure_logging(verbose)
-    import asyncio
     import json as _json
     from .augment.prompts import PROMPT_VERSION
     from .cache.store import CacheStore
@@ -452,20 +451,21 @@ def pr(
         raise typer.Exit(code=2)
     run_dir = fetch_result.run_dir
 
+    augment_task = None
     if augment:
         from .augment.pipeline import augment_run_dir
 
         cache = None if no_cache else CacheStore(root=cache_dir, prompt_version=PROMPT_VERSION)
-        asyncio.run(
-            augment_run_dir(
-                run_dir,
+
+        async def augment_task(rd):  # noqa: F811 — closes over local config
+            await augment_run_dir(
+                rd,
                 model=model,
                 concurrency=concurrency,
                 cache=cache,
                 client=client,
                 show_progress=not verbose,
             )
-        )
     else:
         # Mirror cli.review's behaviour: copy raw → augmented so render has
         # something to parse when augment is skipped.
@@ -476,6 +476,7 @@ def pr(
 
     result = serve_review(
         run_dir,
+        augment=augment_task,
         port=port,
         timeout=timeout,
         open_browser=not no_open,

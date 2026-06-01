@@ -9,6 +9,15 @@
   const DATA = JSON.parse(document.getElementById("scr-data").textContent);
   const SMELLS = DATA.smells_catalogue || {};
 
+  // When the server starts before augmentation, DATA carries the file/
+  // hunk skeleton with empty annotations and a `pending: true` flag.
+  // The viewer uses this to distinguish "annotation hasn't arrived yet"
+  // (show "analysing…") from "annotation failed" (show the re-run hint).
+  // A `reload` SSE event arrives once augmentation completes; the page
+  // reloads and the next render reads completed annotations from the
+  // freshly-emitted HTML.
+  const PENDING = !!DATA.pending;
+
   const SESSION_ENDPOINT = (() => {
     const m = document.querySelector('meta[name="scr-session-endpoint"]');
     return m ? m.getAttribute("content") : "";
@@ -432,7 +441,14 @@
     const hdr = el("div", "hunk-header");
     hdr.appendChild(chev(folded));
     hdr.appendChild(el("span", "hunk-pos", h.header));
-    const intent = el("span", h.intent ? "hunk-intent" : "hunk-intent empty", h.intent || "(no intent — may need re-run)");
+    let intent;
+    if (h.intent) {
+      intent = el("span", "hunk-intent", h.intent);
+    } else if (PENDING) {
+      intent = el("span", "hunk-intent pending", "analysing…");
+    } else {
+      intent = el("span", "hunk-intent empty", "(no intent — may need re-run)");
+    }
     hdr.appendChild(intent);
     const meta = el("span", "hunk-meta");
     for (const sm of h.smells || []) meta.appendChild(smellPill(sm));
@@ -1072,6 +1088,28 @@
     restoreHash();
     render();
     commentStorageLoad();
+    installSessionEvents();
+  }
+
+  // Subscribe to the server's SSE channel. Today the only event the
+  // viewer reacts to is `reload`, fired once augmentation completes;
+  // the page reloads and picks up the freshly-rendered HTML with full
+  // annotations baked in. Slice 2 will add per-hunk patching events
+  // that mutate the DOM in place instead of triggering a reload.
+  function installSessionEvents() {
+    if (!SESSION_ENDPOINT || typeof EventSource === "undefined") return;
+    let es;
+    try {
+      es = new EventSource(SESSION_ENDPOINT + "/events");
+    } catch (_) {
+      return;
+    }
+    es.addEventListener("reload", () => {
+      // Close the source first so the impending navigation doesn't
+      // leave a dangling connection blocking process shutdown.
+      try { es.close(); } catch (_) { /* ignore */ }
+      window.location.reload();
+    });
   }
 
   if (document.readyState === "loading") {

@@ -226,6 +226,14 @@ body {
   align-self: start;
 }
 .hunk-intent.empty { color: var(--fg-dim); font-style: italic; }
+.hunk-intent.pending {
+  color: var(--fg-dim); font-style: italic;
+  animation: scr-pulse 1.4s ease-in-out infinite;
+}
+@keyframes scr-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
 .hunk-meta { grid-area: meta; display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
 .confidence {
   font-size: 11px; color: var(--fg-muted); padding: 1px 6px; border-radius: 10px;

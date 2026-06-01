@@ -2,15 +2,21 @@
 
 Spawned by ``scr review``; dies when the viewer POSTs /exit or when the
 idle timeout elapses. No external deps — stdlib ``http.server``.
+
+The server also publishes Server-Sent Events on ``GET /events`` so the
+viewer can react to back-channel updates (today: the augmentation pass
+completing). Each connected client gets a blocking queue; ``publish()``
+fans events out and never blocks the caller.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import queue
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -21,6 +27,12 @@ from .comments import CommentStore
 log = logging.getLogger(__name__)
 
 
+# Sentinel pushed onto subscriber queues to ask the handler thread to
+# release the connection at shutdown (so the daemon thread doesn't pin
+# the process). Distinct from any real event payload.
+_CLOSE = object()
+
+
 @dataclass
 class ServerContext:
     run_dir: Path
@@ -29,6 +41,12 @@ class ServerContext:
     viewer_json: dict[str, Any]
     done_event: threading.Event
     last_activity: float = 0.0
+    # SSE fan-out. Each connected /events client gets a queue;
+    # publish() pushes the same payload onto all queues. Mutated only
+    # under ``subs_lock`` because handler threads add/remove and the
+    # publishing thread broadcasts.
+    subscribers: list[queue.Queue] = field(default_factory=list)
+    subs_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -89,7 +107,55 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/comments":
             self._json(200, {"comments": [c.model_dump() for c in self.ctx.store.all()]})
             return
+        if path == "/events":
+            self._stream_events()
+            return
         self._json(404, {"error": "not found"})
+
+    def _stream_events(self) -> None:
+        """Serve the SSE channel until the client disconnects or the
+        server signals shutdown via the close sentinel."""
+        q: queue.Queue = queue.Queue()
+        with self.ctx.subs_lock:
+            self.ctx.subscribers.append(q)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "keep-alive")
+            # Disable proxy buffering in case anyone front-proxies this
+            # localhost server (rare but cheap).
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            # Initial comment line tells the browser the connection is
+            # open before any real event arrives; some EventSource
+            # implementations wait for the first byte before firing
+            # ``open``.
+            try:
+                self.wfile.write(b": ok\n\n")
+                self.wfile.flush()
+            except OSError:
+                return
+            while True:
+                item = q.get()
+                if item is _CLOSE:
+                    return
+                event_type, payload = item
+                body = json.dumps(payload, ensure_ascii=False)
+                frame = f"event: {event_type}\ndata: {body}\n\n".encode("utf-8")
+                try:
+                    self.wfile.write(frame)
+                    self.wfile.flush()
+                except OSError:
+                    # Peer disconnected. Just return; the finally block
+                    # unregisters this subscriber.
+                    return
+        finally:
+            with self.ctx.subs_lock:
+                try:
+                    self.ctx.subscribers.remove(q)
+                except ValueError:
+                    pass
 
     def do_POST(self) -> None:  # noqa: N802
         self._touch()
@@ -185,6 +251,29 @@ class ReviewServer:
     def url(self) -> str:
         return f"http://{self._host}:{self._port}"
 
+    def publish(self, event_type: str, payload: dict[str, Any]) -> None:
+        """Broadcast an SSE event to every connected /events client.
+
+        Caller-thread-safe and non-blocking — each subscriber has its
+        own queue. Disconnected clients drain themselves at the
+        handler-thread side; the snapshot here is just to avoid holding
+        the lock while putting onto queues.
+        """
+        with self.ctx.subs_lock:
+            subs = list(self.ctx.subscribers)
+        item = (event_type, payload)
+        for q in subs:
+            q.put(item)
+
+    def update_viewer_json(self, viewer_json: dict[str, Any]) -> None:
+        """Replace the JSON returned by ``GET /data.json``.
+
+        Used after the augmentation pass completes so any late
+        ``data.json`` fetch (a tab opened post-augment, a manual reload)
+        sees the full state.
+        """
+        self.ctx.viewer_json = viewer_json
+
     def wait_until_done(
         self,
         *,
@@ -205,6 +294,14 @@ class ReviewServer:
         return True
 
     def stop(self) -> None:
+        # Wake any SSE handler threads parked on their queue so they
+        # return out of ``_stream_events`` before we tear down the
+        # socket — otherwise ``server_close`` can race the still-open
+        # connections and the process pins on the daemon threads.
+        with self.ctx.subs_lock:
+            subs = list(self.ctx.subscribers)
+        for q in subs:
+            q.put(_CLOSE)
         if self._httpd is not None:
             self._httpd.shutdown()
             self._httpd.server_close()

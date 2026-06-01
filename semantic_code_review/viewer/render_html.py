@@ -54,16 +54,26 @@ def render_run_dir(
     out_path: Path,
     *,
     session_endpoint: str | None = None,
+    override_data: dict[str, Any] | None = None,
 ) -> Path:
-    meta_path = run_dir / "meta.json"
-    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
-    sidecar = run_dir / "augmented.scr.json"
-    if sidecar.exists():
-        diff = load_sidecar(sidecar)
+    """Render the viewer HTML for a run directory.
+
+    Normally derives the viewer JSON from the run dir's sidecar or
+    augmented.diff. ``override_data`` short-circuits that — used during
+    the pre-augment "pending" render where neither file exists yet.
+    """
+    if override_data is not None:
+        data = override_data
     else:
-        diff = parse_augmented_diff((run_dir / "augmented.diff").read_text(encoding="utf-8"))
-    head_dir = run_dir / "head"
-    data = build_viewer_json(diff, meta, head_dir=head_dir if head_dir.exists() else None)
+        meta_path = run_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+        sidecar = run_dir / "augmented.scr.json"
+        if sidecar.exists():
+            diff = load_sidecar(sidecar)
+        else:
+            diff = parse_augmented_diff((run_dir / "augmented.diff").read_text(encoding="utf-8"))
+        head_dir = run_dir / "head"
+        data = build_viewer_json(diff, meta, head_dir=head_dir if head_dir.exists() else None)
     html = render_html(data, session_endpoint=session_endpoint)
     out_path.write_text(html, encoding="utf-8")
     return out_path

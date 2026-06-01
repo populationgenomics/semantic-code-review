@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from semantic_code_review.format.parse import parse_augmented_diff
-from semantic_code_review.viewer.build_json import build_viewer_json
+from semantic_code_review.viewer.build_json import (
+    build_pending_viewer_json, build_viewer_json,
+)
 from semantic_code_review.viewer.render_html import render_html
 
 
@@ -93,3 +96,48 @@ def test_render_html_self_contained_contains_expected_text() -> None:
     assert "Pagination is introduced" in html
     assert "paginate() helper" in html
     assert "string-sql" in html
+
+
+_RAW_DIFF = """diff --git a/foo.py b/foo.py
+index 0123456..89abcde 100644
+--- a/foo.py
++++ b/foo.py
+@@ -1,2 +1,2 @@
+ def foo():
+-    return 1
++    return 2
+"""
+
+
+def test_build_pending_viewer_json_emits_skeleton_with_pending_flag(tmp_path: Path) -> None:
+    """Pre-augment JSON carries file/hunk structure but no annotations
+    and is tagged `pending: true` so the viewer JS shows a spinner
+    placeholder instead of the failure copy."""
+    (tmp_path / "raw.diff").write_text(_RAW_DIFF, encoding="utf-8")
+    (tmp_path / "meta.json").write_text(json.dumps({
+        "title": "Bump return value",
+        "author": {"login": "tester"},
+        "url": "",
+        "baseRefOid": "aaa",
+        "headRefOid": "bbb",
+    }), encoding="utf-8")
+
+    data = build_pending_viewer_json(tmp_path)
+
+    assert data["pending"] is True
+    assert data["pr"]["title"] == "Bump return value"
+    assert data["pr"]["base_sha"] == "aaa"
+    assert data["pr"]["head_sha"] == "bbb"
+    # Structure is present even though annotations are empty.
+    assert len(data["files"]) == 1
+    f = data["files"][0]
+    assert f["path"] == "foo.py"
+    assert f["adds"] == 1 and f["dels"] == 1
+    assert len(f["hunks"]) == 1
+    h = f["hunks"][0]
+    assert h["id"] == "H0_0"
+    assert h["intent"] == ""
+    assert h["smells"] == []
+    # No overview yet → no themes / groups.
+    assert data["pr"]["themes"] == []
+    assert data["groups"] == []
