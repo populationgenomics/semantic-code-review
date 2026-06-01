@@ -9,40 +9,12 @@
 // Compiled by tsc to `comments.js`. Concatenated into the rendered
 // HTML by `render_html.py`; viewer.js calls into window.ScrReviewerComments.
 
-// `module: "none"` puts every top-level declaration in the shared
-// global namespace, so an IIFE here keeps this module's internals
-// from colliding with the other Scr* modules. Only the final
-// window.ScrComments registration escapes.
-
-(() => {
+import { Annotations, type AnnotationHandle } from "./annotations";
 
 // --- State ---------------------------------------------------------------
 
 let _lsKey = "scr-comments:local";
 const _comments: Record<string, ReviewerComment> = Object.create(null);
-
-interface AnnotationHandleLike {
-  element: HTMLElement;
-  placeholder: HTMLElement | null;
-  resize(): void;
-  remove(): void;
-}
-
-interface AnnotationsFacade {
-  attach(opts: {
-    anchor: HTMLElement;
-    shadowAnchor?: HTMLElement | null;
-    variant: string;
-    content: Node | string;
-    onInsert?: (el: HTMLElement) => void;
-  }): AnnotationHandleLike;
-  detach(row: HTMLElement): void;
-  reflow(anchor: HTMLElement): void;
-}
-
-function _annotations(): AnnotationsFacade {
-  return (window as unknown as { ScrAnnotations: AnnotationsFacade }).ScrAnnotations;
-}
 
 function _sessionEndpoint(): string {
   if (typeof document === "undefined") return "";
@@ -208,7 +180,7 @@ function _openEditor({ rowEl, side, line, file, existing }: EditorOpts): void {
   bar.appendChild(cancel);
   bodyWrap.appendChild(bar);
 
-  const handle = _annotations().attach({
+  const handle = Annotations.attach({
     anchor: rowEl,
     shadowAnchor: (rowEl as { _scrPair?: HTMLElement | null })._scrPair || null,
     variant: "comment",
@@ -256,7 +228,7 @@ function _openEditor({ rowEl, side, line, file, existing }: EditorOpts): void {
   });
 }
 
-function _buildReviewerCommentRow(comment: ReviewerComment, anchorRowEl: HTMLElement): AnnotationHandleLike {
+function _buildReviewerCommentRow(comment: ReviewerComment, anchorRowEl: HTMLElement): AnnotationHandle {
   const bodyWrap = _el("div", "comment-display-body");
   const body = _el("div", "comment-body");
   body.textContent = comment.body;
@@ -268,7 +240,7 @@ function _buildReviewerCommentRow(comment: ReviewerComment, anchorRowEl: HTMLEle
   bar.appendChild(del);
   bodyWrap.appendChild(bar);
 
-  const handle = _annotations().attach({
+  const handle = Annotations.attach({
     anchor: anchorRowEl,
     shadowAnchor: (anchorRowEl as { _scrPair?: HTMLElement | null })._scrPair || null,
     variant: "comment",
@@ -307,7 +279,7 @@ function _refreshForAnchor(anchorRowEl: HTMLElement, anchor: Anchor): void {
   // Any LLM annotations (line_notes, fold summaries) that also
   // anchor at this row now sit further from it — reflow re-measures
   // their arrows to stretch past the newly-inserted comments.
-  _annotations().reflow(anchorRowEl);
+  Annotations.reflow(anchorRowEl);
 }
 
 function _removeReviewerCommentRowsAfter(anchorRowEl: HTMLElement): void {
@@ -321,18 +293,12 @@ function _removeReviewerCommentRowsAfter(anchorRowEl: HTMLElement): void {
       && (n as HTMLElement).dataset
       && (n as HTMLElement).dataset.commentId;
     if (!isReviewerCommentRow) break;
-    _annotations().detach(n as HTMLElement);
+    Annotations.detach(n as HTMLElement);
     n = next;
   }
 }
 
-const Comments = {
+export const Comments = {
   init,
   renderAll,
 };
-
-if (typeof window !== "undefined") {
-  (window as unknown as { ScrComments: typeof Comments }).ScrComments = Comments;
-}
-
-})();

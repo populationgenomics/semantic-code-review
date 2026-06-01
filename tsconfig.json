@@ -1,7 +1,8 @@
 {
   "compilerOptions": {
     "target": "es2020",
-    "module": "none",
+    "module": "esnext",
+    "moduleResolution": "bundler",
     "lib": ["es2020", "dom", "dom.iterable"],
     "types": [],
     "strict": true,
@@ -15,9 +16,8 @@
     "declaration": false,
     "sourceMap": false,
     "removeComments": false,
-    "noEmitOnError": true,
-    "outDir": "semantic_code_review/viewer/assets",
-    "rootDir": "semantic_code_review/viewer/assets"
+    "noEmit": true,
+    "isolatedModules": true
   },
   "include": ["semantic_code_review/viewer/assets/**/*.ts"],
   "exclude": ["node_modules", "tests"]

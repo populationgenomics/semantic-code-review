@@ -4,93 +4,20 @@
 // together in the right order, and handles the few session-level
 // pieces that don't naturally belong to any single module: the Done
 // button, SSE → patch dispatch, and the per-event mutators that
-// update DATA before delegating to the right window.ScrX module.
-//
-// Most of the actual work lives in TS modules:
-//   annotations.ts → window.ScrAnnotations (rows + arrows)
-//   progress.ts    → window.ScrProgress    (header strip)
-//   sse.ts         → window.ScrSse         (EventSource dispatch)
-//   sidebar.ts     → window.ScrSidebar     (themes + files axes)
-//   folds.ts       → window.ScrFolds       (file-level fold detection)
-//   comments.ts    → window.ScrComments    (reviewer comments)
-//   render.ts      → window.ScrRender      (renderers + fold state)
+// update DATA before delegating to the right module.
 
-// `module: "none"` — the IIFE keeps this module's private helpers
-// (applyOverviewPatch, applyHunkPatch, …) from colliding with the
-// other Scr* modules at runtime.
+import { Annotations } from "./annotations";
+import { Comments } from "./comments";
+import { Folds } from "./folds";
+import { Progress } from "./progress";
+import { Render } from "./render";
+import { Sidebar } from "./sidebar";
+import { Sse } from "./sse";
 
-(() => {
-
-interface ScrAnnotationsFacade {
-  attach(opts: {
-    anchor: HTMLElement;
-    shadowAnchor?: HTMLElement | null;
-    variant: string;
-    content: Node | string;
-    onInsert?: (el: HTMLElement) => void;
-  }): unknown;
-  detach(row: HTMLElement): void;
-  reflow(anchor: HTMLElement): void;
-  reflowAll(): void;
-  watchViewport(): void;
-}
-
-interface ScrProgressFacade {
-  init(data: ViewerData): void;
-  setHunkState(hunkId: string, state: "queued" | "running" | "ok" | "failed"): void;
-  setOverviewState(state: "pending" | "running" | "ok" | "failed"): void;
-  getHunkState(hunkId: string): string | undefined;
-  finalise(): void;
-}
-
-interface ScrSidebarFacade {
-  init(data: ViewerData): void;
-  render(): void;
-  refreshThemes(groups: GroupBlock[]): void;
-  rebuildFilesAxis(): void;
-  setActivePill(pill: { axis: string; id: string } | null): void;
-  applyFilter(): void;
-}
-
-interface ScrFoldsFacade {
-  attachFileFolds(fileEl: HTMLElement, file: FileBlock): void;
-}
-
-interface ScrCommentsFacade {
-  init(data: ViewerData): void;
-  renderAll(): void;
-}
-
-interface ScrRenderFacade {
-  init(data: ViewerData): void;
-  render(): void;
-  renderHunkReplace(file: FileBlock, hunkIdx: number): void;
-  repaintHunkHeader(hunkId: string): void;
-  clearRenderedDiffCache(hunkId: string): void;
-}
-
-interface ScrSseFacade {
-  connect(endpoint: string, handlers: {
-    overviewStart?: () => void;
-    overviewFailed?: () => void;
-    overview?: (payload: SseOverviewEvent) => void;
-    hunkStart?: (payload: SseHunkStartEvent) => void;
-    hunk?: (payload: SseHunkEvent) => void;
-    foldSummary?: (payload: SseFoldSummaryEvent) => void;
-    done?: (payload: SseDoneEvent) => void;
-  }): EventSource | null;
-}
-
-const _win = window as unknown as {
-  ScrAnnotations: ScrAnnotationsFacade;
-  ScrProgress: ScrProgressFacade;
-  ScrSidebar: ScrSidebarFacade;
-  ScrFolds: ScrFoldsFacade;
-  ScrComments: ScrCommentsFacade;
-  ScrRender: ScrRenderFacade;
-  ScrSse: ScrSseFacade;
-  CSS?: { escape?: (s: string) => string };
-};
+// Keep an unused import to ensure annotations.ts's window-attach side
+// effects (if any are added later) execute. Type checker sees Annotations
+// as used via boot's other callers too.
+void Annotations;
 
 const _dataScript = document.getElementById("scr-data");
 if (!_dataScript || !_dataScript.textContent) {
@@ -102,7 +29,7 @@ const DATA: ViewerData = JSON.parse(_dataScript.textContent);
 // per-hunk events from a running augmentation pass. Hunks without
 // an annotation render an "analysing…" spinner during that window
 // and the failure copy once the `done` event clears the flag —
-// see installSessionEvents below + ScrRender's renderHunkHeader.
+// see installSessionEvents below + Render's renderHunkHeader.
 
 const SESSION_ENDPOINT: string = (() => {
   const m = document.querySelector('meta[name="scr-session-endpoint"]');
@@ -114,15 +41,15 @@ const SESSION_ENDPOINT: string = (() => {
 // DATA for the localStorage key; render needs DATA to drive the initial
 // paint + wire its hash/keyboard/button handlers; progress wants DATA
 // to know how many hunks the strip will display.
-_win.ScrSidebar.init(DATA);
+Sidebar.init(DATA);
 
 // --- Boot ----------------------------------------------------------------
 
 function boot(): void {
-  _win.ScrComments.init(DATA);     // wires gutter + loads existing
+  Comments.init(DATA);     // wires gutter + loads existing
   installDoneButton();
-  _win.ScrRender.init(DATA);       // wires hash + keyboard + initial paint
-  _win.ScrProgress.init(DATA);
+  Render.init(DATA);       // wires hash + keyboard + initial paint
+  Progress.init(DATA);
   installSessionEvents();
 }
 
@@ -134,10 +61,9 @@ if (document.readyState === "loading") {
 
 // --- Done button ---------------------------------------------------------
 // Tells the review server we're finished. The server exits after this
-// fires; comments accumulated via window.ScrComments have already
-// round-tripped on each mutation. Single fetch, kept here rather than
-// in comments.ts to avoid coupling "I'm done" to the comment storage
-// layer.
+// fires; comments accumulated via Comments have already round-tripped on
+// each mutation. Single fetch, kept here rather than in comments.ts to
+// avoid coupling "I'm done" to the comment storage layer.
 
 function installDoneButton(): void {
   if (!SESSION_ENDPOINT) return;
@@ -162,14 +88,13 @@ function installDoneButton(): void {
 }
 
 // --- SSE wiring ----------------------------------------------------------
-// sse.ts owns the EventSource subscription + JSON-parse dispatch.
+// Sse.connect owns the EventSource subscription + JSON-parse dispatch.
 // boot.ts's handlers patch the in-memory DATA + delegate the visible
 // side-effects to the right module.
 
 function installSessionEvents(): void {
   if (!SESSION_ENDPOINT) return;
-  const Progress = _win.ScrProgress;
-  _win.ScrSse.connect(SESSION_ENDPOINT, {
+  Sse.connect(SESSION_ENDPOINT, {
     overviewStart: () => Progress.setOverviewState("running"),
     overviewFailed: () => Progress.setOverviewState("failed"),
     overview: (payload) => {
@@ -179,7 +104,7 @@ function installSessionEvents(): void {
     hunkStart: (payload) => {
       const hunkId = `H${payload.file_idx}_${payload.hunk_idx}`;
       Progress.setHunkState(hunkId, "running");
-      _win.ScrRender.repaintHunkHeader(hunkId);
+      Render.repaintHunkHeader(hunkId);
     },
     hunk: (payload) => {
       Progress.setHunkState(
@@ -211,13 +136,13 @@ function applyOverviewPatch(payload: SseOverviewEvent): void {
     // Themes axis lives in sidebar.ts; refreshThemes mutates in
     // place. Keep DATA.groups in sync for any consumer that still
     // reads it directly.
-    _win.ScrSidebar.refreshThemes(payload.groups);
+    Sidebar.refreshThemes(payload.groups);
     DATA.groups = payload.groups;
   }
   // PR header + sidebar live outside the hunk list and are cheap
   // to redraw; one full re-render keeps the logic consistent with
   // the initial-paint path.
-  _win.ScrRender.render();
+  Render.render();
 }
 
 // Tracks the slice 5 `_failed` marker on hunks whose augmentation
@@ -240,7 +165,7 @@ function applyHunkPatch(payload: SseHunkEvent): void {
     file.hunks[hi].intent = "";
     (file.hunks[hi] as HunkBlockMutable)._failed = true;
   }
-  _win.ScrRender.renderHunkReplace(file, hi);
+  Render.renderHunkReplace(file, hi);
 }
 
 // FoldRegion gains a transient `_inflight` flag while a local POST
@@ -287,11 +212,11 @@ function applyFoldSummary(payload: SseFoldSummaryEvent): void {
   if (region._inflight) return;
   // Cross-tab path: replace the hunk DOM, then re-attach the
   // file-level fold pass over the freshly-rendered rows.
-  _win.ScrRender.renderHunkReplace(f, hostHunkIdx);
+  Render.renderHunkReplace(f, hostHunkIdx);
   const fileEl = document.querySelector(
     '.file[data-id="' + _cssEscape(f.id) + '"]',
   ) as HTMLElement | null;
-  if (fileEl) _win.ScrFolds.attachFileFolds(fileEl, f);
+  if (fileEl) Folds.attachFileFolds(fileEl, f);
 }
 
 function finaliseStreaming(): void {
@@ -300,16 +225,15 @@ function finaliseStreaming(): void {
   // failure copy on the next re-render instead of the spinner.
   DATA.pending = false;
   // Hide the progress strip — only useful while streaming.
-  _win.ScrProgress.finalise();
-  _win.ScrRender.render();
+  Progress.finalise();
+  Render.render();
 }
 
 // Minimal CSS.escape polyfill — only needed because some older
 // browsers ship without `CSS.escape`. File and hunk ids are simple
 // ASCII identifiers, so escaping is a defensive measure.
 function _cssEscape(s: string): string {
-  if (_win.CSS && typeof _win.CSS.escape === "function") return _win.CSS.escape(s);
+  const w = window as unknown as { CSS?: { escape?: (s: string) => string } };
+  if (w.CSS && typeof w.CSS.escape === "function") return w.CSS.escape(s);
   return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => "\\" + c);
 }
-
-})();

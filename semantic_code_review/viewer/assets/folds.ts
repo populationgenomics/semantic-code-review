@@ -17,12 +17,7 @@
 // Compiled by tsc to `folds.js`. Concatenated into the rendered
 // HTML by `render_html.py`; viewer.js calls into window.ScrFolds.
 
-// `module: "none"` puts every top-level declaration in the shared
-// global namespace, so an IIFE here keeps this module's internals
-// from colliding with the other Scr* modules. Only the final
-// window.ScrFolds registration escapes.
-
-(() => {
+import { Annotations, type AnnotationHandle } from "./annotations";
 
 interface RowWithEls extends RowBlock {
   oldEl: HTMLElement;
@@ -42,14 +37,7 @@ interface DetectedRegion {
 
 interface AttachedFold {
   marker: SVGElement;
-  foldHandle: AnnotationHandleLike | null;
-}
-
-interface AnnotationHandleLike {
-  element: HTMLElement;
-  placeholder: HTMLElement | null;
-  resize(): void;
-  remove(): void;
+  foldHandle: AnnotationHandle | null;
 }
 
 interface FoldRequestAddress {
@@ -61,7 +49,7 @@ interface FoldRequestAddress {
 }
 
 interface FoldFileState {
-  handles: AnnotationHandleLike[];
+  handles: AnnotationHandle[];
   chevrons: SVGElement[];
 }
 
@@ -329,7 +317,7 @@ function _foldAddress(region: FoldRegion): FoldRequestAddress | null {
 
 function _requestFoldSummary(
   fileIdx: number, region: FoldRegionRuntime,
-  foldHandle: AnnotationHandleLike,
+  foldHandle: AnnotationHandle,
 ): void {
   if (region._inflight || region.summary) return;
   const addr = _foldAddress(region);
@@ -365,7 +353,7 @@ function _requestFoldSummary(
 }
 
 function _setFoldBoxContent(
-  foldHandle: AnnotationHandleLike, text: string,
+  foldHandle: AnnotationHandle, text: string,
   classes: { pending?: boolean; failed?: boolean },
   onClick?: () => void,
 ): void {
@@ -407,23 +395,14 @@ function _attachOneFold(
   marker.setAttribute("role", "button");
   marker.setAttribute("tabindex", "0");
 
-  let foldHandle: AnnotationHandleLike | null = null;
+  let foldHandle: AnnotationHandle | null = null;
   const canSummarise = _canRequestFoldSummary(fileIdx, region);
   if (region.summary || region.has_changes || canSummarise) {
     const initialContent = region.summary
       || (canSummarise
         ? "summarising…"
         : "(changes here; run augment to generate a description)");
-    const annotations = (window as unknown as {
-      ScrAnnotations: {
-        attach(opts: {
-          anchor: HTMLElement; shadowAnchor: HTMLElement;
-          variant: string; content: string;
-        }): AnnotationHandleLike;
-        reflow(anchor: HTMLElement): void;
-      };
-    }).ScrAnnotations;
-    foldHandle = annotations.attach({
+    foldHandle = Annotations.attach({
       anchor, shadowAnchor: shadow,
       variant: "fold", content: initialContent,
     });
@@ -456,10 +435,7 @@ function _attachOneFold(
         && _canRequestFoldSummary(fileIdx, region)) {
       _requestFoldSummary(fileIdx, region, foldHandle);
     }
-    const annotations = (window as unknown as {
-      ScrAnnotations?: { reflow(anchor: HTMLElement): void };
-    }).ScrAnnotations;
-    if (annotations) annotations.reflow(anchor);
+    Annotations.reflow(anchor);
   });
 
   const contentCell = anchor && (anchor.children[1] as HTMLElement | undefined);
@@ -473,7 +449,7 @@ function attachFileFolds(fileEl: HTMLElement, file: FileBlock): void {
   const rows = _collectFileRows(fileEl);
   if (rows.length === 0) return;
   const detected = _computeFoldRegions(rows);
-  const handles: AnnotationHandleLike[] = [];
+  const handles: AnnotationHandle[] = [];
   const chevrons: SVGElement[] = [];
   for (const det of detected) {
     const region = _upsertFoldRegion(file, det, rows);
@@ -485,13 +461,7 @@ function attachFileFolds(fileEl: HTMLElement, file: FileBlock): void {
   _FILE_FOLD_STATE[file.id] = { handles, chevrons };
 }
 
-// The single runtime surface. viewer.js calls attachFileFolds on
+// The single runtime surface. boot.ts calls attachFileFolds on
 // initial render, after every gap expand/collapse, and from
 // applyFoldSummary's cross-tab path.
-const Folds = { attachFileFolds };
-
-if (typeof window !== "undefined") {
-  (window as unknown as { ScrFolds: typeof Folds }).ScrFolds = Folds;
-}
-
-})();
+export const Folds = { attachFileFolds };

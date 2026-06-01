@@ -8,30 +8,29 @@
 //   - fold-summary on first close fires POST /fold-summary and renders
 //     the returned text (or the failure copy on error)
 //
-// boot.ts is an IIFE — it has no exports and grabs everything off
-// `document` / `window` at module load. We mount the same DOM template
-// the Jinja template emits, install a scr-data <script>, stub
-// EventSource + fetch on the global, then read the compiled boot.js
-// as a string and eval() it. The eval (rather than `import`) is what
-// gives us a clean re-execution per test without fighting Vitest's
-// module cache.
+// The viewer is a single IIFE-wrapped bundle produced by esbuild from
+// boot.ts as the entry. We mount the same DOM template the Jinja
+// template emits, install a scr-data <script>, stub EventSource +
+// fetch on the global, then read viewer.js as a string and eval() it.
+// The eval (rather than `import`) gives us a clean re-execution per
+// test without fighting Vitest's module cache or having to wrangle
+// dynamic imports.
 
 import fs from "node:fs";
 import path from "node:path";
 import { describe, test, expect, vi, beforeEach, afterEach } from "vitest";
 
-import "../../semantic_code_review/viewer/assets/annotations";
-import "../../semantic_code_review/viewer/assets/progress";
-import "../../semantic_code_review/viewer/assets/sse";
-import "../../semantic_code_review/viewer/assets/sidebar";
-import "../../semantic_code_review/viewer/assets/folds";
-import "../../semantic_code_review/viewer/assets/comments";
-import "../../semantic_code_review/viewer/assets/render";
-
-const VIEWER_SRC = fs.readFileSync(
-  path.resolve(process.cwd(), "semantic_code_review/viewer/assets/boot.js"),
-  "utf-8",
-);
+const VIEWER_SRC = (() => {
+  const bundle = path.resolve(
+    process.cwd(), "semantic_code_review/viewer/assets/viewer.js",
+  );
+  if (!fs.existsSync(bundle)) {
+    throw new Error(
+      `viewer bundle missing at ${bundle}. Run \`npm run build\` first.`,
+    );
+  }
+  return fs.readFileSync(bundle, "utf-8");
+})();
 
 // --- Stub EventSource ------------------------------------------------------
 // Captures the listeners viewer.js registers; tests fire events via

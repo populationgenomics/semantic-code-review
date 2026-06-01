@@ -72,8 +72,5 @@ function connect(endpoint: string, handlers: SseHandlers): EventSource | null {
   return es;
 }
 
-const Sse = { connect };
-
-if (typeof window !== "undefined") {
-  (window as unknown as { ScrSse: typeof Sse }).ScrSse = Sse;
-}
+export const Sse = { connect };
+export type { SseHandlers };

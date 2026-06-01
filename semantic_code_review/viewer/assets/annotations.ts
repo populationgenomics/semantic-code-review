@@ -537,11 +537,9 @@ function insertAfter(node: Node, ref: Node): void {
 // Facade
 // ---------------------------------------------------------------------------
 
-// The single runtime surface: assigned to window.ScrAnnotations below
-// and the only thing viewer.js reaches for. tsc's `module: "none"`
-// strips no code; the file is a classic script that runs top-to-bottom
-// when inlined into the viewer HTML.
-const Annotations = {
+// The single runtime surface. Imported by boot.ts and any other
+// module that attaches annotation rows.
+export const Annotations = {
   attach,
   detach,
   reflow,
@@ -553,10 +551,5 @@ const Annotations = {
   _setRectProvider: setRectProvider,
 };
 
-// Register on the global. The cast to `unknown` sidesteps the need
-// for a `declare global` Window augmentation (which requires a
-// module context, which tsc with `module: "none"` refuses to give us).
-if (typeof window !== "undefined") {
-  (window as unknown as { ScrAnnotations: typeof Annotations }).ScrAnnotations = Annotations;
-}
+export type { AnnotationHandle, AttachOptions };
 

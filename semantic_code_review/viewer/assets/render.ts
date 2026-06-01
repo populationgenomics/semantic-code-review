@@ -18,13 +18,11 @@
 // Compiled by tsc to `render.js`; concatenated into the rendered
 // HTML by `render_html.py`. Exposes window.ScrRender.
 
-// `module: "none"` puts every top-level declaration in the shared
-// global namespace, so an IIFE here is the cleanest way to keep this
-// module's internals from colliding with the other Scr* modules'
-// private helpers (_el, _chev, _state, _data, _SVG_NS, …). Only the
-// final window.ScrRender registration escapes.
-
-(() => {
+import { Annotations } from "./annotations";
+import { Comments } from "./comments";
+import { Folds } from "./folds";
+import { Progress } from "./progress";
+import { Sidebar } from "./sidebar";
 
 // --- Module state --------------------------------------------------------
 
@@ -69,34 +67,21 @@ function render(): void {
   app.innerHTML = "";
   app.appendChild(_renderPRPanel(_data.pr));
   for (const f of _data.files) app.appendChild(_renderFile(f));
-  const sidebar = (window as unknown as {
-    ScrSidebar?: { render(): void; applyFilter(): void };
-  }).ScrSidebar;
-  if (sidebar) {
-    sidebar.render();
-    sidebar.applyFilter();
-  }
+  Sidebar.render();
+  Sidebar.applyFilter();
   _updateStatus();
   _syncHash();
   _updateSliderButtons();
-  const comments = (window as unknown as {
-    ScrComments?: { renderAll(): void };
-  }).ScrComments;
-  if (comments) comments.renderAll();
+  Comments.renderAll();
   // Annotation arrows attached during render were sized while the
   // tree was still detached. The viewport watcher hooks
   // window-resize + fonts.ready for post-mount reflow; double-RAF a
   // fresh pass for the first paint.
-  const annotations = (window as unknown as {
-    ScrAnnotations?: { watchViewport(): void; reflowAll(): void };
-  }).ScrAnnotations;
-  if (annotations) {
-    annotations.watchViewport();
-    requestAnimationFrame(() => {
-      annotations.reflowAll();
-      requestAnimationFrame(() => annotations.reflowAll());
-    });
-  }
+  Annotations.watchViewport();
+  requestAnimationFrame(() => {
+    Annotations.reflowAll();
+    requestAnimationFrame(() => Annotations.reflowAll());
+  });
 }
 
 /** Replace one hunk's DOM in place. Drops the renderedDiffs cache
@@ -247,10 +232,7 @@ function _renderFile(f: FileBlock): HTMLElement {
     }
     div.appendChild(body);
     // Run a file-level fold pass once the body is assembled.
-    const folds = (window as unknown as {
-      ScrFolds?: { attachFileFolds(fileEl: HTMLElement, f: FileBlock): void };
-    }).ScrFolds;
-    if (folds) folds.attachFileFolds(div, f);
+    Folds.attachFileFolds(div, f);
   }
   return div;
 }
@@ -417,10 +399,7 @@ function _refreshFileFolds(f: FileBlock): void {
   const fileEl = document.querySelector(
     '.file[data-id="' + _cssEscape(f.id) + '"]',
   ) as HTMLElement | null;
-  const folds = (window as unknown as {
-    ScrFolds?: { attachFileFolds(fileEl: HTMLElement, f: FileBlock): void };
-  }).ScrFolds;
-  if (fileEl && folds) folds.attachFileFolds(fileEl, f);
+  if (fileEl) Folds.attachFileFolds(fileEl, f);
 }
 
 // --- Hunk + diff body ---------------------------------------------------
@@ -506,11 +485,8 @@ function _renderHunkHeader(h: HunkBlock, folded: boolean): HTMLElement {
   } else if (_data.pending && !(h as HunkBlockExtended)._failed) {
     // Still streaming. Distinguish "queued, model hasn't looked yet"
     // (static, dim) from "running, model is working on it right now"
-    // (pulse). State comes from window.ScrProgress.
-    const progress = (window as unknown as {
-      ScrProgress?: { getHunkState(id: string): string | undefined };
-    }).ScrProgress;
-    const st = progress ? progress.getHunkState(h.id) : undefined;
+    // (pulse). State comes from the Progress module.
+    const st = Progress.getHunkState(h.id);
     if (st === "running") {
       intent = _el("span", "hunk-intent pending", "analysing…");
     } else {
@@ -601,15 +577,6 @@ function _attachLineNotes(
   rows: RowBlock[], notes: LineNote[],
 ): void {
   if (!notes.length || !rows.length) return;
-  const annotations = (window as unknown as {
-    ScrAnnotations?: {
-      attach(opts: {
-        anchor: HTMLElement; shadowAnchor: HTMLElement;
-        variant: string; content: string;
-      }): unknown;
-    };
-  }).ScrAnnotations;
-  if (!annotations) return;
   const byNewLine = new Map<number, number>();
   for (let i = 0; i < rows.length; i++) {
     const ln = rows[i].new_line;
@@ -618,7 +585,7 @@ function _attachLineNotes(
   for (const note of notes) {
     const idx = byNewLine.get(note.line);
     if (idx === undefined) continue;
-    annotations.attach({
+    Annotations.attach({
       anchor: rowElsNew[idx],
       shadowAnchor: rowElsOld[idx],
       variant: "note",
@@ -802,16 +769,10 @@ function _wireInputs(): void {
 
 // --- Public surface -----------------------------------------------------
 
-const Render = {
+export const Render = {
   init: renderInit,
   render,
   renderHunkReplace,
   repaintHunkHeader,
   clearRenderedDiffCache,
 };
-
-if (typeof window !== "undefined") {
-  (window as unknown as { ScrRender: typeof Render }).ScrRender = Render;
-}
-
-})();

@@ -16,12 +16,7 @@
 // Compiled by tsc to `sidebar.js`. Concatenated into the rendered
 // HTML by `render_html.py`; viewer.js calls into window.ScrSidebar.
 
-// `module: "none"` puts every top-level declaration in the shared
-// global namespace, so an IIFE here keeps this module's internals
-// from colliding with the other Scr* modules. Only the final
-// window.ScrSidebar registration escapes.
-
-(() => {
+import { Annotations } from "./annotations";
 
 interface SidebarAxis {
   id: "themes" | "files";
@@ -193,12 +188,7 @@ function setActivePill(pill: ActivePill | null): void {
     if (btn) btn.classList.add("active");
   }
   applyFilter();
-  // ScrAnnotations is populated by annotations.ts (also concatenated
-  // ahead of viewer.js). Cast — `module: "none"` doesn't allow a
-  // global Window augmentation in this file.
-  const annotations = (window as unknown as { ScrAnnotations?: { reflowAll(): void } })
-    .ScrAnnotations;
-  if (annotations) annotations.reflowAll();
+  Annotations.reflowAll();
 }
 
 function _activePillHunkIds(): Set<string> | null {
@@ -244,7 +234,7 @@ function _el(tag: string, className: string | null, text?: string): HTMLElement 
   return n;
 }
 
-const Sidebar = {
+export const Sidebar = {
   init,
   render,
   refreshThemes,
@@ -252,9 +242,3 @@ const Sidebar = {
   setActivePill,
   applyFilter,
 };
-
-if (typeof window !== "undefined") {
-  (window as unknown as { ScrSidebar: typeof Sidebar }).ScrSidebar = Sidebar;
-}
-
-})();

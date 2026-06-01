@@ -27,7 +27,7 @@ VENDOR_DIR = ASSETS_DIR / "vendor"
 
 
 def _locate_compiled_js(name: str) -> Path:
-    """Find a tsc-compiled viewer module.
+    """Find a viewer JS bundle emitted by esbuild.
 
     The bootstrap wrapper builds into a data-dir and points us at it
     via SCR_VIEWER_BUILD_DIR. If that env var isn't set (e.g. a future
@@ -45,7 +45,7 @@ def _locate_compiled_js(name: str) -> Path:
     raise FileNotFoundError(
         f"compiled {name} not found. Checked: "
         + ", ".join(str(c) for c in candidates)
-        + ". Run `bin/scr` (auto-builds) or `npm run build` to compile."
+        + ". Run `bin/scr` (auto-builds) or `npm run build` to bundle."
     )
 
 
@@ -104,21 +104,12 @@ def render_html(
     pr_meta = " · ".join(pr_meta_bits)
 
     viewer_css = (ASSETS_DIR / "viewer.css").read_text(encoding="utf-8")
-    # Concatenate the compiled TS modules in dependency order; boot.js
-    # comes last because it calls into each window.Scr* surface that
-    # the earlier modules register. The .ts sources are the source of
-    # truth; tsc emits matching .js files into a build directory. The
-    # bin/scr bootstrap points us at its data-dir build via
-    # SCR_VIEWER_BUILD_DIR; wheel-installed setups fall back to the
-    # package's own assets/.
-    ts_modules = [
-        "annotations.js", "progress.js", "sse.js", "sidebar.js",
-        "folds.js", "comments.js", "render.js", "boot.js",
-    ]
-    viewer_js = "\n".join(
-        _locate_compiled_js(name).read_text(encoding="utf-8")
-        for name in ts_modules
-    )
+    # The .ts sources are the source of truth; esbuild bundles them
+    # into a single viewer.js (IIFE-wrapped, ES2020) starting from
+    # boot.ts. The bin/scr bootstrap points us at its data-dir build
+    # via SCR_VIEWER_BUILD_DIR; wheel-installed setups fall back to
+    # the package's own assets/.
+    viewer_js = _locate_compiled_js("viewer.js").read_text(encoding="utf-8")
 
     ctx: dict[str, Any] = {
         "pr_title": pr_title,
