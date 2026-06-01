@@ -335,6 +335,11 @@
         if (mid) body.appendChild(renderGapChip(f, mid));
       }
       div.appendChild(body);
+      // Run a file-level fold pass once the body is assembled. This
+      // detects indent regions spanning multiple stretches (e.g. a
+      // function defined in expanded context above a hunk whose body
+      // contains the hunk's rows) — slice 3 of fold-anywhere.
+      attachFileFolds(div, f);
     }
     return div;
   }
@@ -389,6 +394,10 @@
     chip.title = `lines ${gap.new_start}–${gap.new_end}`;
     chip.addEventListener("click", () => {
       chip.replaceWith(renderGapExpansion(f, gap));
+      // Structural change to the file — rebuild file-level folds so
+      // newly-visible rows participate in indent fold detection.
+      const fileEl = document.querySelector('.file[data-id="' + cssEscape(f.id) + '"]');
+      if (fileEl) attachFileFolds(fileEl, f);
     });
     return chip;
   }
@@ -399,19 +408,19 @@
     collapse.title = "Hide these lines again";
     collapse.addEventListener("click", () => {
       container.replaceWith(renderGapChip(f, gap));
+      // Structural change to the file — rebuild file-level folds.
+      const fileEl = document.querySelector('.file[data-id="' + cssEscape(f.id) + '"]');
+      if (fileEl) attachFileFolds(fileEl, f);
     });
     container.appendChild(collapse);
 
-    // Same structural shape as a regular hunk: a .diff with two .half
-    // children, each holding its side's rows. renderRow now returns
-    // {old, new}, so we must dispatch each side to its own half.
     const diff = el("div", "diff");
     const halfOld = el("div", "half half-old");
     const halfNew = el("div", "half half-new");
     diff.appendChild(halfOld);
     diff.appendChild(halfNew);
 
-    const rows = [];                 // logical row records for fold detection
+    const rows = [];
     const rowElsOld = [];
     const rowElsNew = [];
     const count = gap.new_end - gap.new_start + 1;
@@ -433,24 +442,11 @@
       rowElsNew.push(pair.new);
     }
 
-    // Compute indent fold regions over the expanded context and
-    // attach chevrons so the reviewer can collapse + summarise blocks
-    // of unchanged code. All such regions are right-context (lines
-    // exist in head/<path> only — they're unchanged context, but the
-    // pre-image line numbers happen to track too; the summariser
-    // only needs the post-image addressing).
-    const fileIdx = Number(f.id.replace("F", ""));
-    const regions = computeFoldRegionsJs(rows).map((r) => ({
-      header_idx: r.header_idx,
-      body_start_idx: r.body_start_idx,
-      body_end_idx: r.body_end_idx,
-      context: "right",
-      right_start: r.right_start, right_end: r.right_end,
-      left_start: null, left_end: null,
-      has_changes: false,
-      summary: "",
-    }));
-    attachIndentFolds(halfOld, halfNew, rowElsOld, rowElsNew, regions, fileIdx);
+    // Stash records + DOM refs on the container so the file-level
+    // fold walker (attachFileFolds) can recover them later.
+    container._scrRows = rows;
+    container._scrRowElsOld = rowElsOld;
+    container._scrRowElsNew = rowElsNew;
 
     container.appendChild(diff);
     return container;
@@ -503,22 +499,37 @@
     for (const [header_idx, body_end] of raw) {
       const body_start = header_idx + 1;
       if (body_start > body_end) continue;
-      // For now we only emit right-context regions (all expanded
-      // rows are ctx, so the post-image new_line is present on every
-      // row). The header is the row that opens the indent.
-      let right_start = null, right_end = null;
-      for (let j = header_idx; j <= body_end; j++) {
-        if (rows[j].new_line != null) { right_start = rows[j].new_line; break; }
-      }
-      for (let j = body_end; j >= header_idx; j--) {
-        if (rows[j].new_line != null) { right_end = rows[j].new_line; break; }
-      }
+      const right_start = firstLine(rows, header_idx, body_end, "new_line");
+      const right_end = lastLine(rows, header_idx, body_end, "new_line");
+      const left_start = firstLine(rows, header_idx, body_end, "old_line");
+      const left_end = lastLine(rows, header_idx, body_end, "old_line");
+      const hasChanges = anyChangesInRange(rows, header_idx, body_end);
+      let context;
+      if (right_start != null && left_start != null && hasChanges) context = "both";
+      else if (right_start != null) context = "right";
+      else context = "left";
       regions.push({
         header_idx, body_start_idx: body_start, body_end_idx: body_end,
+        context,
         right_start, right_end,
+        left_start, left_end,
       });
     }
     return regions;
+  }
+
+  function firstLine(rows, start, end, attr) {
+    for (let j = start; j <= end; j++) {
+      if (rows[j][attr] != null) return rows[j][attr];
+    }
+    return null;
+  }
+
+  function lastLine(rows, start, end, attr) {
+    for (let j = end; j >= start; j--) {
+      if (rows[j][attr] != null) return rows[j][attr];
+    }
+    return null;
   }
 
   function renderFileHeader(f, folded) {
@@ -709,11 +720,13 @@
       rowElsOld.push(pair.old);
       rowElsNew.push(pair.new);
     }
-    // hunk.id is "H<file_idx>_<hunk_idx>" — first segment is the
-    // file index the v2 fold-summary protocol addresses against.
-    const fileIdx = Number(h.id.replace("H", "").split("_")[0]);
-    attachIndentFolds(halfOld, halfNew, rowElsOld, rowElsNew, h.fold_regions || [], fileIdx);
     attachLineNotes(halfOld, halfNew, rowElsOld, rowElsNew, h.rows || [], h.line_notes || []);
+    // Stash row records + DOM refs on the .diff so the file-level
+    // fold walker (attachFileFolds) can build a unified row stream
+    // across this hunk and its surrounding expanded context.
+    container._scrRows = h.rows || [];
+    container._scrRowElsOld = rowElsOld;
+    container._scrRowElsNew = rowElsNew;
     STATE.renderedDiffs[h.id] = container;
     return container;
   }
@@ -752,18 +765,151 @@
   // (so the LLM can describe each one). Wire the chevron and the
   // summary row for the folded state.
 
-  function attachIndentFolds(halfOld, halfNew, rowElsOld, rowElsNew, regions, fileIdx) {
-    for (const r of regions) attachOneFold(halfOld, halfNew, rowElsOld, rowElsNew, r, fileIdx);
+  // --- File-level fold detection ------------------------------------------
+  // The viewer's fold story across stretches (hunk body vs surrounding
+  // expanded context) is unified here: walk every visible row in the
+  // file, run the JS port of compute_fold_regions over the unified
+  // sequence, and attach chevrons accordingly. A fold whose body spans
+  // a hunk boundary still collapses the right rows because each row
+  // carries its own DOM refs.
+  //
+  // Triggered on initial render and after any gap expand/collapse.
+  // FILE_FOLD_STATE keeps the previously-attached chevrons + handles
+  // so we can tear them down before each re-pass.
+
+  const FILE_FOLD_STATE = Object.create(null);  // file.id -> { handles: [], chevrons: [] }
+
+  function teardownFileFolds(fileId) {
+    const s = FILE_FOLD_STATE[fileId];
+    if (!s) return;
+    for (const h of s.handles) {
+      try { h.remove(); } catch (_) { /* ignore */ }
+    }
+    for (const c of s.chevrons) {
+      try { c.remove(); } catch (_) { /* ignore */ }
+    }
+    delete FILE_FOLD_STATE[fileId];
   }
 
-  function attachOneFold(halfOld, halfNew, rowElsOld, rowElsNew, region, fileIdx) {
+  function collectFileRows(fileEl) {
+    // Walk the file body's children in DOM order; for each .hunk and
+    // .gap-expansion container, pull the stashed row records + the
+    // matching DOM elements. Folded hunks contribute nothing (their
+    // .diff isn't in the DOM).
+    const body = fileEl.querySelector(".file-body");
+    if (!body) return [];
+    const out = [];
+    for (const child of body.children) {
+      const cls = child.classList;
+      let source = null;
+      if (cls.contains("hunk")) {
+        source = child.querySelector(".diff");
+      } else if (cls.contains("gap-expansion")) {
+        source = child;
+      }
+      if (!source || !source._scrRows) continue;
+      const rows = source._scrRows;
+      const oldEls = source._scrRowElsOld;
+      const newEls = source._scrRowElsNew;
+      for (let i = 0; i < rows.length; i++) {
+        out.push({
+          ...rows[i],
+          oldEl: oldEls[i],
+          newEl: newEls[i],
+        });
+      }
+    }
+    return out;
+  }
+
+  function findExistingFoldRecord(file, region) {
+    // Look up a pre-existing fold_region in DATA whose address
+    // matches the detected region — so any cached summary lands as
+    // the box's initial content.
+    const rs = region.right_start || 0, re_ = region.right_end || 0;
+    const ls = region.left_start || 0, le = region.left_end || 0;
+    for (const h of file.hunks || []) {
+      for (const r of h.fold_regions || []) {
+        if (
+          (r.context || "right") === region.context
+          && (r.right_start || 0) === rs && (r.right_end || 0) === re_
+          && (r.left_start || 0) === ls && (r.left_end || 0) === le
+        ) {
+          return r;
+        }
+      }
+    }
+    return null;
+  }
+
+  function attachFileFolds(fileEl, file) {
+    teardownFileFolds(file.id);
+    const fileIdx = Number(file.id.replace("F", ""));
+    const rows = collectFileRows(fileEl);
+    if (rows.length === 0) return;
+    const detected = computeFoldRegionsJs(rows);
+    const handles = [];
+    const chevrons = [];
+    for (const det of detected) {
+      const region = upsertFoldRegion(file, det, rows);
+      const attached = attachOneFold(rows, region, fileIdx);
+      if (!attached) continue;
+      if (attached.foldHandle) handles.push(attached.foldHandle);
+      if (attached.marker) chevrons.push(attached.marker);
+    }
+    FILE_FOLD_STATE[file.id] = { handles, chevrons };
+  }
+
+  function upsertFoldRegion(file, det, rows) {
+    // Look up an existing fold_region matching this address. If found,
+    // refresh its detected fields and return it — that's the canonical
+    // persistent object the local POST handler and SSE updater both
+    // mutate, so they need to be the same reference. Otherwise create
+    // a new one and stash it on the file's first hunk's fold_regions
+    // list (matches the server's persistence path).
+    const candidate = {
+      header_idx: det.header_idx,
+      body_start_idx: det.body_start_idx,
+      body_end_idx: det.body_end_idx,
+      context: det.context,
+      right_start: det.right_start, right_end: det.right_end,
+      left_start: det.left_start, left_end: det.left_end,
+      has_changes: anyChangesInRange(rows, det.header_idx, det.body_end_idx),
+      summary: "",
+    };
+    const existing = findExistingFoldRecord(file, candidate);
+    if (existing) {
+      existing.header_idx = candidate.header_idx;
+      existing.body_start_idx = candidate.body_start_idx;
+      existing.body_end_idx = candidate.body_end_idx;
+      existing.has_changes = candidate.has_changes;
+      return existing;
+    }
+    if (file.hunks && file.hunks.length > 0) {
+      if (!file.hunks[0].fold_regions) file.hunks[0].fold_regions = [];
+      file.hunks[0].fold_regions.push(candidate);
+    }
+    return candidate;
+  }
+
+  function anyChangesInRange(rows, start, end) {
+    for (let i = start; i <= end; i++) {
+      const k = rows[i].kind;
+      if (k === "ins" || k === "del" || k === "pair") return true;
+    }
+    return false;
+  }
+
+  function attachOneFold(rows, region, fileIdx) {
     const bodyStart = region.body_start_idx;
     const bodyEnd = region.body_end_idx;
-    if (bodyStart > bodyEnd) return;
+    if (bodyStart > bodyEnd) return null;
 
-    const headerOld = rowElsOld[region.header_idx];
-    const headerNew = rowElsNew[region.header_idx];
-    if (!headerOld && !headerNew) return;
+    const headerRow = rows[region.header_idx];
+    if (!headerRow) return null;
+    const headerOld = headerRow.oldEl;
+    const headerNew = headerRow.newEl;
+    if (!headerOld && !headerNew) return null;
 
     // Choose which half the fold chevron + summary live on. Prefer the
     // side whose content cell is non-empty; fall back to new-side.
@@ -777,9 +923,6 @@
     marker.setAttribute("tabindex", "0");
 
     let foldHandle = null;
-    // Create a fold box whenever there's something useful to show
-    // there: an existing summary, an LLM-summarisable region, or a
-    // changed block whose summary will land on first close.
     const canSummarise = canRequestFoldSummary(fileIdx, region);
     if (region.summary || region.has_changes || canSummarise) {
       const initialContent = region.summary
@@ -804,29 +947,30 @@
     marker.addEventListener("click", e => {
       e.stopPropagation();
       const nowOpen = marker.classList.toggle("open");
+      // Walk the file-level row stream so a fold whose body spans
+      // multiple containers (hunk body + adjacent expanded context)
+      // still hides every row that belongs to it.
       for (let i = bodyStart; i <= bodyEnd; i++) {
-        if (rowElsOld[i]) rowElsOld[i].style.display = nowOpen ? "" : "none";
-        if (rowElsNew[i]) rowElsNew[i].style.display = nowOpen ? "" : "none";
+        const r = rows[i];
+        if (!r) continue;
+        if (r.oldEl) r.oldEl.style.display = nowOpen ? "" : "none";
+        if (r.newEl) r.newEl.style.display = nowOpen ? "" : "none";
       }
       if (foldHandle) {
         foldHandle.element.style.display = nowOpen ? "none" : "";
         if (foldHandle.placeholder) foldHandle.placeholder.style.display = nowOpen ? "none" : "";
         if (!nowOpen) foldHandle.resize();
       }
-      // On close, if the region still has no summary, ask the server to
-      // generate one. Single-flight per region: requestFoldSummary
-      // guards against the user opening + closing repeatedly.
       if (!nowOpen && !region.summary && foldHandle
           && canRequestFoldSummary(fileIdx, region)) {
         requestFoldSummary(fileIdx, region, foldHandle);
       }
-      // Showing/hiding the fold summary shifts every sibling annotation
-      // below it; re-size any that share this fold's header as anchor.
       window.ScrAnnotations.reflow(anchor);
     });
 
     const contentCell = anchor && anchor.children[1];
     if (contentCell) contentCell.prepend(marker);
+    return { marker, foldHandle };
   }
 
   function isRowContentEmpty(rowEl) {
@@ -1477,13 +1621,17 @@
     // own the DOM update.
     if (region._inflight) return;
     // Cross-tab path: drop the cached diff and let the next render
-    // rebuild with the summary.
+    // rebuild with the summary. Replacing the hunk DOM also blows
+    // away its fold chevrons — re-run the file-level fold pass so
+    // they come back attached to the freshly-rendered rows.
     delete STATE.renderedDiffs[hostHunk.id];
     const existing = document.querySelector('.hunk[data-id="' + cssEscape(hostHunk.id) + '"]');
     if (existing && existing.parentNode) {
       const fresh = renderHunk(hostHunk, f);
       existing.parentNode.replaceChild(fresh, existing);
     }
+    const fileEl = document.querySelector('.file[data-id="' + cssEscape(f.id) + '"]');
+    if (fileEl) attachFileFolds(fileEl, f);
   }
 
   // --- Progress strip ------------------------------------------------------

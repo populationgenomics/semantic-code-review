@@ -404,15 +404,26 @@ describe("streaming events", () => {
 
 describe("lazy fold summaries", () => {
   function dataWithFold(): ViewerData {
+    // Rows the file-level walker will recognise as a fold: `def foo():`
+    // header at indent 0, indented body. The fold_regions block is
+    // server-computed; the viewer re-detects from the rows but uses
+    // the block when looking up an existing summary.
     return makeData({
-      pending: false,  // post-augment state
+      pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
         adds: 1, dels: 1, summary: "ok", head_lines: null,
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "real intent", {
+          rows: [
+            { kind: "ctx", old_line: 1, new_line: 1, old_text: "def foo():", new_text: "def foo():" },
+            { kind: "pair", old_line: 2, new_line: 2, old_text: "    x = 1", new_text: "    x = 2" },
+          ],
           fold_regions: [
-            { header_idx: 0, body_start_idx: 1, body_end_idx: 1, context: "right", right_start: 1, right_end: 2, left_start: null, left_end: null, has_changes: true, summary: "" },
+            { header_idx: 0, body_start_idx: 1, body_end_idx: 1,
+              context: "both", right_start: 1, right_end: 2,
+              left_start: 1, left_end: 2,
+              has_changes: true, summary: "" },
           ],
         })],
       }],
@@ -440,20 +451,24 @@ describe("lazy fold summaries", () => {
     expandHunk();
     queueFetchResponse({
       status: 200,
-      body: { file_idx: 0, context: "right", right_start: 1, right_end: 2, left_start: 0, left_end: 0, summary: "renames the column" },
+      body: { file_idx: 0, context: "both", right_start: 1, right_end: 2, left_start: 1, left_end: 2, summary: "renames the column" },
     });
 
     const marker = document.querySelector(".fold-chev") as SVGElement | null;
     expect(marker).not.toBeNull();
-    // SVGElement has no .click() in jsdom; dispatch the event directly.
-    // The default is OPEN; one click collapses → fires the request.
     clickEl(marker!);
     expect(marker!.classList.contains("open")).toBe(false);
 
     const foldCalls = fetchCalls.filter((c) => c.url.includes("/fold-summary"));
     expect(foldCalls).toHaveLength(1);
     const body = JSON.parse((foldCalls[0].init!.body as string));
-    expect(body).toEqual({ file_idx: 0, context: "right", right_start: 1, right_end: 2 });
+    // The pair row inside the fold body makes this a "both" region —
+    // the model gets to see a diff body for the change.
+    expect(body).toEqual({
+      file_idx: 0, context: "both",
+      right_start: 1, right_end: 2,
+      left_start: 1, left_end: 2,
+    });
 
     // Let the fetch promise resolve.
     await new Promise((r) => setTimeout(r, 0));
@@ -486,7 +501,7 @@ describe("lazy fold summaries", () => {
     clickEl(marker);           // open → closed: should NOT re-fire (in-flight guard)
     expect(foldCalls()).toHaveLength(1);
 
-    resolveFetch({ status: 200, body: { file_idx: 0, context: "right", right_start: 1, right_end: 2, summary: "done" } });
+    resolveFetch({ status: 200, body: { file_idx: 0, context: "both", right_start: 1, right_end: 2, left_start: 1, left_end: 2, summary: "done" } });
     await new Promise((r) => setTimeout(r, 0));
     expect(document.querySelector(".annot-box")?.textContent).toBe("done");
   });
@@ -530,6 +545,79 @@ describe("lazy fold summaries", () => {
 
     await new Promise((r) => setTimeout(r, 0));
     expect(document.querySelector(".annot-box")?.textContent).toBe("drops the removed() helper");
+  });
+
+  test("fold whose body spans expanded context + a hunk collapses across both", async () => {
+    // A def-block opens in the expanded context above a hunk, the
+    // hunk lives inside the body, and the body continues for one
+    // more indented line. Folding the def-block should collapse
+    // rows from both stretches.
+    bootViewer(makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 1, dels: 1, summary: "ok",
+        head_lines: [
+          "def foo():",                  // 1 — fold header (in expanded context)
+          "    x = 1",                   // 2 — body line (in expanded context)
+          "    return new()",            // 3 — body line (lives inside the hunk)
+        ],
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock("H0_0", "ok", {
+          // Hunk covers line 3 only: replace `return old()` with `return new()`.
+          old_start: 3, old_count: 1, new_start: 3, new_count: 1,
+          rows: [{
+            kind: "pair", old_line: 3, new_line: 3,
+            old_text: "    return old()", new_text: "    return new()",
+          }],
+        })],
+      }],
+    }));
+
+    // Unfold the hunk so its rows are visible in the file-level
+    // row stream — without this, the file-level fold walker only
+    // sees the expanded-context rows and the cross-stretch span
+    // doesn't form.
+    expandHunk();
+    // Expand the gap above the hunk (covers lines 1-2).
+    const chip = document.querySelector(".gap-chip") as HTMLElement;
+    chip.click();
+
+    // One fold chevron now anchors the def-block; its body spans the
+    // last expanded-context row AND the pair row inside the hunk.
+    const chevrons = document.querySelectorAll(".fold-chev");
+    expect(chevrons.length).toBeGreaterThanOrEqual(1);
+
+    // Identify the row elements (one per side) we expect to hide.
+    // ScrAnnotations.attach injects a .row-annotation wrapper for the
+    // fold's summary box; filter it out and only count diff rows.
+    const expansionRows = document.querySelectorAll(
+      ".gap-expansion .half-new .row:not(.row-annotation)",
+    );
+    const hunkRows = document.querySelectorAll(
+      ".hunk .half-new .row:not(.row-annotation)",
+    );
+    expect(expansionRows.length).toBe(2);
+    expect(hunkRows.length).toBeGreaterThanOrEqual(1);
+    // Pre-condition: all visible.
+    expect((expansionRows[1] as HTMLElement).style.display).not.toBe("none");
+    expect((hunkRows[0] as HTMLElement).style.display).not.toBe("none");
+
+    // Click the chevron — body of the fold (expansion row 2 + hunk row 1)
+    // should go to display:none. Header (expansion row 1) stays.
+    clickEl(chevrons[0]);
+    expect((expansionRows[0] as HTMLElement).style.display).not.toBe("none");
+    expect((expansionRows[1] as HTMLElement).style.display).toBe("none");
+    expect((hunkRows[0] as HTMLElement).style.display).toBe("none");
+
+    // Fold-summary fires for the cross-stretch range (lines 1..3).
+    const foldCalls = fetchCalls.filter((c) => c.url.includes("/fold-summary"));
+    expect(foldCalls).toHaveLength(1);
+    const body = JSON.parse(foldCalls[0].init!.body as string);
+    // Pair row inside the body → context is "both".
+    expect(body.context).toBe("both");
+    expect(body.right_start).toBe(1);
+    expect(body.right_end).toBe(3);
   });
 
   test("expanded unchanged context exposes its own indent folds", async () => {
@@ -599,7 +687,7 @@ describe("lazy fold summaries", () => {
     expandHunk();
     queueFetchResponse({
       status: 200,
-      body: { file_idx: 0, context: "right", right_start: 1, right_end: 2, summary: "wraps in try/except" },
+      body: { file_idx: 0, context: "both", right_start: 1, right_end: 2, left_start: 1, left_end: 2, summary: "wraps in try/except" },
     });
 
     const marker = document.querySelector(".fold-chev") as SVGElement;
@@ -608,7 +696,7 @@ describe("lazy fold summaries", () => {
 
     // SSE arrives for the same region with the same payload.
     lastEventSource().dispatch("fold-summary", {
-      file_idx: 0, context: "right", right_start: 1, right_end: 2, summary: "wraps in try/except",
+      file_idx: 0, context: "both", right_start: 1, right_end: 2, left_start: 1, left_end: 2, summary: "wraps in try/except",
     });
     await new Promise((r) => setTimeout(r, 0));
 
@@ -640,7 +728,7 @@ describe("lazy fold summaries", () => {
     expandHunk();
     const es = lastEventSource();
     es.dispatch("fold-summary", {
-      file_idx: 0, context: "right", right_start: 1, right_end: 2, summary: "remote summary",
+      file_idx: 0, context: "both", right_start: 1, right_end: 2, left_start: 1, left_end: 2, summary: "remote summary",
     });
     // The SSE handler drops the rendered cache and replaces the hunk
     // DOM, so the new fold box's content reflects the streamed value.
