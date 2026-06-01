@@ -673,11 +673,19 @@ body {
 .gap-expansion .gap-collapse:hover { color: var(--fg); border-color: var(--accent); }
 
 /* --- Status bar ----------------------------------------------------------- */
+/* `position: sticky; bottom: 0` only pins relative to a scrolling
+ * ancestor, not the viewport — for a body-level footer it just sits
+ * at the end of the document flow. Use `fixed` to anchor it to the
+ * viewport bottom regardless of scroll position, and reserve space
+ * with body padding so the last content row isn't hidden behind it. */
 .status-bar {
-  position: sticky; bottom: 0; background: var(--bg-alt); border-top: 1px solid var(--border);
+  position: fixed; bottom: 0; left: 0; right: 0;
+  background: var(--bg-alt); border-top: 1px solid var(--border);
   padding: 6px 16px; color: var(--fg-muted); font-size: 12px;
   display: flex; gap: 16px;
+  z-index: 40;
 }
+body { padding-bottom: 30px; }
 
 /* --- Help overlay --------------------------------------------------------- */
 .help-overlay {
