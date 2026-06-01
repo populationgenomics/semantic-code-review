@@ -20,7 +20,6 @@ from ..augment.schemas import (
     SkippedOverview,
 )
 from ..cache.store import CacheStore
-from ..viewer.hunk_layout import build_rows, compute_fold_regions
 from .agents import Client, make_hunk_agent
 from .prompts import HUNK_SYSTEM, PROMPT_VERSION
 from .tools import TOOL_FUNCTIONS, RepoTools
@@ -38,33 +37,14 @@ def format_hunk_prompt(
     """Assemble the user content blocks for one hunk call.
 
     Three blocks: overview (cached), file summary (cached), hunk-specific
-    (not cached). The hunk-specific block also lists any indent fold
-    regions that contain changed lines — the LLM is expected to return a
-    one-line description per region.
+    (not cached). Fold-region summaries are no longer produced here —
+    the review server fires a focused call on first fold-close; see
+    `augment.fold_summary`.
     """
-    rows = build_rows(hunk.parsed)
-    regions = compute_fold_regions(rows)
-    changed_regions = [
-        r for r in regions
-        if r.has_changes and r.new_start is not None and r.new_end is not None
-    ]
-
-    fold_block = ""
-    if changed_regions:
-        bullet_lines = [
-            f"  +{r.new_start}..+{r.new_end}" for r in changed_regions
-        ]
-        fold_block = (
-            "\n# Indent fold regions (post-image, contain changes)\n"
-            + "\n".join(bullet_lines)
-            + "\nReturn a one-liner for each in `fold_descriptions`."
-        )
-
     hunk_text = (
         f"# File\npath: {fp.path}\n"
         f"lang: {fp.ann.lang or ''}\n\n"
         f"# Hunk\n{hunk.parsed.header}\n{hunk.parsed.body}"
-        f"{fold_block}"
     )
     return [
         {"type": "text", "text": f"# PR overview\n{overview_json}",

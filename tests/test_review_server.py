@@ -219,6 +219,120 @@ def test_events_replay_buffered_after_reconnect(server) -> None:
     conn.close()
 
 
+def test_fold_summary_returns_409_when_summariser_not_wired(server) -> None:
+    """Before serve_review installs the summariser, POST returns 409."""
+    conn = HTTPConnection("127.0.0.1", int(server.url().rsplit(":", 1)[1]), timeout=5)
+    conn.request(
+        "POST", "/fold-summary",
+        body=json.dumps({"hunk_id": "H0_0", "new_start": 1, "new_count": 3}),
+        headers={"Content-Type": "application/json"},
+    )
+    r = conn.getresponse()
+    assert r.status == 409
+    body = json.loads(r.read())
+    assert "augmentation" in body["error"]
+    conn.close()
+
+
+def test_fold_summary_persists_and_publishes(tmp_path: Path) -> None:
+    """When the summariser is wired and the sidecar is on disk, the
+    route calls the closure, writes the result back to the sidecar +
+    /data.json, and fans out a `fold-summary` SSE event."""
+    from semantic_code_review.format.parse import parse_augmented_diff
+    from semantic_code_review.format.sidecar import dump_sidecar
+    from semantic_code_review.review.server import ReviewServer
+
+    # Use the augmented fixture (carries an overview + per-hunk
+    # annotations) so the sidecar resolves cleanly.
+    fixture = Path(__file__).parent / "fixtures" / "sample.augmented.diff"
+    diff = parse_augmented_diff(fixture.read_text(encoding="utf-8"))
+    sidecar = tmp_path / "augmented.scr.json"
+    dump_sidecar(diff, sidecar)
+    (tmp_path / "augmented.diff").write_text(
+        fixture.read_text(encoding="utf-8"), encoding="utf-8",
+    )
+    (tmp_path / "review.html").write_text("<html></html>", encoding="utf-8")
+    viewer_json = {
+        "version": "1",
+        "files": [{
+            "id": "F0", "path": diff.files[0].path,
+            "hunks": [{
+                "id": "H0_0",
+                "fold_regions": [{"new_start": 1, "new_end": 3, "summary": ""}],
+            }],
+        }],
+    }
+
+    srv = ReviewServer(
+        run_dir=tmp_path,
+        html_path=tmp_path / "review.html",
+        viewer_json=viewer_json,
+    )
+    srv.start()
+    try:
+        captured = {}
+
+        async def summariser(fp, hunk, overview_json, new_start, new_count):
+            captured["called"] = True
+            captured["path"] = fp.path
+            captured["new_start"] = new_start
+            captured["new_count"] = new_count
+            return "wraps the body in a try/except to fail-soft on bad input"
+
+        srv.set_fold_summariser(summariser)
+
+        # Subscribe to /events so we can assert the broadcast happened.
+        conn = HTTPConnection("127.0.0.1", int(srv.url().rsplit(":", 1)[1]), timeout=5)
+        conn.request("GET", "/events")
+        events_resp = conn.getresponse()
+        assert events_resp.status == 200
+        # Consume the priming frame.
+        events_resp.fp.readline()
+        events_resp.fp.readline()
+
+        # Wait for the subscriber to actually register.
+        for _ in range(50):
+            with srv.ctx.state_lock:
+                if srv.ctx.subscribers:
+                    break
+            time.sleep(0.01)
+
+        code, body = _request(
+            srv.url() + "/fold-summary", "POST",
+            {"hunk_id": "H0_0", "new_start": 1, "new_count": 3},
+        )
+        assert code == 200
+        assert body["summary"].startswith("wraps the body")
+        assert captured["called"] is True
+        assert captured["new_start"] == 1 and captured["new_count"] == 3
+
+        # Sidecar now carries the summary.
+        from semantic_code_review.format.sidecar import load_sidecar
+        reloaded = load_sidecar(sidecar)
+        folds = reloaded.files[0].hunks[0].ann.fold_descriptions
+        assert any(
+            fd.new_start == 1 and fd.new_count == 3
+            and fd.summary.startswith("wraps the body")
+            for fd in folds
+        )
+        # `/data.json` reflects the patched viewer_json.
+        code, data = _request(srv.url() + "/data.json")
+        assert code == 200
+        assert data["files"][0]["hunks"][0]["fold_regions"][0]["summary"].startswith(
+            "wraps the body"
+        )
+        # The SSE channel broadcast the same payload.
+        id_line = events_resp.fp.readline()
+        event_line = events_resp.fp.readline()
+        data_line = events_resp.fp.readline()
+        events_resp.fp.readline()  # trailing blank
+        assert event_line == b"event: fold-summary\n"
+        assert b'"summary":' in data_line
+        conn.close()
+    finally:
+        srv.stop()
+
+
 def test_events_replay_from_zero_when_header_absent(server) -> None:
     """A fresh connection with no Last-Event-ID gets the full buffer."""
     server.publish("overview", {"summary": "first"})

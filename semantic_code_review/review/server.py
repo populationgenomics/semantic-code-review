@@ -11,11 +11,13 @@ fans events out and never blocks the caller.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import queue
 import threading
 import time
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -44,6 +46,56 @@ def _parse_last_event_id(raw: str | None) -> int:
         return 0
 
 
+def _parse_hunk_id(hunk_id: str) -> tuple[int, int]:
+    """`"H{fi}_{hi}"` → (fi, hi). Raises ValueError on malformed input."""
+    if not hunk_id.startswith("H") or "_" not in hunk_id:
+        raise ValueError(f"malformed hunk_id {hunk_id!r}")
+    try:
+        fi_str, hi_str = hunk_id[1:].split("_", 1)
+        return int(fi_str), int(hi_str)
+    except ValueError as e:
+        raise ValueError(f"malformed hunk_id {hunk_id!r}") from e
+
+
+def _update_viewer_json_fold(
+    viewer_json: dict[str, Any], fi: int, hi: int,
+    new_start: int, new_count: int, summary: str,
+) -> None:
+    """Patch the matching fold_regions[i].summary in the viewer JSON
+    so a fresh `/data.json` fetch sees the result."""
+    files = viewer_json.get("files") or []
+    if fi >= len(files):
+        return
+    hunks = files[fi].get("hunks") or []
+    if hi >= len(hunks):
+        return
+    new_end = new_start + new_count - 1
+    for reg in hunks[hi].get("fold_regions") or []:
+        if reg.get("new_start") == new_start and reg.get("new_end") == new_end:
+            reg["summary"] = summary
+            return
+
+
+def _ctx_publish(ctx: ServerContext, event_type: str, payload: dict[str, Any]) -> None:
+    """Append an event to the buffer + broadcast to subscribers.
+
+    Shared by `ReviewServer.publish` and route handlers so the
+    /fold-summary route can fan out to other tabs without round-
+    tripping through the ReviewServer instance.
+    """
+    with ctx.state_lock:
+        ev = _BufferedEvent(
+            id=ctx.next_event_id, event_type=event_type, payload=payload,
+        )
+        ctx.next_event_id += 1
+        ctx.buffer.append(ev)
+        if len(ctx.buffer) > _BUFFER_CAP:
+            del ctx.buffer[: len(ctx.buffer) - _BUFFER_CAP]
+        subs = list(ctx.subscribers)
+    for q in subs:
+        q.put(ev)
+
+
 #: Upper bound on the replay buffer. A 200-hunk PR emits ~200 hunk
 #: events plus overview/done; even at a few KB per event the buffer
 #: stays well under a megabyte. Anything beyond this cap drops the
@@ -61,6 +113,16 @@ class _BufferedEvent:
     payload: dict[str, Any]
 
 
+#: Signature of the on-demand fold summariser closure. The server
+#: resolves hunk_id → file/hunk from the persisted sidecar and passes
+#: (AnnotatedFile, AnnotatedHunk, overview_json, new_start, new_count).
+#: The closure encapsulates model selection, cache, trace dir, etc;
+#: the server stays diff-source-agnostic. Stored as ``Any`` here to
+#: avoid pulling the augment-side schemas into the stdlib-only server
+#: module — the actual signature is in `review/runner.py`.
+FoldSummariser = Callable[..., Awaitable[str]]
+
+
 @dataclass
 class ServerContext:
     run_dir: Path
@@ -69,6 +131,10 @@ class ServerContext:
     viewer_json: dict[str, Any]
     done_event: threading.Event
     last_activity: float = 0.0
+    # Optional, wired by serve_review when an LLM backend is available.
+    # The /fold-summary route returns 409 until this is set (the augment
+    # pass has to finish first so the sidecar exists).
+    fold_summariser: FoldSummariser | None = None
     # SSE fan-out + replay buffer. Subscribers and `buffer` are mutated
     # by both publishing threads and request-handling threads; the
     # single ``state_lock`` covers both so a reconnecting client sees a
@@ -227,7 +293,112 @@ class _Handler(BaseHTTPRequestHandler):
             # Defer the event set slightly so the response flushes.
             threading.Thread(target=self._signal_done, daemon=True).start()
             return
+        if path == "/fold-summary":
+            try:
+                payload = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": f"invalid json: {e}"})
+                return
+            self._handle_fold_summary(payload)
+            return
         self._json(404, {"error": "not found"})
+
+    def _handle_fold_summary(self, payload: dict[str, Any]) -> None:
+        """Resolve hunk_id → (file, hunk), call the summariser, persist
+        the result, push a `fold-summary` SSE event, and return the
+        summary in the HTTP response.
+        """
+        if self.ctx.fold_summariser is None:
+            self._json(409, {"error": "augmentation still in progress"})
+            return
+        hunk_id = str(payload.get("hunk_id", "")).strip()
+        try:
+            new_start = int(payload.get("new_start"))
+            new_count = int(payload.get("new_count"))
+        except (TypeError, ValueError):
+            self._json(400, {"error": "new_start and new_count must be integers"})
+            return
+        try:
+            fi, hi = _parse_hunk_id(hunk_id)
+        except ValueError as e:
+            self._json(400, {"error": str(e)})
+            return
+
+        sidecar = self.ctx.run_dir / "augmented.scr.json"
+        if not sidecar.exists():
+            self._json(409, {"error": "augmented.scr.json missing — augment not complete"})
+            return
+
+        # Local imports keep stdlib-only modules importable even when
+        # the augment / format machinery isn't installed (tests that
+        # exercise the server in isolation).
+        from ..format.emit import emit_augmented_diff
+        from ..format.sidecar import dump_sidecar, load_sidecar
+
+        diff = load_sidecar(sidecar)
+        if fi >= len(diff.files) or hi >= len(diff.files[fi].hunks):
+            self._json(404, {"error": f"hunk {hunk_id!r} not in diff"})
+            return
+
+        fp = diff.files[fi]
+        hunk = diff.files[fi].hunks[hi]
+        # Pass the overview as a JSON string mirroring the per-hunk
+        # pass's prompt block (which the agent caches against).
+        from ..augment.hunks import overview_to_prompt_json
+
+        overview_json = overview_to_prompt_json(diff)
+
+        try:
+            summary = asyncio.run(
+                self.ctx.fold_summariser(fp, hunk, overview_json, new_start, new_count)
+            )
+        except Exception as e:  # noqa: BLE001
+            log.exception("fold-summary failed for %s %s+%d", hunk_id, new_start, new_count)
+            self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            return
+
+        # Persist: append or replace the matching FoldDescription on
+        # the hunk's annotations, then write the sidecar + the
+        # augmented.diff so a manual reload also sees the new summary.
+        from ..augment.schemas import FoldDescription
+
+        new_folds = [
+            fd for fd in hunk.ann.fold_descriptions
+            if not (fd.new_start == new_start and fd.new_count == new_count)
+        ]
+        new_folds.append(
+            FoldDescription(new_start=new_start, new_count=new_count, summary=summary)
+        )
+        updated_ann = hunk.ann.model_copy(update={"fold_descriptions": new_folds})
+        updated_hunk = hunk.model_copy(update={"ann": updated_ann})
+        updated_hunks = list(fp.hunks)
+        updated_hunks[hi] = updated_hunk
+        updated_file = fp.model_copy(update={"hunks": updated_hunks})
+        updated_files = list(diff.files)
+        updated_files[fi] = updated_file
+        updated_diff = diff.model_copy(update={"files": updated_files})
+
+        dump_sidecar(updated_diff, sidecar)
+        (self.ctx.run_dir / "augmented.diff").write_text(
+            emit_augmented_diff(updated_diff), encoding="utf-8",
+        )
+
+        # Update the viewer_json fold_regions[].summary so a reload
+        # via /data.json also picks it up, then broadcast the patch
+        # to any other connected tabs viewing the same review.
+        _update_viewer_json_fold(
+            self.ctx.viewer_json, fi, hi, new_start, new_count, summary,
+        )
+        _ctx_publish(self.ctx, "fold-summary", {
+            "hunk_id": hunk_id, "new_start": new_start,
+            "new_count": new_count, "summary": summary,
+        })
+        # Caller's RPC response carries the summary so the requesting
+        # tab doesn't need to wait for its own SSE event to round-trip.
+        self._json(200, {
+            "hunk_id": hunk_id, "new_start": new_start,
+            "new_count": new_count, "summary": summary,
+        })
 
     def do_DELETE(self) -> None:  # noqa: N802
         self._touch()
@@ -305,25 +476,19 @@ class ReviewServer:
 
         Caller-thread-safe and non-blocking — each subscriber has its
         own queue. Disconnected clients drain themselves at the
-        handler-thread side; the snapshot here is just to avoid holding
-        the lock while putting onto queues.
+        handler-thread side; the snapshot taken inside the lock is just
+        to avoid holding it while putting onto queues.
         """
-        with self.ctx.state_lock:
-            ev = _BufferedEvent(
-                id=self.ctx.next_event_id, event_type=event_type, payload=payload,
-            )
-            self.ctx.next_event_id += 1
-            self.ctx.buffer.append(ev)
-            if len(self.ctx.buffer) > _BUFFER_CAP:
-                # Drop the oldest entries. A client that reconnects with
-                # a Last-Event-ID older than the surviving range will
-                # simply receive every event we still have — gaps are
-                # tolerable (they degrade to the slice-1 "may need re-run"
-                # state) and the cap is well above any realistic review.
-                del self.ctx.buffer[: len(self.ctx.buffer) - _BUFFER_CAP]
-            subs = list(self.ctx.subscribers)
-        for q in subs:
-            q.put(ev)
+        _ctx_publish(self.ctx, event_type, payload)
+
+    def set_fold_summariser(self, summariser: FoldSummariser | None) -> None:
+        """Install (or clear) the on-demand fold-summary closure.
+
+        serve_review calls this once the augmentation pass has finished
+        and the sidecar is on disk. Before then, /fold-summary returns
+        409 because the diff can't be resolved.
+        """
+        self.ctx.fold_summariser = summariser
 
     def update_viewer_json(self, viewer_json: dict[str, Any]) -> None:
         """Replace the JSON returned by ``GET /data.json``.

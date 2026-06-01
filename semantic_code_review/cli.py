@@ -452,8 +452,10 @@ def pr(
     run_dir = fetch_result.run_dir
 
     augment_task = None
+    fold_summary_task = None
     if augment:
         from .augment.pipeline import augment_run_dir
+        from .review.runner import _build_fold_summary_task
 
         cache = None if no_cache else CacheStore(root=cache_dir, prompt_version=PROMPT_VERSION)
 
@@ -470,6 +472,10 @@ def pr(
                 show_progress=False,
                 on_event=publish,
             )
+
+        fold_summary_task = _build_fold_summary_task(
+            client=client, model=model, cache=cache,
+        )
     else:
         # Mirror cli.review's behaviour: copy raw → augmented so render has
         # something to parse when augment is skipped.
@@ -481,6 +487,7 @@ def pr(
     result = serve_review(
         run_dir,
         augment=augment_task,
+        fold_summary=fold_summary_task,
         port=port,
         timeout=timeout,
         open_browser=not no_open,

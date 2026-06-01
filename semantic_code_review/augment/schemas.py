@@ -94,7 +94,9 @@ class FoldDescription(BaseModel):
     """One-line summary of the change inside an indent fold region.
 
     `new_start`/`new_count` target post-image lines the region covers.
-    Emitted by the LLM for every fold region that contains changed text.
+    Generated lazily by the review server's `/fold-summary` route the
+    first time the reviewer collapses a region; cached so subsequent
+    reviews skip the call.
     """
 
     new_start: int

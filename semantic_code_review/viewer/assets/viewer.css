@@ -512,6 +512,17 @@ body {
   color: var(--fg-dim);
   border-left-color: var(--fg-dim);
 }
+.diff .annot-box.pending {
+  color: var(--fg-muted);
+  border-left-color: var(--accent);
+  font-style: italic;
+  animation: scr-pulse 1.4s ease-in-out infinite;
+}
+.diff .annot-box.failed {
+  color: var(--err);
+  border-left-color: var(--err);
+  cursor: pointer;
+}
 
 /* Reviewer comment variant (amber/warn border so it stands out from the
  * blue LLM fold descriptions). */

@@ -527,7 +527,7 @@
       rowElsOld.push(pair.old);
       rowElsNew.push(pair.new);
     }
-    attachIndentFolds(halfOld, halfNew, rowElsOld, rowElsNew, h.fold_regions || []);
+    attachIndentFolds(halfOld, halfNew, rowElsOld, rowElsNew, h.fold_regions || [], h.id);
     attachLineNotes(halfOld, halfNew, rowElsOld, rowElsNew, h.rows || [], h.line_notes || []);
     STATE.renderedDiffs[h.id] = container;
     return container;
@@ -567,11 +567,11 @@
   // (so the LLM can describe each one). Wire the chevron and the
   // summary row for the folded state.
 
-  function attachIndentFolds(halfOld, halfNew, rowElsOld, rowElsNew, regions) {
-    for (const r of regions) attachOneFold(halfOld, halfNew, rowElsOld, rowElsNew, r);
+  function attachIndentFolds(halfOld, halfNew, rowElsOld, rowElsNew, regions, hunkId) {
+    for (const r of regions) attachOneFold(halfOld, halfNew, rowElsOld, rowElsNew, r, hunkId);
   }
 
-  function attachOneFold(halfOld, halfNew, rowElsOld, rowElsNew, region) {
+  function attachOneFold(halfOld, halfNew, rowElsOld, rowElsNew, region, hunkId) {
     const bodyStart = region.body_start_idx;
     const bodyEnd = region.body_end_idx;
     if (bodyStart > bodyEnd) return;
@@ -593,15 +593,19 @@
 
     let foldHandle = null;
     if (region.summary || region.has_changes) {
+      const initialContent = region.summary
+        || (canRequestFoldSummary(hunkId, region) ? "summarising…"
+            : "(changes here; run augment to generate a description)");
       foldHandle = window.ScrAnnotations.attach({
         anchor,
         shadowAnchor: shadow,
         variant: "fold",
-        content: region.summary || "(changes here; run augment to generate a description)",
+        content: initialContent,
       });
       if (!region.summary) {
         const box = foldHandle.element.querySelector(".annot-box");
         if (box) box.classList.add("missing");
+        if (initialContent === "summarising…" && box) box.classList.add("pending");
       }
       // Fold defaults to open, so the summary + its placeholder start hidden.
       foldHandle.element.style.display = "none";
@@ -619,6 +623,13 @@
         foldHandle.element.style.display = nowOpen ? "none" : "";
         if (foldHandle.placeholder) foldHandle.placeholder.style.display = nowOpen ? "none" : "";
         if (!nowOpen) foldHandle.resize();
+      }
+      // On close, if the region still has no summary, ask the server to
+      // generate one. Single-flight per region: requestFoldSummary
+      // guards against the user opening + closing repeatedly.
+      if (!nowOpen && !region.summary && foldHandle
+          && canRequestFoldSummary(hunkId, region)) {
+        requestFoldSummary(hunkId, region, foldHandle);
       }
       // Showing/hiding the fold summary shifts every sibling annotation
       // below it; re-size any that share this fold's header as anchor.
@@ -1148,8 +1159,103 @@
     });
     es.addEventListener("done", () => {
       finaliseStreaming();
-      try { es.close(); } catch (_) { /* ignore */ }
+      // Don't close `es` yet — fold-summary events fire later on the
+      // same channel when other tabs (or this one) request summaries.
     });
+    es.addEventListener("fold-summary", (e) => {
+      try { applyFoldSummary(JSON.parse(e.data)); } catch (_) { /* ignore */ }
+    });
+  }
+
+  // --- Fold-summary RPC ----------------------------------------------------
+
+  function canRequestFoldSummary(hunkId, region) {
+    if (!SESSION_ENDPOINT) return false;
+    if (!hunkId) return false;
+    if (region.new_start == null || region.new_end == null) return false;
+    return true;
+  }
+
+  function requestFoldSummary(hunkId, region, foldHandle) {
+    if (region._inflight || region.summary) return;
+    region._inflight = true;
+    setFoldBoxContent(foldHandle, "summarising…", {pending: true});
+    const new_count = region.new_end - region.new_start + 1;
+    fetch(SESSION_ENDPOINT + "/fold-summary", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        hunk_id: hunkId, new_start: region.new_start, new_count,
+      }),
+    })
+      .then((r) => r.json().then((j) => ({status: r.status, body: j})))
+      .then(({status, body}) => {
+        region._inflight = false;
+        if (status === 200 && body.summary) {
+          region.summary = body.summary;
+          setFoldBoxContent(foldHandle, body.summary, {});
+        } else {
+          setFoldBoxContent(
+            foldHandle,
+            "(summary failed — click to retry)",
+            {failed: true},
+            () => requestFoldSummary(hunkId, region, foldHandle),
+          );
+        }
+      })
+      .catch(() => {
+        region._inflight = false;
+        setFoldBoxContent(
+          foldHandle,
+          "(summary failed — click to retry)",
+          {failed: true},
+          () => requestFoldSummary(hunkId, region, foldHandle),
+        );
+      });
+  }
+
+  function setFoldBoxContent(foldHandle, text, classes, onClick) {
+    if (!foldHandle || !foldHandle.element) return;
+    const box = foldHandle.element.querySelector(".annot-box");
+    if (!box) return;
+    box.textContent = text;
+    box.classList.remove("pending", "failed");
+    if (classes.pending) box.classList.add("pending");
+    if (classes.failed) box.classList.add("failed");
+    // Replace any prior click handler. cloneNode keeps the DOM but
+    // sheds listeners, which is the simplest cross-browser path.
+    if (onClick) {
+      const clone = box.cloneNode(true);
+      clone.style.cursor = "pointer";
+      clone.addEventListener("click", onClick);
+      box.replaceWith(clone);
+    }
+    foldHandle.resize();
+  }
+
+  function applyFoldSummary(payload) {
+    if (!payload || !payload.hunk_id || payload.summary == null) return;
+    const [fi, hi] = payload.hunk_id.replace("H", "").split("_").map(Number);
+    const f = DATA.files && DATA.files[fi];
+    const h = f && f.hunks && f.hunks[hi];
+    if (!h) return;
+    const new_end = payload.new_start + payload.new_count - 1;
+    const region = (h.fold_regions || []).find(
+      (r) => r.new_start === payload.new_start && r.new_end === new_end,
+    );
+    if (!region) return;
+    region.summary = payload.summary;
+    region._inflight = false;
+    // If this hunk's diff is already in the DOM, patch the fold box.
+    // The rendered cache is keyed by hunk id; we don't know which
+    // fold instance to update without re-rendering, so simplest is
+    // to drop the cache for this hunk and let the next render rebuild.
+    delete STATE.renderedDiffs[h.id];
+    const existing = document.querySelector('.hunk[data-id="' + cssEscape(h.id) + '"]');
+    if (existing && existing.parentNode) {
+      const fresh = renderHunk(h, f);
+      existing.parentNode.replaceChild(fresh, existing);
+    }
   }
 
   // --- Progress strip ------------------------------------------------------

@@ -14,7 +14,7 @@ from __future__ import annotations
 from .schemas import SMELL_TAGS_TEXT
 
 
-PROMPT_VERSION = "p8"
+PROMPT_VERSION = "p9"
 
 
 OVERVIEW_SYSTEM = (
@@ -81,21 +81,9 @@ HUNK_SYSTEM = (
     "- `context`: cross-file dependencies the reviewer can't see from the diff.\n"
     "- `refs`: {path, line, reason} for other files the reviewer should look at.\n"
     "- `confidence`: 0-100 integer. Low is fine and honest.\n"
-    "- `line_notes`: {line, body} for notes too specific for intent. `line` is post-image.\n"
-    "- `fold_descriptions`: the viewer supports indent-based code folding inside the "
-    "diff. The prompt lists the nested fold regions in this hunk that contain changed "
-    "lines. For EACH region, return a short hint (<= 25 words, present tense, "
-    "lowercase) that tells a reviewer who has the fold collapsed what the WHOLE folded "
-    "block DOES as a unit. Describe behaviour, not structure; describe the effect, not "
-    "the control flow. If the folded block REPLACES existing code, describe the "
-    "CHANGE the block introduces, not just the new steps.\n"
-    "Good: 'convert every top-level message in every descriptor to a json schema'. "
-    "Good: 'fall back to inline generation when include_all is set'. "
-    "Good: 'forward page/size kwargs to list_users so pagination reaches the handler'. "
-    "Bad: 'iterate every file descriptor in the set' (structure, not effect). "
-    "Bad: 'if / elif / else' (control flow). "
-    "Bad: 'call self._convert_message_to_schema' (names a call, not what is achieved).\n"
-    "Match each region's `new_start`/`new_count` exactly. If no regions are listed, "
-    "omit the field.\n\n"
+    "- `line_notes`: {line, body} for notes too specific for intent. `line` is post-image.\n\n"
+    "Fold-region summaries (indent-based collapsed blocks inside the diff) are NOT "
+    "produced here — the review server fires a focused one-shot call for each region "
+    "the reviewer actually collapses. Leave `fold_descriptions` empty.\n\n"
     "Tone: explanatory, not evaluative. Comprehension first."
 )

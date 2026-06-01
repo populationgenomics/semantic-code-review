@@ -18,6 +18,7 @@ import webbrowser
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .. import git_ops
 from ..augment.agents import Client
@@ -42,6 +43,19 @@ log = logging.getLogger(__name__)
 AugmentCallable = Callable[
     [Path, Callable[[str, dict], None]],
     Awaitable[None],
+]
+
+
+#: Signature of the on-demand fold-summary callable accepted by
+#: ``serve_review``. The server resolves hunk_id → AnnotatedFile +
+#: AnnotatedHunk from the persisted sidecar before invoking; the
+#: closure does the LLM call and returns a one-sentence summary.
+#: Wired up only when an LLM backend is available (i.e.
+#: ``opts.augment is True``); ``--no-augment`` reviews leave this
+#: at ``None`` and the route returns 409 unconditionally.
+FoldSummaryCallable = Callable[
+    [Any, Any, str, int, int],  # (fp, hunk, overview_json, new_start, new_count)
+    Awaitable[str],
 ]
 
 
@@ -81,6 +95,7 @@ def run_review(opts: ReviewOptions) -> int:
     _populate_run_dir(run_dir, diff, spec_md=opts.spec_markdown)
 
     augment_task: AugmentCallable | None = None
+    fold_summary_task: FoldSummaryCallable | None = None
     if opts.augment:
         from ..augment.pipeline import augment_run_dir  # lazy: anthropic SDK
 
@@ -101,6 +116,10 @@ def run_review(opts: ReviewOptions) -> int:
                 show_progress=False,
                 on_event=publish,
             )
+
+        fold_summary_task = _build_fold_summary_task(
+            client=opts.client, model=opts.model, cache=cache,
+        )
     else:
         # When augment is skipped, copy raw.diff to augmented.diff so render
         # has something to parse. It'll have no annotations.
@@ -112,6 +131,7 @@ def run_review(opts: ReviewOptions) -> int:
     result = serve_review(
         run_dir,
         augment=augment_task,
+        fold_summary=fold_summary_task,
         port=opts.port,
         timeout=opts.timeout,
         open_browser=opts.open_browser,
@@ -136,6 +156,7 @@ def serve_review(
     run_dir: "Path",
     *,
     augment: AugmentCallable | None = None,
+    fold_summary: FoldSummaryCallable | None = None,
     port: int = 0,
     timeout: int = 3600,
     open_browser: bool = True,
@@ -202,6 +223,12 @@ def serve_review(
                 final_json = _load_viewer_json(run_dir)
                 render_run_dir(run_dir, html_path, session_endpoint=srv.url())
                 srv.update_viewer_json(final_json)
+                # Augmentation has emitted a sidecar, so the /fold-summary
+                # route can now resolve hunk_ids. Bind the summariser here
+                # rather than at start() to prevent races against a tab
+                # that opens before augmentation lands.
+                if fold_summary is not None:
+                    srv.set_fold_summariser(fold_summary)
                 srv.publish("done", {"reason": "augment-complete"})
             if augment_error is not None and not isinstance(augment_error, Exception):
                 # KeyboardInterrupt / SystemExit shouldn't be swallowed —
@@ -214,6 +241,31 @@ def serve_review(
 
     store = CommentStore(run_dir / "comments.json")
     return ServeResult(comments=store.all(), clean=clean)
+
+
+def _build_fold_summary_task(
+    *, client: Client | None, model: str, cache: CacheStore | None,
+) -> FoldSummaryCallable:
+    """Construct the FoldSummaryCallable that ``serve_review`` installs
+    onto the review server once augmentation completes. The closure
+    captures the LLM backend + cache so the server module stays
+    independent of the augment-side machinery.
+    """
+    # Lazy import: keeps the SDK / pydantic-ai dep out of the
+    # `--no-augment` path.
+    from ..augment.fold_summary import summarise_fold
+
+    async def task(fp, hunk, overview_json: str, new_start: int, new_count: int) -> str:
+        # client is None only when augment is False; in that path
+        # serve_review never wires this task up, so a None here would
+        # be a wiring bug — fail loudly.
+        assert client is not None, "fold-summary task called without an LLM backend"
+        return await summarise_fold(
+            client, fp=fp, hunk=hunk, overview_json=overview_json,
+            new_start=new_start, new_count=new_count, model=model, cache=cache,
+        )
+
+    return task
 
 
 def _populate_run_dir(run_dir: Path, diff: LocalDiff, *, spec_md: Path | None) -> None:
