@@ -19,8 +19,10 @@
 
 // Top-level declarations use no `export` keyword so tsc with
 // `module: "none"` emits classic-script output (no CommonJS wrapper).
-// Types are internal to this file; callers that want to reference
-// them import from `annotations.types.ts` which re-exports.
+// Types declared here are internal to this file. The wider viewer
+// data contract (ViewerData / FileBlock / HunkBlock / …) lives in
+// `types.d.ts` and is available to every .ts file in this directory
+// without an explicit import.
 
 type ColumnMode = "auto" | "absolute" | "explicit";
 type StackPolicy = "auto" | "fixed" | "grouped";
