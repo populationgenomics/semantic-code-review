@@ -14,7 +14,7 @@ from __future__ import annotations
 from .schemas import SMELL_TAGS_TEXT
 
 
-PROMPT_VERSION = "p9"
+PROMPT_VERSION = "p10"
 
 
 OVERVIEW_SYSTEM = (

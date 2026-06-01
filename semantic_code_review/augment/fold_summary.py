@@ -6,19 +6,22 @@ defer: the review server fires this code path the first time the
 reviewer closes a region, the result is cached, and the augmented
 sidecar is updated so subsequent loads are free.
 
-The summariser is structurally similar to `run_hunk_pass` but cheaper:
-- No repo tools — the region body is self-contained.
-- Tiny structured output (just a `summary` field).
-- Cache key includes the region range so different regions of the same
-  hunk don't collide.
+Address space (slice 1 of "fold anywhere"): a fold region is identified
+by a file path + a `context` (right / left / both) + 1-indexed line
+ranges into the named worktree file. Pure-context folds use right;
+deletion-only folds use left; folds that straddle changed content use
+both. The server reads the actual line content from the head/ and/or
+base/ worktrees and passes a prepared body string to this module —
+the summariser stays narrow and focused on the LLM call + caching.
 """
 
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
@@ -26,9 +29,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.output import ToolOutput
 
 from ..cache.store import CacheStore
-from ..viewer.hunk_layout import build_rows, compute_fold_regions
 from .agents import Client
-from .schemas import AnnotatedFile, AnnotatedHunk
 from .trace_adapter import (
     submit_args_from_result, write_partial_trace, write_pydantic_ai_trace,
 )
@@ -37,16 +38,22 @@ from .trace_adapter import (
 log = logging.getLogger(__name__)
 
 
+FoldContext = Literal["right", "left", "both"]
+
+
 FOLD_SYSTEM = (
-    "You are describing one COLLAPSED fold region inside a diff hunk. A reviewer "
-    "is looking at the hunk with this region's body hidden; your sentence is the "
-    "ONLY thing they see in place of it.\n\n"
+    "You are describing one COLLAPSED fold region for a reviewer who has "
+    "the body hidden; your sentence is the ONLY thing they see in place of it.\n\n"
+    "The user prompt declares which kind of region you're looking at:\n"
+    "  - `right`: the lines exist post-change. Describe what the code DOES.\n"
+    "  - `left`:  the lines are being REMOVED. Describe what they did,\n"
+    "             phrased so the reviewer understands what was lost.\n"
+    "  - `both`:  the fold straddles changed content; you'll see a diff.\n"
+    "             Describe the CHANGE the fold introduces.\n\n"
     "Rules:\n"
     "- One sentence. <= 25 words.\n"
     "- Present tense. Lowercase. No trailing period.\n"
     "- Describe EFFECT, not structure or control flow.\n"
-    "- If the folded block REPLACES existing code, describe the CHANGE the block "
-    "  introduces, not just the new steps.\n"
     "- Tone: explanatory, not evaluative.\n\n"
     "Good: 'convert every top-level message in every descriptor to a json schema'.\n"
     "Good: 'fall back to inline generation when include_all is set'.\n"
@@ -72,69 +79,77 @@ def make_fold_summary_agent(model: str | Model) -> Agent[None, FoldSummarySubmis
     )
 
 
-def extract_region_body(
-    hunk: AnnotatedHunk, side: str, start: int, count: int,
+def extract_fold_body(
+    run_dir: Path,
+    file_path: str,
+    context: FoldContext,
+    right_range: tuple[int, int] | None,
+    left_range: tuple[int, int] | None,
 ) -> str:
-    """Return the raw +/-/space-prefixed lines that fall inside the
-    requested side-relative range, joined by newlines. Falls back to
-    the full hunk body when the range doesn't match a computed region.
+    """Read the actual line content for a fold region.
 
-    `side` is "new" (post-image, the common case — describe what the
-    new code does) or "old" (pre-image, used when an indent fold is
-    a pure deletion and has no post-image lines to address).
+    `right_range` / `left_range` are 1-indexed inclusive `(start, end)`.
+    For `right` / `left` returns the plain lines joined with newlines.
+    For `both` returns a unified-diff-style body so the LLM can see
+    what changed.
     """
-    rows = build_rows(hunk.parsed)
-    regions = compute_fold_regions(rows)
-    end = start + count - 1
-    if side == "old":
-        matched = next(
-            (r for r in regions if r.side == "old"
-             and r.old_start == start and r.old_end == end),
-            None,
-        )
-    else:
-        matched = next(
-            (r for r in regions if r.side == "new"
-             and r.new_start == start and r.new_end == end),
-            None,
-        )
-    if matched is None:
-        # Unknown region — return the whole hunk body so the model has
-        # something coherent to summarise. The caller already knows the
-        # range was suspicious; this keeps it useful as a fallback.
-        return hunk.parsed.body
-    lines = []
-    for row in rows[matched.header_idx : matched.body_end_idx + 1]:
-        if row.kind == "ins":
-            lines.append("+" + row.new_text)
-        elif row.kind == "del":
-            lines.append("-" + row.old_text)
-        elif row.kind == "pair":
-            lines.append("-" + row.old_text)
-            lines.append("+" + row.new_text)
-        else:  # ctx
-            lines.append(" " + row.new_text)
-    return "\n".join(lines)
+    head_path = run_dir / "head" / file_path
+    base_path = run_dir / "base" / file_path
+
+    if context == "right":
+        if right_range is None:
+            return ""
+        return "\n".join(_slice_lines(head_path, *right_range))
+    if context == "left":
+        if left_range is None:
+            return ""
+        return "\n".join(_slice_lines(base_path, *left_range))
+    # both — unified diff between the corresponding slices.
+    right_lines = _slice_lines(head_path, *right_range) if right_range else []
+    left_lines = _slice_lines(base_path, *left_range) if left_range else []
+    diff = difflib.unified_diff(
+        left_lines, right_lines,
+        fromfile=f"base/{file_path}", tofile=f"head/{file_path}",
+        lineterm="",
+    )
+    return "\n".join(diff)
+
+
+def _slice_lines(path: Path, start: int, end: int) -> list[str]:
+    if not path.exists():
+        return []
+    text = path.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+    # 1-indexed inclusive → Python slice.
+    return lines[max(0, start - 1) : end]
 
 
 def _format_fold_prompt(
     *,
     overview_json: str,
-    fp: AnnotatedFile,
-    hunk: AnnotatedHunk,
-    side: str,
-    start: int,
-    count: int,
+    file_path: str,
+    file_summary: str,
+    context: FoldContext,
+    body: str,
+    right_range: tuple[int, int] | None,
+    left_range: tuple[int, int] | None,
 ) -> list[dict[str, Any]]:
-    region_body = extract_region_body(hunk, side, start, count)
-    file_summary = (fp.ann.summary or "").strip()
-    sign = "+" if side == "new" else "-"
-    side_label = "post-image" if side == "new" else "pre-image (deleted)"
+    if context == "right":
+        rs, re_ = right_range or (0, 0)
+        region_label = f"post-image lines head/{file_path}:{rs}..{re_}"
+    elif context == "left":
+        ls, le = left_range or (0, 0)
+        region_label = f"pre-image (deleted) lines base/{file_path}:{ls}..{le}"
+    else:
+        rs, re_ = right_range or (0, 0)
+        ls, le = left_range or (0, 0)
+        region_label = (
+            f"both sides — head/{file_path}:{rs}..{re_} vs base/{file_path}:{ls}..{le}"
+        )
     region_text = (
-        f"# File\npath: {fp.path}\nlang: {fp.ann.lang or ''}\n\n"
-        f"# Hunk\n{hunk.parsed.header}\n\n"
-        f"# Folded region ({side_label} lines {sign}{start}..{sign}{start + count - 1})\n"
-        f"{region_body}\n\n"
+        f"# File\npath: {file_path}\n\n"
+        f"# Folded region — context: {context}; {region_label}\n"
+        f"{body}\n\n"
         "Summarise the folded region."
     )
     return [
@@ -149,41 +164,50 @@ def _format_fold_prompt(
 async def summarise_fold(
     client: Client,
     *,
-    fp: AnnotatedFile,
-    hunk: AnnotatedHunk,
+    run_dir: Path,
+    file_path: str,
+    file_summary: str,
     overview_json: str,
-    side: str,
-    start: int,
-    count: int,
+    context: FoldContext,
+    right_range: tuple[int, int] | None,
+    left_range: tuple[int, int] | None,
     model: str,
     cache: CacheStore | None = None,
     trace_dir: Path | None = None,
 ) -> str:
-    """Return a one-sentence summary for the fold region (side, start, count).
+    """Return a one-sentence summary for a fold region.
 
-    `side` is "new" or "old" — the addressing axis. Cached by
-    (file path, hunk body, side, range). Trace file (if `trace_dir`
-    is given) lands at `trace_dir/fold-<file>-<hunk>-<side><range>.json`
-    so failures are diagnosable alongside the per-hunk traces.
+    Cached by `(file path, ranges, context, body content hash)`. Trace
+    file (if `trace_dir` is given) lands at
+    `trace_dir/fold-<file>-<context><range>.json` so failures are
+    diagnosable alongside the per-hunk traces.
     """
-    user_content = _format_fold_prompt(
-        overview_json=overview_json, fp=fp, hunk=hunk,
-        side=side, start=start, count=count,
+    body = extract_fold_body(
+        run_dir, file_path, context, right_range, left_range,
     )
-    trace_path = _trace_path(trace_dir, fp.path, hunk, side, start, count)
+    user_content = _format_fold_prompt(
+        overview_json=overview_json, file_path=file_path,
+        file_summary=file_summary, context=context, body=body,
+        right_range=right_range, left_range=left_range,
+    )
+    trace_path = _trace_path(
+        trace_dir, file_path, context, right_range, left_range,
+    )
 
     if cache is not None:
         key = cache.key(
-            "fold-summary",
+            "fold-summary-v2",
             model,
             FOLD_SYSTEM,
             overview_json,
-            fp.path,
-            hunk.parsed.header,
-            hunk.parsed.body,
-            side,
-            str(start),
-            str(count),
+            file_summary,
+            file_path,
+            context,
+            str(right_range or ""),
+            str(left_range or ""),
+            # Include the body so a re-run after the file content changed
+            # is invalidated even when ranges happen to line up.
+            body,
         )
         entry = cache.get(key)
         if entry is not None:
@@ -235,8 +259,8 @@ async def summarise_fold(
         cache.put(
             key,
             request={
-                "file": fp.path, "header": hunk.parsed.header,
-                "new_start": new_start, "new_count": new_count,
+                "file": file_path, "context": context,
+                "right_range": right_range, "left_range": left_range,
             },
             response=submit_args,
             tokens_in=tokens_in, tokens_out=tokens_out,
@@ -245,15 +269,20 @@ async def summarise_fold(
 
 
 def _trace_path(
-    trace_dir: Path | None, file_path: str, hunk: AnnotatedHunk,
-    side: str, start: int, count: int,
+    trace_dir: Path | None, file_path: str, context: FoldContext,
+    right_range: tuple[int, int] | None, left_range: tuple[int, int] | None,
 ) -> Path | None:
     if trace_dir is None:
         return None
     safe_file = file_path.replace("/", "_")
-    safe_hunk = (
-        hunk.parsed.header.replace(" ", "_").replace("@", "")
-        .replace(",", "_").replace("+", "p").replace("-", "m")
-    )
-    side_prefix = "p" if side == "new" else "m"
-    return trace_dir / f"fold-{safe_file}-{safe_hunk[:40]}-{side_prefix}{start}_{count}.json"
+    if context == "right":
+        rs, re_ = right_range or (0, 0)
+        tag = f"r{rs}_{re_}"
+    elif context == "left":
+        ls, le = left_range or (0, 0)
+        tag = f"l{ls}_{le}"
+    else:
+        rs, re_ = right_range or (0, 0)
+        ls, le = left_range or (0, 0)
+        tag = f"b_r{rs}_{re_}_l{ls}_{le}"
+    return trace_dir / f"fold-{safe_file}-{tag}.json"

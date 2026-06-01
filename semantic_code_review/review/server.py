@@ -58,30 +58,46 @@ def _parse_hunk_id(hunk_id: str) -> tuple[int, int]:
 
 
 def _update_viewer_json_fold(
-    viewer_json: dict[str, Any], fi: int, hi: int,
-    side: str, start: int, count: int, summary: str,
+    viewer_json: dict[str, Any], payload: dict[str, Any],
 ) -> None:
     """Patch the matching fold_regions[i].summary in the viewer JSON
-    so a fresh `/data.json` fetch sees the result."""
+    so a fresh `/data.json` fetch sees the result.
+
+    Walks every hunk in the addressed file looking for a region whose
+    (context, right_start/end, left_start/end) match — the regions are
+    addressed at the file level by the v2 protocol but still attached
+    to individual hunks in the per-hunk fold_regions block.
+    """
     files = viewer_json.get("files") or []
-    if fi >= len(files):
+    fi = payload.get("file_idx")
+    if fi is None or fi >= len(files):
         return
-    hunks = files[fi].get("hunks") or []
-    if hi >= len(hunks):
-        return
-    end = start + count - 1
-    if side == "old":
-        start_key, end_key = "old_start", "old_end"
-    else:
-        start_key, end_key = "new_start", "new_end"
-    for reg in hunks[hi].get("fold_regions") or []:
-        if (
-            reg.get("side") == side
-            and reg.get(start_key) == start
-            and reg.get(end_key) == end
-        ):
-            reg["summary"] = summary
-            return
+    context = payload.get("context")
+    rs = payload.get("right_start", 0); re_ = payload.get("right_end", 0)
+    ls = payload.get("left_start", 0); le = payload.get("left_end", 0)
+    summary = payload.get("summary", "")
+    for hunk in files[fi].get("hunks") or []:
+        for reg in hunk.get("fold_regions") or []:
+            if (
+                reg.get("context") == context
+                and (reg.get("right_start") or 0) == rs
+                and (reg.get("right_end") or 0) == re_
+                and (reg.get("left_start") or 0) == ls
+                and (reg.get("left_end") or 0) == le
+            ):
+                reg["summary"] = summary
+                return
+
+
+def _range_from_payload(payload: dict[str, Any], side: str) -> tuple[int, int] | None:
+    """Pull (start, end) for a side out of the request payload, or None
+    if the keys aren't both present + parsable."""
+    try:
+        s = int(payload[f"{side}_start"])
+        e = int(payload[f"{side}_end"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (s, e)
 
 
 def _ctx_publish(ctx: ServerContext, event_type: str, payload: dict[str, Any]) -> None:
@@ -312,28 +328,39 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
     def _handle_fold_summary(self, payload: dict[str, Any]) -> None:
-        """Resolve hunk_id → (file, hunk), call the summariser, persist
-        the result, push a `fold-summary` SSE event, and return the
-        summary in the HTTP response.
+        """Resolve file + ranges from the payload, call the summariser,
+        persist the result, push a `fold-summary` SSE event, and return
+        the summary in the HTTP response.
+
+        Wire format (slice 1 of fold-anywhere):
+            { file_idx: int,
+              context: "right" | "left" | "both",
+              right_start?, right_end?,    # iff context != "left"
+              left_start?,  left_end?      # iff context != "right"
+            }
+        Line numbers are 1-indexed into head/<path> (right) and
+        base/<path> (left).
         """
         if self.ctx.fold_summariser is None:
             self._json(409, {"error": "augmentation still in progress"})
             return
-        hunk_id = str(payload.get("hunk_id", "")).strip()
-        side = str(payload.get("side", "new"))
-        if side not in ("new", "old"):
-            self._json(400, {"error": "side must be 'new' or 'old'"})
+        context = str(payload.get("context", ""))
+        if context not in ("right", "left", "both"):
+            self._json(400, {"error": "context must be 'right', 'left', or 'both'"})
             return
         try:
-            start = int(payload.get("start"))
-            count = int(payload.get("count"))
+            file_idx = int(payload.get("file_idx"))
         except (TypeError, ValueError):
-            self._json(400, {"error": "start and count must be integers"})
+            self._json(400, {"error": "file_idx must be an integer"})
             return
-        try:
-            fi, hi = _parse_hunk_id(hunk_id)
-        except ValueError as e:
-            self._json(400, {"error": str(e)})
+
+        right_range = _range_from_payload(payload, "right") if context != "left" else None
+        left_range = _range_from_payload(payload, "left") if context != "right" else None
+        if context in ("right", "both") and right_range is None:
+            self._json(400, {"error": "right_start/right_end required"})
+            return
+        if context in ("left", "both") and left_range is None:
+            self._json(400, {"error": "left_start/left_end required"})
             return
 
         sidecar = self.ctx.run_dir / "augmented.scr.json"
@@ -348,71 +375,78 @@ class _Handler(BaseHTTPRequestHandler):
         from ..format.sidecar import dump_sidecar, load_sidecar
 
         diff = load_sidecar(sidecar)
-        if fi >= len(diff.files) or hi >= len(diff.files[fi].hunks):
-            self._json(404, {"error": f"hunk {hunk_id!r} not in diff"})
+        if file_idx < 0 or file_idx >= len(diff.files):
+            self._json(404, {"error": f"file_idx {file_idx} not in diff"})
             return
 
-        fp = diff.files[fi]
-        hunk = diff.files[fi].hunks[hi]
-        # Pass the overview as a JSON string mirroring the per-hunk
-        # pass's prompt block (which the agent caches against).
+        fp = diff.files[file_idx]
+        file_path = fp.path
+        file_summary = (fp.ann.summary or "").strip()
         from ..augment.hunks import overview_to_prompt_json
 
         overview_json = overview_to_prompt_json(diff)
 
         try:
-            summary = asyncio.run(
-                self.ctx.fold_summariser(fp, hunk, overview_json, side, start, count)
-            )
+            summary = asyncio.run(self.ctx.fold_summariser(
+                file_path, file_summary, overview_json,
+                context, right_range, left_range,
+            ))
         except Exception as e:  # noqa: BLE001
             log.exception(
-                "fold-summary failed for %s %s%d..%d", hunk_id,
-                "+" if side == "new" else "-", start, start + count - 1,
+                "fold-summary failed for %s context=%s right=%s left=%s",
+                file_path, context, right_range, left_range,
             )
             self._json(500, {"error": f"{type(e).__name__}: {e}"})
             return
 
         # Persist: append or replace the matching FoldDescription on
-        # the hunk's annotations, then write the sidecar + the
-        # augmented.diff so a manual reload also sees the new summary.
+        # the file's first hunk's annotations. We carry fold descriptions
+        # at the hunk level for legacy reasons; for v2 addressing they
+        # describe content addressed at the *file* level, so we stash
+        # them on the file's first hunk (chosen as a stable home) until
+        # the schema migrates fold_descriptions up to AnnotatedFile.
         from ..augment.schemas import FoldDescription
 
-        new_folds = [
-            fd for fd in hunk.ann.fold_descriptions
-            if not (fd.side == side and fd.start == start and fd.count == count)
-        ]
-        if side == "new":
+        rs, re_ = right_range or (0, 0)
+        ls, le = left_range or (0, 0)
+        target_hunk_idx = 0 if fp.hunks else None
+        if target_hunk_idx is not None:
+            hunk = fp.hunks[target_hunk_idx]
+            new_folds = [
+                fd for fd in hunk.ann.fold_descriptions
+                if not (
+                    fd.context == context
+                    and fd.right_start == rs and fd.right_end == re_
+                    and fd.left_start == ls and fd.left_end == le
+                )
+            ]
             new_folds.append(FoldDescription(
-                side="new", new_start=start, new_count=count, summary=summary,
+                context=context,
+                right_start=rs, right_end=re_,
+                left_start=ls, left_end=le,
+                summary=summary,
             ))
-        else:
-            new_folds.append(FoldDescription(
-                side="old", old_start=start, old_count=count, summary=summary,
-            ))
-        updated_ann = hunk.ann.model_copy(update={"fold_descriptions": new_folds})
-        updated_hunk = hunk.model_copy(update={"ann": updated_ann})
-        updated_hunks = list(fp.hunks)
-        updated_hunks[hi] = updated_hunk
-        updated_file = fp.model_copy(update={"hunks": updated_hunks})
-        updated_files = list(diff.files)
-        updated_files[fi] = updated_file
-        updated_diff = diff.model_copy(update={"files": updated_files})
+            updated_ann = hunk.ann.model_copy(update={"fold_descriptions": new_folds})
+            updated_hunk = hunk.model_copy(update={"ann": updated_ann})
+            updated_hunks = list(fp.hunks)
+            updated_hunks[target_hunk_idx] = updated_hunk
+            updated_file = fp.model_copy(update={"hunks": updated_hunks})
+            updated_files = list(diff.files)
+            updated_files[file_idx] = updated_file
+            updated_diff = diff.model_copy(update={"files": updated_files})
 
-        dump_sidecar(updated_diff, sidecar)
-        (self.ctx.run_dir / "augmented.diff").write_text(
-            emit_augmented_diff(updated_diff), encoding="utf-8",
-        )
+            dump_sidecar(updated_diff, sidecar)
+            (self.ctx.run_dir / "augmented.diff").write_text(
+                emit_augmented_diff(updated_diff), encoding="utf-8",
+            )
 
-        # Update the viewer_json fold_regions[].summary so a reload
-        # via /data.json also picks it up, then broadcast the patch
-        # to any other connected tabs viewing the same review.
-        _update_viewer_json_fold(
-            self.ctx.viewer_json, fi, hi, side, start, count, summary,
-        )
         broadcast_payload = {
-            "hunk_id": hunk_id, "side": side,
-            "start": start, "count": count, "summary": summary,
+            "file_idx": file_idx, "context": context,
+            "right_start": rs, "right_end": re_,
+            "left_start": ls, "left_end": le,
+            "summary": summary,
         }
+        _update_viewer_json_fold(self.ctx.viewer_json, broadcast_payload)
         _ctx_publish(self.ctx, "fold-summary", broadcast_payload)
         # Caller's RPC response carries the summary so the requesting
         # tab doesn't need to wait for its own SSE event to round-trip.

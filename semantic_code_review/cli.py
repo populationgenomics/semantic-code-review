@@ -474,7 +474,7 @@ def pr(
             )
 
         fold_summary_task = _build_fold_summary_task(
-            client=client, model=model, cache=cache,
+            client=client, model=model, cache=cache, run_dir=run_dir,
         )
     else:
         # Mirror cli.review's behaviour: copy raw → augmented so render has

@@ -617,7 +617,10 @@
       rowElsOld.push(pair.old);
       rowElsNew.push(pair.new);
     }
-    attachIndentFolds(halfOld, halfNew, rowElsOld, rowElsNew, h.fold_regions || [], h.id);
+    // hunk.id is "H<file_idx>_<hunk_idx>" — first segment is the
+    // file index the v2 fold-summary protocol addresses against.
+    const fileIdx = Number(h.id.replace("H", "").split("_")[0]);
+    attachIndentFolds(halfOld, halfNew, rowElsOld, rowElsNew, h.fold_regions || [], fileIdx);
     attachLineNotes(halfOld, halfNew, rowElsOld, rowElsNew, h.rows || [], h.line_notes || []);
     STATE.renderedDiffs[h.id] = container;
     return container;
@@ -657,11 +660,11 @@
   // (so the LLM can describe each one). Wire the chevron and the
   // summary row for the folded state.
 
-  function attachIndentFolds(halfOld, halfNew, rowElsOld, rowElsNew, regions, hunkId) {
-    for (const r of regions) attachOneFold(halfOld, halfNew, rowElsOld, rowElsNew, r, hunkId);
+  function attachIndentFolds(halfOld, halfNew, rowElsOld, rowElsNew, regions, fileIdx) {
+    for (const r of regions) attachOneFold(halfOld, halfNew, rowElsOld, rowElsNew, r, fileIdx);
   }
 
-  function attachOneFold(halfOld, halfNew, rowElsOld, rowElsNew, region, hunkId) {
+  function attachOneFold(halfOld, halfNew, rowElsOld, rowElsNew, region, fileIdx) {
     const bodyStart = region.body_start_idx;
     const bodyEnd = region.body_end_idx;
     if (bodyStart > bodyEnd) return;
@@ -684,7 +687,7 @@
     let foldHandle = null;
     if (region.summary || region.has_changes) {
       const initialContent = region.summary
-        || (canRequestFoldSummary(hunkId, region) ? "summarising…"
+        || (canRequestFoldSummary(fileIdx, region) ? "summarising…"
             : "(changes here; run augment to generate a description)");
       foldHandle = window.ScrAnnotations.attach({
         anchor,
@@ -718,8 +721,8 @@
       // generate one. Single-flight per region: requestFoldSummary
       // guards against the user opening + closing repeatedly.
       if (!nowOpen && !region.summary && foldHandle
-          && canRequestFoldSummary(hunkId, region)) {
-        requestFoldSummary(hunkId, region, foldHandle);
+          && canRequestFoldSummary(fileIdx, region)) {
+        requestFoldSummary(fileIdx, region, foldHandle);
       }
       // Showing/hiding the fold summary shifts every sibling annotation
       // below it; re-size any that share this fold's header as anchor.
@@ -1259,28 +1262,34 @@
 
   // --- Fold-summary RPC ----------------------------------------------------
 
-  function canRequestFoldSummary(hunkId, region) {
+  function canRequestFoldSummary(fileIdx, region) {
     if (!SESSION_ENDPOINT) return false;
-    if (!hunkId) return false;
+    if (fileIdx == null) return false;
     return foldAddress(region) !== null;
   }
 
-  // Resolve a fold region to its `{side, start, count}` request shape.
-  // Returns null when the region is unaddressable on either side
-  // (shouldn't happen — compute_fold_regions always picks one).
+  // Resolve a fold region to its v2 request shape — file-level
+  // identifiers plus either or both `right_*`/`left_*` line ranges
+  // depending on context. Returns null when the region isn't
+  // addressable (shouldn't happen — compute_fold_regions always
+  // produces a populated range matching the context).
   function foldAddress(region) {
-    const side = region.side || "new";
-    if (side === "old") {
-      if (region.old_start == null || region.old_end == null) return null;
-      return { side: "old", start: region.old_start,
-               count: region.old_end - region.old_start + 1 };
+    const context = region.context || "right";
+    const addr = { context };
+    if (context === "right" || context === "both") {
+      if (region.right_start == null || region.right_end == null) return null;
+      addr.right_start = region.right_start;
+      addr.right_end = region.right_end;
     }
-    if (region.new_start == null || region.new_end == null) return null;
-    return { side: "new", start: region.new_start,
-             count: region.new_end - region.new_start + 1 };
+    if (context === "left" || context === "both") {
+      if (region.left_start == null || region.left_end == null) return null;
+      addr.left_start = region.left_start;
+      addr.left_end = region.left_end;
+    }
+    return addr;
   }
 
-  function requestFoldSummary(hunkId, region, foldHandle) {
+  function requestFoldSummary(fileIdx, region, foldHandle) {
     if (region._inflight || region.summary) return;
     const addr = foldAddress(region);
     if (!addr) return;
@@ -1289,7 +1298,7 @@
     fetch(SESSION_ENDPOINT + "/fold-summary", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ hunk_id: hunkId, ...addr }),
+      body: JSON.stringify({ file_idx: fileIdx, ...addr }),
     })
       .then((r) => r.json().then((j) => ({status: r.status, body: j})))
       .then(({status, body}) => {
@@ -1337,20 +1346,30 @@
   }
 
   function applyFoldSummary(payload) {
-    if (!payload || !payload.hunk_id || payload.summary == null) return;
-    const [fi, hi] = payload.hunk_id.replace("H", "").split("_").map(Number);
-    const f = DATA.files && DATA.files[fi];
-    const h = f && f.hunks && f.hunks[hi];
-    if (!h) return;
-    const side = payload.side || "new";
-    const end = payload.start + payload.count - 1;
-    const region = (h.fold_regions || []).find((r) => {
-      if ((r.side || "new") !== side) return false;
-      return side === "old"
-        ? r.old_start === payload.start && r.old_end === end
-        : r.new_start === payload.start && r.new_end === end;
-    });
-    if (!region) return;
+    if (!payload || payload.summary == null) return;
+    if (payload.file_idx == null) return;
+    const f = DATA.files && DATA.files[payload.file_idx];
+    if (!f) return;
+    const ctx = payload.context || "right";
+    const rs = payload.right_start || 0, re_ = payload.right_end || 0;
+    const ls = payload.left_start || 0, le = payload.left_end || 0;
+    // Regions live on individual hunks but are addressed at the file
+    // level; walk every hunk's fold_regions for the matching key.
+    let region = null;
+    let hostHunk = null;
+    for (const h of f.hunks || []) {
+      for (const r of h.fold_regions || []) {
+        if (
+          (r.context || "right") === ctx
+          && (r.right_start || 0) === rs && (r.right_end || 0) === re_
+          && (r.left_start || 0) === ls && (r.left_end || 0) === le
+        ) {
+          region = r; hostHunk = h; break;
+        }
+      }
+      if (region) break;
+    }
+    if (!region || !hostHunk) return;
     // Idempotency: same payload, no work. Avoids a redundant re-render
     // (and the fold popping back open) when our own POST also arrives
     // via the SSE broadcast loop.
@@ -1361,12 +1380,12 @@
     // pop the user's just-closed fold back open. Let the local path
     // own the DOM update.
     if (region._inflight) return;
-    // Cross-tab path: this region wasn't requested locally. Drop the
-    // cached diff and let the next render rebuild with the summary.
-    delete STATE.renderedDiffs[h.id];
-    const existing = document.querySelector('.hunk[data-id="' + cssEscape(h.id) + '"]');
+    // Cross-tab path: drop the cached diff and let the next render
+    // rebuild with the summary.
+    delete STATE.renderedDiffs[hostHunk.id];
+    const existing = document.querySelector('.hunk[data-id="' + cssEscape(hostHunk.id) + '"]');
     if (existing && existing.parentNode) {
-      const fresh = renderHunk(h, f);
+      const fresh = renderHunk(hostHunk, f);
       existing.parentNode.replaceChild(fresh, existing);
     }
   }

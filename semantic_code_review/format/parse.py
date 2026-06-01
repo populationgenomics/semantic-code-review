@@ -60,7 +60,11 @@ _HUNK_HEADER_RE = re.compile(
     r"^@@ -(?P<os>\d+)(?:,(?P<oc>\d+))? \+(?P<ns>\d+)(?:,(?P<nc>\d+))? @@"
 )
 _SEGMENT_RANGE_RE = re.compile(r"^\s*\+(\d+)\.\.\+(\d+)\s*$")
-_FOLD_RE = re.compile(r'^\s*([+\-])(\d+)\.\.\1(\d+)\s+(?:"(.*)"|(.+))\s*$')
+_FOLD_RIGHT_RE = re.compile(r'^\s*right\s+(\d+)\.\.(\d+)\s+(?:"(.*)"|(.+))\s*$')
+_FOLD_LEFT_RE = re.compile(r'^\s*left\s+(\d+)\.\.(\d+)\s+(?:"(.*)"|(.+))\s*$')
+_FOLD_BOTH_RE = re.compile(
+    r'^\s*both\s+R(\d+)\.\.(\d+)\s+L(\d+)\.\.(\d+)\s+(?:"(.*)"|(.+))\s*$'
+)
 _LINE_NOTE_RE = re.compile(r'^\s*\+(\d+)\s+(?:"(.*)"|(.+))\s*$')
 _SMELL_RE = re.compile(r'^\s*(\S+)(?:\s+"(.*)")?\s*$')
 _DIFF_GIT_RE = re.compile(r"^diff --git a/(.+?) b/(.+?)\s*$")
@@ -160,23 +164,45 @@ def _parse_line_note(value: str, lineno: int) -> LineNote:
 
 
 def _parse_fold(value: str, lineno: int) -> FoldDescription:
-    m = _FOLD_RE.match(value)
-    if not m:
-        raise ParseError(f"line {lineno}: malformed scr-fold value {value!r}")
-    sign = m.group(1)
-    start = int(m.group(2))
-    end = int(m.group(3))
-    summary = m.group(4) if m.group(4) is not None else (m.group(5) or "")
-    if end < start:
-        raise ParseError(f"line {lineno}: fold end {sign}{end} before start {sign}{start}")
-    count = end - start + 1
-    if sign == "+":
+    """Parse a `#scr:hunk-fold` directive value.
+
+    Three forms — one per context — to keep the syntax unambiguous:
+
+        right 10..25 "summary text"     (post-image only)
+        left 8..22 "summary text"       (pre-image deletion fold)
+        both R10..25 L8..22 "summary"   (fold straddles changed content)
+    """
+    m = _FOLD_RIGHT_RE.match(value)
+    if m:
+        start = int(m.group(1)); end = int(m.group(2))
+        summary = m.group(3) if m.group(3) is not None else (m.group(4) or "")
+        if end < start:
+            raise ParseError(f"line {lineno}: fold end {end} before start {start}")
         return FoldDescription(
-            side="new", new_start=start, new_count=count, summary=summary,
+            context="right", right_start=start, right_end=end, summary=summary,
         )
-    return FoldDescription(
-        side="old", old_start=start, old_count=count, summary=summary,
-    )
+    m = _FOLD_LEFT_RE.match(value)
+    if m:
+        start = int(m.group(1)); end = int(m.group(2))
+        summary = m.group(3) if m.group(3) is not None else (m.group(4) or "")
+        if end < start:
+            raise ParseError(f"line {lineno}: fold end {end} before start {start}")
+        return FoldDescription(
+            context="left", left_start=start, left_end=end, summary=summary,
+        )
+    m = _FOLD_BOTH_RE.match(value)
+    if m:
+        rs = int(m.group(1)); re_ = int(m.group(2))
+        ls = int(m.group(3)); le = int(m.group(4))
+        summary = m.group(5) if m.group(5) is not None else (m.group(6) or "")
+        if re_ < rs or le < ls:
+            raise ParseError(f"line {lineno}: fold has end before start")
+        return FoldDescription(
+            context="both",
+            right_start=rs, right_end=re_, left_start=ls, left_end=le,
+            summary=summary,
+        )
+    raise ParseError(f"line {lineno}: malformed scr-fold value {value!r}")
 
 
 def _parse_refs(value: str, lineno: int) -> list[Ref]:

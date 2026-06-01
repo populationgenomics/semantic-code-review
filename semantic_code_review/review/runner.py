@@ -47,16 +47,15 @@ AugmentCallable = Callable[
 
 
 #: Signature of the on-demand fold-summary callable accepted by
-#: ``serve_review``. The server resolves hunk_id → AnnotatedFile +
-#: AnnotatedHunk from the persisted sidecar before invoking; the
-#: closure does the LLM call and returns a one-sentence summary.
-#: ``side`` is "new" (post-image; describing what the new code does)
-#: or "old" (pre-image; describing what the deletion-only block
-#: removed). Wired up only when an LLM backend is available (i.e.
+#: ``serve_review``. The closure does the actual LLM call (with the
+#: backend that augment_run_dir is wired against) given the file
+#: identifiers + line ranges the server resolved from the request.
+#: Wired up only when an LLM backend is available (i.e.
 #: ``opts.augment is True``); ``--no-augment`` reviews leave this
 #: at ``None`` and the route returns 409 unconditionally.
 FoldSummaryCallable = Callable[
-    [Any, Any, str, str, int, int],  # (fp, hunk, overview_json, side, start, count)
+    # (file_path, file_summary, overview_json, context, right_range, left_range)
+    [str, str, str, str, "tuple[int, int] | None", "tuple[int, int] | None"],
     Awaitable[str],
 ]
 
@@ -120,7 +119,7 @@ def run_review(opts: ReviewOptions) -> int:
             )
 
         fold_summary_task = _build_fold_summary_task(
-            client=opts.client, model=opts.model, cache=cache,
+            client=opts.client, model=opts.model, cache=cache, run_dir=run_dir,
         )
     else:
         # When augment is skipped, copy raw.diff to augmented.diff so render
@@ -247,26 +246,37 @@ def serve_review(
 
 def _build_fold_summary_task(
     *, client: Client | None, model: str, cache: CacheStore | None,
+    run_dir: Path,
 ) -> FoldSummaryCallable:
     """Construct the FoldSummaryCallable that ``serve_review`` installs
     onto the review server once augmentation completes. The closure
-    captures the LLM backend + cache so the server module stays
-    independent of the augment-side machinery.
+    captures the LLM backend + cache + run_dir so the server module
+    stays independent of the augment-side machinery.
     """
     # Lazy import: keeps the SDK / pydantic-ai dep out of the
     # `--no-augment` path.
     from ..augment.fold_summary import summarise_fold
 
     async def task(
-        fp, hunk, overview_json: str, side: str, start: int, count: int,
+        file_path: str, file_summary: str, overview_json: str,
+        context: str,
+        right_range: "tuple[int, int] | None",
+        left_range: "tuple[int, int] | None",
     ) -> str:
         # client is None only when augment is False; in that path
         # serve_review never wires this task up, so a None here would
         # be a wiring bug — fail loudly.
         assert client is not None, "fold-summary task called without an LLM backend"
         return await summarise_fold(
-            client, fp=fp, hunk=hunk, overview_json=overview_json,
-            side=side, start=start, count=count, model=model, cache=cache,
+            client,
+            run_dir=run_dir,
+            file_path=file_path,
+            file_summary=file_summary,
+            overview_json=overview_json,
+            context=context,  # type: ignore[arg-type]
+            right_range=right_range,
+            left_range=left_range,
+            model=model, cache=cache,
         )
 
     return task

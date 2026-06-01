@@ -94,29 +94,30 @@ class Segment(BaseModel):
 class FoldDescription(BaseModel):
     """One-line summary of the body inside an indent fold region.
 
-    Regions can live on either side of the diff: post-image (the
-    common case — describing what the new code does) or pre-image
-    (describing what a deletion-only block removed). `side` tags
-    which axis the start/count refer to; the unused side stays at 0.
+    Addressed by 1-indexed line ranges into the *files* the diff
+    relates — never into the hunk's row sequence — so the
+    representation is stable across re-renders and lets folds span
+    expanded context as well as hunk bodies.
+
+    `context` picks which side(s) the fold covers:
+      - "right": post-image lines only (the common case — describe
+        what the new code does). Address with right_start/right_end
+        as 1-indexed line numbers in head/<path>.
+      - "left": pre-image lines only (a pure deletion fold).
+        Address with left_start/left_end in base/<path>.
+      - "both": fold straddles changed content. Both ranges populated.
+
     Generated lazily by the review server's `/fold-summary` route
     the first time the reviewer collapses a region; cached so
     subsequent reviews skip the call.
     """
 
-    side: Literal["new", "old"] = "new"
-    new_start: int = 0
-    new_count: int = 0
-    old_start: int = 0
-    old_count: int = 0
+    context: Literal["right", "left", "both"] = "right"
+    right_start: int = 0
+    right_end: int = 0
+    left_start: int = 0
+    left_end: int = 0
     summary: str
-
-    @property
-    def start(self) -> int:
-        return self.old_start if self.side == "old" else self.new_start
-
-    @property
-    def count(self) -> int:
-        return self.old_count if self.side == "old" else self.new_count
 
 
 class FileRole(str, Enum):

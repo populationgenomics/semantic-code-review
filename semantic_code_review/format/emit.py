@@ -106,10 +106,16 @@ def _emit_hunk(h: AnnotatedHunk) -> list[str]:
     for seg in ann.segments:
         lines.extend(_emit_segment(seg))
     for fd in ann.fold_descriptions:
-        sign = "+" if fd.side == "new" else "-"
-        start = fd.start
-        end = start + fd.count - 1
-        lines.extend(_text("scr-fold", f'{sign}{start}..{sign}{end} "{fd.summary}"'))
+        if fd.context == "right":
+            body = f'right {fd.right_start}..{fd.right_end} "{fd.summary}"'
+        elif fd.context == "left":
+            body = f'left {fd.left_start}..{fd.left_end} "{fd.summary}"'
+        else:  # both
+            body = (
+                f'both R{fd.right_start}..{fd.right_end} '
+                f'L{fd.left_start}..{fd.left_end} "{fd.summary}"'
+            )
+        lines.extend(_text("scr-fold", body))
     for ln in ann.line_notes:
         lines.extend(_text("scr-line", f'+{ln.line} "{ln.body}"'))
     return lines

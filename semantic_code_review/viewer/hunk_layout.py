@@ -36,14 +36,16 @@ _RowKind = Literal["ctx", "ins", "del", "pair"]
 class _FoldRegion:
     """An indent-based fold region within a hunk's row sequence.
 
-    `header_idx` is the row whose content opens the block (the `def foo():`
-    row for a function body, for example). `body_start_idx`..`body_end_idx`
-    are the rows that fold up under the header. `new_start`/`new_end` and
-    `old_start`/`old_end` carry the side-relative line ranges (either
-    side may be absent — a pure deletion has no new lines, a pure addition
-    has no old lines). `side` picks which addressing scheme the viewer
-    uses to talk about this region with the fold-summary endpoint:
-    "new" when the region has any post-image lines, "old" otherwise.
+    `header_idx` is the row whose content opens the block; `body_start_idx`
+    ..`body_end_idx` are the rows that fold up under the header.
+    `context` picks the addressing scheme the viewer uses for /fold-summary:
+      - "right": region has post-image lines only. right_start/right_end
+        are 1-indexed line numbers in head/<path>.
+      - "left": region has pre-image lines only (pure deletion).
+        left_start/left_end are 1-indexed line numbers in base/<path>.
+      - "both": region has lines on both sides (typically because it
+        straddles changed content). Both range pairs populated.
+
     `has_changes` is true iff any row in [header_idx, body_end_idx]
     contributes a change (ins / del / pair).
     """
@@ -51,11 +53,11 @@ class _FoldRegion:
     header_idx: int
     body_start_idx: int
     body_end_idx: int
-    side: Literal["new", "old"]
-    new_start: int | None
-    new_end: int | None
-    old_start: int | None
-    old_end: int | None
+    context: Literal["right", "left", "both"]
+    right_start: int | None
+    right_end: int | None
+    left_start: int | None
+    left_end: int | None
     has_changes: bool
 
 
@@ -212,31 +214,38 @@ def compute_fold_regions(rows: list[_Row]) -> list[_FoldRegion]:
             rows[j].kind in ("ins", "del", "pair")
             for j in range(header_idx, body_end + 1)
         )
-        new_start = _first_side_line(rows, header_idx, body_end, "new")
-        new_end = _last_side_line(rows, header_idx, body_end, "new")
-        old_start = _first_side_line(rows, header_idx, body_end, "old")
-        old_end = _last_side_line(rows, header_idx, body_end, "old")
-        # A region that contains *any* post-image lines is addressed
-        # on the new side (matches today's behaviour). A region with
-        # only deletions falls back to old-side addressing so the
-        # fold-summary path can reach it.
-        side: Literal["new", "old"] = "new" if new_start is not None else "old"
+        right_start = _first_side_line(rows, header_idx, body_end, "right")
+        right_end = _last_side_line(rows, header_idx, body_end, "right")
+        left_start = _first_side_line(rows, header_idx, body_end, "left")
+        left_end = _last_side_line(rows, header_idx, body_end, "left")
+        # context picks the addressing axis(es). Pair regions (both
+        # sides populated and the diff straddles changed content) are
+        # addressed as "both" so the server can produce a diff-style
+        # body. Right-only and left-only regions stay single-sided.
+        if right_start is not None and left_start is not None and has_changes:
+            context: Literal["right", "left", "both"] = "both"
+        elif right_start is not None:
+            context = "right"
+        else:
+            context = "left"
         regions.append(_FoldRegion(
             header_idx=header_idx,
             body_start_idx=body_start,
             body_end_idx=body_end,
-            side=side,
-            new_start=new_start,
-            new_end=new_end,
-            old_start=old_start,
-            old_end=old_end,
+            context=context,
+            right_start=right_start,
+            right_end=right_end,
+            left_start=left_start,
+            left_end=left_end,
             has_changes=has_changes,
         ))
     return regions
 
 
 def _first_side_line(rows: list[_Row], start: int, end: int, side: str) -> int | None:
-    attr = "new_line" if side == "new" else "old_line"
+    """First non-None line number on the named side within the row
+    span. `side` is "right" (post-image) or "left" (pre-image)."""
+    attr = "new_line" if side == "right" else "old_line"
     for i in range(start, end + 1):
         v = getattr(rows[i], attr)
         if v is not None:
@@ -245,7 +254,7 @@ def _first_side_line(rows: list[_Row], start: int, end: int, side: str) -> int |
 
 
 def _last_side_line(rows: list[_Row], start: int, end: int, side: str) -> int | None:
-    attr = "new_line" if side == "new" else "old_line"
+    attr = "new_line" if side == "right" else "old_line"
     for i in range(end, start - 1, -1):
         v = getattr(rows[i], attr)
         if v is not None:
@@ -262,30 +271,29 @@ def build_hunk_viewer_block(
     ann = h.ann
     rows = build_rows(parsed)
     regions = compute_fold_regions(rows)
-    # Index summaries by (side, start, count) so old-side and new-side
-    # descriptions don't collide if a hunk has both kinds of folds.
-    summary_by_range: dict[tuple[str, int, int], str] = {
-        (fd.side, fd.start, fd.count): fd.summary for fd in ann.fold_descriptions
+    # Index summaries by (context, ranges) so right/left/both descriptions
+    # don't collide when a hunk has folds of multiple kinds.
+    summary_by_key: dict[tuple[str, int, int, int, int], str] = {
+        (fd.context, fd.right_start, fd.right_end, fd.left_start, fd.left_end): fd.summary
+        for fd in ann.fold_descriptions
     }
     fold_region_blocks: list[dict[str, Any]] = []
     for reg in regions:
-        if reg.side == "new" and reg.new_start is not None and reg.new_end is not None:
-            count = reg.new_end - reg.new_start + 1
-            summary = summary_by_range.get(("new", reg.new_start, count), "")
-        elif reg.side == "old" and reg.old_start is not None and reg.old_end is not None:
-            count = reg.old_end - reg.old_start + 1
-            summary = summary_by_range.get(("old", reg.old_start, count), "")
-        else:
-            summary = ""
+        key = (
+            reg.context,
+            reg.right_start or 0, reg.right_end or 0,
+            reg.left_start or 0, reg.left_end or 0,
+        )
+        summary = summary_by_key.get(key, "")
         fold_region_blocks.append({
             "header_idx": reg.header_idx,
             "body_start_idx": reg.body_start_idx,
             "body_end_idx": reg.body_end_idx,
-            "side": reg.side,
-            "new_start": reg.new_start,
-            "new_end": reg.new_end,
-            "old_start": reg.old_start,
-            "old_end": reg.old_end,
+            "context": reg.context,
+            "right_start": reg.right_start,
+            "right_end": reg.right_end,
+            "left_start": reg.left_start,
+            "left_end": reg.left_end,
             "has_changes": reg.has_changes,
             "summary": summary,
         })

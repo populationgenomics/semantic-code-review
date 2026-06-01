@@ -412,7 +412,7 @@ describe("lazy fold summaries", () => {
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "real intent", {
           fold_regions: [
-            { header_idx: 0, body_start_idx: 1, body_end_idx: 1, side: "new", new_start: 1, new_end: 2, old_start: null, old_end: null, has_changes: true, summary: "" },
+            { header_idx: 0, body_start_idx: 1, body_end_idx: 1, context: "right", right_start: 1, right_end: 2, left_start: null, left_end: null, has_changes: true, summary: "" },
           ],
         })],
       }],
@@ -440,7 +440,7 @@ describe("lazy fold summaries", () => {
     expandHunk();
     queueFetchResponse({
       status: 200,
-      body: { hunk_id: "H0_0", side: "new", start: 1, count: 2, summary: "renames the column" },
+      body: { file_idx: 0, context: "right", right_start: 1, right_end: 2, left_start: 0, left_end: 0, summary: "renames the column" },
     });
 
     const marker = document.querySelector(".fold-chev") as SVGElement | null;
@@ -453,7 +453,7 @@ describe("lazy fold summaries", () => {
     const foldCalls = fetchCalls.filter((c) => c.url.includes("/fold-summary"));
     expect(foldCalls).toHaveLength(1);
     const body = JSON.parse((foldCalls[0].init!.body as string));
-    expect(body).toEqual({ hunk_id: "H0_0", side: "new", start: 1, count: 2 });
+    expect(body).toEqual({ file_idx: 0, context: "right", right_start: 1, right_end: 2 });
 
     // Let the fetch promise resolve.
     await new Promise((r) => setTimeout(r, 0));
@@ -486,7 +486,7 @@ describe("lazy fold summaries", () => {
     clickEl(marker);           // open → closed: should NOT re-fire (in-flight guard)
     expect(foldCalls()).toHaveLength(1);
 
-    resolveFetch({ status: 200, body: { hunk_id: "H0_0", side: "new", start: 1, count: 2, summary: "done" } });
+    resolveFetch({ status: 200, body: { file_idx: 0, context: "right", right_start: 1, right_end: 2, summary: "done" } });
     await new Promise((r) => setTimeout(r, 0));
     expect(document.querySelector(".annot-box")?.textContent).toBe("done");
   });
@@ -506,8 +506,8 @@ describe("lazy fold summaries", () => {
           ],
           fold_regions: [{
             header_idx: 0, body_start_idx: 1, body_end_idx: 2,
-            side: "old", new_start: null, new_end: null,
-            old_start: 10, old_end: 12, has_changes: true, summary: "",
+            context: "left", right_start: null, right_end: null,
+            left_start: 10, left_end: 12, has_changes: true, summary: "",
           }],
         })],
       }],
@@ -515,7 +515,7 @@ describe("lazy fold summaries", () => {
     expandHunk();
     queueFetchResponse({
       status: 200,
-      body: { hunk_id: "H0_0", side: "old", start: 10, count: 3, summary: "drops the removed() helper" },
+      body: { file_idx: 0, context: "left", right_start: 0, right_end: 0, left_start: 10, left_end: 12, summary: "drops the removed() helper" },
     });
 
     const marker = document.querySelector(".fold-chev") as SVGElement | null;
@@ -525,7 +525,7 @@ describe("lazy fold summaries", () => {
     const foldCalls = fetchCalls.filter((c) => c.url.includes("/fold-summary"));
     expect(foldCalls).toHaveLength(1);
     expect(JSON.parse(foldCalls[0].init!.body as string)).toEqual({
-      hunk_id: "H0_0", side: "old", start: 10, count: 3,
+      file_idx: 0, context: "left", left_start: 10, left_end: 12,
     });
 
     await new Promise((r) => setTimeout(r, 0));
@@ -541,7 +541,7 @@ describe("lazy fold summaries", () => {
     expandHunk();
     queueFetchResponse({
       status: 200,
-      body: { hunk_id: "H0_0", side: "new", start: 1, count: 2, summary: "wraps in try/except" },
+      body: { file_idx: 0, context: "right", right_start: 1, right_end: 2, summary: "wraps in try/except" },
     });
 
     const marker = document.querySelector(".fold-chev") as SVGElement;
@@ -550,7 +550,7 @@ describe("lazy fold summaries", () => {
 
     // SSE arrives for the same region with the same payload.
     lastEventSource().dispatch("fold-summary", {
-      hunk_id: "H0_0", side: "new", start: 1, count: 2, summary: "wraps in try/except",
+      file_idx: 0, context: "right", right_start: 1, right_end: 2, summary: "wraps in try/except",
     });
     await new Promise((r) => setTimeout(r, 0));
 
@@ -582,7 +582,7 @@ describe("lazy fold summaries", () => {
     expandHunk();
     const es = lastEventSource();
     es.dispatch("fold-summary", {
-      hunk_id: "H0_0", side: "new", start: 1, count: 2, summary: "remote summary",
+      file_idx: 0, context: "right", right_start: 1, right_end: 2, summary: "remote summary",
     });
     // The SSE handler drops the rendered cache and replaces the hunk
     // DOM, so the new fold box's content reflects the streamed value.
