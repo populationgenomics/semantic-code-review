@@ -9,14 +9,10 @@
   const DATA = JSON.parse(document.getElementById("scr-data").textContent);
   const SMELLS = DATA.smells_catalogue || {};
 
-  // When the server starts before augmentation, DATA carries the file/
-  // hunk skeleton with empty annotations and a `pending: true` flag.
-  // The viewer uses this to distinguish "annotation hasn't arrived yet"
-  // (show "analysing…") from "annotation failed" (show the re-run hint).
-  // A `reload` SSE event arrives once augmentation completes; the page
-  // reloads and the next render reads completed annotations from the
-  // freshly-emitted HTML.
-  const PENDING = !!DATA.pending;
+  // DATA.pending is true while the server is streaming overview / per-hunk
+  // events from a running augmentation pass. Hunks without an annotation
+  // render an "analysing…" spinner during that window and the failure
+  // copy once the `done` event clears the flag. See installSessionEvents.
 
   const SESSION_ENDPOINT = (() => {
     const m = document.querySelector('meta[name="scr-session-endpoint"]');
@@ -444,7 +440,9 @@
     let intent;
     if (h.intent) {
       intent = el("span", "hunk-intent", h.intent);
-    } else if (PENDING) {
+    } else if (DATA.pending && !h._failed) {
+      // Still streaming; this hunk hasn't reported yet. The pulse
+      // animation distinguishes "in flight" from "reported failure".
       intent = el("span", "hunk-intent pending", "analysing…");
     } else {
       intent = el("span", "hunk-intent empty", "(no intent — may need re-run)");
@@ -1091,11 +1089,18 @@
     installSessionEvents();
   }
 
-  // Subscribe to the server's SSE channel. Today the only event the
-  // viewer reacts to is `reload`, fired once augmentation completes;
-  // the page reloads and picks up the freshly-rendered HTML with full
-  // annotations baked in. Slice 2 will add per-hunk patching events
-  // that mutate the DOM in place instead of triggering a reload.
+  // Subscribe to the server's SSE channel and patch the page as
+  // overview / per-hunk events arrive from the augment pipeline.
+  // Events:
+  //   - overview: PR-level summary, themes, semantic groups, and
+  //               per-file summaries land in DATA; the sidebar and
+  //               file headers re-render.
+  //   - hunk:     one hunk's block (the same shape as DATA.files[].hunks[i])
+  //               replaces its slot in DATA and the corresponding
+  //               .hunk DOM node, dropping the "analysing…" placeholder.
+  //   - done:     augmentation finished; any hunks still pending get
+  //               the "(no intent — may need re-run)" copy. The SSE
+  //               connection is closed.
   function installSessionEvents() {
     if (!SESSION_ENDPOINT || typeof EventSource === "undefined") return;
     let es;
@@ -1104,12 +1109,87 @@
     } catch (_) {
       return;
     }
-    es.addEventListener("reload", () => {
-      // Close the source first so the impending navigation doesn't
-      // leave a dangling connection blocking process shutdown.
-      try { es.close(); } catch (_) { /* ignore */ }
-      window.location.reload();
+    es.addEventListener("overview", (e) => {
+      try { applyOverviewPatch(JSON.parse(e.data)); } catch (_) { /* ignore */ }
     });
+    es.addEventListener("hunk", (e) => {
+      try { applyHunkPatch(JSON.parse(e.data)); } catch (_) { /* ignore */ }
+    });
+    es.addEventListener("done", () => {
+      finaliseStreaming();
+      try { es.close(); } catch (_) { /* ignore */ }
+    });
+  }
+
+  function applyHunkPatch(payload) {
+    const fi = payload.file_idx;
+    const hi = payload.hunk_idx;
+    if (!DATA.files || !DATA.files[fi]) return;
+    const file = DATA.files[fi];
+    if (!file.hunks || !file.hunks[hi]) return;
+    if (payload.ok && payload.block) {
+      file.hunks[hi] = payload.block;
+    } else {
+      // Failure: mark the slot so finaliseStreaming() / renderHunk
+      // show the re-run copy instead of the pending spinner.
+      file.hunks[hi].intent = "";
+      file.hunks[hi]._failed = true;
+    }
+    // Re-render the single hunk in place. STATE.renderedDiffs caches
+    // by hunk id; drop the cached entry so the new annotations and
+    // (possibly different) fold regions get fresh DOM.
+    delete STATE.renderedDiffs[file.hunks[hi].id];
+    const fresh = renderHunk(file.hunks[hi], file);
+    const existing = document.querySelector('.hunk[data-id="' + cssEscape(file.hunks[hi].id) + '"]');
+    if (existing && existing.parentNode) {
+      existing.parentNode.replaceChild(fresh, existing);
+    }
+  }
+
+  function applyOverviewPatch(payload) {
+    if (payload.pr) Object.assign(DATA.pr || (DATA.pr = {}), payload.pr);
+    if (Array.isArray(payload.files)) {
+      for (const fp of payload.files) {
+        const f = DATA.files && DATA.files[fp.file_idx];
+        if (!f) continue;
+        if (fp.summary !== undefined) f.summary = fp.summary;
+        if (fp.language) f.language = fp.language;
+        if (fp.symbols) f.symbols = fp.symbols;
+        if (fp.status) f.status = fp.status;
+      }
+    }
+    if (Array.isArray(payload.groups)) {
+      DATA.groups = payload.groups;
+      // Rebuild the lookup tables the sidebar reads from.
+      for (const k of Object.keys(GROUP_BY_ID)) delete GROUP_BY_ID[k];
+      for (const k of Object.keys(HUNK_GROUP_COUNT)) delete HUNK_GROUP_COUNT[k];
+      for (const g of DATA.groups) {
+        GROUP_BY_ID[g.id] = g;
+        for (const hid of g.hunk_ids || []) {
+          HUNK_GROUP_COUNT[hid] = (HUNK_GROUP_COUNT[hid] || 0) + 1;
+        }
+      }
+    }
+    // The PR header and groups sidebar live outside the hunk list and
+    // are cheap to redraw; a full re-render keeps the logic in one
+    // place and avoids drift between streamed and non-streamed paths.
+    render();
+  }
+
+  function finaliseStreaming() {
+    // Drop the pending flag so any hunks the server never sent an
+    // event for (filtered, skipped, crashed mid-pass) render the
+    // failure copy on the next re-render instead of the spinner.
+    DATA.pending = false;
+    render();
+  }
+
+  // Minimal CSS.escape polyfill — only needed because some older
+  // browsers ship without `CSS.escape`. Hunk ids are simple ASCII
+  // identifiers, so escaping is a defensive measure.
+  function cssEscape(s) {
+    if (window.CSS && typeof CSS.escape === "function") return CSS.escape(s);
+    return String(s).replace(/[^a-zA-Z0-9_-]/g, c => "\\" + c);
   }
 
   if (document.readyState === "loading") {

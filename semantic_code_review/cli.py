@@ -457,7 +457,7 @@ def pr(
 
         cache = None if no_cache else CacheStore(root=cache_dir, prompt_version=PROMPT_VERSION)
 
-        async def augment_task(rd):  # noqa: F811 — closes over local config
+        async def augment_task(rd, publish):  # noqa: F811 — closes over local config
             await augment_run_dir(
                 rd,
                 model=model,
@@ -465,6 +465,7 @@ def pr(
                 cache=cache,
                 client=client,
                 show_progress=not verbose,
+                on_event=publish,
             )
     else:
         # Mirror cli.review's behaviour: copy raw → augmented so render has

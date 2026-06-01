@@ -182,3 +182,68 @@ async def test_augment_max_hunks_caps_calls(tmp_path: Path) -> None:
         run, model="t", concurrency=1, client=backend, cache=None, max_hunks=1,
     )
     assert canned.calls == 2  # overview + 1 hunk
+
+
+async def test_augment_publishes_overview_and_per_hunk_events(tmp_path: Path) -> None:
+    """The on_event hook fires once for overview and once per hunk
+    completion, carrying enough payload for the viewer to patch."""
+    run = _make_run_dir(tmp_path)
+    backend, _ = _make_canned_backend(
+        overview_args={
+            "summary": "Bumps two constants.",
+            "themes": ["constants"],
+            "files": [{"path": "f.py", "summary": "x and y bumped"}],
+        },
+        hunk_args_list=[
+            {"intent": "Bump x from 1 to 2", "confidence": 90, "smells": []},
+            {"intent": "Bump y from 1 to 2", "confidence": 90, "smells": []},
+        ],
+    )
+
+    events: list[tuple[str, dict]] = []
+    def collect(event_type: str, payload: dict) -> None:
+        events.append((event_type, payload))
+
+    await augment_run_dir(
+        run, model="t", concurrency=1, client=backend, cache=None,
+        on_event=collect,
+    )
+
+    types = [t for t, _ in events]
+    assert types.count("overview") == 1
+    hunk_events = [p for t, p in events if t == "hunk"]
+    assert len(hunk_events) == 2
+    # Identity + payload shape — sufficient for the viewer to patch.
+    indices = {(p["file_idx"], p["hunk_idx"]) for p in hunk_events}
+    assert indices == {(0, 0), (0, 1)}
+    for p in hunk_events:
+        assert p["ok"] is True
+        assert p["block"]["id"] == f"H{p['file_idx']}_{p['hunk_idx']}"
+        assert p["block"]["intent"].startswith("Bump ")
+
+    overview_payload = next(p for t, p in events if t == "overview")
+    assert overview_payload["pr"]["summary"] == "Bumps two constants."
+    assert overview_payload["pr"]["themes"] == ["constants"]
+    assert overview_payload["files"][0]["summary"] == "x and y bumped"
+
+
+async def test_augment_event_consumer_failure_does_not_break_pipeline(
+    tmp_path: Path,
+) -> None:
+    """A consumer that throws on every event must not abort the run —
+    the on_event hook is a best-effort progress channel."""
+    run = _make_run_dir(tmp_path)
+    backend, _ = _make_canned_backend(
+        overview_args={"summary": "ok", "files": []},
+        hunk_args_list=[{"intent": "ok"}, {"intent": "ok"}],
+    )
+
+    def explode(_event_type: str, _payload: dict) -> None:
+        raise RuntimeError("consumer is on fire")
+
+    await augment_run_dir(
+        run, model="t", concurrency=1, client=backend, cache=None,
+        on_event=explode,
+    )
+    # Run still produced parseable output.
+    assert (run / "augmented.diff").exists()

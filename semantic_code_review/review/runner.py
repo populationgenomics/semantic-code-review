@@ -35,6 +35,16 @@ from .server import ReviewServer
 log = logging.getLogger(__name__)
 
 
+#: Signature of the augment callable accepted by ``serve_review``. The
+#: second argument is the publisher bound to the live review server's
+#: SSE channel; pass it through to ``augment_run_dir(on_event=...)`` so
+#: the pipeline can stream overview / per-hunk events to the page.
+AugmentCallable = Callable[
+    [Path, Callable[[str, dict], None]],
+    Awaitable[None],
+]
+
+
 @dataclass
 class ReviewOptions:
     spec: str                       # git ref or range, user-supplied
@@ -70,7 +80,7 @@ def run_review(opts: ReviewOptions) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     _populate_run_dir(run_dir, diff, spec_md=opts.spec_markdown)
 
-    augment_task: Callable[[Path], Awaitable[None]] | None = None
+    augment_task: AugmentCallable | None = None
     if opts.augment:
         from ..augment.pipeline import augment_run_dir  # lazy: anthropic SDK
 
@@ -78,7 +88,7 @@ def run_review(opts: ReviewOptions) -> int:
             root=opts.cache_dir, prompt_version=PROMPT_VERSION
         )
 
-        async def augment_task(rd: Path) -> None:  # noqa: F811 — closes over opts
+        async def augment_task(rd: Path, publish) -> None:  # noqa: F811 — closes over opts
             await augment_run_dir(
                 rd,
                 model=opts.model,
@@ -86,6 +96,7 @@ def run_review(opts: ReviewOptions) -> int:
                 cache=cache,
                 client=opts.client,
                 show_progress=opts.show_progress,
+                on_event=publish,
             )
     else:
         # When augment is skipped, copy raw.diff to augmented.diff so render
@@ -121,7 +132,7 @@ class ServeResult:
 def serve_review(
     run_dir: "Path",
     *,
-    augment: Callable[[Path], Awaitable[None]] | None = None,
+    augment: AugmentCallable | None = None,
     port: int = 0,
     timeout: int = 3600,
     open_browser: bool = True,
@@ -171,15 +182,15 @@ def serve_review(
                 log.warning("could not open browser: %s", e)
 
         if augment is not None:
-            # Run augmentation while the server is live. If the pass
-            # writes augmented.diff (the normal path, even with some
-            # failed hunks), re-render and flush a `reload`. If it
-            # blew up before producing anything on disk, leave the
-            # page on the pending view — reloading into an empty
-            # viewer JSON is worse than honest "still analysing".
+            # Run augmentation while the server is live, streaming each
+            # overview / per-hunk completion to the page via SSE. After
+            # the pass returns, refresh `/data.json` and the on-disk
+            # HTML so a fresh tab opened post-augment also sees the
+            # full state, then publish `done` so connected viewers can
+            # finalise any still-pending placeholders.
             augment_error: BaseException | None = None
             try:
-                asyncio.run(augment(run_dir))
+                asyncio.run(augment(run_dir, srv.publish))
             except BaseException as e:  # noqa: BLE001
                 augment_error = e
                 log.exception("augmentation failed; page stays on pending view")
@@ -188,7 +199,7 @@ def serve_review(
                 final_json = _load_viewer_json(run_dir)
                 render_run_dir(run_dir, html_path, session_endpoint=srv.url())
                 srv.update_viewer_json(final_json)
-                srv.publish("reload", {"reason": "augment-complete"})
+                srv.publish("done", {"reason": "augment-complete"})
             if augment_error is not None and not isinstance(augment_error, Exception):
                 # KeyboardInterrupt / SystemExit shouldn't be swallowed —
                 # re-raise after the page has its latest state pushed.

@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from ..cache.store import CacheStore
 from ..format.emit import emit_augmented_diff
 from ..format.parse import parse_raw_diff
 from ..format.sidecar import dump_sidecar
+from ..viewer.hunk_layout import build_hunk_viewer_block
 from .agents import Client
 from .hunks import (
     apply_hunk_annotations, build_hunk_annotations, overview_to_prompt_json,
@@ -31,9 +33,25 @@ from .progress import ProgressMeter
 from .prompts import PROMPT_VERSION
 from .schemas import (
     AnnotatedDiff, AnnotatedFile, AnnotatedHunk, FileAnnotations, FileRole,
-    HunkAnnotations, PRInfo, ParsedDiff, lift_file,
+    HunkAnnotations, Overview, PRInfo, ParsedDiff, lift_file,
 )
 from .tools import RepoTools
+
+
+# Callable signature for streaming progress events. Wired up to the
+# review server's SSE channel by `serve_review`; unset elsewhere
+# (CLI-only augment, tests). Calls are best-effort — pipeline must not
+# fail if the consumer raises.
+OnEvent = Callable[[str, dict[str, Any]], None]
+
+
+def _safe_emit(on_event: OnEvent | None, event_type: str, payload: dict[str, Any]) -> None:
+    if on_event is None:
+        return
+    try:
+        on_event(event_type, payload)
+    except Exception:  # noqa: BLE001 — pipeline progresses regardless of consumer health
+        log.exception("on_event consumer raised for %s; continuing", event_type)
 
 
 # Paths we do not send to the LLM — lock files, vendored bundles, binary
@@ -75,6 +93,7 @@ async def augment_run_dir(
     skip_overview: bool = False,
     skip_context: bool = False,
     show_progress: bool = True,
+    on_event: OnEvent | None = None,
 ) -> Path:
     """Augment a fetch run directory. Returns the augmented.diff path."""
     if client is None:
@@ -159,6 +178,7 @@ async def augment_run_dir(
                 )
                 diff = apply_overview_to_diff(diff, ov)
                 meter.finish_overview(ok=True)
+                _safe_emit(on_event, "overview", _overview_event_payload(diff))
             except Exception:
                 meter.finish_overview(ok=False)
                 raise
@@ -191,7 +211,7 @@ async def augment_run_dir(
                     _augment_one_hunk(
                         ord_idx, meter, sem, client, diff, fi, hi,
                         overview_json, repo_tools, model, cache,
-                        trace_dir, stats, results,
+                        trace_dir, stats, results, on_event,
                     )
                 )
                 for fi, hi, ord_idx in queued
@@ -256,6 +276,7 @@ async def _augment_one_hunk(
     trace_dir: Path,
     stats: _HunkStats,
     results: dict[tuple[int, int], HunkAnnotations],
+    on_event: OnEvent | None,
 ) -> None:
     fp = diff.files[fi]
     hunk = fp.hunks[hi]
@@ -285,6 +306,12 @@ async def _augment_one_hunk(
             log.info("hunk %s @ %s: intent=%r smells=%d segs=%d",
                      fp.path, hunk.parsed.header,
                      (ann.intent or "")[:80], len(ann.smells), len(ann.segments))
+            block = build_hunk_viewer_block(
+                AnnotatedHunk(parsed=hunk.parsed, ann=ann), fi, hi,
+            )
+            _safe_emit(on_event, "hunk", {
+                "file_idx": fi, "hunk_idx": hi, "ok": True, "block": block,
+            })
         except Exception as e:  # noqa: BLE001
             stats.failed += 1
             meter.finish_hunk(ord_idx, ok=False)
@@ -292,6 +319,67 @@ async def _augment_one_hunk(
                 "hunk %s @ %s failed: %s: %s",
                 fp.path, hunk.parsed.header, type(e).__name__, e,
             )
+            _safe_emit(on_event, "hunk", {
+                "file_idx": fi, "hunk_idx": hi, "ok": False,
+                "error": f"{type(e).__name__}: {e}",
+            })
+
+
+def _overview_event_payload(diff: AnnotatedDiff) -> dict[str, Any]:
+    """Build the `overview` SSE payload from the post-overview diff.
+
+    Carries the PR-level fields the viewer wants to update (summary,
+    themes, symbols, callgraph), the semantic groups the sidebar
+    filters by, and per-file summaries/symbols that show up in the
+    file header. Mirrors the relevant slices of `build_viewer_json`'s
+    output so the viewer can patch in place without re-fetching
+    `data.json`.
+    """
+    ov = diff.overview if isinstance(diff.overview, Overview) else None
+    path_to_file_idx = {fp.path: i for i, fp in enumerate(diff.files)}
+    groups: list[dict[str, Any]] = []
+    if ov is not None:
+        for gi, g in enumerate(ov.groups):
+            hunk_ids: list[str] = []
+            for m in g.members:
+                fi = path_to_file_idx.get(m.path)
+                if fi is None:
+                    continue
+                hunk_ids.append(f"H{fi}_{m.hunk_index}")
+            if not hunk_ids:
+                continue
+            groups.append({
+                "id": f"G{gi}", "title": g.title,
+                "rationale": g.rationale, "hunk_ids": hunk_ids,
+            })
+    file_patches = [
+        {
+            "file_idx": i,
+            "path": fp.path,
+            "summary": fp.ann.summary,
+            "language": fp.ann.lang or "",
+            "symbols": (
+                fp.ann.symbols.model_dump() if fp.ann.symbols
+                else {"added": [], "modified": [], "removed": []}
+            ),
+            "status": fp.ann.role.value if fp.ann.role else "modified",
+        }
+        for i, fp in enumerate(diff.files)
+    ]
+    return {
+        "pr": {
+            "summary": ov.summary if ov else "",
+            "themes": ov.themes if ov else [],
+            "symbols_added": [s.model_dump() for s in (ov.symbols_added if ov else [])],
+            "symbols_modified": [s.model_dump() for s in (ov.symbols_modified if ov else [])],
+            "symbols_removed": [s.model_dump() for s in (ov.symbols_removed if ov else [])],
+            "callgraph_edges": [
+                e.model_dump(by_alias=True) for e in (ov.callgraph_edges if ov else [])
+            ],
+        },
+        "groups": groups,
+        "files": file_patches,
+    }
 
 
 def _merge_hunk_results(

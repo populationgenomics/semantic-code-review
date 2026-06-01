@@ -200,9 +200,11 @@ def _populate_minimal_run_dir(run_dir: Path) -> None:
     }), encoding="utf-8")
 
 
-def test_serve_review_renders_pending_then_pushes_reload_on_completion(tmp_path: Path) -> None:
-    """End-to-end: serve_review starts the server, surfaces a pending
-    HTML, then runs the augment closure and fires `reload` over SSE."""
+def test_serve_review_renders_pending_then_streams_and_finalises(tmp_path: Path) -> None:
+    """End-to-end: serve_review starts the server, renders a pending
+    HTML, then runs the augment closure (which can publish streaming
+    events via the supplied publish callable) and fires `done` once
+    augmentation finishes."""
     from semantic_code_review.review.runner import serve_review
 
     _populate_minimal_run_dir(tmp_path)
@@ -211,7 +213,7 @@ def test_serve_review_renders_pending_then_pushes_reload_on_completion(tmp_path:
     augment_release = threading.Event()
     augment_finished = threading.Event()
 
-    async def fake_augment(rd: Path) -> None:
+    async def fake_augment(rd: Path, publish) -> None:
         augment_started.set()
         # Block until the test confirms it has observed the pending
         # HTML — otherwise the final render races us and the assertion
@@ -219,8 +221,10 @@ def test_serve_review_renders_pending_then_pushes_reload_on_completion(tmp_path:
         await asyncio.get_running_loop().run_in_executor(
             None, augment_release.wait, 5.0,
         )
-        # Mimic the real pipeline: write augmented.diff with the same
-        # content (no annotations) so render_run_dir can parse it.
+        # Mimic a per-hunk completion before the pipeline writes its
+        # final on-disk output. The page would react by patching the
+        # hunk slot; here we just confirm the callable was wired in.
+        publish("hunk", {"file_idx": 0, "hunk_idx": 0, "ok": True, "block": {"id": "H0_0"}})
         (rd / "augmented.diff").write_text(_RAW_DIFF_FOR_RUN, encoding="utf-8")
         augment_finished.set()
 
