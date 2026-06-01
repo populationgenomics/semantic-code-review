@@ -60,7 +60,7 @@ _HUNK_HEADER_RE = re.compile(
     r"^@@ -(?P<os>\d+)(?:,(?P<oc>\d+))? \+(?P<ns>\d+)(?:,(?P<nc>\d+))? @@"
 )
 _SEGMENT_RANGE_RE = re.compile(r"^\s*\+(\d+)\.\.\+(\d+)\s*$")
-_FOLD_RE = re.compile(r'^\s*\+(\d+)\.\.\+(\d+)\s+(?:"(.*)"|(.+))\s*$')
+_FOLD_RE = re.compile(r'^\s*([+\-])(\d+)\.\.\1(\d+)\s+(?:"(.*)"|(.+))\s*$')
 _LINE_NOTE_RE = re.compile(r'^\s*\+(\d+)\s+(?:"(.*)"|(.+))\s*$')
 _SMELL_RE = re.compile(r'^\s*(\S+)(?:\s+"(.*)")?\s*$')
 _DIFF_GIT_RE = re.compile(r"^diff --git a/(.+?) b/(.+?)\s*$")
@@ -163,12 +163,20 @@ def _parse_fold(value: str, lineno: int) -> FoldDescription:
     m = _FOLD_RE.match(value)
     if not m:
         raise ParseError(f"line {lineno}: malformed scr-fold value {value!r}")
-    start = int(m.group(1))
-    end = int(m.group(2))
-    summary = m.group(3) if m.group(3) is not None else (m.group(4) or "")
+    sign = m.group(1)
+    start = int(m.group(2))
+    end = int(m.group(3))
+    summary = m.group(4) if m.group(4) is not None else (m.group(5) or "")
     if end < start:
-        raise ParseError(f"line {lineno}: fold end +{end} before start +{start}")
-    return FoldDescription(new_start=start, new_count=end - start + 1, summary=summary)
+        raise ParseError(f"line {lineno}: fold end {sign}{end} before start {sign}{start}")
+    count = end - start + 1
+    if sign == "+":
+        return FoldDescription(
+            side="new", new_start=start, new_count=count, summary=summary,
+        )
+    return FoldDescription(
+        side="old", old_start=start, old_count=count, summary=summary,
+    )
 
 
 def _parse_refs(value: str, lineno: int) -> list[Ref]:

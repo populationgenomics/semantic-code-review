@@ -1262,21 +1262,34 @@
   function canRequestFoldSummary(hunkId, region) {
     if (!SESSION_ENDPOINT) return false;
     if (!hunkId) return false;
-    if (region.new_start == null || region.new_end == null) return false;
-    return true;
+    return foldAddress(region) !== null;
+  }
+
+  // Resolve a fold region to its `{side, start, count}` request shape.
+  // Returns null when the region is unaddressable on either side
+  // (shouldn't happen — compute_fold_regions always picks one).
+  function foldAddress(region) {
+    const side = region.side || "new";
+    if (side === "old") {
+      if (region.old_start == null || region.old_end == null) return null;
+      return { side: "old", start: region.old_start,
+               count: region.old_end - region.old_start + 1 };
+    }
+    if (region.new_start == null || region.new_end == null) return null;
+    return { side: "new", start: region.new_start,
+             count: region.new_end - region.new_start + 1 };
   }
 
   function requestFoldSummary(hunkId, region, foldHandle) {
     if (region._inflight || region.summary) return;
+    const addr = foldAddress(region);
+    if (!addr) return;
     region._inflight = true;
     setFoldBoxContent(foldHandle, "summarising…", {pending: true});
-    const new_count = region.new_end - region.new_start + 1;
     fetch(SESSION_ENDPOINT + "/fold-summary", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({
-        hunk_id: hunkId, new_start: region.new_start, new_count,
-      }),
+      body: JSON.stringify({ hunk_id: hunkId, ...addr }),
     })
       .then((r) => r.json().then((j) => ({status: r.status, body: j})))
       .then(({status, body}) => {
@@ -1329,10 +1342,14 @@
     const f = DATA.files && DATA.files[fi];
     const h = f && f.hunks && f.hunks[hi];
     if (!h) return;
-    const new_end = payload.new_start + payload.new_count - 1;
-    const region = (h.fold_regions || []).find(
-      (r) => r.new_start === payload.new_start && r.new_end === new_end,
-    );
+    const side = payload.side || "new";
+    const end = payload.start + payload.count - 1;
+    const region = (h.fold_regions || []).find((r) => {
+      if ((r.side || "new") !== side) return false;
+      return side === "old"
+        ? r.old_start === payload.start && r.old_end === end
+        : r.new_start === payload.start && r.new_end === end;
+    });
     if (!region) return;
     // Idempotency: same payload, no work. Avoids a redundant re-render
     // (and the fold popping back open) when our own POST also arrives

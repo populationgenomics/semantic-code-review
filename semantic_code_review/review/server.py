@@ -59,7 +59,7 @@ def _parse_hunk_id(hunk_id: str) -> tuple[int, int]:
 
 def _update_viewer_json_fold(
     viewer_json: dict[str, Any], fi: int, hi: int,
-    new_start: int, new_count: int, summary: str,
+    side: str, start: int, count: int, summary: str,
 ) -> None:
     """Patch the matching fold_regions[i].summary in the viewer JSON
     so a fresh `/data.json` fetch sees the result."""
@@ -69,9 +69,17 @@ def _update_viewer_json_fold(
     hunks = files[fi].get("hunks") or []
     if hi >= len(hunks):
         return
-    new_end = new_start + new_count - 1
+    end = start + count - 1
+    if side == "old":
+        start_key, end_key = "old_start", "old_end"
+    else:
+        start_key, end_key = "new_start", "new_end"
     for reg in hunks[hi].get("fold_regions") or []:
-        if reg.get("new_start") == new_start and reg.get("new_end") == new_end:
+        if (
+            reg.get("side") == side
+            and reg.get(start_key) == start
+            and reg.get(end_key) == end
+        ):
             reg["summary"] = summary
             return
 
@@ -312,11 +320,15 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(409, {"error": "augmentation still in progress"})
             return
         hunk_id = str(payload.get("hunk_id", "")).strip()
+        side = str(payload.get("side", "new"))
+        if side not in ("new", "old"):
+            self._json(400, {"error": "side must be 'new' or 'old'"})
+            return
         try:
-            new_start = int(payload.get("new_start"))
-            new_count = int(payload.get("new_count"))
+            start = int(payload.get("start"))
+            count = int(payload.get("count"))
         except (TypeError, ValueError):
-            self._json(400, {"error": "new_start and new_count must be integers"})
+            self._json(400, {"error": "start and count must be integers"})
             return
         try:
             fi, hi = _parse_hunk_id(hunk_id)
@@ -350,10 +362,13 @@ class _Handler(BaseHTTPRequestHandler):
 
         try:
             summary = asyncio.run(
-                self.ctx.fold_summariser(fp, hunk, overview_json, new_start, new_count)
+                self.ctx.fold_summariser(fp, hunk, overview_json, side, start, count)
             )
         except Exception as e:  # noqa: BLE001
-            log.exception("fold-summary failed for %s %s+%d", hunk_id, new_start, new_count)
+            log.exception(
+                "fold-summary failed for %s %s%d..%d", hunk_id,
+                "+" if side == "new" else "-", start, start + count - 1,
+            )
             self._json(500, {"error": f"{type(e).__name__}: {e}"})
             return
 
@@ -364,11 +379,16 @@ class _Handler(BaseHTTPRequestHandler):
 
         new_folds = [
             fd for fd in hunk.ann.fold_descriptions
-            if not (fd.new_start == new_start and fd.new_count == new_count)
+            if not (fd.side == side and fd.start == start and fd.count == count)
         ]
-        new_folds.append(
-            FoldDescription(new_start=new_start, new_count=new_count, summary=summary)
-        )
+        if side == "new":
+            new_folds.append(FoldDescription(
+                side="new", new_start=start, new_count=count, summary=summary,
+            ))
+        else:
+            new_folds.append(FoldDescription(
+                side="old", old_start=start, old_count=count, summary=summary,
+            ))
         updated_ann = hunk.ann.model_copy(update={"fold_descriptions": new_folds})
         updated_hunk = hunk.model_copy(update={"ann": updated_ann})
         updated_hunks = list(fp.hunks)
@@ -387,18 +407,16 @@ class _Handler(BaseHTTPRequestHandler):
         # via /data.json also picks it up, then broadcast the patch
         # to any other connected tabs viewing the same review.
         _update_viewer_json_fold(
-            self.ctx.viewer_json, fi, hi, new_start, new_count, summary,
+            self.ctx.viewer_json, fi, hi, side, start, count, summary,
         )
-        _ctx_publish(self.ctx, "fold-summary", {
-            "hunk_id": hunk_id, "new_start": new_start,
-            "new_count": new_count, "summary": summary,
-        })
+        broadcast_payload = {
+            "hunk_id": hunk_id, "side": side,
+            "start": start, "count": count, "summary": summary,
+        }
+        _ctx_publish(self.ctx, "fold-summary", broadcast_payload)
         # Caller's RPC response carries the summary so the requesting
         # tab doesn't need to wait for its own SSE event to round-trip.
-        self._json(200, {
-            "hunk_id": hunk_id, "new_start": new_start,
-            "new_count": new_count, "summary": summary,
-        })
+        self._json(200, broadcast_payload)
 
     def do_DELETE(self) -> None:  # noqa: N802
         self._touch()

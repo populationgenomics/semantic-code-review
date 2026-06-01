@@ -19,6 +19,7 @@ takes a `ParsedDiff` and produces an `AnnotatedDiff` via pure functions.
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -91,17 +92,31 @@ class Segment(BaseModel):
 
 
 class FoldDescription(BaseModel):
-    """One-line summary of the change inside an indent fold region.
+    """One-line summary of the body inside an indent fold region.
 
-    `new_start`/`new_count` target post-image lines the region covers.
-    Generated lazily by the review server's `/fold-summary` route the
-    first time the reviewer collapses a region; cached so subsequent
-    reviews skip the call.
+    Regions can live on either side of the diff: post-image (the
+    common case — describing what the new code does) or pre-image
+    (describing what a deletion-only block removed). `side` tags
+    which axis the start/count refer to; the unused side stays at 0.
+    Generated lazily by the review server's `/fold-summary` route
+    the first time the reviewer collapses a region; cached so
+    subsequent reviews skip the call.
     """
 
-    new_start: int
-    new_count: int
+    side: Literal["new", "old"] = "new"
+    new_start: int = 0
+    new_count: int = 0
+    old_start: int = 0
+    old_count: int = 0
     summary: str
+
+    @property
+    def start(self) -> int:
+        return self.old_start if self.side == "old" else self.new_start
+
+    @property
+    def count(self) -> int:
+        return self.old_count if self.side == "old" else self.new_count
 
 
 class FileRole(str, Enum):

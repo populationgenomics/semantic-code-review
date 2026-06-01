@@ -72,21 +72,32 @@ def make_fold_summary_agent(model: str | Model) -> Agent[None, FoldSummarySubmis
     )
 
 
-def extract_region_body(hunk: AnnotatedHunk, new_start: int, new_count: int) -> str:
+def extract_region_body(
+    hunk: AnnotatedHunk, side: str, start: int, count: int,
+) -> str:
     """Return the raw +/-/space-prefixed lines that fall inside the
-    requested post-image range, joined by newlines. Falls back to the
-    full hunk body when the range doesn't match a computed region.
+    requested side-relative range, joined by newlines. Falls back to
+    the full hunk body when the range doesn't match a computed region.
+
+    `side` is "new" (post-image, the common case — describe what the
+    new code does) or "old" (pre-image, used when an indent fold is
+    a pure deletion and has no post-image lines to address).
     """
     rows = build_rows(hunk.parsed)
     regions = compute_fold_regions(rows)
-    new_end = new_start + new_count - 1
-    matched = next(
-        (
-            r for r in regions
-            if r.new_start == new_start and r.new_end == new_end
-        ),
-        None,
-    )
+    end = start + count - 1
+    if side == "old":
+        matched = next(
+            (r for r in regions if r.side == "old"
+             and r.old_start == start and r.old_end == end),
+            None,
+        )
+    else:
+        matched = next(
+            (r for r in regions if r.side == "new"
+             and r.new_start == start and r.new_end == end),
+            None,
+        )
     if matched is None:
         # Unknown region — return the whole hunk body so the model has
         # something coherent to summarise. The caller already knows the
@@ -111,15 +122,18 @@ def _format_fold_prompt(
     overview_json: str,
     fp: AnnotatedFile,
     hunk: AnnotatedHunk,
-    new_start: int,
-    new_count: int,
+    side: str,
+    start: int,
+    count: int,
 ) -> list[dict[str, Any]]:
-    region_body = extract_region_body(hunk, new_start, new_count)
+    region_body = extract_region_body(hunk, side, start, count)
     file_summary = (fp.ann.summary or "").strip()
+    sign = "+" if side == "new" else "-"
+    side_label = "post-image" if side == "new" else "pre-image (deleted)"
     region_text = (
         f"# File\npath: {fp.path}\nlang: {fp.ann.lang or ''}\n\n"
         f"# Hunk\n{hunk.parsed.header}\n\n"
-        f"# Folded region (post-image lines +{new_start}..+{new_start + new_count - 1})\n"
+        f"# Folded region ({side_label} lines {sign}{start}..{sign}{start + count - 1})\n"
         f"{region_body}\n\n"
         "Summarise the folded region."
     )
@@ -138,23 +152,25 @@ async def summarise_fold(
     fp: AnnotatedFile,
     hunk: AnnotatedHunk,
     overview_json: str,
-    new_start: int,
-    new_count: int,
+    side: str,
+    start: int,
+    count: int,
     model: str,
     cache: CacheStore | None = None,
     trace_dir: Path | None = None,
 ) -> str:
-    """Return a one-sentence summary for the fold region at (new_start, new_count).
+    """Return a one-sentence summary for the fold region (side, start, count).
 
-    Cached by (file path, hunk body, region). Trace file (if `trace_dir`
-    is given) lands at `trace_dir/fold-<file>-<hunk>-<range>.json` so
-    failures are diagnosable alongside the per-hunk traces.
+    `side` is "new" or "old" — the addressing axis. Cached by
+    (file path, hunk body, side, range). Trace file (if `trace_dir`
+    is given) lands at `trace_dir/fold-<file>-<hunk>-<side><range>.json`
+    so failures are diagnosable alongside the per-hunk traces.
     """
     user_content = _format_fold_prompt(
         overview_json=overview_json, fp=fp, hunk=hunk,
-        new_start=new_start, new_count=new_count,
+        side=side, start=start, count=count,
     )
-    trace_path = _trace_path(trace_dir, fp.path, hunk, new_start, new_count)
+    trace_path = _trace_path(trace_dir, fp.path, hunk, side, start, count)
 
     if cache is not None:
         key = cache.key(
@@ -165,8 +181,9 @@ async def summarise_fold(
             fp.path,
             hunk.parsed.header,
             hunk.parsed.body,
-            str(new_start),
-            str(new_count),
+            side,
+            str(start),
+            str(count),
         )
         entry = cache.get(key)
         if entry is not None:
@@ -229,7 +246,7 @@ async def summarise_fold(
 
 def _trace_path(
     trace_dir: Path | None, file_path: str, hunk: AnnotatedHunk,
-    new_start: int, new_count: int,
+    side: str, start: int, count: int,
 ) -> Path | None:
     if trace_dir is None:
         return None
@@ -238,4 +255,5 @@ def _trace_path(
         hunk.parsed.header.replace(" ", "_").replace("@", "")
         .replace(",", "_").replace("+", "p").replace("-", "m")
     )
-    return trace_dir / f"fold-{safe_file}-{safe_hunk[:40]}-p{new_start}_{new_count}.json"
+    side_prefix = "p" if side == "new" else "m"
+    return trace_dir / f"fold-{safe_file}-{safe_hunk[:40]}-{side_prefix}{start}_{count}.json"

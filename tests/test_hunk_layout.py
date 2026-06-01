@@ -167,3 +167,43 @@ def test_fold_regions_ignores_blank_lines() -> None:
     regions = compute_fold_regions(rows)
     assert len(regions) == 1
     assert regions[0].body_end_idx == 3  # last indented row, not the blank
+
+
+def test_fold_regions_pure_deletion_picks_old_side() -> None:
+    """A fold region whose body is entirely deleted has no post-image
+    lines to address. compute_fold_regions falls back to old-side
+    addressing so /fold-summary can still reach it."""
+    body = (
+        "-def removed():\n"
+        "-    x = 1\n"
+        "-    y = 2\n"
+    )
+    # old_start=10 makes the absolute old line numbers easy to verify.
+    rows = build_rows(_hunk(body, old_count=3, new_count=0, old_start=10, new_start=1))
+    regions = compute_fold_regions(rows)
+    assert len(regions) == 1
+    r = regions[0]
+    assert r.side == "old"
+    assert r.new_start is None and r.new_end is None
+    assert r.old_start == 10 and r.old_end == 12
+    assert r.has_changes is True
+
+
+def test_fold_regions_pair_region_picks_new_side() -> None:
+    """A fold region with both sides present is addressed on the new
+    side (matches the historical, post-image-anchored behaviour)."""
+    body = (
+        " def foo():\n"
+        "-    x = 1\n"
+        "+    x = 2\n"
+        "     return x\n"
+    )
+    rows = build_rows(_hunk(body, old_count=3, new_count=3))
+    regions = compute_fold_regions(rows)
+    assert len(regions) == 1
+    r = regions[0]
+    assert r.side == "new"
+    assert r.new_start is not None and r.new_end is not None
+    # old side is populated too — both ranges available — but the
+    # region's canonical addressing is new.
+    assert r.old_start is not None and r.old_end is not None

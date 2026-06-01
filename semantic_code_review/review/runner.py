@@ -50,11 +50,13 @@ AugmentCallable = Callable[
 #: ``serve_review``. The server resolves hunk_id → AnnotatedFile +
 #: AnnotatedHunk from the persisted sidecar before invoking; the
 #: closure does the LLM call and returns a one-sentence summary.
-#: Wired up only when an LLM backend is available (i.e.
+#: ``side`` is "new" (post-image; describing what the new code does)
+#: or "old" (pre-image; describing what the deletion-only block
+#: removed). Wired up only when an LLM backend is available (i.e.
 #: ``opts.augment is True``); ``--no-augment`` reviews leave this
 #: at ``None`` and the route returns 409 unconditionally.
 FoldSummaryCallable = Callable[
-    [Any, Any, str, int, int],  # (fp, hunk, overview_json, new_start, new_count)
+    [Any, Any, str, str, int, int],  # (fp, hunk, overview_json, side, start, count)
     Awaitable[str],
 ]
 
@@ -255,14 +257,16 @@ def _build_fold_summary_task(
     # `--no-augment` path.
     from ..augment.fold_summary import summarise_fold
 
-    async def task(fp, hunk, overview_json: str, new_start: int, new_count: int) -> str:
+    async def task(
+        fp, hunk, overview_json: str, side: str, start: int, count: int,
+    ) -> str:
         # client is None only when augment is False; in that path
         # serve_review never wires this task up, so a None here would
         # be a wiring bug — fail loudly.
         assert client is not None, "fold-summary task called without an LLM backend"
         return await summarise_fold(
             client, fp=fp, hunk=hunk, overview_json=overview_json,
-            new_start=new_start, new_count=new_count, model=model, cache=cache,
+            side=side, start=start, count=count, model=model, cache=cache,
         )
 
     return task

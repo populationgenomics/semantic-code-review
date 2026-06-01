@@ -258,7 +258,10 @@ def test_fold_summary_persists_and_publishes(tmp_path: Path) -> None:
             "id": "F0", "path": diff.files[0].path,
             "hunks": [{
                 "id": "H0_0",
-                "fold_regions": [{"new_start": 1, "new_end": 3, "summary": ""}],
+                "fold_regions": [{
+                    "side": "new", "new_start": 1, "new_end": 3,
+                    "old_start": None, "old_end": None, "summary": "",
+                }],
             }],
         }],
     }
@@ -272,11 +275,12 @@ def test_fold_summary_persists_and_publishes(tmp_path: Path) -> None:
     try:
         captured = {}
 
-        async def summariser(fp, hunk, overview_json, new_start, new_count):
+        async def summariser(fp, hunk, overview_json, side, start, count):
             captured["called"] = True
             captured["path"] = fp.path
-            captured["new_start"] = new_start
-            captured["new_count"] = new_count
+            captured["side"] = side
+            captured["start"] = start
+            captured["count"] = count
             return "wraps the body in a try/except to fail-soft on bad input"
 
         srv.set_fold_summariser(summariser)
@@ -299,19 +303,20 @@ def test_fold_summary_persists_and_publishes(tmp_path: Path) -> None:
 
         code, body = _request(
             srv.url() + "/fold-summary", "POST",
-            {"hunk_id": "H0_0", "new_start": 1, "new_count": 3},
+            {"hunk_id": "H0_0", "side": "new", "start": 1, "count": 3},
         )
         assert code == 200
         assert body["summary"].startswith("wraps the body")
         assert captured["called"] is True
-        assert captured["new_start"] == 1 and captured["new_count"] == 3
+        assert captured["side"] == "new"
+        assert captured["start"] == 1 and captured["count"] == 3
 
         # Sidecar now carries the summary.
         from semantic_code_review.format.sidecar import load_sidecar
         reloaded = load_sidecar(sidecar)
         folds = reloaded.files[0].hunks[0].ann.fold_descriptions
         assert any(
-            fd.new_start == 1 and fd.new_count == 3
+            fd.side == "new" and fd.new_start == 1 and fd.new_count == 3
             and fd.summary.startswith("wraps the body")
             for fd in folds
         )
@@ -329,6 +334,68 @@ def test_fold_summary_persists_and_publishes(tmp_path: Path) -> None:
         assert event_line == b"event: fold-summary\n"
         assert b'"summary":' in data_line
         conn.close()
+    finally:
+        srv.stop()
+
+
+def test_fold_summary_for_deletion_side_resolves_and_persists(tmp_path: Path) -> None:
+    """A pure-deletion fold posts {side:'old', start, count}; the server
+    routes to the same summariser and persists with side='old'."""
+    from semantic_code_review.format.parse import parse_augmented_diff
+    from semantic_code_review.format.sidecar import dump_sidecar, load_sidecar
+    from semantic_code_review.review.server import ReviewServer
+
+    fixture = Path(__file__).parent / "fixtures" / "sample.augmented.diff"
+    diff = parse_augmented_diff(fixture.read_text(encoding="utf-8"))
+    sidecar = tmp_path / "augmented.scr.json"
+    dump_sidecar(diff, sidecar)
+    (tmp_path / "augmented.diff").write_text(
+        fixture.read_text(encoding="utf-8"), encoding="utf-8",
+    )
+    (tmp_path / "review.html").write_text("<html></html>", encoding="utf-8")
+    viewer_json = {
+        "version": "1",
+        "files": [{
+            "id": "F0", "path": diff.files[0].path,
+            "hunks": [{
+                "id": "H0_0",
+                "fold_regions": [{
+                    "side": "old", "new_start": None, "new_end": None,
+                    "old_start": 12, "old_end": 14, "summary": "",
+                }],
+            }],
+        }],
+    }
+
+    srv = ReviewServer(
+        run_dir=tmp_path, html_path=tmp_path / "review.html",
+        viewer_json=viewer_json,
+    )
+    srv.start()
+    try:
+        seen = {}
+
+        async def summariser(fp, hunk, overview_json, side, start, count):
+            seen["side"] = side
+            seen["start"] = start
+            seen["count"] = count
+            return "drops the legacy retry loop"
+
+        srv.set_fold_summariser(summariser)
+        code, body = _request(
+            srv.url() + "/fold-summary", "POST",
+            {"hunk_id": "H0_0", "side": "old", "start": 12, "count": 3},
+        )
+        assert code == 200
+        assert seen == {"side": "old", "start": 12, "count": 3}
+        assert body["side"] == "old" and body["start"] == 12
+
+        reloaded = load_sidecar(sidecar)
+        folds = reloaded.files[0].hunks[0].ann.fold_descriptions
+        assert any(
+            fd.side == "old" and fd.old_start == 12 and fd.old_count == 3
+            for fd in folds
+        )
     finally:
         srv.stop()
 
