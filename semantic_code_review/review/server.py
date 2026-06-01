@@ -33,6 +33,34 @@ log = logging.getLogger(__name__)
 _CLOSE = object()
 
 
+def _parse_last_event_id(raw: str | None) -> int:
+    """Coerce the `Last-Event-ID` header to an int, treating anything
+    non-numeric (or missing) as 0 — i.e. "give me everything"."""
+    if not raw:
+        return 0
+    try:
+        return int(raw.strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+#: Upper bound on the replay buffer. A 200-hunk PR emits ~200 hunk
+#: events plus overview/done; even at a few KB per event the buffer
+#: stays well under a megabyte. Anything beyond this cap drops the
+#: oldest entries, which is fine — the buffer is a reconnect safety
+#: net, not durable history.
+_BUFFER_CAP = 2000
+
+
+@dataclass
+class _BufferedEvent:
+    """One SSE frame, retained for `Last-Event-ID` replay on reconnect."""
+
+    id: int
+    event_type: str
+    payload: dict[str, Any]
+
+
 @dataclass
 class ServerContext:
     run_dir: Path
@@ -41,12 +69,15 @@ class ServerContext:
     viewer_json: dict[str, Any]
     done_event: threading.Event
     last_activity: float = 0.0
-    # SSE fan-out. Each connected /events client gets a queue;
-    # publish() pushes the same payload onto all queues. Mutated only
-    # under ``subs_lock`` because handler threads add/remove and the
-    # publishing thread broadcasts.
+    # SSE fan-out + replay buffer. Subscribers and `buffer` are mutated
+    # by both publishing threads and request-handling threads; the
+    # single ``state_lock`` covers both so a reconnecting client sees a
+    # consistent snapshot (replay-then-subscribe is atomic w.r.t.
+    # concurrent publishes).
     subscribers: list[queue.Queue] = field(default_factory=list)
-    subs_lock: threading.Lock = field(default_factory=threading.Lock)
+    buffer: list[_BufferedEvent] = field(default_factory=list)
+    next_event_id: int = 1
+    state_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -114,9 +145,20 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _stream_events(self) -> None:
         """Serve the SSE channel until the client disconnects or the
-        server signals shutdown via the close sentinel."""
+        server signals shutdown via the close sentinel.
+
+        Honours the EventSource ``Last-Event-ID`` reconnect header so a
+        page refresh / dropped connection picks up where it left off —
+        every buffered event newer than the supplied id is replayed
+        before the live stream resumes.
+        """
+        last_id = _parse_last_event_id(self.headers.get("Last-Event-ID"))
         q: queue.Queue = queue.Queue()
-        with self.ctx.subs_lock:
+        # Snapshot the replay slice and register the subscriber under a
+        # single lock acquisition so a publish racing this connect can't
+        # land an event that's neither in the replay nor in the queue.
+        with self.ctx.state_lock:
+            replay = [ev for ev in self.ctx.buffer if ev.id > last_id]
             self.ctx.subscribers.append(q)
         try:
             self.send_response(200)
@@ -136,26 +178,32 @@ class _Handler(BaseHTTPRequestHandler):
                 self.wfile.flush()
             except OSError:
                 return
+            for ev in replay:
+                if not self._write_event(ev):
+                    return
             while True:
                 item = q.get()
                 if item is _CLOSE:
                     return
-                event_type, payload = item
-                body = json.dumps(payload, ensure_ascii=False)
-                frame = f"event: {event_type}\ndata: {body}\n\n".encode("utf-8")
-                try:
-                    self.wfile.write(frame)
-                    self.wfile.flush()
-                except OSError:
-                    # Peer disconnected. Just return; the finally block
-                    # unregisters this subscriber.
+                ev = item  # _BufferedEvent
+                if not self._write_event(ev):
                     return
         finally:
-            with self.ctx.subs_lock:
+            with self.ctx.state_lock:
                 try:
                     self.ctx.subscribers.remove(q)
                 except ValueError:
                     pass
+
+    def _write_event(self, ev: "_BufferedEvent") -> bool:
+        body = json.dumps(ev.payload, ensure_ascii=False)
+        frame = f"id: {ev.id}\nevent: {ev.event_type}\ndata: {body}\n\n".encode("utf-8")
+        try:
+            self.wfile.write(frame)
+            self.wfile.flush()
+        except OSError:
+            return False
+        return True
 
     def do_POST(self) -> None:  # noqa: N802
         self._touch()
@@ -252,18 +300,30 @@ class ReviewServer:
         return f"http://{self._host}:{self._port}"
 
     def publish(self, event_type: str, payload: dict[str, Any]) -> None:
-        """Broadcast an SSE event to every connected /events client.
+        """Broadcast an SSE event to every connected /events client and
+        append it to the replay buffer.
 
         Caller-thread-safe and non-blocking — each subscriber has its
         own queue. Disconnected clients drain themselves at the
         handler-thread side; the snapshot here is just to avoid holding
         the lock while putting onto queues.
         """
-        with self.ctx.subs_lock:
+        with self.ctx.state_lock:
+            ev = _BufferedEvent(
+                id=self.ctx.next_event_id, event_type=event_type, payload=payload,
+            )
+            self.ctx.next_event_id += 1
+            self.ctx.buffer.append(ev)
+            if len(self.ctx.buffer) > _BUFFER_CAP:
+                # Drop the oldest entries. A client that reconnects with
+                # a Last-Event-ID older than the surviving range will
+                # simply receive every event we still have — gaps are
+                # tolerable (they degrade to the slice-1 "may need re-run"
+                # state) and the cap is well above any realistic review.
+                del self.ctx.buffer[: len(self.ctx.buffer) - _BUFFER_CAP]
             subs = list(self.ctx.subscribers)
-        item = (event_type, payload)
         for q in subs:
-            q.put(item)
+            q.put(ev)
 
     def update_viewer_json(self, viewer_json: dict[str, Any]) -> None:
         """Replace the JSON returned by ``GET /data.json``.
@@ -298,7 +358,7 @@ class ReviewServer:
         # return out of ``_stream_events`` before we tear down the
         # socket — otherwise ``server_close`` can race the still-open
         # connections and the process pins on the daemon threads.
-        with self.ctx.subs_lock:
+        with self.ctx.state_lock:
             subs = list(self.ctx.subscribers)
         for q in subs:
             q.put(_CLOSE)

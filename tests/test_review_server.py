@@ -147,7 +147,7 @@ def test_events_stream_delivers_published_payload(server) -> None:
     # we publish. Without this, `subscribers` may still be empty when
     # publish() snapshots the list.
     for _ in range(50):
-        with server.ctx.subs_lock:
+        with server.ctx.state_lock:
             if server.ctx.subscribers:
                 break
         time.sleep(0.01)
@@ -156,13 +156,87 @@ def test_events_stream_delivers_published_payload(server) -> None:
 
     server.publish("reload", {"reason": "test"})
 
-    # Read until we have an event/data pair.
+    # Frame is id/event/data terminated by a blank line.
+    id_line = r.fp.readline()
     event_line = r.fp.readline()
     data_line = r.fp.readline()
     trailing = r.fp.readline()
+    assert id_line == b"id: 1\n"
     assert event_line == b"event: reload\n"
     assert data_line == b'data: {"reason": "test"}\n'
     assert trailing == b"\n"
+
+    conn.close()
+
+
+def _read_sse_frame(fp) -> tuple[int, str, str]:
+    """Read one SSE frame (id/event/data, terminated by a blank line)
+    from a buffered file-like and return (id, event_type, data_body)."""
+    lines: list[str] = []
+    while True:
+        line = fp.readline().decode("utf-8")
+        if line == "\n":
+            break
+        if not line:
+            raise EOFError("connection closed mid-frame")
+        lines.append(line.rstrip("\n"))
+    parts = {}
+    for ln in lines:
+        if ":" in ln:
+            k, _, v = ln.partition(":")
+            parts[k.strip()] = v.lstrip()
+    return int(parts.get("id", "0")), parts.get("event", ""), parts.get("data", "")
+
+
+def test_events_replay_buffered_after_reconnect(server) -> None:
+    """Reconnecting with Last-Event-ID replays only the events the
+    client hasn't seen yet."""
+    server.publish("hunk", {"file_idx": 0, "hunk_idx": 0})
+    server.publish("hunk", {"file_idx": 0, "hunk_idx": 1})
+    server.publish("done", {})
+
+    conn = HTTPConnection("127.0.0.1", int(server.url().rsplit(":", 1)[1]), timeout=5)
+    conn.putrequest("GET", "/events")
+    conn.putheader("Last-Event-ID", "1")
+    conn.endheaders()
+    r = conn.getresponse()
+    assert r.status == 200
+
+    # Skip the priming comment frame.
+    primer = r.fp.readline()
+    assert primer.startswith(b":")
+    blank = r.fp.readline()
+    assert blank == b"\n"
+
+    # Should replay events with id 2 and 3 (we acked id 1).
+    eid, etype, data = _read_sse_frame(r.fp)
+    assert eid == 2 and etype == "hunk"
+    assert json.loads(data) == {"file_idx": 0, "hunk_idx": 1}
+
+    eid, etype, data = _read_sse_frame(r.fp)
+    assert eid == 3 and etype == "done"
+
+    conn.close()
+
+
+def test_events_replay_from_zero_when_header_absent(server) -> None:
+    """A fresh connection with no Last-Event-ID gets the full buffer."""
+    server.publish("overview", {"summary": "first"})
+    server.publish("hunk", {"file_idx": 0, "hunk_idx": 0})
+
+    conn = HTTPConnection("127.0.0.1", int(server.url().rsplit(":", 1)[1]), timeout=5)
+    conn.request("GET", "/events")
+    r = conn.getresponse()
+    assert r.status == 200
+
+    primer = r.fp.readline()
+    assert primer.startswith(b":")
+    r.fp.readline()
+
+    eid1, etype1, _ = _read_sse_frame(r.fp)
+    eid2, etype2, _ = _read_sse_frame(r.fp)
+    assert (eid1, etype1) == (1, "overview")
+    assert (eid2, etype2) == (2, "hunk")
 
     conn.close()
 
