@@ -312,7 +312,7 @@ describe("streaming events", () => {
     expect(intent.textContent).toContain("may need re-run");
   });
 
-  test("overview event populates the sidebar and the file summary", () => {
+  test("overview event populates the themes axis and the file summary", () => {
     bootViewer(makeData({
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
@@ -321,11 +321,13 @@ describe("streaming events", () => {
         hunks: [makeHunkBlock("H0_0"), makeHunkBlock("H0_1")],
       }],
     }));
-    // Sidebar starts empty (the regression we shipped before this test
-    // existed — see commit e800632).
+    // The Files axis is structural and renders from boot — no overview
+    // pass needed. The Themes axis is empty until the overview SSE
+    // event lands.
     const sidebar = document.getElementById("group-sidebar")!;
-    expect(sidebar.classList.contains("empty")).toBe(true);
-    expect(sidebar.querySelectorAll(".group-btn")).toHaveLength(0);
+    expect(sidebar.classList.contains("empty")).toBe(false);
+    expect(sidebar.querySelector('[data-axis="files"]')).not.toBeNull();
+    expect(sidebar.querySelector('[data-axis="themes"]')).toBeNull();
 
     const es = lastEventSource();
     es.dispatch("overview", {
@@ -335,12 +337,55 @@ describe("streaming events", () => {
       ],
       files: [{ file_idx: 0, summary: "x and y bumped", language: "python", symbols: { added: [], modified: [], removed: [] } }],
     });
-    expect(sidebar.classList.contains("empty")).toBe(false);
-    const groupButtons = sidebar.querySelectorAll(".group-btn");
-    expect(groupButtons.length).toBeGreaterThanOrEqual(1);
-    expect(Array.from(groupButtons).some((b) => b.textContent?.includes("return value bumps"))).toBe(true);
-    // File summary on the file header reflects the overview's per-file slice.
+    const themesSection = sidebar.querySelector('[data-axis="themes"]')!;
+    expect(themesSection).not.toBeNull();
+    const themeBtns = themesSection.querySelectorAll(".group-btn");
+    expect(themeBtns.length).toBe(1);
+    expect(themeBtns[0].textContent).toContain("return value bumps");
     expect(document.querySelector(".file-summary")!.textContent).toBe("x and y bumped");
+  });
+
+  test("by-file axis renders from boot with one pill per file and filters on click", () => {
+    bootViewer(makeData({
+      pending: false,
+      files: [
+        {
+          id: "F0", path: "a.py", status: "modified", language: "python",
+          adds: 0, dels: 0, summary: "", head_lines: null,
+          symbols: { added: [], modified: [], removed: [] },
+          hunks: [makeHunkBlock("H0_0", "alpha"), makeHunkBlock("H0_1", "beta")],
+        },
+        {
+          id: "F1", path: "b.py", status: "modified", language: "python",
+          adds: 0, dels: 0, summary: "", head_lines: null,
+          symbols: { added: [], modified: [], removed: [] },
+          hunks: [makeHunkBlock("H1_0", "gamma")],
+        },
+      ],
+    }));
+    const sidebar = document.getElementById("group-sidebar")!;
+    const filesSection = sidebar.querySelector('[data-axis="files"]')!;
+    expect(filesSection).not.toBeNull();
+    const pills = filesSection.querySelectorAll(".group-btn");
+    expect(pills).toHaveLength(2);
+    expect(pills[0].textContent).toContain("a.py");
+    expect(pills[0].querySelector(".group-btn-count")!.textContent).toBe("2");
+    expect(pills[1].textContent).toContain("b.py");
+    expect(pills[1].querySelector(".group-btn-count")!.textContent).toBe("1");
+
+    // Click the a.py pill — only its two hunks remain visible; b's
+    // hunk is hidden and its file element collapses.
+    (pills[0] as HTMLElement).click();
+    const h0 = document.querySelector('.hunk[data-id="H0_0"]') as HTMLElement;
+    const h1 = document.querySelector('.hunk[data-id="H1_0"]') as HTMLElement;
+    expect(h0.style.display).not.toBe("none");
+    expect(h1.style.display).toBe("none");
+    expect((pills[0] as HTMLElement).classList.contains("active")).toBe(true);
+
+    // Clicking it again clears the filter.
+    (pills[0] as HTMLElement).click();
+    expect(h1.style.display).not.toBe("none");
+    expect(document.querySelector(".group-btn-all")!.classList.contains("active")).toBe(true);
   });
 
   test("done event hides the progress strip and clears pending", () => {

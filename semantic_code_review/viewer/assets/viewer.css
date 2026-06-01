@@ -82,7 +82,8 @@ body {
 .group-sidebar #app + & { /* never triggered, but documents: sidebar left of #app */ }
 .layout > main#app { flex: 1 1 auto; min-width: 0; }
 
-.group-sidebar-header h3 {
+.group-sidebar-header h3,
+.group-axis-header h3 {
   margin: 0 0 8px 2px;
   font-size: 11px;
   text-transform: uppercase;
@@ -90,6 +91,14 @@ body {
   color: var(--fg-muted);
   font-weight: 600;
 }
+
+/* Each grouping axis lives in its own stacked section so reviewers
+ * can scan every axis at once without flipping a tab. Themes sits
+ * above Files; the "Show all" button sits above both axes and
+ * clears whichever pill is active. */
+.group-axis { margin-bottom: 14px; }
+.group-axis:last-child { margin-bottom: 0; }
+.group-axis-header h3 { margin-top: 6px; }
 .group-btn {
   display: flex;
   align-items: center;
