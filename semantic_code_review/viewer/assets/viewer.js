@@ -31,15 +31,11 @@
     activePill: null,   // { axis: "themes"|"files", id: string } | null
   };
 
-  // Per-hunk progress state, populated while DATA.pending is true.
-  // Hunks start in 'queued', flip to 'running' on the `hunk-start` SSE
-  // event, then to 'ok' / 'failed' on the completion event. The header
-  // strip squares + the per-hunk intent slot copy both read from here.
-  const PROGRESS = {
-    byId: Object.create(null),    // hunkId -> 'queued'|'running'|'ok'|'failed'
-    order: [],                    // hunkIds in pipeline-queue order
-    overview: "pending",          // 'pending'|'running'|'ok'|'failed'
-  };
+  // The augmentation progress strip (header counter + grid of hunk
+  // squares) lives in progress.ts as `window.ScrProgress`. viewer.js
+  // calls into it on every overview / hunk lifecycle event; the
+  // per-hunk intent-slot repaint stays here because it's about the
+  // hunk DOM, not the strip.
 
   // --- Semantic groups -----------------------------------------------------
   // The overview LLM pass may emit `DATA.groups`, a flat list of
@@ -646,9 +642,10 @@
     } else if (DATA.pending && !h._failed) {
       // Still streaming. Distinguish "queued, model hasn't looked at
       // this yet" (static, dim) from "running, model is working on it
-      // right now" (pulse). State is sourced from PROGRESS, which the
-      // overview-start / hunk-start / hunk SSE events drive.
-      const st = PROGRESS.byId[h.id];
+      // right now" (pulse). State comes from window.ScrProgress
+      // (see progress.ts), which the overview-start / hunk-start /
+      // hunk SSE events drive.
+      const st = window.ScrProgress.getHunkState(h.id);
       if (st === "running") {
         intent = el("span", "hunk-intent pending", "analysing…");
       } else {
@@ -1447,7 +1444,7 @@
     restoreHash();
     render();
     commentStorageLoad();
-    initProgress();
+    window.ScrProgress.init(DATA);
     installSessionEvents();
   }
 
@@ -1471,22 +1468,27 @@
     } catch (_) {
       return;
     }
-    es.addEventListener("overview-start", () => setOverviewState("running"));
-    es.addEventListener("overview-failed", () => setOverviewState("failed"));
+    const Progress = window.ScrProgress;
+    es.addEventListener("overview-start", () => Progress.setOverviewState("running"));
+    es.addEventListener("overview-failed", () => Progress.setOverviewState("failed"));
     es.addEventListener("overview", (e) => {
-      setOverviewState("ok");
+      Progress.setOverviewState("ok");
       try { applyOverviewPatch(JSON.parse(e.data)); } catch (_) { /* ignore */ }
     });
     es.addEventListener("hunk-start", (e) => {
       try {
         const p = JSON.parse(e.data);
-        setHunkProgress(`H${p.file_idx}_${p.hunk_idx}`, "running");
+        const hunkId = `H${p.file_idx}_${p.hunk_idx}`;
+        Progress.setHunkState(hunkId, "running");
+        // Flip the per-hunk intent slot from "queued" to
+        // "analysing…" without waiting for the completion event.
+        repaintHunkHeader(hunkId);
       } catch (_) { /* ignore */ }
     });
     es.addEventListener("hunk", (e) => {
       try {
         const p = JSON.parse(e.data);
-        setHunkProgress(`H${p.file_idx}_${p.hunk_idx}`, p.ok ? "ok" : "failed");
+        Progress.setHunkState(`H${p.file_idx}_${p.hunk_idx}`, p.ok ? "ok" : "failed");
         applyHunkPatch(p);
       } catch (_) { /* ignore */ }
     });
@@ -1634,75 +1636,12 @@
     if (fileEl) attachFileFolds(fileEl, f);
   }
 
-  // --- Progress strip ------------------------------------------------------
-  // Builds the header strip the moment the page loads in pending mode.
-  // Each square corresponds to one hunk in the pipeline's queue order
-  // (file-then-hunk, skipping generated / binary files — same order the
-  // terminal meter uses). Mutated in place as events arrive.
-  function initProgress() {
-    if (!DATA.pending) return;
-    const root = document.getElementById("scr-progress");
-    if (!root) return;
-    const grid = root.querySelector(".scr-progress-grid");
-    grid.innerHTML = "";
-    PROGRESS.order = [];
-    for (const f of DATA.files || []) {
-      if (f.status === "generated" || f.status === "binary") continue;
-      for (const h of f.hunks || []) {
-        PROGRESS.byId[h.id] = "queued";
-        PROGRESS.order.push(h.id);
-        const sq = el("div", "sq");
-        sq.dataset.id = h.id;
-        sq.dataset.state = "queued";
-        sq.title = `${f.path} ${h.header || ""}`.trim();
-        sq.setAttribute("role", "listitem");
-        sq.addEventListener("click", () => scrollToHunk(h.id));
-        grid.appendChild(sq);
-      }
-    }
-    root.querySelector(".scr-progress-total").textContent = String(PROGRESS.order.length);
-    refreshProgressCounters();
-    root.classList.remove("hidden");
-  }
-
-  function setHunkProgress(hunkId, state) {
-    if (!(hunkId in PROGRESS.byId)) return;
-    PROGRESS.byId[hunkId] = state;
-    const sq = document.querySelector(`.scr-progress-grid .sq[data-id="${cssEscape(hunkId)}"]`);
-    if (sq) sq.dataset.state = state;
-    refreshProgressCounters();
-    // Re-render the intent slot of the matching hunk so "queued" flips
-    // to "analysing…" without waiting for the completion event.
-    if (state === "running") repaintHunkHeader(hunkId);
-  }
-
-  function setOverviewState(state) {
-    PROGRESS.overview = state;
-    const el_ = document.querySelector(".scr-progress-overview");
-    if (el_) el_.dataset.state = state;
-  }
-
-  function refreshProgressCounters() {
-    let running = 0, queued = 0, ok = 0, failed = 0;
-    for (const id of PROGRESS.order) {
-      const s = PROGRESS.byId[id];
-      if (s === "running") running++;
-      else if (s === "ok") ok++;
-      else if (s === "failed") failed++;
-      else queued++;
-    }
-    const root = document.getElementById("scr-progress");
-    if (!root) return;
-    root.querySelector(".scr-progress-done").textContent = String(ok + failed);
-    root.querySelector(".scr-progress-running").textContent = String(running);
-    root.querySelector(".scr-progress-queued").textContent = String(queued);
-    root.querySelector(".scr-progress-failed").textContent = String(failed);
-  }
-
+  // --- Per-hunk DOM repaint -----------------------------------------------
+  // The progress strip itself lives in progress.ts (`window.ScrProgress`).
+  // viewer.js only owns the per-hunk intent-slot repaint — the strip
+  // module shouldn't reach into the hunk DOM, and we don't want to
+  // re-render the whole hunk when only the placeholder copy changes.
   function repaintHunkHeader(hunkId) {
-    // Replace just the .hunk-header within the existing .hunk node so
-    // we don't disturb expanded segments / line notes the reviewer is
-    // already interacting with.
     const node = document.querySelector('.hunk[data-id="' + cssEscape(hunkId) + '"]');
     if (!node) return;
     const oldHdr = node.querySelector(".hunk-header");
@@ -1714,11 +1653,6 @@
     const folded = isFolded(h.id, defaultHunkFolded());
     const fresh = renderHunkHeader(h, folded);
     oldHdr.replaceWith(fresh);
-  }
-
-  function scrollToHunk(hunkId) {
-    const node = document.querySelector('.hunk[data-id="' + cssEscape(hunkId) + '"]');
-    if (node) node.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
   function applyHunkPatch(payload) {
@@ -1788,8 +1722,7 @@
     DATA.pending = false;
     // Hide the progress strip — it's only useful while the run is
     // streaming. The terminal meter has the same lifecycle.
-    const root = document.getElementById("scr-progress");
-    if (root) root.classList.add("hidden");
+    window.ScrProgress.finalise();
     render();
   }
 

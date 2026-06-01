@@ -21,6 +21,7 @@ dist/
 # the bin/scr bootstrap) and inlined into the viewer HTML.
 node_modules/
 semantic_code_review/viewer/assets/annotations.js
+semantic_code_review/viewer/assets/progress.js
 semantic_code_review/viewer/assets/*.d.ts
 # types.d.ts is hand-authored (the viewer data contract), not a tsc emit.
 !semantic_code_review/viewer/assets/types.d.ts

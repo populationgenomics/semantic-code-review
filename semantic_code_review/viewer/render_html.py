@@ -26,8 +26,8 @@ ASSETS_DIR = Path(__file__).parent / "assets"
 VENDOR_DIR = ASSETS_DIR / "vendor"
 
 
-def _locate_annotations_js() -> Path:
-    """Find the tsc-compiled annotations module.
+def _locate_compiled_js(name: str) -> Path:
+    """Find a tsc-compiled viewer module.
 
     The bootstrap wrapper builds into a data-dir and points us at it
     via SCR_VIEWER_BUILD_DIR. If that env var isn't set (e.g. a future
@@ -37,15 +37,15 @@ def _locate_annotations_js() -> Path:
     build_dir = os.environ.get("SCR_VIEWER_BUILD_DIR")
     candidates: list[Path] = []
     if build_dir:
-        candidates.append(Path(build_dir) / "annotations.js")
-    candidates.append(ASSETS_DIR / "annotations.js")
+        candidates.append(Path(build_dir) / name)
+    candidates.append(ASSETS_DIR / name)
     for p in candidates:
         if p.exists():
             return p
     raise FileNotFoundError(
-        "compiled annotations.js not found. Checked: "
+        f"compiled {name} not found. Checked: "
         + ", ".join(str(c) for c in candidates)
-        + ". Run `bin/scr` (auto-builds) or `npm run build` to compile from annotations.ts."
+        + ". Run `bin/scr` (auto-builds) or `npm run build` to compile."
     )
 
 
@@ -104,15 +104,19 @@ def render_html(
     pr_meta = " · ".join(pr_meta_bits)
 
     viewer_css = (ASSETS_DIR / "viewer.css").read_text(encoding="utf-8")
-    # Concatenate the compiled annotations module before viewer.js.
-    # annotations.ts is the source of truth; tsc emits annotations.js
-    # into a build directory. The bin/scr bootstrap points us at its
-    # data-dir build location via $SCR_VIEWER_BUILD_DIR; for future
-    # wheel-installed setups that ship prebuilt JS as package_data,
-    # we fall back to the package's own assets/ directory.
-    annotations_path = _locate_annotations_js()
+    # Concatenate the compiled TS modules ahead of viewer.js so their
+    # window.* surfaces are available when viewer.js's IIFE runs.
+    # annotations.ts / progress.ts / … are the sources of truth; tsc
+    # emits matching .js files into a build directory. The bin/scr
+    # bootstrap points us at its data-dir build via SCR_VIEWER_BUILD_DIR;
+    # wheel-installed setups fall back to the package's own assets/.
+    ts_modules = ["annotations.js", "progress.js"]
+    ts_js = "\n".join(
+        _locate_compiled_js(name).read_text(encoding="utf-8")
+        for name in ts_modules
+    )
     viewer_js = (
-        annotations_path.read_text(encoding="utf-8")
+        ts_js
         + "\n"
         + (ASSETS_DIR / "viewer.js").read_text(encoding="utf-8")
     )
