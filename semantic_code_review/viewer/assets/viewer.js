@@ -23,7 +23,6 @@
     fold: "hunks",      // 'files' | 'hunks' | 'segments' | 'off'
     overrides: {},      // regionId -> bool (true = folded)
     renderedDiffs: {},  // hunkId -> pre-rendered <div>
-    comments: {},       // id -> Comment
   };
 
   // The augmentation progress strip lives in progress.ts (window.ScrProgress).
@@ -93,7 +92,7 @@
     syncHash();
     updateSliderButtons();
     // Re-attach any loaded comments to freshly-rendered rows.
-    if (Object.keys(STATE.comments).length) renderAllExistingComments();
+    window.ScrComments.renderAll();
     // Annotation arrows attached during render were sized while the
     // tree was still detached. Install the viewport watcher (idempotent)
     // which hooks window-resize + fonts.ready for post-mount reflow, and
@@ -649,283 +648,16 @@
     }[c]));
   }
 
-  // ==========================================================================
-  // Reviewer comments (line-level).
-  //
-  // Each comment is anchored to {file_id, side, line}. When a session
-  // endpoint is present, every mutation (new / edit / delete) PUT/DELETEs
-  // to the server. Without one, comments persist in localStorage keyed
-  // by file+side+line+head_sha, so a reload keeps them but they won't
-  // round-trip back to a Claude Code session.
-  // ==========================================================================
+  // Reviewer comments live in comments.ts (window.ScrComments).
+  // Boot wires the gutter + loads existing; render() calls renderAll.
 
-  const LS_KEY = `scr-comments:${(DATA.pr && DATA.pr.head_sha) || "local"}`;
-
-  function commentStorageLoad() {
-    if (SESSION_ENDPOINT) {
-      fetch(`${SESSION_ENDPOINT}/comments`)
-        .then(r => r.ok ? r.json() : { comments: [] })
-        .then(d => {
-          for (const c of d.comments || []) STATE.comments[c.id] = c;
-          renderAllExistingComments();
-        })
-        .catch(() => { /* server may have exited; ignore */ });
-      return;
-    }
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (!raw) return;
-      const data = JSON.parse(raw);
-      for (const c of data.comments || []) STATE.comments[c.id] = c;
-      renderAllExistingComments();
-    } catch (_) { /* ignore */ }
-  }
-
-  function commentStorageFlush() {
-    if (SESSION_ENDPOINT) return;  // server round-trips per-mutation
-    const payload = { comments: Object.values(STATE.comments) };
-    try { localStorage.setItem(LS_KEY, JSON.stringify(payload)); } catch (_) {}
-  }
-
-  function saveComment(c) {
-    STATE.comments[c.id] = c;
-    if (SESSION_ENDPOINT) {
-      return fetch(`${SESSION_ENDPOINT}/comments`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(c),
-      }).then(r => r.ok ? r.json() : null)
-        .catch(() => null);
-    }
-    commentStorageFlush();
-    return Promise.resolve(c);
-  }
-
-  function deleteComment(id) {
-    delete STATE.comments[id];
-    if (SESSION_ENDPOINT) {
-      return fetch(`${SESSION_ENDPOINT}/comments/${encodeURIComponent(id)}`, {
-        method: "DELETE",
-      }).catch(() => null);
-    }
-    commentStorageFlush();
-    return Promise.resolve();
-  }
-
-  function postExit() {
-    if (!SESSION_ENDPOINT) return Promise.resolve();
-    return fetch(`${SESSION_ENDPOINT}/exit`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    }).then(() => { /* server exits soon */ }).catch(() => {});
-  }
-
-  // --- Anchor key + lookup -------------------------------------------------
-
-  function commentKey(file, side, line) { return `${file}|${side}|${line}`; }
-
-  function commentsFor(file, side, line) {
-    const k = commentKey(file, side, line);
-    return Object.values(STATE.comments).filter(
-      c => commentKey(c.file, c.side, c.line) === k
-    );
-  }
-
-  // --- Gutter affordance + click-to-comment --------------------------------
-  // Installed via event delegation on the root so it survives re-renders.
-
-  function installCommentGutter(appEl) {
-    appEl.addEventListener("click", (e) => {
-      const cell = e.target.closest(".cell-lineno");
-      if (!cell || cell.classList.contains("empty")) return;
-      const row = cell.parentElement;
-      if (!row || !row.classList.contains("row")) return;
-      const side = cell.classList.contains("cell-lineno-old") ? "old" : "new";
-      const line = parseInt(cell.textContent.trim(), 10);
-      if (isNaN(line)) return;
-      const fileEl = row.closest(".file");
-      const filePath = fileEl && fileEl.querySelector(".file-path")
-        ? fileEl.querySelector(".file-path").textContent
-        : "";
-      openCommentEditor({ rowEl: row, side, line, file: filePath });
-      e.stopPropagation();
-    });
-  }
-
-  // Dynamic comment rows (display + editor) are each built via
-  // ScrAnnotations.attach, with the comment-specific UI (edit/delete
-  // buttons, or a textarea + save/cancel) nested inside the .annot-box.
-  // Comment state lives in the caller (STATE.comments + persistence);
-  // the annotation module just hosts the DOM.
-
-  function openCommentEditor({ rowEl, side, line, file, existing }) {
-    // Build the editor's body (textarea + Save/Cancel bar).
-    const bodyWrap = el("div", "comment-editor-body");
-    const ta = el("textarea", "comment-editor-input");
-    ta.rows = 1;
-    ta.placeholder = "Write a comment… (Enter to save, Shift-Enter for newline, Esc to cancel)";
-    ta.value = existing ? existing.body : "";
-    bodyWrap.appendChild(ta);
-    const bar = el("div", "comment-editor-bar");
-    const save = el("button", "comment-btn comment-btn-save", existing ? "Update" : "Save");
-    const cancel = el("button", "comment-btn comment-btn-cancel", "Cancel");
-    bar.appendChild(save);
-    bar.appendChild(cancel);
-    bodyWrap.appendChild(bar);
-
-    const handle = window.ScrAnnotations.attach({
-      anchor: rowEl,
-      shadowAnchor: rowEl._scrPair || null,
-      variant: "comment",
-      content: bodyWrap,
-      onInsert: (el) => {
-        el.classList.add("annot-editor");
-        // The annotation module applies "max-width: 64ch" to the box
-        // by default; the editor wants the full half width instead
-        // (see viewer.css .annot-editor .comment-editor-box rule).
-        const box = el.querySelector(".annot-box");
-        if (box) box.classList.add("comment-editor-box");
-      },
-    });
-
-    function autosizeTextarea() {
-      ta.style.height = "auto";
-      ta.style.height = ta.scrollHeight + "px";
-    }
-    function close() { handle.remove(); }
-    function submit() {
-      const body = ta.value.trim();
-      if (!body) { close(); return; }
-      const id = (existing && existing.id) || `c-${Math.random().toString(36).slice(2, 10)}`;
-      const now = Date.now() / 1000;
-      const c = {
-        id, file, side, line, body,
-        created_at: existing ? existing.created_at : now,
-        updated_at: now,
-      };
-      saveComment(c).then(() => {
-        close();
-        refreshCommentsForAnchor(rowEl, { file, side, line });
-      });
-    }
-
-    save.addEventListener("click", e => { e.stopPropagation(); submit(); });
-    cancel.addEventListener("click", e => { e.stopPropagation(); close(); });
-    ta.addEventListener("keydown", e => {
-      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
-      else if (e.key === "Escape") { e.preventDefault(); close(); }
-      e.stopPropagation();
-    });
-    ta.addEventListener("input", autosizeTextarea);
-    requestAnimationFrame(() => {
-      autosizeTextarea();
-      ta.focus();
-      ta.setSelectionRange(ta.value.length, ta.value.length);
-    });
-  }
-
-  function buildCommentRow(comment, anchorRowEl) {
-    // Body of the comment: prose + action bar. The annotation module
-    // wraps this in a .row-annotation .cell-annotation .annot-box.
-    const bodyWrap = el("div", "comment-display-body");
-    const body = el("div", "comment-body");
-    body.textContent = comment.body;
-    bodyWrap.appendChild(body);
-    const bar = el("div", "comment-actions");
-    const edit = el("button", "comment-btn comment-btn-edit", "edit");
-    const del = el("button", "comment-btn comment-btn-del", "delete");
-    bar.appendChild(edit);
-    bar.appendChild(del);
-    bodyWrap.appendChild(bar);
-
-    const handle = window.ScrAnnotations.attach({
-      anchor: anchorRowEl,
-      shadowAnchor: anchorRowEl._scrPair || null,
-      variant: "comment",
-      content: bodyWrap,
-      onInsert: (elRoot) => {
-        elRoot.dataset.commentId = comment.id;
-        const box = elRoot.querySelector(".annot-box");
-        if (box) box.classList.add("comment-display");
-      },
-    });
-
-    edit.addEventListener("click", e => {
-      e.stopPropagation();
-      handle.remove();
-      openCommentEditor({
-        rowEl: anchorRowEl, side: comment.side, line: comment.line,
-        file: comment.file, existing: comment,
-      });
-    });
-    del.addEventListener("click", e => {
-      e.stopPropagation();
-      deleteComment(comment.id).then(() => handle.remove());
-    });
-    return handle;
-  }
-
-  function refreshCommentsForAnchor(anchorRowEl, anchor) {
-    removeCommentRowsAfter(anchorRowEl);
-    const relevant = commentsFor(anchor.file, anchor.side, anchor.line)
-      .sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
-    for (const c of relevant) {
-      buildCommentRow(c, anchorRowEl);
-    }
-    // Any LLM annotations (line_notes, fold summaries) that also anchor
-    // at this row now sit further from it — ScrAnnotations.reflow()
-    // re-measures their arrows to stretch past the newly-inserted
-    // comments.
-    window.ScrAnnotations.reflow(anchorRowEl);
-  }
-
-  function removeCommentRowsAfter(anchorRowEl) {
-    // Comment display rows carry a `data-comment-id`. Walk forward
-    // from the anchor detaching each matching row (which also removes
-    // its shadow placeholder). Stops at the first non-matching sibling.
-    let n = anchorRowEl.nextSibling;
-    while (n) {
-      const next = n.nextSibling;
-      const isCommentRow = n.nodeType === 1
-        && n.classList.contains("row-annotation")
-        && n.classList.contains("annot-comment")
-        && !n.classList.contains("annot-editor")
-        && n.dataset && n.dataset.commentId;
-      if (!isCommentRow) break;
-      window.ScrAnnotations.detach(n);
-      n = next;
-    }
-  }
-
-  function renderAllExistingComments() {
-    // On load, walk the DOM for every row and reattach comments.
-    // After the per-half restructure each .row lives inside a single half
-    // and holds only [lineno, content]; the side is readable from the
-    // lineno cell's class.
-    const byAnchor = {};  // anchorKey -> list
-    for (const c of Object.values(STATE.comments)) {
-      const k = `${c.file}|${c.side}|${c.line}`;
-      (byAnchor[k] ||= []).push(c);
-    }
-    document.querySelectorAll(".file").forEach(fileEl => {
-      const filePath = fileEl.querySelector(".file-path")
-        ? fileEl.querySelector(".file-path").textContent : "";
-      fileEl.querySelectorAll(".row").forEach(row => {
-        const linenoCell = row.children[0];
-        if (!linenoCell || !linenoCell.classList.contains("cell-lineno")) return;
-        if (linenoCell.classList.contains("empty")) return;
-        const side = linenoCell.classList.contains("cell-lineno-old") ? "old" : "new";
-        const n = parseInt(linenoCell.textContent.trim(), 10);
-        if (isNaN(n)) return;
-        const relevant = byAnchor[`${filePath}|${side}|${n}`];
-        if (!relevant) return;
-        refreshCommentsForAnchor(row, { file: filePath, side, line: n });
-      });
-    });
-  }
 
   // --- Done button ---------------------------------------------------------
+  // Tells the review server we're finished. The server exits after
+  // this fires; comments accumulated via window.ScrComments have
+  // already round-tripped on each mutation. Single fetch, kept here
+  // rather than in comments.ts to avoid coupling "I'm done" to the
+  // comment storage layer.
 
   function installDoneButton() {
     if (!SESSION_ENDPOINT) return;
@@ -936,7 +668,12 @@
     btn.addEventListener("click", () => {
       btn.disabled = true;
       btn.textContent = "Sending…";
-      postExit().then(() => { btn.textContent = "Done ✓"; });
+      fetch(`${SESSION_ENDPOINT}/exit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }).catch(() => { /* server may exit before responding */ })
+        .finally(() => { btn.textContent = "Done ✓"; });
     });
     bar.appendChild(btn);
   }
@@ -956,11 +693,10 @@
     });
     document.addEventListener("keydown", onKeydown);
     window.addEventListener("hashchange", () => { STATE.overrides = {}; restoreHash(); render(); });
-    installCommentGutter(document.getElementById("app"));
+    window.ScrComments.init(DATA);     // wires gutter + loads existing
     installDoneButton();
     restoreHash();
     render();
-    commentStorageLoad();
     window.ScrProgress.init(DATA);
     installSessionEvents();
   }
