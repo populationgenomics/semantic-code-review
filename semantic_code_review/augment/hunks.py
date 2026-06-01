@@ -24,7 +24,9 @@ from ..viewer.hunk_layout import build_rows, compute_fold_regions
 from .agents import Client, make_hunk_agent
 from .prompts import HUNK_SYSTEM, PROMPT_VERSION
 from .tools import TOOL_FUNCTIONS, RepoTools
-from .trace_adapter import submit_args_from_result, write_pydantic_ai_trace
+from .trace_adapter import (
+    submit_args_from_result, write_partial_trace, write_pydantic_ai_trace,
+)
 
 
 def format_hunk_prompt(
@@ -123,7 +125,28 @@ async def run_hunk_pass(
     # follow-up; correctness comes first.
     user_text = "\n\n".join(b["text"] for b in user_content)
     agent = make_hunk_agent(client.model)
-    run_result = await agent.run(user_text, deps=repo_tools)
+    # Drive the run via agent.iter() so the partial message history is
+    # accessible on `AgentRun` even if the inner loop raises (most
+    # commonly UsageLimitExceeded once a hunk's tool-use loop blows the
+    # default request cap). Without this, failed hunks leave no trace
+    # — the most diagnostic case is the one with no diagnostics.
+    async with agent.iter(user_text, deps=repo_tools) as agent_run:
+        try:
+            async for _ in agent_run:
+                pass
+        except BaseException as exc:
+            if trace_path is not None:
+                write_partial_trace(
+                    list(agent_run.all_messages()),
+                    trace_path=trace_path,
+                    model=str(client.model),
+                    system=HUNK_SYSTEM,
+                    tool_names=[fn.__name__ for fn in TOOL_FUNCTIONS],
+                    submit_tool="submit_annotations",
+                    error=exc,
+                )
+            raise
+        run_result = agent_run.result
     submit_args = submit_args_from_result(run_result)
     if trace_path is not None:
         write_pydantic_ai_trace(

@@ -19,7 +19,9 @@ from ..augment.schemas import (
 from ..cache.store import CacheStore
 from .agents import Client, make_overview_agent
 from .prompts import OVERVIEW_SYSTEM, PROMPT_VERSION
-from .trace_adapter import submit_args_from_result, write_pydantic_ai_trace
+from .trace_adapter import (
+    submit_args_from_result, write_partial_trace, write_pydantic_ai_trace,
+)
 
 
 log = logging.getLogger(__name__)
@@ -78,7 +80,25 @@ async def run_overview_pass(
     trace_path = (trace_dir / "overview.json") if trace_dir is not None else None
 
     agent = make_overview_agent(client.model)
-    run_result = await agent.run(user_text)
+    # See `hunks.run_hunk_pass` for the rationale on driving the run
+    # via `iter()` rather than `run()` — partial trace on failure.
+    async with agent.iter(user_text) as agent_run:
+        try:
+            async for _ in agent_run:
+                pass
+        except BaseException as exc:
+            if trace_path is not None:
+                write_partial_trace(
+                    list(agent_run.all_messages()),
+                    trace_path=trace_path,
+                    model=str(client.model),
+                    system=OVERVIEW_SYSTEM,
+                    tool_names=[],
+                    submit_tool="submit_overview",
+                    error=exc,
+                )
+            raise
+        run_result = agent_run.result
     submit_args = submit_args_from_result(run_result)
     if trace_path is not None:
         write_pydantic_ai_trace(

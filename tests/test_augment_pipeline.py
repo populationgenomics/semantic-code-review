@@ -247,3 +247,57 @@ async def test_augment_event_consumer_failure_does_not_break_pipeline(
     )
     # Run still produced parseable output.
     assert (run / "augmented.diff").exists()
+
+
+class _BlowsUpModel(_CannedModel):
+    """Canned model that returns the overview normally and raises on
+    the first hunk request — simulating UsageLimitExceeded / any other
+    mid-run agent failure for trace-on-failure testing."""
+
+    async def request(  # type: ignore[override]
+        self, messages, model_settings, model_request_parameters,
+    ):
+        self.calls += 1
+        tool_name = (
+            model_request_parameters.output_tools[0].name
+            if model_request_parameters.output_tools else ""
+        )
+        if tool_name == "submit_annotations":
+            raise RuntimeError("simulated request_limit of 50 exceeded")
+        return await super().request(messages, model_settings, model_request_parameters)
+
+
+async def test_per_hunk_trace_written_on_agent_failure(tmp_path: Path) -> None:
+    """When the per-hunk agent raises mid-run, the trace file must
+    still appear, carry the prompt that was sent, and record the
+    failure type+message so we can diagnose the next outlier."""
+    import json as _json
+
+    run = _make_run_dir(tmp_path)
+    blowup = _BlowsUpModel(
+        overview_args={"summary": "ok", "files": []},
+        hunk_args_list=[{"intent": "n/a"}, {"intent": "n/a"}],
+    )
+    backend = Client(model=blowup)
+
+    # Pipeline-level: the failing hunks are caught and accounted as
+    # `failed`; the run still completes.
+    await augment_run_dir(run, model="t", concurrency=1, client=backend, cache=None)
+
+    trace_dir = run / "trace"
+    hunk_traces = list(trace_dir.glob("hunk-*.json"))
+    assert hunk_traces, "no hunk traces were written"
+    # At least one hunk trace carries the error block we just wired in.
+    failures = []
+    for p in hunk_traces:
+        data = _json.loads(p.read_text(encoding="utf-8"))
+        if "error" in data:
+            failures.append((p, data))
+    assert failures, "expected at least one failed hunk trace with error metadata"
+    _, sample = failures[0]
+    assert sample["error"]["type"] == "RuntimeError"
+    assert "request_limit" in sample["error"]["message"]
+    # The user prompt that was sent is preserved (so reviewers can see
+    # what the model was working from when it ran out of budget).
+    sent = sample["iterations"][0]["messages_sent"]
+    assert sent and sent[0]["role"] == "user"

@@ -28,6 +28,10 @@ The shape:
             "output_tokens": int,
             "cache_read_tokens": int,
         },
+        "error": {                  # present iff the run failed before submit
+            "type": str,            # exception class name
+            "message": str,         # str(exc)
+        },
     }
 """
 
@@ -168,8 +172,38 @@ def write_pydantic_ai_trace(
     tool_names: list[str],
     submit_tool: str,
 ) -> None:
-    """Render `result` (an `AgentRunResult`) into the legacy trace shape."""
-    messages = list(result.all_messages())
+    """Render an `AgentRunResult` into the legacy trace shape and write it."""
+    submit_args = _submit_args_from_output(getattr(result, "output", None))
+    write_partial_trace(
+        list(result.all_messages()),
+        trace_path=trace_path,
+        model=model,
+        system=system,
+        tool_names=tool_names,
+        submit_tool=submit_tool,
+        submit_args=submit_args,
+    )
+
+
+def write_partial_trace(
+    messages: list[Any],
+    *,
+    trace_path: Path,
+    model: str,
+    system: str,
+    tool_names: list[str],
+    submit_tool: str,
+    submit_args: dict[str, Any] | None = None,
+    error: BaseException | None = None,
+) -> None:
+    """Write a trace for a (possibly partial) message history.
+
+    Distinct entry point from ``write_pydantic_ai_trace`` because the
+    caller drives ``agent.iter()`` rather than ``agent.run()`` — on a
+    `UsageLimitExceeded` or similar mid-run failure there is no
+    `AgentRunResult` to extract `output`/`all_messages()` from, but
+    the partial message history is still on the `AgentRun`.
+    """
     requests = [m for m in messages if isinstance(m, ModelRequest)]
     responses = [m for m in messages if isinstance(m, ModelResponse)]
 
@@ -193,6 +227,21 @@ def write_pydantic_ai_trace(
             }
         )
 
+    # Trailing request with no matching response — happens on the
+    # failure path when the agent loop raised before the model
+    # replied (e.g. usage-limit fired on the first call, or the
+    # provider returned an error). Surface the prompt anyway so the
+    # diagnostic trace shows what was sent.
+    if len(requests) > len(responses):
+        cumulative.extend(_request_to_sent(requests[len(responses)]))
+        iterations.append(
+            {
+                "messages_sent": [dict(m) for m in cumulative],
+                "response": None,
+                "tool_results": [],
+            }
+        )
+
     input_t = output_t = cache_t = 0
     for resp in responses:
         u = resp.usage
@@ -202,11 +251,7 @@ def write_pydantic_ai_trace(
         output_t += u.output_tokens or 0
         cache_t += u.cache_read_tokens or 0
 
-    submit_args: dict[str, Any]
-    output = getattr(result, "output", None)
-    if output is not None and hasattr(output, "model_dump"):
-        submit_args = output.model_dump(by_alias=True)
-    else:
+    if submit_args is None:
         submit_args = {}
 
     tool_calls: list[dict[str, Any]] = []
@@ -228,7 +273,7 @@ def write_pydantic_ai_trace(
                     }
                 )
 
-    trace = {
+    trace: dict[str, Any] = {
         "model": model,
         "system": system,
         "tools": tool_names,
@@ -242,8 +287,18 @@ def write_pydantic_ai_trace(
             "cache_read_tokens": cache_t,
         },
     }
+    if error is not None:
+        trace["error"] = {"type": type(error).__name__, "message": str(error)}
     trace_path.parent.mkdir(parents=True, exist_ok=True)
     trace_path.write_text(json.dumps(trace, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _submit_args_from_output(output: Any) -> dict[str, Any]:
+    if output is None:
+        return {}
+    if hasattr(output, "model_dump"):
+        return output.model_dump(by_alias=True)
+    return {}
 
 
 def submit_args_from_result(result: Any) -> dict[str, Any]:
