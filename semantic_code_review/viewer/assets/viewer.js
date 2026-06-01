@@ -1159,11 +1159,16 @@
       }
     }
     if (Array.isArray(payload.groups)) {
-      DATA.groups = payload.groups;
-      // Rebuild the lookup tables the sidebar reads from.
+      // The sidebar renderer reads from `GROUPS` — a const captured
+      // at module load — so we must mutate the array in place rather
+      // than reassigning DATA.groups (which would leave GROUPS still
+      // pointing at the original empty array).
+      GROUPS.length = 0;
+      for (const g of payload.groups) GROUPS.push(g);
+      DATA.groups = GROUPS;
       for (const k of Object.keys(GROUP_BY_ID)) delete GROUP_BY_ID[k];
       for (const k of Object.keys(HUNK_GROUP_COUNT)) delete HUNK_GROUP_COUNT[k];
-      for (const g of DATA.groups) {
+      for (const g of GROUPS) {
         GROUP_BY_ID[g.id] = g;
         for (const hid of g.hunk_ids || []) {
           HUNK_GROUP_COUNT[hid] = (HUNK_GROUP_COUNT[hid] || 0) + 1;
