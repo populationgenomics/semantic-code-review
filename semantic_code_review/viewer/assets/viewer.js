@@ -1448,57 +1448,37 @@
     installSessionEvents();
   }
 
-  // Subscribe to the server's SSE channel and patch the page as
-  // overview / per-hunk events arrive from the augment pipeline.
-  // Events:
-  //   - overview: PR-level summary, themes, semantic groups, and
-  //               per-file summaries land in DATA; the sidebar and
-  //               file headers re-render.
-  //   - hunk:     one hunk's block (the same shape as DATA.files[].hunks[i])
-  //               replaces its slot in DATA and the corresponding
-  //               .hunk DOM node, dropping the "analysing…" placeholder.
-  //   - done:     augmentation finished; any hunks still pending get
-  //               the "(no intent — may need re-run)" copy. The SSE
-  //               connection is closed.
+  // Subscribe to the server's SSE channel (wire + parse handled in
+  // sse.ts via window.ScrSse) and patch the viewer state as events
+  // arrive. The handlers are responsible for the viewer-side effects:
+  // updating the progress strip, mutating DATA, and re-rendering the
+  // affected DOM. sse.ts itself stays diff-agnostic.
   function installSessionEvents() {
-    if (!SESSION_ENDPOINT || typeof EventSource === "undefined") return;
-    let es;
-    try {
-      es = new EventSource(SESSION_ENDPOINT + "/events");
-    } catch (_) {
-      return;
-    }
+    if (!SESSION_ENDPOINT) return;
     const Progress = window.ScrProgress;
-    es.addEventListener("overview-start", () => Progress.setOverviewState("running"));
-    es.addEventListener("overview-failed", () => Progress.setOverviewState("failed"));
-    es.addEventListener("overview", (e) => {
-      Progress.setOverviewState("ok");
-      try { applyOverviewPatch(JSON.parse(e.data)); } catch (_) { /* ignore */ }
-    });
-    es.addEventListener("hunk-start", (e) => {
-      try {
-        const p = JSON.parse(e.data);
-        const hunkId = `H${p.file_idx}_${p.hunk_idx}`;
+    window.ScrSse.connect(SESSION_ENDPOINT, {
+      overviewStart: () => Progress.setOverviewState("running"),
+      overviewFailed: () => Progress.setOverviewState("failed"),
+      overview: (payload) => {
+        Progress.setOverviewState("ok");
+        applyOverviewPatch(payload);
+      },
+      hunkStart: (payload) => {
+        const hunkId = `H${payload.file_idx}_${payload.hunk_idx}`;
         Progress.setHunkState(hunkId, "running");
-        // Flip the per-hunk intent slot from "queued" to
-        // "analysing…" without waiting for the completion event.
+        // Flip the per-hunk intent slot from "queued" to "analysing…"
+        // without waiting for the completion event.
         repaintHunkHeader(hunkId);
-      } catch (_) { /* ignore */ }
-    });
-    es.addEventListener("hunk", (e) => {
-      try {
-        const p = JSON.parse(e.data);
-        Progress.setHunkState(`H${p.file_idx}_${p.hunk_idx}`, p.ok ? "ok" : "failed");
-        applyHunkPatch(p);
-      } catch (_) { /* ignore */ }
-    });
-    es.addEventListener("done", () => {
-      finaliseStreaming();
-      // Don't close `es` yet — fold-summary events fire later on the
-      // same channel when other tabs (or this one) request summaries.
-    });
-    es.addEventListener("fold-summary", (e) => {
-      try { applyFoldSummary(JSON.parse(e.data)); } catch (_) { /* ignore */ }
+      },
+      hunk: (payload) => {
+        Progress.setHunkState(
+          `H${payload.file_idx}_${payload.hunk_idx}`,
+          payload.ok ? "ok" : "failed",
+        );
+        applyHunkPatch(payload);
+      },
+      done: () => finaliseStreaming(),
+      foldSummary: (payload) => applyFoldSummary(payload),
     });
   }
 

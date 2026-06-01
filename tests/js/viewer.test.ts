@@ -21,6 +21,7 @@ import { describe, test, expect, vi, beforeEach, afterEach } from "vitest";
 
 import "../../semantic_code_review/viewer/assets/annotations";
 import "../../semantic_code_review/viewer/assets/progress";
+import "../../semantic_code_review/viewer/assets/sse";
 
 const VIEWER_SRC = fs.readFileSync(
   path.resolve(process.cwd(), "semantic_code_review/viewer/assets/viewer.js"),
