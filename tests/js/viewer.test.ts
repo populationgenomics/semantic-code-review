@@ -532,6 +532,64 @@ describe("lazy fold summaries", () => {
     expect(document.querySelector(".annot-box")?.textContent).toBe("drops the removed() helper");
   });
 
+  test("expanded unchanged context exposes its own indent folds", async () => {
+    // File starts with 6 lines of unchanged context above a tiny
+    // hunk. The first 3 lines form a `def foo():` body — the
+    // expand-context path should detect that as an indent fold and
+    // attach a chevron the reviewer can click to summarise.
+    bootViewer(makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 1, dels: 1, summary: "ok",
+        head_lines: [
+          "def foo():",                  // 1
+          "    x = 1",                   // 2
+          "    y = 2",                   // 3
+          "",                            // 4
+          "z = 5",                       // 5
+          "z = 6",                       // 6
+        ],
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock("H0_0", "trivial", {
+          old_start: 7, old_count: 1, new_start: 7, new_count: 1,
+          rows: [{ kind: "pair", old_line: 7, new_line: 7, old_text: "a", new_text: "A" }],
+        })],
+      }],
+    }));
+
+    // Expand the gap above the hunk.
+    const chip = document.querySelector(".gap-chip") as HTMLElement;
+    expect(chip).not.toBeNull();
+    chip.click();
+
+    // A fold chevron now lives inside the gap-expansion block.
+    const expansion = document.querySelector(".gap-expansion") as HTMLElement;
+    expect(expansion).not.toBeNull();
+    const marker = expansion.querySelector(".fold-chev") as SVGElement | null;
+    expect(marker).not.toBeNull();
+
+    queueFetchResponse({
+      status: 200,
+      body: {
+        file_idx: 0, context: "right", right_start: 1, right_end: 4,
+        left_start: 0, left_end: 0, summary: "initialise x and y",
+      },
+    });
+    clickEl(marker!);   // collapse → fires the request
+
+    const foldCalls = fetchCalls.filter((c) => c.url.includes("/fold-summary"));
+    expect(foldCalls).toHaveLength(1);
+    const body = JSON.parse(foldCalls[0].init!.body as string);
+    expect(body.context).toBe("right");
+    expect(body.file_idx).toBe(0);
+    expect(body.right_start).toBe(1);
+    // Fold ends at the row before the dedenter; that row is the blank
+    // line (row 4 of head_lines). Matches Python's compute_fold_regions
+    // — the algorithm doesn't crop trailing blanks.
+    expect(body.right_end).toBe(4);
+  });
+
   test("server's broadcast back to the requesting tab does not pop the fold open", async () => {
     // The server publishes a `fold-summary` SSE event to every
     // subscriber after handling the POST — including the tab that

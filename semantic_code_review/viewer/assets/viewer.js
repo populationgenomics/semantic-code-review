@@ -411,22 +411,114 @@
     diff.appendChild(halfOld);
     diff.appendChild(halfNew);
 
+    const rows = [];                 // logical row records for fold detection
+    const rowElsOld = [];
+    const rowElsNew = [];
     const count = gap.new_end - gap.new_start + 1;
     for (let i = 0; i < count; i++) {
       const ol = gap.old_start + i;
       const nl = gap.new_start + i;
       const text = f.head_lines[nl - 1] ?? "";
-      const pair = renderRow({
+      const rowRecord = {
         kind: "ctx", old_line: ol, new_line: nl,
         old_text: text, new_text: text,
-      }, f);
+      };
+      rows.push(rowRecord);
+      const pair = renderRow(rowRecord, f);
       pair.old._scrPair = pair.new;
       pair.new._scrPair = pair.old;
       halfOld.appendChild(pair.old);
       halfNew.appendChild(pair.new);
+      rowElsOld.push(pair.old);
+      rowElsNew.push(pair.new);
     }
+
+    // Compute indent fold regions over the expanded context and
+    // attach chevrons so the reviewer can collapse + summarise blocks
+    // of unchanged code. All such regions are right-context (lines
+    // exist in head/<path> only — they're unchanged context, but the
+    // pre-image line numbers happen to track too; the summariser
+    // only needs the post-image addressing).
+    const fileIdx = Number(f.id.replace("F", ""));
+    const regions = computeFoldRegionsJs(rows).map((r) => ({
+      header_idx: r.header_idx,
+      body_start_idx: r.body_start_idx,
+      body_end_idx: r.body_end_idx,
+      context: "right",
+      right_start: r.right_start, right_end: r.right_end,
+      left_start: null, left_end: null,
+      has_changes: false,
+      summary: "",
+    }));
+    attachIndentFolds(halfOld, halfNew, rowElsOld, rowElsNew, regions, fileIdx);
+
     container.appendChild(diff);
     return container;
+  }
+
+  // --- JS port of compute_fold_regions -------------------------------------
+  // Mirrors viewer/hunk_layout.py:compute_fold_regions so the viewer can
+  // detect folds inside expanded unchanged-context blocks without a
+  // server round-trip. The two implementations must produce identical
+  // region boundaries for the same row sequence.
+
+  function rowIndent(row) {
+    const text = row.kind === "del" ? row.old_text : row.new_text;
+    if (!text || !text.trim()) return -1;
+    let ind = 0;
+    for (const ch of text) {
+      if (ch === " ") ind += 1;
+      else if (ch === "\t") ind += 4;
+      else break;
+    }
+    return ind;
+  }
+
+  function computeFoldRegionsJs(rows) {
+    const indents = rows.map(rowIndent);
+    const nextNonBlank = (i) => {
+      for (let j = i + 1; j < indents.length; j++) {
+        if (indents[j] !== -1) return indents[j];
+      }
+      return null;
+    };
+    const raw = [];                     // (header_idx, body_end_idx)
+    const stack = [];                   // (indent, header_idx)
+    for (let i = 0; i < indents.length; i++) {
+      const ind = indents[i];
+      if (ind === -1) continue;
+      while (stack.length && stack[stack.length - 1][0] >= ind) {
+        const [, top_idx] = stack.pop();
+        raw.push([top_idx, i - 1]);
+      }
+      const ni = nextNonBlank(i);
+      if (ni !== null && ni > ind) stack.push([ind, i]);
+    }
+    while (stack.length) {
+      const [, top_idx] = stack.pop();
+      raw.push([top_idx, indents.length - 1]);
+    }
+    raw.sort((a, b) => a[0] - b[0]);
+    const regions = [];
+    for (const [header_idx, body_end] of raw) {
+      const body_start = header_idx + 1;
+      if (body_start > body_end) continue;
+      // For now we only emit right-context regions (all expanded
+      // rows are ctx, so the post-image new_line is present on every
+      // row). The header is the row that opens the indent.
+      let right_start = null, right_end = null;
+      for (let j = header_idx; j <= body_end; j++) {
+        if (rows[j].new_line != null) { right_start = rows[j].new_line; break; }
+      }
+      for (let j = body_end; j >= header_idx; j--) {
+        if (rows[j].new_line != null) { right_end = rows[j].new_line; break; }
+      }
+      regions.push({
+        header_idx, body_start_idx: body_start, body_end_idx: body_end,
+        right_start, right_end,
+      });
+    }
+    return regions;
   }
 
   function renderFileHeader(f, folded) {
@@ -685,9 +777,13 @@
     marker.setAttribute("tabindex", "0");
 
     let foldHandle = null;
-    if (region.summary || region.has_changes) {
+    // Create a fold box whenever there's something useful to show
+    // there: an existing summary, an LLM-summarisable region, or a
+    // changed block whose summary will land on first close.
+    const canSummarise = canRequestFoldSummary(fileIdx, region);
+    if (region.summary || region.has_changes || canSummarise) {
       const initialContent = region.summary
-        || (canRequestFoldSummary(fileIdx, region) ? "summarising…"
+        || (canSummarise ? "summarising…"
             : "(changes here; run augment to generate a description)");
       foldHandle = window.ScrAnnotations.attach({
         anchor,
