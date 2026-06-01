@@ -230,6 +230,89 @@ def test_partial_trace_captures_tool_calls_and_error(tmp_path: Path) -> None:
     assert trace["result"]["submit_args"] == {}
 
 
+def test_response_falls_back_for_unknown_part_types(tmp_path: Path) -> None:
+    """Parts the adapter doesn't render specifically (ThinkingPart and
+    similar) still leave a class-name + repr trace so a misbehaving
+    model run's output is inspectable."""
+    from pydantic_ai.messages import ThinkingPart
+
+    messages = [
+        ModelRequest(
+            parts=[UserPromptPart(content="hi", timestamp=_ts())],
+            timestamp=_ts(),
+        ),
+        ModelResponse(
+            parts=[ThinkingPart(content="let me think about this carefully")],
+            usage=RequestUsage(input_tokens=5, output_tokens=2),
+            model_name="m",
+            finish_reason="tool_calls",
+            timestamp=_ts(),
+        ),
+    ]
+    trace_path = tmp_path / "thinking.json"
+    write_partial_trace(
+        messages,
+        trace_path=trace_path,
+        model="m",
+        system="s",
+        tool_names=[],
+        submit_tool="submit",
+        error=RuntimeError("validation failed"),
+    )
+    trace = json.loads(trace_path.read_text())
+    blocks = trace["iterations"][0]["response"]["content"]
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "ThinkingPart"
+    assert "let me think" in blocks[0]["repr"]
+
+
+def test_response_captures_malformed_tool_call_args(tmp_path: Path) -> None:
+    """When a model emits a ToolCallPart whose args are invalid JSON
+    (the usual cause of UnexpectedModelBehavior in output validation),
+    the trace must carry the raw args + parse error rather than
+    silently dropping the part."""
+    messages = [
+        ModelRequest(
+            parts=[UserPromptPart(content="hi", timestamp=_ts())],
+            timestamp=_ts(),
+        ),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="submit_annotations",
+                    # Pass an invalid JSON string — args_as_dict will
+                    # raise on this and the adapter should capture it.
+                    args='{"intent": "ok", "smells": [',
+                    tool_call_id="c1",
+                ),
+            ],
+            usage=RequestUsage(input_tokens=5, output_tokens=10),
+            model_name="m",
+            finish_reason="tool_calls",
+            timestamp=_ts(),
+        ),
+    ]
+    trace_path = tmp_path / "bad.json"
+    write_partial_trace(
+        messages,
+        trace_path=trace_path,
+        model="m",
+        system="s",
+        tool_names=["submit_annotations"],
+        submit_tool="submit_annotations",
+        error=RuntimeError("validation failed"),
+    )
+    trace = json.loads(trace_path.read_text())
+    blocks = trace["iterations"][0]["response"]["content"]
+    tool_use = next(b for b in blocks if b["type"] == "tool_use")
+    # pydantic-ai exposes the raw text under `INVALID_JSON` rather than
+    # raising — either way the raw string the model emitted is what we
+    # want preserved in the trace.
+    raw = tool_use["input"]
+    raw_text = raw.get("INVALID_JSON") or raw.get("_raw") or ""
+    assert "smells" in raw_text
+
+
 def test_partial_trace_no_error_field_when_no_error(tmp_path: Path) -> None:
     """`write_partial_trace` doubles as the engine for the success
     path; callers omit `error=`, and the trace must not carry an

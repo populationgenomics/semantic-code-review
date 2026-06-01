@@ -53,11 +53,18 @@ from pydantic_ai.messages import (
 )
 
 
+#: Cap for the fallback `repr` on unrecognised parts. Long thinking
+#: blocks can be tens of KB; trimming keeps traces inspectable.
+_FALLBACK_REPR_CAP = 5000
+
+
 def _request_to_sent(req: ModelRequest) -> list[dict[str, Any]]:
     """Translate a ModelRequest's parts into the legacy `messages_sent` shape.
 
     System prompts are intentionally dropped — the trace records the
-    system prompt once at the top level.
+    system prompt once at the top level. Anything else we don't have
+    explicit handling for (FilePart, InstructionPart, …) falls through
+    to a generic dump so the trace doesn't silently lose information.
     """
     out: list[dict[str, Any]] = []
     for part in req.parts:
@@ -92,25 +99,59 @@ def _request_to_sent(req: ModelRequest) -> list[dict[str, Any]]:
                     ],
                 }
             )
+        else:
+            out.append({"role": "unknown", "content": _fallback_part(part)})
     return out
 
 
 def _response_content(resp: ModelResponse) -> list[dict[str, Any]]:
-    """Flatten ModelResponse parts into the legacy assistant `content` blocks."""
+    """Flatten ModelResponse parts into the legacy assistant `content` blocks.
+
+    Parts the legacy shape doesn't have a slot for (ThinkingPart,
+    BuiltinToolCallPart, …) fall through to a generic dump so a
+    misbehaving model run's trace still shows what the model emitted.
+    """
     out: list[dict[str, Any]] = []
     for part in resp.parts:
         if isinstance(part, TextPart):
             out.append({"type": "text", "text": part.content})
         elif isinstance(part, ToolCallPart):
+            try:
+                input_ = part.args_as_dict()
+            except Exception as e:  # noqa: BLE001 — args may be unparseable JSON
+                # The malformed args themselves are exactly what we
+                # want to see when a tool-output validation fails.
+                input_ = {
+                    "_raw": getattr(part, "args", None),
+                    "_parse_error": f"{type(e).__name__}: {e}",
+                }
             out.append(
                 {
                     "type": "tool_use",
                     "id": part.tool_call_id or "",
                     "name": part.tool_name,
-                    "input": part.args_as_dict(),
+                    "input": input_,
                 }
             )
+        else:
+            out.append(_fallback_part(part))
     return out
+
+
+def _fallback_part(part: Any) -> dict[str, Any]:
+    """Generic dump for message parts we don't render specifically.
+
+    Carries the class name and a truncated `repr` so trace readers can
+    see at minimum what kind of part the model emitted, and (for short
+    parts) its content. Common targets: ThinkingPart from extended-
+    thinking models, BuiltinToolCallPart / BuiltinToolReturnPart from
+    server-side tool surfaces, FilePart / InstructionPart from
+    multimodal prompts.
+    """
+    text = repr(part)
+    if len(text) > _FALLBACK_REPR_CAP:
+        text = text[:_FALLBACK_REPR_CAP] + "…(truncated)"
+    return {"type": type(part).__name__, "repr": text}
 
 
 def _response_to_dict(resp: ModelResponse) -> dict[str, Any]:
