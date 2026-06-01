@@ -8,12 +8,13 @@
 //   - fold-summary on first close fires POST /fold-summary and renders
 //     the returned text (or the failure copy on error)
 //
-// viewer.js is an IIFE — it has no exports and grabs everything off
+// boot.ts is an IIFE — it has no exports and grabs everything off
 // `document` / `window` at module load. We mount the same DOM template
 // the Jinja template emits, install a scr-data <script>, stub
-// EventSource + fetch on the global, then read viewer.js as a string
-// and eval() it. The eval (rather than `import`) is what gives us a
-// clean re-execution per test without fighting Vitest's module cache.
+// EventSource + fetch on the global, then read the compiled boot.js
+// as a string and eval() it. The eval (rather than `import`) is what
+// gives us a clean re-execution per test without fighting Vitest's
+// module cache.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -28,7 +29,7 @@ import "../../semantic_code_review/viewer/assets/comments";
 import "../../semantic_code_review/viewer/assets/render";
 
 const VIEWER_SRC = fs.readFileSync(
-  path.resolve(process.cwd(), "semantic_code_review/viewer/assets/viewer.js"),
+  path.resolve(process.cwd(), "semantic_code_review/viewer/assets/boot.js"),
   "utf-8",
 );
 

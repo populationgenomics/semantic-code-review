@@ -104,24 +104,20 @@ def render_html(
     pr_meta = " · ".join(pr_meta_bits)
 
     viewer_css = (ASSETS_DIR / "viewer.css").read_text(encoding="utf-8")
-    # Concatenate the compiled TS modules ahead of viewer.js so their
-    # window.* surfaces are available when viewer.js's IIFE runs.
-    # annotations.ts / progress.ts / … are the sources of truth; tsc
-    # emits matching .js files into a build directory. The bin/scr
-    # bootstrap points us at its data-dir build via SCR_VIEWER_BUILD_DIR;
-    # wheel-installed setups fall back to the package's own assets/.
+    # Concatenate the compiled TS modules in dependency order; boot.js
+    # comes last because it calls into each window.Scr* surface that
+    # the earlier modules register. The .ts sources are the source of
+    # truth; tsc emits matching .js files into a build directory. The
+    # bin/scr bootstrap points us at its data-dir build via
+    # SCR_VIEWER_BUILD_DIR; wheel-installed setups fall back to the
+    # package's own assets/.
     ts_modules = [
         "annotations.js", "progress.js", "sse.js", "sidebar.js",
-        "folds.js", "comments.js", "render.js",
+        "folds.js", "comments.js", "render.js", "boot.js",
     ]
-    ts_js = "\n".join(
+    viewer_js = "\n".join(
         _locate_compiled_js(name).read_text(encoding="utf-8")
         for name in ts_modules
-    )
-    viewer_js = (
-        ts_js
-        + "\n"
-        + (ASSETS_DIR / "viewer.js").read_text(encoding="utf-8")
     )
 
     ctx: dict[str, Any] = {

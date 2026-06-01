@@ -27,6 +27,7 @@ semantic_code_review/viewer/assets/sidebar.js
 semantic_code_review/viewer/assets/folds.js
 semantic_code_review/viewer/assets/comments.js
 semantic_code_review/viewer/assets/render.js
+semantic_code_review/viewer/assets/boot.js
 semantic_code_review/viewer/assets/*.d.ts
 # types.d.ts is hand-authored (the viewer data contract), not a tsc emit.
 !semantic_code_review/viewer/assets/types.d.ts
