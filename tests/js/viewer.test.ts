@@ -25,6 +25,7 @@ import "../../semantic_code_review/viewer/assets/sse";
 import "../../semantic_code_review/viewer/assets/sidebar";
 import "../../semantic_code_review/viewer/assets/folds";
 import "../../semantic_code_review/viewer/assets/comments";
+import "../../semantic_code_review/viewer/assets/render";
 
 const VIEWER_SRC = fs.readFileSync(
   path.resolve(process.cwd(), "semantic_code_review/viewer/assets/viewer.js"),

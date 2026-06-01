@@ -112,7 +112,7 @@ def render_html(
     # wheel-installed setups fall back to the package's own assets/.
     ts_modules = [
         "annotations.js", "progress.js", "sse.js", "sidebar.js",
-        "folds.js", "comments.js",
+        "folds.js", "comments.js", "render.js",
     ]
     ts_js = "\n".join(
         _locate_compiled_js(name).read_text(encoding="utf-8")
