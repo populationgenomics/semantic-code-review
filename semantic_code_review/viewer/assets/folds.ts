@@ -17,9 +17,12 @@
 // Compiled by tsc to `folds.js`. Concatenated into the rendered
 // HTML by `render_html.py`; viewer.js calls into window.ScrFolds.
 
-// `module: "none"` — top-level declarations only. ViewerData /
-// FileBlock / FoldRegion / RowBlock live in `types.d.ts` and are in
-// scope without an import.
+// `module: "none"` puts every top-level declaration in the shared
+// global namespace, so an IIFE here keeps this module's internals
+// from colliding with the other Scr* modules. Only the final
+// window.ScrFolds registration escapes.
+
+(() => {
 
 interface RowWithEls extends RowBlock {
   oldEl: HTMLElement;
@@ -78,7 +81,7 @@ function _sessionEndpoint(): string {
 
 const _SVG_NS = "http://www.w3.org/2000/svg";
 
-function _foldChev(folded: boolean, extraClass: string): SVGElement {
+function _chev(folded: boolean, extraClass: string): SVGElement {
   const svg = document.createElementNS(_SVG_NS, "svg") as unknown as SVGElement;
   svg.setAttribute("viewBox", "0 0 12 12");
   svg.setAttribute("aria-hidden", "true");
@@ -94,12 +97,6 @@ function _foldChev(folded: boolean, extraClass: string): SVGElement {
   path.setAttribute("stroke-linejoin", "round");
   svg.appendChild(path);
   return svg;
-}
-
-function _foldCssEscape(s: string): string {
-  const w = window as unknown as { CSS?: { escape?: (s: string) => string } };
-  if (w.CSS && typeof w.CSS.escape === "function") return w.CSS.escape(s);
-  return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => "\\" + c);
 }
 
 function _isRowContentEmpty(rowEl: HTMLElement | undefined | null): boolean {
@@ -406,7 +403,7 @@ function _attachOneFold(
   const anchor = side === "new" ? headerNew : headerOld;
   const shadow = side === "new" ? headerOld : headerNew;
 
-  const marker = _foldChev(false, "fold-chev");
+  const marker = _chev(false, "fold-chev");
   marker.setAttribute("role", "button");
   marker.setAttribute("tabindex", "0");
 
@@ -496,3 +493,5 @@ const Folds = { attachFileFolds };
 if (typeof window !== "undefined") {
   (window as unknown as { ScrFolds: typeof Folds }).ScrFolds = Folds;
 }
+
+})();

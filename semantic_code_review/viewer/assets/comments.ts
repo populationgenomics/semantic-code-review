@@ -9,13 +9,16 @@
 // Compiled by tsc to `comments.js`. Concatenated into the rendered
 // HTML by `render_html.py`; viewer.js calls into window.ScrReviewerComments.
 
-// `module: "none"` — top-level decls only. The `ReviewerComment` shape lives
-// in `types.d.ts` and is in scope without an import.
+// `module: "none"` puts every top-level declaration in the shared
+// global namespace, so an IIFE here keeps this module's internals
+// from colliding with the other Scr* modules. Only the final
+// window.ScrComments registration escapes.
+
+(() => {
 
 // --- State ---------------------------------------------------------------
 
-let _commentsData: ViewerData | null = null;
-let _commentsLsKey = "scr-comments:local";
+let _lsKey = "scr-comments:local";
 const _comments: Record<string, ReviewerComment> = Object.create(null);
 
 interface AnnotationHandleLike {
@@ -41,13 +44,13 @@ function _annotations(): AnnotationsFacade {
   return (window as unknown as { ScrAnnotations: AnnotationsFacade }).ScrAnnotations;
 }
 
-function _commentsSessionEndpoint(): string {
+function _sessionEndpoint(): string {
   if (typeof document === "undefined") return "";
   const m = document.querySelector('meta[name="scr-session-endpoint"]');
   return m ? (m.getAttribute("content") || "") : "";
 }
 
-function _commentsEl(tag: string, className: string | null, text?: string): HTMLElement {
+function _el(tag: string, className: string | null, text?: string): HTMLElement {
   const n = document.createElement(tag);
   if (className) n.className = className;
   if (text !== undefined) n.textContent = text;
@@ -56,9 +59,8 @@ function _commentsEl(tag: string, className: string | null, text?: string): HTML
 
 // --- Public API ----------------------------------------------------------
 
-function commentsInit(data: ViewerData): void {
-  _commentsData = data;
-  _commentsLsKey =
+function init(data: ViewerData): void {
+  _lsKey =
     "scr-comments:"
     + (data.pr && data.pr.head_sha ? data.pr.head_sha : "local");
   const app = document.getElementById("app");
@@ -97,7 +99,7 @@ function renderAll(): void {
 // --- Storage (server-mediated, localStorage fallback) -------------------
 
 function _storageLoad(): void {
-  const endpoint = _commentsSessionEndpoint();
+  const endpoint = _sessionEndpoint();
   if (endpoint) {
     fetch(`${endpoint}/comments`)
       .then((r) => (r.ok ? r.json() : { comments: [] as ReviewerComment[] }))
@@ -109,7 +111,7 @@ function _storageLoad(): void {
     return;
   }
   try {
-    const raw = localStorage.getItem(_commentsLsKey);
+    const raw = localStorage.getItem(_lsKey);
     if (!raw) return;
     const data = JSON.parse(raw) as { comments?: ReviewerComment[] };
     for (const c of data.comments || []) _comments[c.id] = c;
@@ -118,14 +120,14 @@ function _storageLoad(): void {
 }
 
 function _storageFlush(): void {
-  if (_commentsSessionEndpoint()) return;  // server round-trips per-mutation
+  if (_sessionEndpoint()) return;  // server round-trips per-mutation
   const payload = { comments: Object.values(_comments) };
-  try { localStorage.setItem(_commentsLsKey, JSON.stringify(payload)); } catch (_) { /* ignore */ }
+  try { localStorage.setItem(_lsKey, JSON.stringify(payload)); } catch (_) { /* ignore */ }
 }
 
 function _save(c: ReviewerComment): Promise<ReviewerComment | null> {
   _comments[c.id] = c;
-  const endpoint = _commentsSessionEndpoint();
+  const endpoint = _sessionEndpoint();
   if (endpoint) {
     return fetch(`${endpoint}/comments`, {
       method: "POST",
@@ -141,7 +143,7 @@ function _save(c: ReviewerComment): Promise<ReviewerComment | null> {
 
 function _delete(id: string): Promise<void> {
   delete _comments[id];
-  const endpoint = _commentsSessionEndpoint();
+  const endpoint = _sessionEndpoint();
   if (endpoint) {
     return fetch(`${endpoint}/comments/${encodeURIComponent(id)}`, {
       method: "DELETE",
@@ -193,15 +195,15 @@ interface EditorOpts {
 }
 
 function _openEditor({ rowEl, side, line, file, existing }: EditorOpts): void {
-  const bodyWrap = _commentsEl("div", "comment-editor-body");
-  const ta = _commentsEl("textarea", "comment-editor-input") as HTMLTextAreaElement;
+  const bodyWrap = _el("div", "comment-editor-body");
+  const ta = _el("textarea", "comment-editor-input") as HTMLTextAreaElement;
   ta.rows = 1;
   ta.placeholder = "Write a comment… (Enter to save, Shift-Enter for newline, Esc to cancel)";
   ta.value = existing ? existing.body : "";
   bodyWrap.appendChild(ta);
-  const bar = _commentsEl("div", "comment-editor-bar");
-  const save = _commentsEl("button", "comment-btn comment-btn-save", existing ? "Update" : "Save");
-  const cancel = _commentsEl("button", "comment-btn comment-btn-cancel", "Cancel");
+  const bar = _el("div", "comment-editor-bar");
+  const save = _el("button", "comment-btn comment-btn-save", existing ? "Update" : "Save");
+  const cancel = _el("button", "comment-btn comment-btn-cancel", "Cancel");
   bar.appendChild(save);
   bar.appendChild(cancel);
   bodyWrap.appendChild(bar);
@@ -255,13 +257,13 @@ function _openEditor({ rowEl, side, line, file, existing }: EditorOpts): void {
 }
 
 function _buildReviewerCommentRow(comment: ReviewerComment, anchorRowEl: HTMLElement): AnnotationHandleLike {
-  const bodyWrap = _commentsEl("div", "comment-display-body");
-  const body = _commentsEl("div", "comment-body");
+  const bodyWrap = _el("div", "comment-display-body");
+  const body = _el("div", "comment-body");
   body.textContent = comment.body;
   bodyWrap.appendChild(body);
-  const bar = _commentsEl("div", "comment-actions");
-  const edit = _commentsEl("button", "comment-btn comment-btn-edit", "edit");
-  const del = _commentsEl("button", "comment-btn comment-btn-del", "delete");
+  const bar = _el("div", "comment-actions");
+  const edit = _el("button", "comment-btn comment-btn-edit", "edit");
+  const del = _el("button", "comment-btn comment-btn-del", "delete");
   bar.appendChild(edit);
   bar.appendChild(del);
   bodyWrap.appendChild(bar);
@@ -325,10 +327,12 @@ function _removeReviewerCommentRowsAfter(anchorRowEl: HTMLElement): void {
 }
 
 const Comments = {
-  init: commentsInit,
+  init,
   renderAll,
 };
 
 if (typeof window !== "undefined") {
   (window as unknown as { ScrComments: typeof Comments }).ScrComments = Comments;
 }
+
+})();

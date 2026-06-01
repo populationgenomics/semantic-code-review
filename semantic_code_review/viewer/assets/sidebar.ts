@@ -16,9 +16,12 @@
 // Compiled by tsc to `sidebar.js`. Concatenated into the rendered
 // HTML by `render_html.py`; viewer.js calls into window.ScrSidebar.
 
-// `module: "none"` — top-level declarations only. The viewer data
-// contract (ViewerData / FileBlock / GroupBlock) lives in
-// `types.d.ts` and is in scope without an import.
+// `module: "none"` puts every top-level declaration in the shared
+// global namespace, so an IIFE here keeps this module's internals
+// from colliding with the other Scr* modules. Only the final
+// window.ScrSidebar registration escapes.
+
+(() => {
 
 interface SidebarAxis {
   id: "themes" | "files";
@@ -50,7 +53,7 @@ let _lsKey = "scr-active-group:local";
 /** Populate axes from the initial viewer data + restore any active
  *  pill from localStorage. Idempotent (call again after DATA mutates
  *  in a way the in-place refreshers don't cover). */
-function sidebarInit(data: ViewerData): void {
+function init(data: ViewerData): void {
   _data = data;
   _lsKey =
     "scr-active-group:"
@@ -135,24 +138,24 @@ function render(): void {
   }
   sidebar.classList.remove("empty");
 
-  const showAll = _sidebarEl("button", "group-btn group-btn-all", "Show all");
+  const showAll = _el("button", "group-btn group-btn-all", "Show all");
   showAll.title = "Clear filter — show every hunk";
   if (_activePill === null) showAll.classList.add("active");
   showAll.addEventListener("click", () => setActivePill(null));
   sidebar.appendChild(showAll);
 
   for (const axis of populated) {
-    const section = _sidebarEl("div", "group-axis");
+    const section = _el("div", "group-axis");
     section.dataset.axis = axis.id;
-    const header = _sidebarEl("div", "group-axis-header");
-    header.appendChild(_sidebarEl("h3", null, axis.label));
+    const header = _el("div", "group-axis-header");
+    header.appendChild(_el("h3", null, axis.label));
     section.appendChild(header);
     for (const g of axis.groups) {
-      const btn = _sidebarEl("button", "group-btn");
+      const btn = _el("button", "group-btn");
       btn.dataset.axis = axis.id;
       btn.dataset.pillId = g.id;
-      btn.appendChild(_sidebarEl("span", "group-btn-label", g.title));
-      btn.appendChild(_sidebarEl("span", "group-btn-count", String((g.hunk_ids || []).length)));
+      btn.appendChild(_el("span", "group-btn-label", g.title));
+      btn.appendChild(_el("span", "group-btn-count", String((g.hunk_ids || []).length)));
       if (g.rationale) btn.title = g.rationale;
       if (_isActivePill(axis.id, g.id)) btn.classList.add("active");
       btn.addEventListener("click", () => {
@@ -234,7 +237,7 @@ function _shortenPath(path: string): string {
   return idx >= 0 ? path.slice(idx + 1) : path;
 }
 
-function _sidebarEl(tag: string, className: string | null, text?: string): HTMLElement {
+function _el(tag: string, className: string | null, text?: string): HTMLElement {
   const n = document.createElement(tag);
   if (className) n.className = className;
   if (text !== undefined) n.textContent = text;
@@ -242,7 +245,7 @@ function _sidebarEl(tag: string, className: string | null, text?: string): HTMLE
 }
 
 const Sidebar = {
-  init: sidebarInit,
+  init,
   render,
   refreshThemes,
   rebuildFilesAxis,
@@ -253,3 +256,5 @@ const Sidebar = {
 if (typeof window !== "undefined") {
   (window as unknown as { ScrSidebar: typeof Sidebar }).ScrSidebar = Sidebar;
 }
+
+})();

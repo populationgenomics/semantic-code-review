@@ -13,9 +13,13 @@
 // classic-script `viewer.js` to reach (no module loader in the HTML).
 
 // Top-level declarations use no `export` keyword so tsc with
-// `module: "none"` emits classic-script output. Types declared here
-// are internal; the viewer data contract (ViewerData / FileBlock / …)
-// lives in `types.d.ts` and is in scope without an import.
+// `module: "none"` puts every top-level declaration in the shared
+// global namespace, so an IIFE here keeps this module's internals
+// from colliding with the other Scr* modules' private helpers
+// (_el, _state, _data, _cssEscape, …). Only the final
+// window.ScrProgress registration escapes.
+
+(() => {
 
 type ProgressHunkState = "queued" | "running" | "ok" | "failed";
 type ProgressOverviewState = "pending" | "running" | "ok" | "failed";
@@ -40,7 +44,7 @@ function _rootElement(): HTMLElement | null {
  *  when `data.pending` is false — non-streaming reviews don't surface
  *  the strip. Generated / binary files are excluded from the grid
  *  (same filter the terminal meter applies). */
-function progressInit(data: ViewerData): void {
+function init(data: ViewerData): void {
   if (!data.pending) return;
   const root = _rootElement();
   if (!root) return;
@@ -140,7 +144,7 @@ function _cssEscape(s: string): string {
 
 // The single runtime surface, mirroring ScrAnnotations.
 const Progress = {
-  init: progressInit,
+  init,
   setHunkState,
   setOverviewState,
   getHunkState,
@@ -150,3 +154,5 @@ const Progress = {
 if (typeof window !== "undefined") {
   (window as unknown as { ScrProgress: typeof Progress }).ScrProgress = Progress;
 }
+
+})();
