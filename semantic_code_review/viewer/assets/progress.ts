@@ -40,7 +40,7 @@ function _rootElement(): HTMLElement | null {
  *  when `data.pending` is false — non-streaming reviews don't surface
  *  the strip. Generated / binary files are excluded from the grid
  *  (same filter the terminal meter applies). */
-function init(data: ViewerData): void {
+function progressInit(data: ViewerData): void {
   if (!data.pending) return;
   const root = _rootElement();
   if (!root) return;
@@ -140,7 +140,7 @@ function _cssEscape(s: string): string {
 
 // The single runtime surface, mirroring ScrAnnotations.
 const Progress = {
-  init,
+  init: progressInit,
   setHunkState,
   setOverviewState,
   getHunkState,

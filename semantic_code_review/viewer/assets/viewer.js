@@ -24,72 +24,13 @@
     overrides: {},      // regionId -> bool (true = folded)
     renderedDiffs: {},  // hunkId -> pre-rendered <div>
     comments: {},       // id -> Comment
-    // Active sidebar pill, scoped to one axis. `null` = show every
-    // hunk. One pill across all axes is active at a time; switching
-    // axes clears the previous selection. Persisted in localStorage
-    // as `<axis>:<id>` (legacy plain ids load as themes:<id>).
-    activePill: null,   // { axis: "themes"|"files", id: string } | null
   };
 
-  // The augmentation progress strip (header counter + grid of hunk
-  // squares) lives in progress.ts as `window.ScrProgress`. viewer.js
-  // calls into it on every overview / hunk lifecycle event; the
-  // per-hunk intent-slot repaint stays here because it's about the
-  // hunk DOM, not the strip.
-
-  // --- Semantic groups -----------------------------------------------------
-  // The overview LLM pass may emit `DATA.groups`, a flat list of
-  // {id, title, rationale, hunk_ids[]} clusters. The sidebar renders
-  // them as pill buttons; clicking one filters the visible hunks to
-  // that group's members. Hunks in NO group get a subtle visual tell
-  // in the default view so reviewers can see which changes didn't
-  // cluster with anything. A hunk can appear in multiple groups.
-
-  // Sidebar axes. Each axis owns its pill collection + lookup tables.
-  // `groups` is the array of {id, title, rationale, hunk_ids} the
-  // sidebar renders; `byId`/`hunkCount` are kept consistent with it.
-  // The themes axis is populated from DATA.groups (the LLM-curated
-  // semantic clusters) and refreshed in place when the streaming
-  // `overview` event arrives. The files axis is derived deterministically
-  // from DATA.files and built once at boot — no LLM call needed.
-  const THEMES_AXIS = {
-    id: "themes", label: "Themes",
-    groups: [], byId: Object.create(null), hunkCount: Object.create(null),
-  };
-  const FILES_AXIS = {
-    id: "files", label: "Files",
-    groups: [], byId: Object.create(null), hunkCount: Object.create(null),
-  };
-  const AXES = [THEMES_AXIS, FILES_AXIS];
-
-  // Legacy aliases: applyOverviewPatch and the boot logic both target
-  // the themes axis explicitly; these names keep the older code paths
-  // readable while only one axis was LLM-driven.
-  const GROUPS = THEMES_AXIS.groups;
-  const GROUP_BY_ID = THEMES_AXIS.byId;
-  const HUNK_GROUP_COUNT = THEMES_AXIS.hunkCount;
-
-  for (const g of DATA.groups || []) {
-    GROUPS.push(g);
-    GROUP_BY_ID[g.id] = g;
-    for (const hid of g.hunk_ids || []) {
-      HUNK_GROUP_COUNT[hid] = (HUNK_GROUP_COUNT[hid] || 0) + 1;
-    }
-  }
-  rebuildFilesAxis();
-
-  const GROUP_LS_KEY = "scr-active-group:" + (DATA.pr && DATA.pr.head_sha ? DATA.pr.head_sha : "local");
-  try {
-    const saved = localStorage.getItem(GROUP_LS_KEY);
-    if (saved) {
-      // Legacy entries are bare ids (themes axis). New entries are
-      // "<axis>:<id>". Resolve to {axis, id} if the target still exists.
-      let axisId = "themes", pillId = saved;
-      if (saved.includes(":")) [axisId, pillId] = saved.split(":", 2);
-      const axis = AXES.find((a) => a.id === axisId);
-      if (axis && axis.byId[pillId]) STATE.activePill = { axis: axisId, id: pillId };
-    }
-  } catch (_) { /* localStorage may be unavailable */ }
+  // The augmentation progress strip lives in progress.ts (window.ScrProgress).
+  // The sidebar (themes + files axes, active pill, filter logic) lives in
+  // sidebar.ts (window.ScrSidebar). viewer.js calls into both; the per-
+  // hunk intent-slot repaint stays here because it's about the hunk DOM.
+  window.ScrSidebar.init(DATA);
 
   // --- Fold defaults per region type ---------------------------------------
   function defaultFileFolded()    { return STATE.fold === "files"; }
@@ -146,8 +87,8 @@
     app.innerHTML = "";
     app.appendChild(renderPRPanel(DATA.pr));
     for (const f of DATA.files) app.appendChild(renderFile(f));
-    renderGroupSidebar();
-    applyGroupFilter();
+    window.ScrSidebar.render();
+    window.ScrSidebar.applyFilter();
     updateStatus();
     syncHash();
     updateSliderButtons();
@@ -162,143 +103,6 @@
       window.ScrAnnotations.reflowAll();
       requestAnimationFrame(() => window.ScrAnnotations.reflowAll());
     });
-  }
-
-  // Build the sidebar's axis sections. Each axis with non-empty
-  // groups gets its own labelled section + pill row. A single
-  // "Show all" sits at the top and clears the active pill across
-  // every axis. The themes axis goes first because its pills are
-  // the most semantically dense; files follows for structural nav.
-  function renderGroupSidebar() {
-    const sidebar = document.getElementById("group-sidebar");
-    if (!sidebar) return;
-    sidebar.innerHTML = "";
-    const populated = AXES.filter((a) => a.groups.length > 0);
-    if (populated.length === 0) {
-      sidebar.classList.add("empty");
-      return;
-    }
-    sidebar.classList.remove("empty");
-
-    const showAll = el("button", "group-btn group-btn-all", "Show all");
-    showAll.title = "Clear filter — show every hunk";
-    if (STATE.activePill === null) showAll.classList.add("active");
-    showAll.addEventListener("click", () => setActivePill(null));
-    sidebar.appendChild(showAll);
-
-    for (const axis of populated) {
-      const section = el("div", "group-axis");
-      section.dataset.axis = axis.id;
-      const header = el("div", "group-axis-header");
-      header.appendChild(el("h3", null, axis.label));
-      section.appendChild(header);
-      for (const g of axis.groups) {
-        const btn = el("button", "group-btn");
-        btn.dataset.axis = axis.id;
-        btn.dataset.pillId = g.id;
-        btn.appendChild(el("span", "group-btn-label", g.title));
-        btn.appendChild(el("span", "group-btn-count", String((g.hunk_ids || []).length)));
-        if (g.rationale) btn.title = g.rationale;
-        if (isActivePill(axis.id, g.id)) btn.classList.add("active");
-        btn.addEventListener("click", () => {
-          setActivePill(
-            isActivePill(axis.id, g.id) ? null : { axis: axis.id, id: g.id },
-          );
-        });
-        section.appendChild(btn);
-      }
-      sidebar.appendChild(section);
-    }
-  }
-
-  function isActivePill(axisId, pillId) {
-    return STATE.activePill !== null
-      && STATE.activePill.axis === axisId
-      && STATE.activePill.id === pillId;
-  }
-
-  function setActivePill(pill) {
-    STATE.activePill = pill;
-    try {
-      if (pill === null) localStorage.removeItem(GROUP_LS_KEY);
-      else localStorage.setItem(GROUP_LS_KEY, `${pill.axis}:${pill.id}`);
-    } catch (_) { /* ignore */ }
-    document.querySelectorAll(".group-btn").forEach((b) => b.classList.remove("active"));
-    if (pill === null) {
-      const all = document.querySelector(".group-btn-all");
-      if (all) all.classList.add("active");
-    } else {
-      const sel = `.group-btn[data-axis="${pill.axis}"][data-pill-id="${pill.id}"]`;
-      const btn = document.querySelector(sel);
-      if (btn) btn.classList.add("active");
-    }
-    applyGroupFilter();
-    window.ScrAnnotations.reflowAll();
-  }
-
-  function activePillHunkIds() {
-    if (STATE.activePill === null) return null;
-    const axis = AXES.find((a) => a.id === STATE.activePill.axis);
-    if (!axis) return null;
-    const g = axis.byId[STATE.activePill.id];
-    return g ? new Set(g.hunk_ids || []) : new Set();
-  }
-
-  // Walk every .hunk element, tag .ungrouped for hunks no themes-axis
-  // group claims (the file axis always covers every hunk so it's not
-  // a useful "ungrouped" signal), and apply visibility based on the
-  // currently-active pill. Files with no visible hunks are hidden too
-  // so the sidebar view reads cleanly.
-  function applyGroupFilter() {
-    const activeIds = activePillHunkIds();
-    document.querySelectorAll(".file").forEach((fileEl) => {
-      let visible = 0;
-      fileEl.querySelectorAll(".hunk").forEach((hunkEl) => {
-        const hid = hunkEl.dataset.id;
-        const inAnyGroup = (HUNK_GROUP_COUNT[hid] || 0) > 0;
-        hunkEl.classList.toggle("ungrouped", !inAnyGroup);
-        const show = activeIds === null ? true : activeIds.has(hid);
-        hunkEl.style.display = show ? "" : "none";
-        if (show) visible++;
-      });
-      fileEl.style.display = visible === 0 && activeIds !== null ? "none" : "";
-    });
-  }
-
-  // Build the by-file axis from DATA.files. One pill per file with
-  // hunks, label = path (basename if path is deep), count = hunks
-  // count. Skipped files (status = generated / binary / deleted with
-  // no diff body) still get a pill — the reviewer might want to jump
-  // to them. Re-buildable in place via `rebuildFilesAxis()`.
-  function rebuildFilesAxis() {
-    FILES_AXIS.groups.length = 0;
-    for (const k of Object.keys(FILES_AXIS.byId)) delete FILES_AXIS.byId[k];
-    for (const k of Object.keys(FILES_AXIS.hunkCount)) delete FILES_AXIS.hunkCount[k];
-    for (let fi = 0; fi < (DATA.files || []).length; fi++) {
-      const f = DATA.files[fi];
-      if (!f.hunks || f.hunks.length === 0) continue;
-      const hunk_ids = f.hunks.map((h) => h.id);
-      const g = {
-        id: `BF${fi}`,
-        title: shortenPath(f.path),
-        rationale: f.path,
-        hunk_ids,
-      };
-      FILES_AXIS.groups.push(g);
-      FILES_AXIS.byId[g.id] = g;
-      for (const hid of hunk_ids) {
-        FILES_AXIS.hunkCount[hid] = (FILES_AXIS.hunkCount[hid] || 0) + 1;
-      }
-    }
-  }
-
-  function shortenPath(path) {
-    // Long paths overflow the sidebar; show the basename, fall back
-    // to the full path if it's already short enough.
-    if (!path) return "";
-    if (path.length <= 28) return path;
-    const idx = path.lastIndexOf("/");
-    return idx >= 0 ? path.slice(idx + 1) : path;
   }
 
   function renderPRPanel(pr) {
@@ -1673,21 +1477,11 @@
       }
     }
     if (Array.isArray(payload.groups)) {
-      // The sidebar renderer reads from `GROUPS` — a const captured
-      // at module load — so we must mutate the array in place rather
-      // than reassigning DATA.groups (which would leave GROUPS still
-      // pointing at the original empty array).
-      GROUPS.length = 0;
-      for (const g of payload.groups) GROUPS.push(g);
-      DATA.groups = GROUPS;
-      for (const k of Object.keys(GROUP_BY_ID)) delete GROUP_BY_ID[k];
-      for (const k of Object.keys(HUNK_GROUP_COUNT)) delete HUNK_GROUP_COUNT[k];
-      for (const g of GROUPS) {
-        GROUP_BY_ID[g.id] = g;
-        for (const hid of g.hunk_ids || []) {
-          HUNK_GROUP_COUNT[hid] = (HUNK_GROUP_COUNT[hid] || 0) + 1;
-        }
-      }
+      // Themes axis lives in sidebar.ts; refreshThemes mutates the
+      // axis state in place. Keep DATA.groups in sync for any
+      // consumer that still reads it directly.
+      window.ScrSidebar.refreshThemes(payload.groups);
+      DATA.groups = payload.groups;
     }
     // The PR header and groups sidebar live outside the hunk list and
     // are cheap to redraw; a full re-render keeps the logic in one

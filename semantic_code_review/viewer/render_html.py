@@ -110,7 +110,7 @@ def render_html(
     # emits matching .js files into a build directory. The bin/scr
     # bootstrap points us at its data-dir build via SCR_VIEWER_BUILD_DIR;
     # wheel-installed setups fall back to the package's own assets/.
-    ts_modules = ["annotations.js", "progress.js", "sse.js"]
+    ts_modules = ["annotations.js", "progress.js", "sse.js", "sidebar.js"]
     ts_js = "\n".join(
         _locate_compiled_js(name).read_text(encoding="utf-8")
         for name in ts_modules
