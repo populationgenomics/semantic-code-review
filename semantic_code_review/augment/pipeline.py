@@ -171,6 +171,7 @@ async def augment_run_dir(
         if not skip_overview:
             log.info("overview pass for %d files", len(diff.files))
             meter.start_overview()
+            _safe_emit(on_event, "overview-start", {})
             try:
                 ov = await run_overview_pass(
                     client, diff=diff, meta=meta, model=model,
@@ -181,6 +182,7 @@ async def augment_run_dir(
                 _safe_emit(on_event, "overview", _overview_event_payload(diff))
             except Exception:
                 meter.finish_overview(ok=False)
+                _safe_emit(on_event, "overview-failed", {})
                 raise
 
         # --- Per-hunk pass -------------------------------------------------
@@ -285,6 +287,7 @@ async def _augment_one_hunk(
         # Mark the square live only AFTER acquiring the semaphore so
         # queued-but-unstarted hunks still render as pending dots.
         meter.start_hunk(ord_idx)
+        _safe_emit(on_event, "hunk-start", {"file_idx": fi, "hunk_idx": hi})
         try:
             if repo_tools is None:
                 rt = RepoTools(

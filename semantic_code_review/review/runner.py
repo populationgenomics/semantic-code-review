@@ -95,7 +95,10 @@ def run_review(opts: ReviewOptions) -> int:
                 concurrency=opts.concurrency,
                 cache=cache,
                 client=opts.client,
-                show_progress=opts.show_progress,
+                # The page now carries the progress display, so silence
+                # the terminal meter — its redraw line would just fight
+                # the listening-URL / per-hunk warning log lines.
+                show_progress=False,
                 on_event=publish,
             )
     else:

@@ -230,10 +230,51 @@ body {
   color: var(--fg-dim); font-style: italic;
   animation: scr-pulse 1.4s ease-in-out infinite;
 }
+.hunk-intent.queued { color: var(--fg-dim); font-style: italic; opacity: 0.7; }
 @keyframes scr-pulse {
   0%, 100% { opacity: 0.55; }
   50%      { opacity: 1; }
 }
+
+/* Progress strip — shown only while augmentation is streaming. */
+.scr-progress {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 6px 14px;
+  background: var(--bg-alt); border-bottom: 1px solid var(--border);
+  font-size: 12px; color: var(--fg-muted);
+}
+.scr-progress.hidden { display: none; }
+.scr-progress-summary { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.scr-progress-overview {
+  display: inline-block; padding: 1px 8px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--bg);
+}
+.scr-progress-overview[data-state="pending"] { color: var(--fg-muted); }
+.scr-progress-overview[data-state="running"] {
+  color: var(--accent); border-color: var(--accent);
+  animation: scr-pulse 1.4s ease-in-out infinite;
+}
+.scr-progress-overview[data-state="ok"]     { color: var(--ok);  border-color: var(--ok); }
+.scr-progress-overview[data-state="failed"] { color: var(--err); border-color: var(--err); }
+.scr-progress-hunks { color: var(--fg); font-weight: 500; }
+.scr-progress-detail { color: var(--fg-dim); }
+.scr-progress-grid {
+  display: flex; flex-wrap: wrap; gap: 3px;
+  padding-top: 2px;
+}
+.scr-progress-grid .sq {
+  width: 10px; height: 10px; border-radius: 2px;
+  background: var(--bg); border: 1px solid var(--border);
+  cursor: pointer;
+}
+.scr-progress-grid .sq[data-state="queued"]  { background: var(--bg); }
+.scr-progress-grid .sq[data-state="running"] {
+  background: var(--accent); border-color: var(--accent);
+  animation: scr-pulse 1.4s ease-in-out infinite;
+}
+.scr-progress-grid .sq[data-state="ok"]     { background: var(--ok);  border-color: var(--ok); }
+.scr-progress-grid .sq[data-state="failed"] { background: var(--err); border-color: var(--err); }
+.scr-progress-grid .sq:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .hunk-meta { grid-area: meta; display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
 .confidence {
   font-size: 11px; color: var(--fg-muted); padding: 1px 6px; border-radius: 10px;

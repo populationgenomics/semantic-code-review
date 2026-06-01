@@ -464,7 +464,10 @@ def pr(
                 concurrency=concurrency,
                 cache=cache,
                 client=client,
-                show_progress=not verbose,
+                # Page carries the progress display now; suppress the
+                # terminal meter to avoid duplicate noise and to keep
+                # the listening-URL / warning lines unobstructed.
+                show_progress=False,
                 on_event=publish,
             )
     else:

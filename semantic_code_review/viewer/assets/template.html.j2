@@ -30,6 +30,19 @@
     <button id="help-btn" class="help-btn" title="Help (?)" aria-label="Help">?</button>
   </header>
 
+  <div id="scr-progress" class="scr-progress hidden" aria-live="polite">
+    <div class="scr-progress-summary">
+      <span class="scr-progress-overview" data-state="pending">Overview</span>
+      <span class="scr-progress-hunks">Hunks <span class="scr-progress-done">0</span>/<span class="scr-progress-total">0</span></span>
+      <span class="scr-progress-detail">
+        (<span class="scr-progress-running">0</span> running ·
+        <span class="scr-progress-queued">0</span> queued ·
+        <span class="scr-progress-failed">0</span> failed)
+      </span>
+    </div>
+    <div class="scr-progress-grid" role="list" aria-label="Hunk progress"></div>
+  </div>
+
   <div class="layout">
     <aside id="group-sidebar" class="group-sidebar"></aside>
     <main id="app"></main>

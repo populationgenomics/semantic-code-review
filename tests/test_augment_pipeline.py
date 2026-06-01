@@ -210,9 +210,17 @@ async def test_augment_publishes_overview_and_per_hunk_events(tmp_path: Path) ->
     )
 
     types = [t for t, _ in events]
+    assert types.count("overview-start") == 1
     assert types.count("overview") == 1
+    # overview-start precedes the completion event.
+    assert types.index("overview-start") < types.index("overview")
+    # Two start events + two completion events for the two hunks; each
+    # start always precedes its matching completion (same indices).
+    assert types.count("hunk-start") == 2
     hunk_events = [p for t, p in events if t == "hunk"]
     assert len(hunk_events) == 2
+    start_events = [p for t, p in events if t == "hunk-start"]
+    assert {(p["file_idx"], p["hunk_idx"]) for p in start_events} == {(0, 0), (0, 1)}
     # Identity + payload shape — sufficient for the viewer to patch.
     indices = {(p["file_idx"], p["hunk_idx"]) for p in hunk_events}
     assert indices == {(0, 0), (0, 1)}
