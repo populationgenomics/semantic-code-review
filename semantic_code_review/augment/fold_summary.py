@@ -43,7 +43,7 @@ FOLD_SYSTEM = (
     "ONLY thing they see in place of it.\n\n"
     "Rules:\n"
     "- One sentence. <= 25 words.\n"
-    "- Present tense. Lowercase. No trailing period optional.\n"
+    "- Present tense. Lowercase. No trailing period.\n"
     "- Describe EFFECT, not structure or control flow.\n"
     "- If the folded block REPLACES existing code, describe the CHANGE the block "
     "  introduces, not just the new steps.\n"

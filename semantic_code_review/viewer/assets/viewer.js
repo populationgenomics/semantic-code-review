@@ -1334,12 +1334,18 @@
       (r) => r.new_start === payload.new_start && r.new_end === new_end,
     );
     if (!region) return;
+    // Idempotency: same payload, no work. Avoids a redundant re-render
+    // (and the fold popping back open) when our own POST also arrives
+    // via the SSE broadcast loop.
+    if (region.summary === payload.summary) return;
     region.summary = payload.summary;
-    region._inflight = false;
-    // If this hunk's diff is already in the DOM, patch the fold box.
-    // The rendered cache is keyed by hunk id; we don't know which
-    // fold instance to update without re-rendering, so simplest is
-    // to drop the cache for this hunk and let the next render rebuild.
+    // If a local POST is in flight, the fetch handler will update the
+    // fold box in place; re-rendering here would rebuild the hunk and
+    // pop the user's just-closed fold back open. Let the local path
+    // own the DOM update.
+    if (region._inflight) return;
+    // Cross-tab path: this region wasn't requested locally. Drop the
+    // cached diff and let the next render rebuild with the summary.
     delete STATE.renderedDiffs[h.id];
     const existing = document.querySelector('.hunk[data-id="' + cssEscape(h.id) + '"]');
     if (existing && existing.parentNode) {

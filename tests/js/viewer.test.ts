@@ -491,6 +491,35 @@ describe("lazy fold summaries", () => {
     expect(document.querySelector(".annot-box")?.textContent).toBe("done");
   });
 
+  test("server's broadcast back to the requesting tab does not pop the fold open", async () => {
+    // The server publishes a `fold-summary` SSE event to every
+    // subscriber after handling the POST — including the tab that
+    // issued it. Re-rendering the hunk on receipt would rebuild the
+    // fold in its default-open state and clobber the user's collapse.
+    bootViewer(dataWithFold());
+    expandHunk();
+    queueFetchResponse({
+      status: 200,
+      body: { hunk_id: "H0_0", new_start: 1, new_count: 2, summary: "wraps in try/except" },
+    });
+
+    const marker = document.querySelector(".fold-chev") as SVGElement;
+    clickEl(marker);   // collapse → POST
+    expect(marker.classList.contains("open")).toBe(false);
+
+    // SSE arrives for the same region with the same payload.
+    lastEventSource().dispatch("fold-summary", {
+      hunk_id: "H0_0", new_start: 1, new_count: 2, summary: "wraps in try/except",
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Fold is still collapsed; the box carries the summary text from
+    // the fetch handler.
+    const markerAfter = document.querySelector(".fold-chev") as SVGElement;
+    expect(markerAfter.classList.contains("open")).toBe(false);
+    expect(document.querySelector(".annot-box")?.textContent).toBe("wraps in try/except");
+  });
+
   test("failure response surfaces the retry copy", async () => {
     bootViewer(dataWithFold());
     expandHunk();
