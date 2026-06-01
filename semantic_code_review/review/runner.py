@@ -27,7 +27,6 @@ from ..cache.store import CacheStore
 from ..format.parse import parse_augmented_diff
 from ..paths import default_runs_root as _default_runs_root
 from ..viewer.build_json import build_pending_viewer_json, build_viewer_json
-from ..viewer.render_html import render_run_dir
 from .comments import CommentStore, format_markdown
 from .git import LocalDiff, build_local_diff
 from .server import ReviewServer
@@ -161,6 +160,7 @@ def serve_review(
     port: int = 0,
     timeout: int = 3600,
     open_browser: bool = True,
+    on_ready: Callable[[str], None] | None = None,
 ) -> ServeResult:
     """Render the viewer for a populated run dir, host the back-channel
     server, block on the user clicking Done, and return the comments
@@ -171,35 +171,32 @@ def serve_review(
     already in place. If ``augment`` is supplied, the server starts
     immediately with a pending viewer (file/hunk structure visible,
     no annotations yet); the augmentation coroutine then runs while
-    the page is live, and a ``reload`` SSE event flushes the completed
-    state to any connected clients. If ``augment`` is None, the run
-    dir is expected to already contain ``augmented.diff`` (the caller
-    skipped augmentation upstream).
+    the page is live, publishing per-hunk SSE events as completions
+    land. After the pass finishes, `update_viewer_json` swaps the
+    `/data.json` payload to the augmented state and a `done` event
+    flushes any still-pending placeholders. If ``augment`` is None,
+    the run dir is expected to already contain ``augmented.diff``
+    (the caller skipped augmentation upstream).
     """
-    html_path = run_dir / "review.html"
     if augment is not None:
-        # Pre-augment: render the file/hunk skeleton so the page is
-        # responsive while the LLM pass runs. The viewer JS sees
-        # `pending: true` and shows "analysing…" placeholders.
+        # Pre-augment: a file/hunk skeleton so the page is responsive
+        # while the LLM pass runs. The viewer JS sees `pending: true`
+        # and shows "analysing…" placeholders for each hunk.
         viewer_json = build_pending_viewer_json(run_dir)
     else:
         viewer_json = _load_viewer_json(run_dir)
     srv = ReviewServer(
         run_dir=run_dir,
-        html_path=html_path,
         viewer_json=viewer_json,
         port=port,
     )
     srv.start()
     try:
-        render_run_dir(
-            run_dir, html_path,
-            session_endpoint=srv.url(),
-            override_data=viewer_json if augment is not None else None,
-        )
         log.info("review server at %s", srv.url())
         sys.stderr.write(f"scr review: listening on {srv.url()}\n")
         sys.stderr.flush()
+        if on_ready is not None:
+            on_ready(srv.url())
         if open_browser:
             try:
                 webbrowser.open(srv.url())
@@ -209,10 +206,10 @@ def serve_review(
         if augment is not None:
             # Run augmentation while the server is live, streaming each
             # overview / per-hunk completion to the page via SSE. After
-            # the pass returns, refresh `/data.json` and the on-disk
-            # HTML so a fresh tab opened post-augment also sees the
-            # full state, then publish `done` so connected viewers can
-            # finalise any still-pending placeholders.
+            # the pass returns, swap `/data.json` to the augmented state
+            # so any tab opened post-augment (or a manual reload) sees
+            # the final view, then publish `done` so connected viewers
+            # can finalise any still-pending placeholders.
             augment_error: BaseException | None = None
             try:
                 asyncio.run(augment(run_dir, srv.publish))
@@ -222,7 +219,6 @@ def serve_review(
                 sys.stderr.write(f"scr review: augment failed: {e}\n")
             if (run_dir / "augmented.diff").exists():
                 final_json = _load_viewer_json(run_dir)
-                render_run_dir(run_dir, html_path, session_endpoint=srv.url())
                 srv.update_viewer_json(final_json)
                 # Augmentation has emitted a sidecar, so the /fold-summary
                 # route can now resolve hunk_ids. Bind the summariser here

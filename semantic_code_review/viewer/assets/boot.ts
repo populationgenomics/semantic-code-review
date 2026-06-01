@@ -19,44 +19,83 @@ import { Sse } from "./sse";
 // as used via boot's other callers too.
 void Annotations;
 
-const _dataScript = document.getElementById("scr-data");
-if (!_dataScript || !_dataScript.textContent) {
-  throw new Error("scr-data script tag missing — viewer cannot boot");
-}
-const DATA: ViewerData = JSON.parse(_dataScript.textContent);
+// DATA is fetched from /data.json once the DOM is ready, then the
+// modules are wired up. DATA.pending is true while the server is
+// streaming overview / per-hunk events from a running augmentation
+// pass; hunks without an annotation render an "analysing…" spinner
+// during that window and the failure copy once the `done` event
+// clears the flag — see installSessionEvents below + Render's
+// renderHunkHeader.
 
-// DATA.pending is true while the server is streaming overview /
-// per-hunk events from a running augmentation pass. Hunks without
-// an annotation render an "analysing…" spinner during that window
-// and the failure copy once the `done` event clears the flag —
-// see installSessionEvents below + Render's renderHunkHeader.
+let DATA!: ViewerData;
 
-const SESSION_ENDPOINT: string = (() => {
+// SESSION_ENDPOINT is the prefix prepended to back-channel routes
+// (/exit, /comments, /events, /fold-summary). Empty string means
+// "same origin" — the normal production path. The meta tag is
+// absent when boot.ts is exercised outside the review server
+// (jsdom tests), in which case those features are wired off.
+const SESSION_ENDPOINT: string | null = (() => {
   const m = document.querySelector('meta[name="scr-session-endpoint"]');
-  return m ? (m.getAttribute("content") || "") : "";
+  return m ? (m.getAttribute("content") || "") : null;
 })();
-
-// --- Module init order ----------------------------------------------------
-// Sidebar's axes are computed from DATA at module init; comments need
-// DATA for the localStorage key; render needs DATA to drive the initial
-// paint + wire its hash/keyboard/button handlers; progress wants DATA
-// to know how many hunks the strip will display.
-Sidebar.init(DATA);
 
 // --- Boot ----------------------------------------------------------------
 
 function boot(): void {
   Comments.init(DATA);     // wires gutter + loads existing
   installDoneButton();
+  Sidebar.init(DATA);
   Render.init(DATA);       // wires hash + keyboard + initial paint
   Progress.init(DATA);
+  installPrHeader(DATA);
   installSessionEvents();
 }
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", boot);
-} else {
-  boot();
+function bootAfterFetch(data: ViewerData): void {
+  DATA = data;
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
+  }
+}
+
+fetch("/data.json", { cache: "no-store" })
+  .then((r) => {
+    if (!r.ok) throw new Error(`GET /data.json -> ${r.status}`);
+    return r.json() as Promise<ViewerData>;
+  })
+  .then(bootAfterFetch)
+  .catch((e) => {
+    const app = document.getElementById("app") || document.body;
+    const msg = document.createElement("div");
+    msg.className = "boot-error";
+    msg.textContent = `viewer failed to load: ${e}`;
+    app.appendChild(msg);
+  });
+
+function installPrHeader(data: ViewerData): void {
+  const pr = data.pr || {} as PRBlock;
+  const title = pr.title || "(untitled PR)";
+  document.title = title;
+  const titleEl = document.querySelector(".pr-title") as HTMLElement | null;
+  const metaEl = document.querySelector(".pr-title .pr-meta") as HTMLElement | null;
+  if (titleEl) {
+    // Title text sits before the existing .pr-meta span; insert as
+    // a text node ahead of metaEl so we don't blow the span away.
+    const txt = document.createTextNode(title + " ");
+    if (metaEl) titleEl.insertBefore(txt, metaEl);
+    else titleEl.appendChild(txt);
+  }
+  if (metaEl) {
+    const bits: string[] = [];
+    if (pr.repo) bits.push(pr.repo);
+    if (pr.number != null) bits.push(`#${pr.number}`);
+    const base = (pr.base_sha || "").slice(0, 8);
+    const head = (pr.head_sha || "").slice(0, 8);
+    if (base && head) bits.push(`${base}..${head}`);
+    metaEl.textContent = bits.join(" · ");
+  }
 }
 
 // --- Done button ---------------------------------------------------------
@@ -66,7 +105,7 @@ if (document.readyState === "loading") {
 // avoid coupling "I'm done" to the comment storage layer.
 
 function installDoneButton(): void {
-  if (!SESSION_ENDPOINT) return;
+  if (SESSION_ENDPOINT === null) return;
   const bar = document.querySelector(".pr-bar");
   if (!bar) return;
   const btn = document.createElement("button");
@@ -93,7 +132,7 @@ function installDoneButton(): void {
 // side-effects to the right module.
 
 function installSessionEvents(): void {
-  if (!SESSION_ENDPOINT) return;
+  if (SESSION_ENDPOINT === null) return;
   Sse.connect(SESSION_ENDPOINT, {
     overviewStart: () => Progress.setOverviewState("running"),
     overviewFailed: () => Progress.setOverviewState("failed"),

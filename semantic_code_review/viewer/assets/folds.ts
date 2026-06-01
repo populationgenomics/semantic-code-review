@@ -12,11 +12,8 @@
 // empty, this module fires `POST /fold-summary` against the live
 // review server. The response writes back into the region object
 // (mutating DATA in place); the server's `fold-summary` SSE event
-// is handled by `applyFoldSummary` in viewer.js.
+// is handled by `applyFoldSummary` in boot.ts.
 //
-// Compiled by tsc to `folds.js`. Concatenated into the rendered
-// HTML by `render_html.py`; viewer.js calls into window.ScrFolds.
-
 import { Annotations, type AnnotationHandle } from "./annotations";
 
 interface RowWithEls extends RowBlock {
@@ -55,13 +52,17 @@ interface FoldFileState {
 
 const _FILE_FOLD_STATE: Record<string, FoldFileState> = Object.create(null);
 
-function _sessionEndpoint(): string {
+function _sessionEndpoint(): string | null {
   // Read at call time, not module init — the meta tag may be
   // injected after this module loads (tests set up the DOM
-  // dynamically, and a future bootloader might too).
-  if (typeof document === "undefined") return "";
+  // dynamically, and a future bootloader might too). Empty
+  // string content means "same origin" (the production case);
+  // a missing meta tag (null) means no server is available
+  // and the route is wired off.
+  if (typeof document === "undefined") return null;
   const m = document.querySelector('meta[name="scr-session-endpoint"]');
-  return m ? (m.getAttribute("content") || "") : "";
+  if (!m) return null;
+  return m.getAttribute("content") || "";
 }
 
 // --- DOM helpers (private, duplicated from viewer.js because the
@@ -294,7 +295,7 @@ interface FoldRegionRuntime extends FoldRegion {
 function _canRequestFoldSummary(
   fileIdx: number | null, region: FoldRegion,
 ): boolean {
-  if (!_sessionEndpoint()) return false;
+  if (_sessionEndpoint() === null) return false;
   if (fileIdx == null) return false;
   return _foldAddress(region) !== null;
 }

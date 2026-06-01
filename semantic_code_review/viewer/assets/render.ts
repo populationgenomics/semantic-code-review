@@ -14,9 +14,6 @@
 //     on each .diff and .gap-expansion container
 //   - comments.ts replays its comment rows after each renderAll
 //   - annotations.ts hosts the row-annotation DOM
-//
-// Compiled by tsc to `render.js`; concatenated into the rendered
-// HTML by `render_html.py`. Exposes window.ScrRender.
 
 import { Annotations } from "./annotations";
 import { Comments } from "./comments";

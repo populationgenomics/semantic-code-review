@@ -231,10 +231,12 @@ checkout (provided Node is available).
 
 - `semantic_code_review/augment/` — overview + per-hunk LLM pipeline,
   prompts, schemas, MCP tool wrapper.
-- `semantic_code_review/viewer/` — Python side: `render_html.py`,
-  `build_json.py`, `rows.py`. Frontend assets in `viewer/assets/`:
-  `viewer.js`, `viewer.css`, `template.html.j2`, the typed
-  `annotations.ts` module, and vendored `highlight.js` under
+- `semantic_code_review/viewer/` — Python side: `build_json.py`,
+  `hunk_layout.py`. Frontend assets in `viewer/assets/`: eight
+  TypeScript modules (boot/render/sidebar/annotations/comments/
+  folds/progress/sse) bundled by esbuild into a single
+  `viewer.js`, `viewer.css`, the static `index.html` served by
+  the review server, and vendored `highlight.js` under
   `assets/vendor/`.
 - `semantic_code_review/review/` — local HTTP server that
   back-channels reviewer comments to the calling process, the

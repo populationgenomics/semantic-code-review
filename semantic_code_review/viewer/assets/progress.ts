@@ -2,17 +2,11 @@
 // per-hunk state while augment_run_dir is running on the server.
 //
 // Owns the .scr-progress DOM tree (counter + grid of squares, one
-// per hunk) exclusively. The viewer's SSE handlers call into this
+// per hunk) exclusively. boot.ts's SSE handlers call into this
 // module on every overview-* / hunk-start / hunk / done event; the
-// per-hunk *intent slot* repaint stays in viewer.js (that's about the
-// hunk DOM, not the strip).
-//
-// Compiled by tsc to `progress.js`. The compiled output is
-// concatenated into the viewer HTML alongside `annotations.js` by
-// `render_html.py`, and must expose `window.ScrProgress` for the
-// classic-script `viewer.js` to reach (no module loader in the HTML).
+// per-hunk *intent slot* repaint lives in render.ts (that's about
+// the hunk DOM, not the strip).
 
-// Top-level declarations use no `export` keyword so tsc with
 type ProgressHunkState = "queued" | "running" | "ok" | "failed";
 type ProgressOverviewState = "pending" | "running" | "ok" | "failed";
 

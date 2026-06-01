@@ -12,13 +12,6 @@
 // no idea what "old" vs "new" means. Callers decide which anchor each
 // annotation targets; styling is chosen via `variant`.
 //
-// Compiled by tsc to `annotations.js` alongside this file. The compiled
-// output is inlined into the viewer HTML by `render_html.py` and must
-// expose `window.ScrAnnotations` for the classic-script `viewer.js` to
-// reach (there is no module loader in the HTML).
-
-// Top-level declarations use no `export` keyword so tsc with
-// `module: "none"` emits classic-script output (no CommonJS wrapper).
 // Types declared here are internal to this file. The wider viewer
 // data contract (ViewerData / FileBlock / HunkBlock / …) lives in
 // `types.d.ts` and is available to every .ts file in this directory

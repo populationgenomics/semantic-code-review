@@ -29,6 +29,41 @@ from .comments import CommentStore
 log = logging.getLogger(__name__)
 
 
+# --- Static asset resolution --------------------------------------------
+# Mirrors the build-dir-aware lookup that render_html.py used to do for
+# viewer.js: a SCR_VIEWER_BUILD_DIR override (set by the bin/scr
+# bootstrap) wins over the in-tree assets/ directory. Falls back to the
+# packaged assets when no override is set. Only viewer.js is expected
+# to live in the build dir; everything else (CSS, vendor, index.html)
+# is always read from the in-tree assets/.
+
+import os
+ASSETS_DIR = Path(__file__).resolve().parent.parent / "viewer" / "assets"
+
+
+def _resolve_asset(rel: str) -> Path:
+    """Locate a static asset, honouring SCR_VIEWER_BUILD_DIR for
+    build artefacts.
+
+    The build dir only ever holds the bundled viewer.js (esbuild
+    output); everything else — index.html, CSS, vendored highlight
+    bundle — is always read from the in-tree assets/ directory.
+    The trailing path-traversal guard keeps `_serve_static`'s
+    whitelist from being the only line of defence.
+    """
+    if ".." in Path(rel).parts:
+        raise FileNotFoundError(f"refused path-traversal asset: {rel!r}")
+    build_dir = os.environ.get("SCR_VIEWER_BUILD_DIR")
+    if build_dir and rel == "viewer.js":
+        p = Path(build_dir) / rel
+        if p.exists():
+            return p
+    p = ASSETS_DIR / rel
+    if p.exists():
+        return p
+    raise FileNotFoundError(f"asset not found: {rel} (looked in {ASSETS_DIR}{', '+build_dir if build_dir else ''})")
+
+
 # Sentinel pushed onto subscriber queues to ask the handler thread to
 # release the connection at shutdown (so the daemon thread doesn't pin
 # the process). Distinct from any real event payload.
@@ -151,7 +186,6 @@ FoldSummariser = Callable[..., Awaitable[str]]
 class ServerContext:
     run_dir: Path
     store: CommentStore
-    html_path: Path
     viewer_json: dict[str, Any]
     done_event: threading.Event
     last_activity: float = 0.0
@@ -215,12 +249,10 @@ class _Handler(BaseHTTPRequestHandler):
         self._touch()
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
-            try:
-                html = self.ctx.html_path.read_bytes()
-            except OSError as e:
-                self._json(500, {"error": str(e)})
-                return
-            self._text(200, "text/html; charset=utf-8", html)
+            self._serve_asset("index.html", "text/html; charset=utf-8")
+            return
+        if path.startswith("/static/"):
+            self._serve_static(path[len("/static/"):])
             return
         if path == "/data.json":
             self._json(200, self.ctx.viewer_json)
@@ -232,6 +264,37 @@ class _Handler(BaseHTTPRequestHandler):
             self._stream_events()
             return
         self._json(404, {"error": "not found"})
+
+    #: Whitelist of asset basenames that may be served via /static/.
+    #: Keeps the route from doubling as a generic file-read primitive
+    #: even though _resolve_static guards against path traversal too.
+    _STATIC_ASSETS: dict[str, str] = {
+        "viewer.css": "text/css; charset=utf-8",
+        "viewer.js":  "application/javascript; charset=utf-8",
+        "vendor/highlight.min.js":   "application/javascript; charset=utf-8",
+        "vendor/github.min.css":     "text/css; charset=utf-8",
+        "vendor/github-dark.min.css": "text/css; charset=utf-8",
+    }
+
+    def _serve_static(self, rel: str) -> None:
+        ctype = self._STATIC_ASSETS.get(rel)
+        if ctype is None:
+            self._json(404, {"error": "not found"})
+            return
+        self._serve_asset(rel, ctype)
+
+    def _serve_asset(self, rel: str, ctype: str) -> None:
+        try:
+            path = _resolve_asset(rel)
+        except FileNotFoundError as e:
+            self._json(500, {"error": str(e)})
+            return
+        try:
+            body = path.read_bytes()
+        except OSError as e:
+            self._json(500, {"error": str(e)})
+            return
+        self._text(200, ctype, body)
 
     def _stream_events(self) -> None:
         """Serve the SSE channel until the client disconnects or the
@@ -472,7 +535,7 @@ class ReviewServer:
 
     Usage:
 
-    >>> srv = ReviewServer(run_dir=..., html_path=..., viewer_json=...)
+    >>> srv = ReviewServer(run_dir=..., viewer_json=...)
     >>> srv.start()
     >>> url = srv.url()
     >>> srv.wait_until_done(timeout=3600)
@@ -483,7 +546,6 @@ class ReviewServer:
         self,
         *,
         run_dir: Path,
-        html_path: Path,
         viewer_json: dict[str, Any],
         host: str = "127.0.0.1",
         port: int = 0,
@@ -494,7 +556,6 @@ class ReviewServer:
         self.ctx = ServerContext(
             run_dir=run_dir,
             store=self.store,
-            html_path=html_path,
             viewer_json=viewer_json,
             done_event=self.done_event,
             last_activity=time.time(),

@@ -18,10 +18,8 @@ from semantic_code_review.review.server import ReviewServer
 
 @pytest.fixture
 def server(tmp_path: Path):
-    (tmp_path / "review.html").write_text("<html><body>hi</body></html>")
     srv = ReviewServer(
         run_dir=tmp_path,
-        html_path=tmp_path / "review.html",
         viewer_json={"version": "1", "files": []},
     )
     srv.start()
@@ -44,10 +42,37 @@ def _request(url: str, method: str = "GET", body: dict | None = None) -> tuple[i
 
 
 def test_get_index_returns_html(server) -> None:
+    """GET / returns the static viewer shell."""
     req = urllib.request.Request(server.url() + "/")
     with urllib.request.urlopen(req, timeout=5) as r:
         assert r.status == 200
-        assert "hi" in r.read().decode()
+        assert r.headers.get("Content-Type", "").startswith("text/html")
+        body = r.read().decode()
+        # The static shell references the bundled JS and includes the
+        # session-endpoint meta tag the viewer uses to flip into
+        # server-mediated mode.
+        assert "/static/viewer.js" in body
+        assert 'name="scr-session-endpoint"' in body
+
+
+def test_get_static_viewer_js(server) -> None:
+    """/static/viewer.js serves the bundled output."""
+    req = urllib.request.Request(server.url() + "/static/viewer.js")
+    with urllib.request.urlopen(req, timeout=5) as r:
+        assert r.status == 200
+        assert r.headers.get("Content-Type", "").startswith("application/javascript")
+        body = r.read()
+        assert body  # non-empty
+
+
+def test_get_static_unknown_404(server) -> None:
+    """Unlisted static paths 404 even if the file would exist on disk."""
+    try:
+        urllib.request.urlopen(server.url() + "/static/../cli.py", timeout=5)
+    except urllib.error.HTTPError as e:
+        assert e.code == 404
+    else:
+        raise AssertionError("expected 404 for path-traversal asset")
 
 
 def test_get_data_json(server) -> None:
@@ -251,7 +276,6 @@ def test_fold_summary_persists_and_publishes(tmp_path: Path) -> None:
     (tmp_path / "augmented.diff").write_text(
         fixture.read_text(encoding="utf-8"), encoding="utf-8",
     )
-    (tmp_path / "review.html").write_text("<html></html>", encoding="utf-8")
     viewer_json = {
         "version": "1",
         "files": [{
@@ -273,7 +297,6 @@ def test_fold_summary_persists_and_publishes(tmp_path: Path) -> None:
 
     srv = ReviewServer(
         run_dir=tmp_path,
-        html_path=tmp_path / "review.html",
         viewer_json=viewer_json,
     )
     srv.start()
@@ -362,7 +385,6 @@ def test_fold_summary_for_left_context_resolves_and_persists(tmp_path: Path) -> 
     (tmp_path / "augmented.diff").write_text(
         fixture.read_text(encoding="utf-8"), encoding="utf-8",
     )
-    (tmp_path / "review.html").write_text("<html></html>", encoding="utf-8")
     viewer_json = {
         "version": "1",
         "files": [{
@@ -378,7 +400,7 @@ def test_fold_summary_for_left_context_resolves_and_persists(tmp_path: Path) -> 
     }
 
     srv = ReviewServer(
-        run_dir=tmp_path, html_path=tmp_path / "review.html",
+        run_dir=tmp_path,
         viewer_json=viewer_json,
     )
     srv.start()
@@ -470,11 +492,12 @@ def _populate_minimal_run_dir(run_dir: Path) -> None:
     }), encoding="utf-8")
 
 
-def test_serve_review_renders_pending_then_streams_and_finalises(tmp_path: Path) -> None:
-    """End-to-end: serve_review starts the server, renders a pending
-    HTML, then runs the augment closure (which can publish streaming
-    events via the supplied publish callable) and fires `done` once
-    augmentation finishes."""
+def test_serve_review_serves_pending_then_streams_and_finalises(tmp_path: Path) -> None:
+    """End-to-end: serve_review starts the server with pending
+    viewer JSON, runs the augment closure (which can publish streaming
+    events via the supplied publish callable), then swaps /data.json
+    to the post-augment state and fires `done` once augmentation
+    finishes."""
     from semantic_code_review.review.runner import serve_review
 
     _populate_minimal_run_dir(tmp_path)
@@ -482,12 +505,14 @@ def test_serve_review_renders_pending_then_streams_and_finalises(tmp_path: Path)
     augment_started = threading.Event()
     augment_release = threading.Event()
     augment_finished = threading.Event()
+    ready_url: dict[str, str] = {}
+    url_ready = threading.Event()
 
     async def fake_augment(rd: Path, publish) -> None:
         augment_started.set()
-        # Block until the test confirms it has observed the pending
-        # HTML — otherwise the final render races us and the assertion
-        # below sees the post-augment file.
+        # Block until the test confirms it has observed pending /data.json.
+        # Otherwise the post-augment swap races us and the assertion
+        # below sees the final state.
         await asyncio.get_running_loop().run_in_executor(
             None, augment_release.wait, 5.0,
         )
@@ -498,60 +523,51 @@ def test_serve_review_renders_pending_then_streams_and_finalises(tmp_path: Path)
         (rd / "augmented.diff").write_text(_RAW_DIFF_FOR_RUN, encoding="utf-8")
         augment_finished.set()
 
-    # Drive the orchestration on a worker thread; the main thread polls
-    # the server and posts /exit once the reload event has been observed.
     result_box: dict = {}
 
     def run_serve() -> None:
+        def _on_ready(url: str) -> None:
+            ready_url["url"] = url
+            url_ready.set()
         result_box["r"] = serve_review(
             tmp_path,
             augment=fake_augment,
             port=0,
             timeout=10,
             open_browser=False,
+            on_ready=_on_ready,
         )
 
     serve_thread = threading.Thread(target=run_serve, daemon=True)
     serve_thread.start()
 
-    # Wait for the server to be ready by polling for the rendered HTML.
-    deadline = time.time() + 5
-    url = None
-    while time.time() < deadline:
-        # Walk the run_dir for review.html; once it exists the server
-        # is up. We don't have a direct handle to the ReviewServer from
-        # the test, but stdout/stderr aren't captured here so we sniff
-        # the html.
-        if (tmp_path / "review.html").exists():
-            break
-        time.sleep(0.02)
+    assert url_ready.wait(timeout=5)
+    url = ready_url["url"]
     assert augment_started.wait(timeout=5)
-    assert (tmp_path / "review.html").exists()
-    html = (tmp_path / "review.html").read_text(encoding="utf-8")
-    # Pending data is inlined.
-    assert '"pending": true' in html
-    # Extract the session endpoint to talk to the server.
-    import re as _re
-    m = _re.search(r'scr-session-endpoint" content="([^"]+)"', html)
-    assert m, "session endpoint not embedded in HTML"
-    url = m.group(1)
 
-    # Release the augment closure and wait for it to finish.
-    augment_release.set()
-    assert augment_finished.wait(timeout=5)
-    # Give the runner a beat to re-render + publish.
-    deadline = time.time() + 3
-    while time.time() < deadline and '"pending": true' in (tmp_path / "review.html").read_text():
-        time.sleep(0.02)
-    final_html = (tmp_path / "review.html").read_text(encoding="utf-8")
-    assert '"pending": true' not in final_html
-
-    # data.json should also reflect the post-augment state.
+    # /data.json reflects the pending skeleton before augment publishes.
     code, body = _request(url + "/data.json")
     assert code == 200
-    assert "pending" not in body or body.get("pending") is False or body.get("pending") is None
+    assert body.get("pending") is True
+    # Skeleton structure is present.
+    assert body["files"] and body["files"][0]["path"] == "foo.py"
 
-    # Tell the server we're done so wait_until_done unblocks.
+    augment_release.set()
+    assert augment_finished.wait(timeout=5)
+
+    # Give the runner a beat to swap /data.json + publish `done`.
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        code, body = _request(url + "/data.json")
+        if body.get("pending") is not True:
+            break
+        time.sleep(0.02)
+    assert body.get("pending") is not True
+
+    # /static/viewer.js stays served throughout.
+    code2, _ = _request(url + "/static/viewer.js", "GET")
+    assert code2 == 200
+
     _request(url + "/exit", "POST", {})
     serve_thread.join(timeout=5)
     assert not serve_thread.is_alive()

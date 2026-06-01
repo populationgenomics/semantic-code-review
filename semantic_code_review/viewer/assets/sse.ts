@@ -8,15 +8,6 @@
 // `types.d.ts`. Replay on reconnect is handled by the browser's
 // EventSource implementation (it sends Last-Event-ID automatically;
 // the server replays from its buffer).
-//
-// Compiled by tsc to `sse.js`. The compiled output is concatenated
-// into the viewer HTML by `render_html.py` and must expose
-// `window.ScrSse` for the classic-script `viewer.js` to call into.
-
-// `module: "none"` — no `export`s, top-level decls only. The viewer
-// data contract (SseOverviewEvent / SseHunkEvent / SseFoldSummaryEvent
-// / SseDoneEvent / SseHunkStartEvent) lives in `types.d.ts` and is in
-// scope without an import.
 
 interface SseHandlers {
   overviewStart?: () => void;
@@ -34,7 +25,10 @@ interface SseHandlers {
  *  doesn't support EventSource or the connection couldn't be opened.
  */
 function connect(endpoint: string, handlers: SseHandlers): EventSource | null {
-  if (!endpoint || typeof EventSource === "undefined") return null;
+  // Empty `endpoint` is valid — it means "same origin" and the
+  // resulting `/events` URL is relative to the page. Only the
+  // browser's missing EventSource (jsdom without our stub) bails.
+  if (typeof EventSource === "undefined") return null;
   let es: EventSource;
   try {
     es = new EventSource(endpoint + "/events");

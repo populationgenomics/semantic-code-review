@@ -9,7 +9,6 @@ from semantic_code_review.format.parse import parse_augmented_diff
 from semantic_code_review.viewer.build_json import (
     build_pending_viewer_json, build_viewer_json,
 )
-from semantic_code_review.viewer.render_html import render_html
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample.augmented.diff"
@@ -71,31 +70,6 @@ def test_viewer_json_files_and_hunks() -> None:
     # Line numbers advance correctly.
     assert rows[0]["old_line"] == 1 and rows[0]["new_line"] == 1
     assert rows[-1]["new_line"] == 7 and rows[-1]["old_line"] is None
-
-
-def test_render_html_has_key_elements() -> None:
-    d = _data()
-    html = render_html(d)
-    assert "<title>Introduce pagination</title>" in html
-    assert "Semantic Code Review" not in html or "viewer" in html.lower()  # sanity
-    assert "fold-slider" in html
-    assert 'data-fold="files"' in html and 'data-fold="hunks"' in html
-    assert 'id="scr-data"' in html
-    # The embedded JSON must be safely encoded (no raw </script>).
-    assert "</script>" not in html.split('id="scr-data"')[1].split("</script>")[0]
-    # Viewer JS is inlined.
-    assert "renderHunk" in html
-    # CSS variables defined.
-    assert "--accent" in html
-
-
-def test_render_html_self_contained_contains_expected_text() -> None:
-    """The HTML should inline intent text and segment intents verbatim (via JSON)."""
-    d = _data()
-    html = render_html(d)
-    assert "Pagination is introduced" in html
-    assert "paginate() helper" in html
-    assert "string-sql" in html
 
 
 _RAW_DIFF = """diff --git a/foo.py b/foo.py

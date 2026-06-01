@@ -9,12 +9,12 @@
 //     the returned text (or the failure copy on error)
 //
 // The viewer is a single IIFE-wrapped bundle produced by esbuild from
-// boot.ts as the entry. We mount the same DOM template the Jinja
-// template emits, install a scr-data <script>, stub EventSource +
-// fetch on the global, then read viewer.js as a string and eval() it.
-// The eval (rather than `import`) gives us a clean re-execution per
-// test without fighting Vitest's module cache or having to wrangle
-// dynamic imports.
+// boot.ts as the entry. We mount the same DOM the static index.html
+// emits, stub EventSource + fetch on the global, queue the /data.json
+// response, then read viewer.js as a string and eval() it. The eval
+// (rather than `import`) gives us a clean re-execution per test
+// without fighting Vitest's module cache or having to wrangle dynamic
+// imports.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -104,15 +104,18 @@ interface ViewerData {
   groups?: Array<Record<string, unknown>>;
 }
 
-function bootViewer(data: ViewerData): void {
-  // Build the same skeleton the Jinja template emits, minus the
-  // bits viewer.js doesn't touch (highlight.js asset, help overlay
-  // body, etc — we keep the IDs so qS lookups succeed).
+async function bootViewer(data: ViewerData): Promise<void> {
+  // Mount the static index.html skeleton (minus the highlight.js
+  // <script> the bundle doesn't need at test time). The
+  // scr-session-endpoint meta tag presence is what flips the viewer
+  // into server-mediated mode; empty content means "same origin"
+  // (which boot.ts then prepends to the stubbed fetch URLs).
   document.head.innerHTML = `
-    <meta name="scr-session-endpoint" content="http://test">
+    <meta name="scr-session-endpoint" content="">
   `;
   document.body.innerHTML = `
     <header class="pr-bar">
+      <div class="pr-title"><span class="pr-meta"></span></div>
       <div class="fold-slider">
         <button data-fold="files"></button>
         <button data-fold="hunks"></button>
@@ -140,14 +143,22 @@ function bootViewer(data: ViewerData): void {
     </div>
     <footer id="status-bar"></footer>
     <div id="help-overlay" class="help-overlay hidden"></div>
-    <script type="application/json" id="scr-data">${JSON.stringify(data)}</script>
   `;
-  // The fixture-loaded annotations module registers window.ScrAnnotations.
-  // viewer.js depends on it.
-  // Execute viewer.js as a fresh IIFE in the current realm so it picks
-  // up our stubs. `new Function` ensures strict-mode and a clean scope.
+  // boot.ts fetches /data.json first thing — queue this response
+  // ahead of anything the test adds so the fetch chain resolves to
+  // our data before Comments.init fires /comments and before any
+  // test-specific POST.
+  queueFetchResponse({ status: 200, body: data });
+  // Execute viewer.js as a fresh IIFE in the current realm so it
+  // picks up our stubs. `new Function` ensures strict-mode + clean
+  // scope. The IIFE returns synchronously; the boot continues on
+  // microtasks once the /data.json fetch resolves.
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
   new Function(VIEWER_SRC)();
+  // Drain microtasks + one macrotask tick so the fetch promise
+  // chain resolves, boot() runs, Comments.init's /comments fetch
+  // resolves, and all sync init lands before the test asserts.
+  await new Promise<void>((r) => setTimeout(r, 0));
 }
 
 function makeHunkBlock(id: string, intent = "", overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -207,6 +218,7 @@ beforeEach(() => {
     const next = fetchResponses.shift() ?? { status: 200, body: {} };
     return Promise.resolve({
       status: next.status,
+      ok: next.status >= 200 && next.status < 300,
       json: () => Promise.resolve(next.body),
     } as Response);
   }) as typeof fetch);
@@ -219,8 +231,8 @@ afterEach(() => {
 
 
 describe("pending boot", () => {
-  test("progress strip shows total + every square starts queued", () => {
-    bootViewer(makeData({
+  test("progress strip shows total + every square starts queued", async () => {
+    await bootViewer(makeData({
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
         adds: 0, dels: 0, summary: "", head_lines: null,
@@ -238,15 +250,15 @@ describe("pending boot", () => {
     expect(strip.querySelector(".scr-progress-done")!.textContent).toBe("0");
   });
 
-  test("hunks with empty intent render the 'queued' placeholder", () => {
-    bootViewer(makeData());
+  test("hunks with empty intent render the 'queued' placeholder", async () => {
+    await bootViewer(makeData());
     const intent = document.querySelector(".hunk-intent")!;
     expect(intent.classList.contains("queued")).toBe(true);
     expect(intent.textContent).toBe("queued");
   });
 
-  test("generated/binary files are excluded from the progress grid", () => {
-    bootViewer(makeData({
+  test("generated/binary files are excluded from the progress grid", async () => {
+    await bootViewer(makeData({
       files: [
         {
           id: "F0", path: "uv.lock", status: "generated", language: "",
@@ -272,8 +284,8 @@ describe("pending boot", () => {
 
 
 describe("streaming events", () => {
-  test("hunk-start flips the square + intent slot to 'running'", () => {
-    bootViewer(makeData());
+  test("hunk-start flips the square + intent slot to 'running'", async () => {
+    await bootViewer(makeData());
     const es = lastEventSource();
     es.dispatch("hunk-start", { file_idx: 0, hunk_idx: 0 });
     const square = document.querySelector('.scr-progress-grid .sq[data-id="H0_0"]')!;
@@ -286,8 +298,8 @@ describe("streaming events", () => {
     expect(strip.querySelector(".scr-progress-queued")!.textContent).toBe("0");
   });
 
-  test("hunk completion patches the intent and marks the square ok", () => {
-    bootViewer(makeData());
+  test("hunk completion patches the intent and marks the square ok", async () => {
+    await bootViewer(makeData());
     const es = lastEventSource();
     es.dispatch("hunk-start", { file_idx: 0, hunk_idx: 0 });
     es.dispatch("hunk", {
@@ -305,8 +317,8 @@ describe("streaming events", () => {
     expect(strip.querySelector(".scr-progress-failed")!.textContent).toBe("0");
   });
 
-  test("hunk failure marks the square failed and shows the re-run copy", () => {
-    bootViewer(makeData());
+  test("hunk failure marks the square failed and shows the re-run copy", async () => {
+    await bootViewer(makeData());
     const es = lastEventSource();
     es.dispatch("hunk", {
       file_idx: 0, hunk_idx: 0, ok: false, error: "UsageLimitExceeded: …",
@@ -318,8 +330,8 @@ describe("streaming events", () => {
     expect(intent.textContent).toContain("may need re-run");
   });
 
-  test("overview event populates the themes axis and the file summary", () => {
-    bootViewer(makeData({
+  test("overview event populates the themes axis and the file summary", async () => {
+    await bootViewer(makeData({
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
         adds: 0, dels: 0, summary: "", head_lines: null,
@@ -351,8 +363,8 @@ describe("streaming events", () => {
     expect(document.querySelector(".file-summary")!.textContent).toBe("x and y bumped");
   });
 
-  test("by-file axis renders from boot with one pill per file and filters on click", () => {
-    bootViewer(makeData({
+  test("by-file axis renders from boot with one pill per file and filters on click", async () => {
+    await bootViewer(makeData({
       pending: false,
       files: [
         {
@@ -394,8 +406,8 @@ describe("streaming events", () => {
     expect(document.querySelector(".group-btn-all")!.classList.contains("active")).toBe(true);
   });
 
-  test("done event hides the progress strip and clears pending", () => {
-    bootViewer(makeData());
+  test("done event hides the progress strip and clears pending", async () => {
+    await bootViewer(makeData());
     const es = lastEventSource();
     es.dispatch("done", { reason: "augment-complete" });
     const strip = document.getElementById("scr-progress")!;
@@ -453,7 +465,7 @@ describe("lazy fold summaries", () => {
   }
 
   test("first fold-close posts /fold-summary and renders the response", async () => {
-    bootViewer(dataWithFold());
+    await bootViewer(dataWithFold());
     expandHunk();
     queueFetchResponse({
       status: 200,
@@ -484,7 +496,7 @@ describe("lazy fold summaries", () => {
   });
 
   test("repeated fold-close while a request is in flight does not re-fire", async () => {
-    bootViewer(dataWithFold());
+    await bootViewer(dataWithFold());
     expandHunk();
     let resolveFetch: (v: { status: number; body: unknown }) => void = () => undefined;
     // Override the per-test mock with a manually-resolved promise so we
@@ -513,7 +525,7 @@ describe("lazy fold summaries", () => {
   });
 
   test("pure-deletion fold posts side=old with old-image coordinates", async () => {
-    bootViewer(makeData({
+    await bootViewer(makeData({
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
@@ -558,7 +570,7 @@ describe("lazy fold summaries", () => {
     // hunk lives inside the body, and the body continues for one
     // more indented line. Folding the def-block should collapse
     // rows from both stretches.
-    bootViewer(makeData({
+    await bootViewer(makeData({
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
@@ -631,7 +643,7 @@ describe("lazy fold summaries", () => {
     // hunk. The first 3 lines form a `def foo():` body — the
     // expand-context path should detect that as an indent fold and
     // attach a chevron the reviewer can click to summarise.
-    bootViewer(makeData({
+    await bootViewer(makeData({
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
@@ -689,7 +701,7 @@ describe("lazy fold summaries", () => {
     // subscriber after handling the POST — including the tab that
     // issued it. Re-rendering the hunk on receipt would rebuild the
     // fold in its default-open state and clobber the user's collapse.
-    bootViewer(dataWithFold());
+    await bootViewer(dataWithFold());
     expandHunk();
     queueFetchResponse({
       status: 200,
@@ -714,7 +726,7 @@ describe("lazy fold summaries", () => {
   });
 
   test("failure response surfaces the retry copy", async () => {
-    bootViewer(dataWithFold());
+    await bootViewer(dataWithFold());
     expandHunk();
     queueFetchResponse({ status: 500, body: { error: "boom" } });
 
@@ -730,7 +742,7 @@ describe("lazy fold summaries", () => {
   });
 
   test("fold-summary SSE event patches DATA + DOM in tabs that did not request it", async () => {
-    bootViewer(dataWithFold());
+    await bootViewer(dataWithFold());
     expandHunk();
     const es = lastEventSource();
     es.dispatch("fold-summary", {

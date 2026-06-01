@@ -196,64 +196,6 @@ def augment(
 
 
 @app.command()
-def render(
-    run_dir: Path = typer.Argument(...),
-    out: Path = typer.Option(None, help="Output HTML path (default <run_dir>/review.html)."),
-) -> None:
-    """Render an augmented run directory as a self-contained HTML viewer."""
-    from .viewer.render_html import render_run_dir
-
-    out_path = out or (run_dir / "review.html")
-    render_run_dir(run_dir, out_path)
-    typer.echo(f"wrote {out_path}")
-
-
-@app.command()
-def run(
-    pr_url: str = typer.Argument(...),
-    runs_root: Path = typer.Option(
-        None, help="Root directory for run artefacts (default: ~/.cache/scr/runs/<repo-fingerprint>/)."
-    ),
-    model: str = typer.Option(None),
-    concurrency: int = typer.Option(8),
-    no_cache: bool = typer.Option(False),
-    backend: str = typer.Option(None),
-    verbose: bool = typer.Option(False, "--verbose", "-v"),
-) -> None:
-    """Fetch + augment + render in one shot."""
-    _configure_logging(verbose)
-    from .augment.pipeline import augment_run_dir
-    from .augment.prompts import PROMPT_VERSION
-    from .fetch import GhFetchError, preflight_gh
-    from .viewer.render_html import render_run_dir
-
-    backend = _CONFIG.resolve_backend(backend)
-    model = _CONFIG.resolve_model(backend=backend, cli_value=model)
-    runs_root = runs_root or _default_runs_root()
-    try:
-        preflight_gh()
-        fetch_result = fetch_pr(pr_url, runs_root)
-    except GhFetchError as e:
-        typer.echo(f"scr: {e}", err=True)
-        raise typer.Exit(code=2)
-    cache = None if no_cache else CacheStore(prompt_version=PROMPT_VERSION)
-    client = _select_client(backend, model=model)
-    asyncio.run(
-        augment_run_dir(
-            fetch_result.run_dir,
-            model=model,
-            concurrency=concurrency,
-            cache=cache,
-            client=client,
-            show_progress=not verbose,
-        )
-    )
-    out = fetch_result.run_dir / "review.html"
-    render_run_dir(fetch_result.run_dir, out)
-    typer.echo(f"done: {out}")
-
-
-@app.command()
 def strip(
     augmented: Path = typer.Argument(..., help="Path to an augmented.diff file."),
 ) -> None:

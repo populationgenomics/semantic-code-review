@@ -3,8 +3,7 @@
 // Owns the #group-sidebar DOM tree and the multi-axis state behind
 // it: a Themes axis populated by the overview LLM pass (refreshed
 // in place when the `overview` SSE event arrives) and a Files axis
-// derived deterministically from DATA.files. Exposes a small
-// runtime surface on window.ScrSidebar.
+// derived deterministically from DATA.files.
 //
 // Filter semantics: one active pill at a time across all axes;
 // clicking a pill toggles visibility on the per-file body via
@@ -12,9 +11,6 @@
 // themes axis (every hunk lives in a file, so the files axis has
 // no useful "ungrouped" signal). Active pill is persisted in
 // localStorage as `<axis>:<id>`.
-//
-// Compiled by tsc to `sidebar.js`. Concatenated into the rendered
-// HTML by `render_html.py`; viewer.js calls into window.ScrSidebar.
 
 import { Annotations } from "./annotations";
 

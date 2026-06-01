@@ -6,9 +6,6 @@
 // click-handler opens an inline editor, save persists the comment,
 // re-rendering re-attaches the existing rows via renderAll().
 //
-// Compiled by tsc to `comments.js`. Concatenated into the rendered
-// HTML by `render_html.py`; viewer.js calls into window.ScrReviewerComments.
-
 import { Annotations, type AnnotationHandle } from "./annotations";
 
 // --- State ---------------------------------------------------------------
@@ -16,10 +13,11 @@ import { Annotations, type AnnotationHandle } from "./annotations";
 let _lsKey = "scr-comments:local";
 const _comments: Record<string, ReviewerComment> = Object.create(null);
 
-function _sessionEndpoint(): string {
-  if (typeof document === "undefined") return "";
+function _sessionEndpoint(): string | null {
+  if (typeof document === "undefined") return null;
   const m = document.querySelector('meta[name="scr-session-endpoint"]');
-  return m ? (m.getAttribute("content") || "") : "";
+  if (!m) return null;
+  return m.getAttribute("content") || "";  // "" = same origin
 }
 
 function _el(tag: string, className: string | null, text?: string): HTMLElement {
@@ -72,7 +70,7 @@ function renderAll(): void {
 
 function _storageLoad(): void {
   const endpoint = _sessionEndpoint();
-  if (endpoint) {
+  if (endpoint !== null) {
     fetch(`${endpoint}/comments`)
       .then((r) => (r.ok ? r.json() : { comments: [] as ReviewerComment[] }))
       .then((d: { comments?: ReviewerComment[] }) => {
@@ -92,7 +90,7 @@ function _storageLoad(): void {
 }
 
 function _storageFlush(): void {
-  if (_sessionEndpoint()) return;  // server round-trips per-mutation
+  if (_sessionEndpoint() !== null) return;  // server round-trips per-mutation
   const payload = { comments: Object.values(_comments) };
   try { localStorage.setItem(_lsKey, JSON.stringify(payload)); } catch (_) { /* ignore */ }
 }
@@ -100,7 +98,7 @@ function _storageFlush(): void {
 function _save(c: ReviewerComment): Promise<ReviewerComment | null> {
   _comments[c.id] = c;
   const endpoint = _sessionEndpoint();
-  if (endpoint) {
+  if (endpoint !== null) {
     return fetch(`${endpoint}/comments`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -116,7 +114,7 @@ function _save(c: ReviewerComment): Promise<ReviewerComment | null> {
 function _delete(id: string): Promise<void> {
   delete _comments[id];
   const endpoint = _sessionEndpoint();
-  if (endpoint) {
+  if (endpoint !== null) {
     return fetch(`${endpoint}/comments/${encodeURIComponent(id)}`, {
       method: "DELETE",
     }).then(() => undefined).catch(() => undefined);
