@@ -17,11 +17,14 @@ preflight `gh` once at the CLI boundary (`fetch.preflight_gh`).
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from dataclasses import dataclass
 from typing import Any, Iterable
 
 from .. import git_ops
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -51,10 +54,33 @@ class OpenPR:
 
 @dataclass(frozen=True)
 class PostedComment:
-    path: str
-    line: int
-    side: str    # "LEFT" or "RIGHT"
+    """One inline review comment in GitHub's expected shape.
+
+    Either *anchored* — ``path`` + ``line`` + ``side`` set, ``in_reply_to``
+    is None — for a new thread, or a *reply* — ``in_reply_to`` set,
+    anchor fields None — to an existing upstream comment. GitHub's
+    `POST /pulls/{n}/reviews` accepts both shapes interchangeably in
+    one ``comments`` array.
+    """
     body: str
+    path: str | None = None
+    line: int | None = None
+    side: str | None = None  # "LEFT" or "RIGHT" for anchored comments.
+    in_reply_to: int | None = None
+
+    @property
+    def is_reply(self) -> bool:
+        return self.in_reply_to is not None
+
+    def to_payload(self) -> dict[str, Any]:
+        if self.in_reply_to is not None:
+            return {"in_reply_to": self.in_reply_to, "body": self.body}
+        return {
+            "path": self.path,
+            "line": self.line,
+            "side": self.side,
+            "body": self.body,
+        }
 
 
 @dataclass(frozen=True)
@@ -157,25 +183,77 @@ def map_side(viewer_side: str) -> str:
     raise ValueError(f"unknown viewer side: {viewer_side!r}")
 
 
+def _github_db_id(comment_id: Any) -> int | None:
+    """Extract the upstream databaseId from an ingest-side comment id.
+
+    Ingested ids look like ``"gh-3331909762"`` — the integer suffix is
+    GitHub's review-comment databaseId. Returns None for ids that
+    don't fit (a local-id reply target, garbage, etc.) so the caller
+    can drop the comment with a warning rather than crash.
+    """
+    if not isinstance(comment_id, str) or not comment_id.startswith("gh-"):
+        return None
+    try:
+        return int(comment_id[3:])
+    except ValueError:
+        return None
+
+
 def comments_to_github(comments: Iterable[Any]) -> list[PostedComment]:
     """Map the viewer's `Comment` objects (or dicts) into the shape
-    GitHub's review-comments API accepts. We use the line+side form,
-    which is the recommended modern variant.
+    GitHub's review-comments API accepts.
+
+    Filters and shapes in one pass:
+
+    - Comments whose ``source`` is anything other than ``"local"``
+      drop out. Ingested github comments are already on GitHub — re-
+      posting would create duplicates, which is the bug this filter
+      exists to prevent.
+    - Comments with an ``in_reply_to_id`` pointing at an ingested
+      parent (``"gh-<databaseId>"``) become reply entries
+      (``in_reply_to`` + ``body``), not new anchored threads.
+    - Local replies to other local comments are skipped with a warning
+      — the parent doesn't exist on GitHub yet, so a one-shot review
+      can't thread to it.
+    - Anything missing the basic shape (no body, no path on a non-reply)
+      is dropped quietly.
     """
     out: list[PostedComment] = []
+
+    def _get(c: Any, key: str) -> Any:
+        return c.get(key) if isinstance(c, dict) else getattr(c, key, None)
+
     for c in comments:
-        path = getattr(c, "file", None) if not isinstance(c, dict) else c.get("file")
-        side = getattr(c, "side", None) if not isinstance(c, dict) else c.get("side")
-        line = getattr(c, "line", None) if not isinstance(c, dict) else c.get("line")
-        body = getattr(c, "body", None) if not isinstance(c, dict) else c.get("body")
-        if not path or side is None or line is None or not body:
-            # Dropped: a malformed entry shouldn't sink the whole post.
+        source = _get(c, "source") or "local"
+        if source != "local":
+            continue
+        body = _get(c, "body")
+        if not body:
+            continue
+        body_str = str(body)
+        parent = _get(c, "in_reply_to_id")
+        if parent:
+            db_id = _github_db_id(parent)
+            if db_id is None:
+                log.warning(
+                    "skipping local reply with non-github parent %r — "
+                    "the bulk-review endpoint can't thread to a "
+                    "comment that doesn't exist upstream yet",
+                    parent,
+                )
+                continue
+            out.append(PostedComment(body=body_str, in_reply_to=db_id))
+            continue
+        path = _get(c, "file")
+        side = _get(c, "side")
+        line = _get(c, "line")
+        if not path or side is None or line is None:
             continue
         out.append(PostedComment(
+            body=body_str,
             path=str(path),
             line=int(line),
             side=map_side(str(side)),
-            body=str(body),
         ))
     return out
 
@@ -193,18 +271,24 @@ def post_inline_review(
     it. Always `event = "COMMENT"` for now (verdicts stay on
     github.com — see plan non-goals); the parameter exists so future
     flags can flip it without touching this signature.
+
+    Accepts either raw viewer Comments (mapped + filtered via
+    :func:`comments_to_github`) or already-mapped ``PostedComment``
+    instances. The caller flow is typically: map first to count
+    threads vs replies for the confirmation prompt, then hand the
+    same list here.
     """
-    posted = comments_to_github(comments)
+    if all(isinstance(c, PostedComment) for c in comments):
+        posted = list(comments)
+    else:
+        posted = comments_to_github(comments)
     if not posted:
         raise GhError("no postable comments after mapping (all entries malformed?)")
     payload = {
         "commit_id": head_sha,
         "event": event,
         "body": body,
-        "comments": [
-            {"path": c.path, "line": c.line, "side": c.side, "body": c.body}
-            for c in posted
-        ],
+        "comments": [c.to_payload() for c in posted],
     }
     rc, stdout, stderr = git_ops.gh_capture(
         "api", "-X", "POST",

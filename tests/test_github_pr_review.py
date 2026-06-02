@@ -58,6 +58,106 @@ def test_comments_to_github_drops_malformed_dict() -> None:
     assert out[0].body == "ok"
 
 
+def test_comments_to_github_filters_ingested_comments() -> None:
+    """Ingested github comments are already upstream — re-posting would
+    duplicate them. They must drop out of the mapper."""
+    cs = [
+        _comment(id="gh-123", source="github", author="alice", body="upstream"),
+        _comment(id="local-1", source="local", body="new local"),
+    ]
+    out = gh.comments_to_github(cs)
+    assert [p.body for p in out] == ["new local"]
+
+
+def test_comments_to_github_emits_reply_payload_for_local_reply_to_gh_parent() -> None:
+    """A local comment with in_reply_to_id pointing at an ingested
+    comment becomes a reply payload (in_reply_to + body) rather than
+    a new anchored thread."""
+    cs = [
+        _comment(
+            id="local-1", source="local", body="reply text",
+            in_reply_to_id="gh-3331909762",
+        ),
+    ]
+    out = gh.comments_to_github(cs)
+    assert len(out) == 1
+    p = out[0]
+    assert p.is_reply
+    assert p.in_reply_to == 3331909762
+    assert p.body == "reply text"
+    # Reply payload doesn't carry anchor fields.
+    assert p.path is None and p.line is None and p.side is None
+    assert p.to_payload() == {"in_reply_to": 3331909762, "body": "reply text"}
+
+
+def test_comments_to_github_skips_local_reply_to_local_parent() -> None:
+    """A local reply to another local comment can't post in a single
+    review (the parent doesn't exist on GitHub yet) — drop with a
+    log warning rather than fail the whole batch."""
+    cs = [
+        _comment(id="local-root", source="local", body="root"),
+        _comment(
+            id="local-reply", source="local", body="reply",
+            in_reply_to_id="local-root",
+        ),
+    ]
+    out = gh.comments_to_github(cs)
+    assert len(out) == 1
+    assert out[0].body == "root"
+    assert out[0].is_reply is False
+
+
+def test_post_inline_review_serialises_mixed_threads_and_replies(monkeypatch) -> None:
+    """Anchored threads and replies coexist in the same review payload —
+    the comments[] array contains both shapes."""
+    captured: dict = {}
+
+    def fake_run(cmd, *, input=None, capture_output=False, text=False, check=False, **kw):
+        captured["cmd"] = cmd
+        captured["input"] = input
+        return _FakeProc(stdout=json.dumps({"id": 1, "html_url": ""}))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    cs = [
+        _comment(id="local-1", source="local", body="new thread"),
+        _comment(
+            id="local-2", source="local", body="reply",
+            in_reply_to_id="gh-111",
+        ),
+        _comment(id="gh-222", source="github", body="should be filtered"),
+    ]
+    result = gh.post_inline_review("o/r", 1, "head", cs)
+    payload = json.loads(captured["input"])
+    assert payload["comments"] == [
+        {"path": "a.py", "line": 10, "side": "RIGHT", "body": "new thread"},
+        {"in_reply_to": 111, "body": "reply"},
+    ]
+    assert result.posted == 2
+
+
+def test_post_inline_review_accepts_already_mapped_PostedComments(monkeypatch) -> None:
+    """CLI maps once for the prompt count, then passes the mapped list
+    to post_inline_review — no double-filter, no surprise."""
+    captured: dict = {}
+
+    def fake_run(cmd, *, input=None, **kw):
+        captured["input"] = input
+        return _FakeProc(stdout=json.dumps({"id": 1, "html_url": ""}))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    posted = [
+        gh.PostedComment(body="hi", path="x.py", line=2, side="RIGHT"),
+        gh.PostedComment(body="ack", in_reply_to=99),
+    ]
+    result = gh.post_inline_review("o/r", 1, "head", posted)
+    payload = json.loads(captured["input"])
+    assert payload["comments"] == [
+        {"path": "x.py", "line": 2, "side": "RIGHT", "body": "hi"},
+        {"in_reply_to": 99, "body": "ack"},
+    ]
+    assert result.posted == 2
+
+
 # ---------------------------------------------------------------------------
 # post_inline_review argv shape
 # ---------------------------------------------------------------------------

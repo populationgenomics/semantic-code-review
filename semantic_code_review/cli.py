@@ -453,10 +453,31 @@ def pr(
         typer.echo("scr pr: meta.json is missing headRefOid; can't anchor review", err=True)
         raise typer.Exit(code=2)
 
+    # Map + filter once: ingested comments drop out, local replies to
+    # ingested threads become reply entries. The prompt + the post both
+    # work off this filtered list so the count we promise matches what
+    # we actually send.
+    from .review.github import comments_to_github
+    mapped = comments_to_github(result.comments)
+    if not mapped:
+        sys.stderr.write(
+            "scr pr: no new local comments to post; "
+            f"comments are in {run_dir / 'comments.json'}.\n"
+        )
+        raise typer.Exit(code=0 if result.clean else 2)
+    n_threads = sum(1 for c in mapped if not c.is_reply)
+    n_replies = len(mapped) - n_threads
+    descr_parts: list[str] = []
+    if n_threads:
+        descr_parts.append(f"{n_threads} new thread{'s' if n_threads != 1 else ''}")
+    if n_replies:
+        descr_parts.append(f"{n_replies} repl{'ies' if n_replies != 1 else 'y'}")
+    descr = " + ".join(descr_parts)
+
     if not yes:
         sys.stderr.write(
-            f"\nAbout to post {len(result.comments)} inline comment(s) as a "
-            f"COMMENT review on {repo}#{number} (commit {head_sha[:8]}…).\n"
+            f"\nAbout to post {descr} as a COMMENT review on "
+            f"{repo}#{number} (commit {head_sha[:8]}…).\n"
             f"Continue? [y/N] "
         )
         sys.stderr.flush()
@@ -470,7 +491,7 @@ def pr(
             raise typer.Exit(code=1)
 
     try:
-        post = post_inline_review(repo, number, head_sha, result.comments)
+        post = post_inline_review(repo, number, head_sha, mapped)
     except GhError as e:
         typer.echo(f"scr pr: posting failed: {e}", err=True)
         sys.stderr.write(
