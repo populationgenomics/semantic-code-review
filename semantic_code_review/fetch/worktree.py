@@ -28,7 +28,7 @@ def init_worktrees(run_dir: Path, ref: PRRef, base_sha: str, head_sha: str) -> t
     if not repo_git.exists():
         repo_git.mkdir(parents=True, exist_ok=True)
         git_ops.init_dir(repo_git)
-        git_ops.remote_add(repo_git, "origin", ref.clone_url)
+        git_ops.git(repo_git, "remote", "add", "origin", ref.clone_url)
         git_ops.fetch_depth1(repo_git, base_sha, head_sha)
 
     if not base.exists():

@@ -10,10 +10,13 @@ All other modules call into this one rather than building their own
 Two layers:
 
 * Generic escape hatches `git()`, `gh()`, `git_capture()`, `gh_capture()`
-  for one-offs.
-* Named helpers (`rev_parse`, `merge_base`, `worktree_add`, `gh_pr_view`,
-  ...) for the common patterns. Add new helpers when a third call site
-  shows up — until then, the escape hatch is fine.
+  for one-offs. These are the canonical mock points — even when a
+  caller could write its own ``subprocess.run``, it shouldn't.
+* Named helpers (`rev_parse`, `grep`, `worktree_add`, `preflight_gh`,
+  ...) for invocation patterns with hidden ceremony or invariants
+  worth a name (tag-peeling, rc=1-means-no-match, cwd-safety, etc.).
+  Pure pass-throughs that just rename arguments don't earn a helper —
+  callers reach for the runner directly.
 
 Wire-format models (PR URL parsing, JSON field lists) stay with their
 domain modules; this file only owns the subprocess invocations.
@@ -21,7 +24,6 @@ domain modules; this file only owns the subprocess invocations.
 
 from __future__ import annotations
 
-import json
 import re
 import shutil
 import subprocess
@@ -45,15 +47,8 @@ class GhMissingError(GhError):
     """
 
 
-_GH_VERSION_RE = re.compile(r"gh version (\d+)\.(\d+)\.(\d+)")
-# baseRefOid / headRefOid landed in gh 2.21 (Jan 2023). Older releases
-# reject them at flag-parse time, so we refuse to start.
-_MIN_GH_VERSION_TUPLE = (2, 21, 0)
-MIN_GH_VERSION = "2.21"
-
-
 # ---------------------------------------------------------------------------
-# Generic git/gh runners
+# Generic git/gh runners — the canonical mock points
 # ---------------------------------------------------------------------------
 
 
@@ -98,8 +93,7 @@ def gh_capture(*args: str, input: str | None = None) -> tuple[int, str, str]:
     """Run ``gh <args>``; return ``(returncode, stdout, stderr)``.
 
     Used by callers that translate specific stderr messages into
-    domain errors (e.g. fetch_pr_meta's "Unknown JSON field" → upgrade
-    hint).
+    domain errors (e.g. fetch_pr_meta).
     """
     proc = subprocess.run(
         ["gh", *args],
@@ -109,44 +103,17 @@ def gh_capture(*args: str, input: str | None = None) -> tuple[int, str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Higher-level git helpers
+# Named helpers — invocation patterns with hidden ceremony
 # ---------------------------------------------------------------------------
 
 
 def rev_parse(cwd: Path, ref: str) -> str:
-    """Resolve ``ref`` to a commit SHA against the repo at ``cwd``."""
-    return git(cwd, "rev-parse", "--verify", f"{ref}^{{commit}}").strip()
+    """Resolve ``ref`` to a commit SHA against the repo at ``cwd``.
 
-
-def merge_base(cwd: Path, a: str, b: str) -> str:
-    return git(cwd, "merge-base", a, b).strip()
-
-
-def diff(cwd: Path, *args: str) -> str:
-    return git(cwd, "diff", *args)
-
-
-def status_porcelain(cwd: Path) -> str:
-    return git(cwd, "status", "--porcelain")
-
-
-def common_dir() -> str:
-    """Return the resolved ``--git-common-dir`` for the current cwd.
-
-    Used by `paths.default_runs_root` to fingerprint the repo. Worktrees
-    of the same repo share a common dir; different repos differ.
+    ``--verify`` + ``^{commit}`` peels tags and rejects non-commit
+    objects — both invariants callers shouldn't have to remember.
     """
-    return git(None, "rev-parse", "--git-common-dir").strip()
-
-
-def show(repo_git: Path, sha: str, path: str) -> str:
-    """``git show <sha>:<path>``. ``repo_git`` is the .git dir cwd."""
-    return git(repo_git, "show", f"{sha}:{path}")
-
-
-def log_oneline(repo_git: Path, path: str, limit: int) -> str:
-    """``git log -n<limit> --oneline -- <path>``."""
-    return git(repo_git, "log", f"-n{limit}", "--oneline", "--", path)
+    return git(cwd, "rev-parse", "--verify", f"{ref}^{{commit}}").strip()
 
 
 def grep(cwd: Path, pattern: str, path_glob: str | None, max_hits: int) -> str:
@@ -170,10 +137,6 @@ def init_dir(target: Path) -> None:
     git(target.parent, "init", str(target))
 
 
-def remote_add(cwd: Path, name: str, url: str) -> None:
-    git(cwd, "remote", "add", name, url)
-
-
 def fetch_depth1(cwd: Path, *refs: str, remote: str = "origin") -> None:
     """Shallow-fetch one or more refs/SHAs. GitHub allows fetching
     arbitrary reachable SHAs; we don't pull history."""
@@ -186,19 +149,14 @@ def worktree_add(repo_git: Path, path: Path, sha: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# gh helpers
+# gh preflight
 # ---------------------------------------------------------------------------
 
-
-def gh_path() -> str:
-    """Resolve the ``gh`` binary on PATH or raise :class:`GhMissingError`."""
-    path = shutil.which("gh")
-    if not path:
-        raise GhMissingError(
-            "`gh` (GitHub CLI) not found on PATH. Install it from "
-            "https://cli.github.com/ or via your package manager."
-        )
-    return path
+# baseRefOid / headRefOid landed in gh 2.21 (Jan 2023). Older releases
+# reject them at flag-parse time, so we refuse to start.
+_MIN_GH_VERSION_TUPLE = (2, 21, 0)
+_MIN_GH_VERSION_STR = ".".join(str(x) for x in _MIN_GH_VERSION_TUPLE[:2])
+_GH_VERSION_RE = re.compile(r"gh version (\d+)\.(\d+)\.(\d+)")
 
 
 def preflight_gh() -> str:
@@ -208,8 +166,18 @@ def preflight_gh() -> str:
     cases so a single catch handler covers all gh-environment errors.
     Unparseable ``--version`` output does not block: a real failure
     later will surface its own error.
+
+    Callers invoke this exactly once per gh-using command. The version
+    requirement is asserted here and nowhere else — downstream callers
+    trust that any preflighted ``gh`` can serve the requests they
+    make.
     """
-    path = gh_path()
+    path = shutil.which("gh")
+    if not path:
+        raise GhMissingError(
+            "`gh` (GitHub CLI) not found on PATH. Install it from "
+            "https://cli.github.com/ or via your package manager."
+        )
     rc, stdout, stderr = gh_capture("--version")
     if rc != 0:
         msg = (stderr or stdout or "").strip()
@@ -222,39 +190,8 @@ def preflight_gh() -> str:
         version_str = ".".join(str(x) for x in ver)
         raise GhMissingError(
             f"gh {version_str} is too old for scr (need >= "
-            f"{MIN_GH_VERSION}, released Jan 2023). Upgrade gh — "
+            f"{_MIN_GH_VERSION_STR}, released Jan 2023). Upgrade gh — "
             f"`brew upgrade gh` on macOS, or see "
             f"https://cli.github.com/ for other platforms."
         )
     return path
-
-
-def gh_pr_view(repo: str, number: int, fields: list[str]) -> tuple[int, str, str]:
-    """``gh pr view <n> --repo <r> --json <fields>``."""
-    return gh_capture(
-        "pr", "view", str(number), "--repo", repo,
-        "--json", ",".join(fields),
-    )
-
-
-def gh_pr_diff(repo: str, number: int) -> tuple[int, str, str]:
-    return gh_capture("pr", "diff", str(number), "--repo", repo)
-
-
-def gh_pr_list(
-    repo: str, search: str, fields: list[str], limit: int = 100,
-) -> tuple[int, str, str]:
-    return gh_capture(
-        "pr", "list", "--repo", repo,
-        "--search", search,
-        "--json", ",".join(fields),
-        "--limit", str(limit),
-    )
-
-
-def gh_api_post(api_path: str, payload: dict) -> tuple[int, str, str]:
-    """POST a JSON payload to ``gh api <api_path>`` via stdin."""
-    return gh_capture(
-        "api", "-X", "POST", api_path, "--input", "-",
-        input=json.dumps(payload),
-    )

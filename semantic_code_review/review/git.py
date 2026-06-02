@@ -196,21 +196,21 @@ def _safe_rev_parse(cwd: Path, ref: str) -> str:
 
 def _safe_merge_base(cwd: Path, a: str, b: str) -> str:
     try:
-        return git_ops.merge_base(cwd, a, b)
+        return git_ops.git(cwd, "merge-base", a, b).strip()
     except git_ops.GitError as e:
         raise LocalDiffError(str(e)) from e
 
 
 def _safe_diff(cwd: Path, *args: str) -> str:
     try:
-        return git_ops.diff(cwd, *args)
+        return git_ops.git(cwd, "diff", *args)
     except git_ops.GitError as e:
         raise LocalDiffError(str(e)) from e
 
 
 def _safe_status(cwd: Path) -> str:
     try:
-        return git_ops.status_porcelain(cwd)
+        return git_ops.git(cwd, "status", "--porcelain")
     except git_ops.GitError as e:
         raise LocalDiffError(str(e)) from e
 

@@ -88,8 +88,11 @@ def list_review_requested_prs(repo: str) -> list[OpenPR]:
     `review-requested:@me` which is exactly the filter we want and
     keeps the auth/host story inside `gh`.
     """
-    rc, stdout, stderr = git_ops.gh_pr_list(
-        repo, "is:open review-requested:@me", _LIST_FIELDS, limit=100,
+    rc, stdout, stderr = git_ops.gh_capture(
+        "pr", "list", "--repo", repo,
+        "--search", "is:open review-requested:@me",
+        "--json", ",".join(_LIST_FIELDS),
+        "--limit", "100",
     )
     if rc != 0:
         raise GhError(f"`gh pr list` failed: {stderr.strip() or stdout.strip()}")
@@ -203,8 +206,11 @@ def post_inline_review(
             for c in posted
         ],
     }
-    rc, stdout, stderr = git_ops.gh_api_post(
-        f"repos/{repo}/pulls/{number}/reviews", payload,
+    rc, stdout, stderr = git_ops.gh_capture(
+        "api", "-X", "POST",
+        f"repos/{repo}/pulls/{number}/reviews",
+        "--input", "-",
+        input=json.dumps(payload),
     )
     if rc != 0:
         # gh's stderr is usually informative; pass it through verbatim.

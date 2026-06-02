@@ -58,7 +58,9 @@ def default_runs_root() -> Path:
         os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")
     ) / "scr" / "runs"
     try:
-        identity = str(Path(git_ops.common_dir()).resolve())
+        identity = str(Path(
+            git_ops.git(None, "rev-parse", "--git-common-dir").strip()
+        ).resolve())
     except (git_ops.GitError, FileNotFoundError):
         identity = str(Path.cwd().resolve())
     fp = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]

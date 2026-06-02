@@ -61,21 +61,6 @@ def _fake_run(stdout: str = "", stderr: str = "", returncode: int = 0):
     return runner
 
 
-def test_old_gh_unknown_field_translates_to_clear_message() -> None:
-    """Pre-2.21 gh rejects baseRefOid; we translate to a clear upgrade hint."""
-    ref = PRRef(owner="acme", repo="widgets", number=42)
-    fake = _fake_run(
-        stderr=(
-            'Unknown JSON field: "baseRefOid"\n'
-            'Available fields:\n  additions\n  assignees\n  ...\n'
-        ),
-        returncode=1,
-    )
-    with patch("semantic_code_review.git_ops.subprocess.run", side_effect=fake):
-        with pytest.raises(GhFetchError, match="gh is too old"):
-            fetch_pr_meta(ref)
-
-
 def test_other_gh_failures_pass_through() -> None:
     """Non-version errors (auth, network) keep their original stderr."""
     ref = PRRef(owner="acme", repo="widgets", number=42)

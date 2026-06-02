@@ -80,22 +80,22 @@ def preflight_gh() -> str:
 
 
 def fetch_pr_meta(ref: PRRef) -> dict:
-    rc, stdout, stderr = git_ops.gh_pr_view(ref.slug, ref.number, _PR_FIELDS)
+    rc, stdout, stderr = git_ops.gh_capture(
+        "pr", "view", str(ref.number), "--repo", ref.slug,
+        "--json", ",".join(_PR_FIELDS),
+    )
     if rc != 0:
-        msg = stderr.strip()
-        if "Unknown JSON field" in msg:
-            raise GhFetchError(
-                f"gh is too old to expose baseRefOid/headRefOid (need >= "
-                f"{git_ops.MIN_GH_VERSION}, released Jan 2023). Upgrade gh — "
-                f"`brew upgrade gh` on macOS, or see "
-                f"https://cli.github.com/ for other platforms."
-            )
-        raise GhFetchError(f"gh pr view failed: {msg}")
+        # preflight_gh is responsible for asserting a minimum gh
+        # version; anything that fails here is a per-call failure
+        # (auth, rate-limit, permissions), not an environment problem.
+        raise GhFetchError(f"gh pr view failed: {stderr.strip()}")
     return json.loads(stdout)
 
 
 def fetch_pr_diff(ref: PRRef) -> str:
-    rc, stdout, stderr = git_ops.gh_pr_diff(ref.slug, ref.number)
+    rc, stdout, stderr = git_ops.gh_capture(
+        "pr", "diff", str(ref.number), "--repo", ref.slug,
+    )
     if rc != 0:
         raise GhFetchError(f"gh pr diff failed: {stderr.strip()}")
     return stdout
@@ -103,7 +103,10 @@ def fetch_pr_diff(ref: PRRef) -> str:
 
 def fetch_pr_files(ref: PRRef) -> list[str]:
     """Return the list of changed file paths (post-image)."""
-    rc, stdout, stderr = git_ops.gh_pr_view(ref.slug, ref.number, ["files"])
+    rc, stdout, stderr = git_ops.gh_capture(
+        "pr", "view", str(ref.number), "--repo", ref.slug,
+        "--json", "files",
+    )
     if rc != 0:
         raise GhFetchError(f"gh pr view --json files failed: {stderr.strip()}")
     data = json.loads(stdout)

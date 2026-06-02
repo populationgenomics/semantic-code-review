@@ -170,7 +170,9 @@ class RepoTools:
             limit: Maximum commits to return.
         """
         try:
-            return _cap(git_ops.log_oneline(self.repo_git, path, limit))
+            return _cap(git_ops.git(
+                self.repo_git, "log", f"-n{limit}", "--oneline", "--", path,
+            ))
         except git_ops.GitError as e:
             return f"error: {e}"
 
