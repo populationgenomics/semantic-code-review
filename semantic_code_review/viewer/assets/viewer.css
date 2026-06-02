@@ -620,13 +620,10 @@ body {
   border-top: none;
   padding-top: 0;
 }
-.comment-thread-reply {
-  /* Indent replies so the parent/child relationship is visible at a
-   * glance. The border-left mirrors the GitHub thread connector. */
-  margin-left: 16px;
-  padding-left: 8px;
-  border-left: 2px solid var(--border);
-}
+/* Replies aren't visually indented — the thread is a flat stack and
+ * the divider between entries is enough. (The .comment-thread-reply
+ * class still attaches for any future treatment that wants to target
+ * replies specifically.) */
 .comment-thread-actions {
   display: flex;
   justify-content: flex-end;
