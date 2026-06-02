@@ -183,6 +183,55 @@ def map_side(viewer_side: str) -> str:
     raise ValueError(f"unknown viewer side: {viewer_side!r}")
 
 
+def _post_review_error(rc: int, stdout: str, stderr: str) -> "GhError":
+    """Build a `GhError` from a failed gh-api POST.
+
+    GitHub puts the actual error JSON in stdout; gh wraps it with a
+    short ``gh: <HTTP status>`` line on stderr. Both alone are useless
+    — stderr just says "Unprocessable Entity", stdout's a JSON blob.
+    We parse the body so the user sees the *real* reason ("User can
+    only have one pending review per pull request"), and special-case
+    that one with a fix hint because it's by far the most common
+    foot-gun on first use.
+    """
+    detail = stderr.strip()
+    body_text = stdout.strip()
+    parsed_msg: str | None = None
+    if body_text:
+        try:
+            body = json.loads(body_text)
+        except ValueError:
+            body = None
+        if isinstance(body, dict):
+            message = str(body.get("message") or "").strip()
+            errors = body.get("errors") or []
+            err_msg = ""
+            if isinstance(errors, list):
+                err_msg = "; ".join(
+                    e.get("message") if isinstance(e, dict) and e.get("message") else str(e)
+                    for e in errors
+                )
+            if message and err_msg:
+                parsed_msg = f"{message}: {err_msg}"
+            elif message:
+                parsed_msg = message
+            elif err_msg:
+                parsed_msg = err_msg
+    if parsed_msg:
+        detail = f"{detail} — {parsed_msg}" if detail else parsed_msg
+    elif body_text and body_text not in detail:
+        detail = f"{detail}\n{body_text}" if detail else body_text
+
+    msg = f"`gh api` POST review failed (exit {rc}): {detail}"
+    if "one pending review" in (parsed_msg or "").lower():
+        msg += (
+            "\nHint: you have an unsubmitted draft review on this PR. "
+            "Open the PR's Files tab on github.com and either submit "
+            "or delete the pending review, then re-run."
+        )
+    return GhError(msg)
+
+
 def _github_db_id(comment_id: Any) -> int | None:
     """Extract the upstream databaseId from an ingest-side comment id.
 
@@ -297,11 +346,7 @@ def post_inline_review(
         input=json.dumps(payload),
     )
     if rc != 0:
-        # gh's stderr is usually informative; pass it through verbatim.
-        raise GhError(
-            f"`gh api` POST review failed (exit {rc}): "
-            f"{stderr.strip() or stdout.strip()}"
-        )
+        raise _post_review_error(rc, stdout, stderr)
     response = json.loads(stdout or "{}")
     return PostResult(
         review_id=int(response.get("id", 0)),

@@ -225,6 +225,42 @@ def test_post_inline_review_propagates_gh_failure(monkeypatch) -> None:
     assert "422" in str(exc.value)
 
 
+def test_post_inline_review_surfaces_github_body_message(monkeypatch) -> None:
+    """gh writes the response body to stdout on error; the wrapper
+    parses it so the user sees the real cause instead of just the
+    gh-side 'Unprocessable Entity' summary."""
+    body = json.dumps({
+        "message": "Validation Failed",
+        "errors": [{"message": "Line 5 must be part of the diff hunk"}],
+    })
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _FakeProc(
+        stdout=body, stderr="gh: Unprocessable Entity (HTTP 422)", returncode=1,
+    ))
+    with pytest.raises(gh.GhError) as exc:
+        gh.post_inline_review("o/r", 1, "abc", [_comment()])
+    text = str(exc.value)
+    assert "Validation Failed" in text
+    assert "Line 5 must be part of the diff hunk" in text
+
+
+def test_post_inline_review_hints_at_pending_draft_review(monkeypatch) -> None:
+    """The single most common foot-gun: a draft review left on
+    github.com blocks the bulk POST. Surface the fix path."""
+    body = json.dumps({
+        "message": "Unprocessable Entity",
+        "errors": ["User can only have one pending review per pull request"],
+        "status": "422",
+    })
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _FakeProc(
+        stdout=body, stderr="gh: Unprocessable Entity (HTTP 422)", returncode=1,
+    ))
+    with pytest.raises(gh.GhError) as exc:
+        gh.post_inline_review("o/r", 1, "abc", [_comment()])
+    text = str(exc.value)
+    assert "one pending review per pull request" in text
+    assert "submit or delete the pending review" in text.lower()
+
+
 # ---------------------------------------------------------------------------
 # list_review_requested_prs
 # ---------------------------------------------------------------------------
