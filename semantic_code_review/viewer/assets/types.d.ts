@@ -277,4 +277,21 @@ interface ReviewerComment {
   body: string;
   created_at: number;
   updated_at: number;
+  /** Where the comment came from. "local" → authored in this session
+   *  (editable). "github" → ingested from the PR (read-only). */
+  source?: "local" | "github";
+  /** Display name of the author. Null for local comments (the
+   *  reviewer is implicit). */
+  author?: string | null;
+  author_avatar_url?: string | null;
+  /** Parent comment id when this is a reply within a thread. */
+  in_reply_to_id?: string | null;
+  /** Upstream commit SHA the comment was anchored to. May predate
+   *  the run's head_sha when the PR has advanced since. */
+  commit_id?: string | null;
+  /** Permalink to the comment on the upstream provider. */
+  html_url?: string | null;
+  /** Provider-rendered HTML of the body. When present the viewer
+   *  injects this verbatim instead of treating `body` as markdown. */
+  body_html?: string | null;
 }

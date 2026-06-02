@@ -8,9 +8,12 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+
+CommentSource = Literal["local", "github"]
 
 
 class Comment(BaseModel):
@@ -21,6 +24,26 @@ class Comment(BaseModel):
     body: str
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
+    # Provenance + threading. All optional; absent on session-local comments
+    # so the on-disk format stays backwards-compatible with older runs.
+    source: CommentSource = "local"
+    author: str | None = None
+    author_avatar_url: str | None = None
+    in_reply_to_id: str | None = None
+    # The commit SHA the comment was anchored to upstream. May not match the
+    # run's head_sha if upstream advanced after the comment was left — the
+    # viewer surfaces the comment at (file, side, line) regardless.
+    commit_id: str | None = None
+    html_url: str | None = None
+    # GitHub-rendered body. When present the viewer prefers it over `body`
+    # so we don't ship a markdown parser to the client.
+    body_html: str | None = None
+
+    @property
+    def is_writable(self) -> bool:
+        """True iff this run owns the comment — i.e. the server may
+        mutate or delete it. Ingested comments stay read-only."""
+        return self.source == "local"
 
 
 class CommentStore:
@@ -102,7 +125,10 @@ def format_markdown(comments: list[Comment], *, run_slug: str = "") -> str:
         out.append("# Review comments")
     out.append("")
     for c in comments:
-        out.append(f"## {c.file}:{c.line} ({c.side})")
+        header = f"## {c.file}:{c.line} ({c.side})"
+        if c.author and c.source != "local":
+            header += f" — @{c.author}"
+        out.append(header)
         for line in c.body.splitlines() or [""]:
             out.append(f"> {line}" if line else ">")
         out.append("")
