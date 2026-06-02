@@ -549,6 +549,70 @@ body {
 }
 .comment-body { white-space: pre-wrap; font-size: 100%; }
 
+/* Header strip on ingested comments: avatar, @author, permalink. Pure
+ * local comments don't get a header (no `author`), so this only shows
+ * up on PR-sourced rows. */
+.comment-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.comment-avatar {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: block;
+}
+.comment-author { font-weight: 600; color: var(--fg); }
+.comment-permalink {
+  margin-left: auto;
+  text-decoration: none;
+  color: var(--fg-muted);
+}
+.comment-permalink:hover { color: var(--accent); }
+
+/* GitHub-rendered body: drop the pre-wrap white-space rule so block
+ * elements (<p>, <pre>, <ul>) lay out naturally. */
+.comment-body.comment-body-html { white-space: normal; }
+.comment-body.comment-body-html p { margin: 0 0 6px; }
+.comment-body.comment-body-html p:last-child { margin-bottom: 0; }
+.comment-body.comment-body-html pre {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 4px 6px;
+  overflow-x: auto;
+  font-size: 12px;
+}
+.comment-body.comment-body-html code {
+  font-family: var(--mono);
+  background: var(--bg-panel);
+  padding: 0 3px;
+  border-radius: 2px;
+}
+.comment-body.comment-body-html pre code {
+  background: transparent;
+  padding: 0;
+}
+.comment-body.comment-body-html blockquote {
+  margin: 0 0 6px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+  color: var(--fg-muted);
+}
+.comment-body.comment-body-html a { color: var(--accent); }
+.comment-body.comment-body-html img { max-width: 100%; }
+
+/* Replies stack under their parent at the same anchor — indent slightly
+ * so the thread structure reads. */
+.diff .annot-comment-reply .annot-box {
+  margin-left: 18px;
+  border-left-color: var(--fg-muted);
+}
+
 /* The comment editor should not inherit the annot-box width/height
  * clamps — it grows freely with the user's text. */
 .diff .annot-editor .annot-box.comment-editor-box {

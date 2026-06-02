@@ -181,17 +181,60 @@ function _openEditor({ rowEl, side, line, file, existing }: EditorOpts): void {
   });
 }
 
+function _isIngested(comment: ReviewerComment): boolean {
+  return (comment.source || "local") !== "local";
+}
+
 function _buildReviewerCommentRow(comment: ReviewerComment, anchorRowEl: HTMLElement): AnnotationHandle {
+  const ingested = _isIngested(comment);
+
   const bodyWrap = _el("div", "comment-display-body");
+  if (comment.author) {
+    const header = _el("div", "comment-header");
+    if (comment.author_avatar_url) {
+      const avatar = document.createElement("img");
+      avatar.className = "comment-avatar";
+      avatar.src = comment.author_avatar_url;
+      avatar.alt = "";
+      avatar.referrerPolicy = "no-referrer";
+      header.appendChild(avatar);
+    }
+    header.appendChild(_el("span", "comment-author", `@${comment.author}`));
+    if (comment.html_url) {
+      const link = document.createElement("a");
+      link.className = "comment-permalink";
+      link.href = comment.html_url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.title = "open on GitHub";
+      link.textContent = "↗";  // ↗
+      header.appendChild(link);
+    }
+    bodyWrap.appendChild(header);
+  }
+
   const body = _el("div", "comment-body");
-  body.textContent = comment.body;
+  if (comment.body_html) {
+    // Trusted upstream rendering (the API call is authenticated as the
+    // user and goes through their own gh CLI). Inject verbatim rather
+    // than ship a markdown parser to the client.
+    body.classList.add("comment-body-html");
+    body.innerHTML = comment.body_html;
+  } else {
+    body.textContent = comment.body;
+  }
   bodyWrap.appendChild(body);
-  const bar = _el("div", "comment-actions");
-  const edit = _el("button", "comment-btn comment-btn-edit", "edit");
-  const del = _el("button", "comment-btn comment-btn-del", "delete");
-  bar.appendChild(edit);
-  bar.appendChild(del);
-  bodyWrap.appendChild(bar);
+
+  let editBtn: HTMLElement | null = null;
+  let delBtn: HTMLElement | null = null;
+  if (!ingested) {
+    const bar = _el("div", "comment-actions");
+    editBtn = _el("button", "comment-btn comment-btn-edit", "edit");
+    delBtn = _el("button", "comment-btn comment-btn-del", "delete");
+    bar.appendChild(editBtn);
+    bar.appendChild(delBtn);
+    bodyWrap.appendChild(bar);
+  }
 
   const handle = Annotations.attach({
     anchor: anchorRowEl,
@@ -200,23 +243,27 @@ function _buildReviewerCommentRow(comment: ReviewerComment, anchorRowEl: HTMLEle
     content: bodyWrap,
     onInsert: (elRoot) => {
       elRoot.dataset.commentId = comment.id;
+      if (ingested) elRoot.classList.add("annot-comment-ingested");
+      if (comment.in_reply_to_id) elRoot.classList.add("annot-comment-reply");
       const box = elRoot.querySelector(".annot-box");
       if (box) box.classList.add("comment-display");
     },
   });
 
-  edit.addEventListener("click", (e) => {
-    e.stopPropagation();
-    handle.remove();
-    _openEditor({
-      rowEl: anchorRowEl, side: comment.side, line: comment.line,
-      file: comment.file, existing: comment,
+  if (editBtn && delBtn) {
+    editBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      handle.remove();
+      _openEditor({
+        rowEl: anchorRowEl, side: comment.side, line: comment.line,
+        file: comment.file, existing: comment,
+      });
     });
-  });
-  del.addEventListener("click", (e) => {
-    e.stopPropagation();
-    _store.delete(comment.id).then(() => handle.remove());
-  });
+    delBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      _store.delete(comment.id).then(() => handle.remove());
+    });
+  }
   return handle;
 }
 

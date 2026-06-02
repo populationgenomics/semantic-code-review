@@ -104,7 +104,13 @@ interface ViewerData {
   groups?: Array<Record<string, unknown>>;
 }
 
-async function bootViewer(data: ViewerData): Promise<void> {
+interface BootOptions {
+  /** Body the /comments fetch fired by Comments.init should resolve to.
+   *  Defaults to an empty array. */
+  comments?: unknown[];
+}
+
+async function bootViewer(data: ViewerData, opts: BootOptions = {}): Promise<void> {
   // Mount the static index.html skeleton (minus the highlight.js
   // <script> the bundle doesn't need at test time). The
   // scr-session-endpoint meta tag presence is what flips the viewer
@@ -147,8 +153,11 @@ async function bootViewer(data: ViewerData): Promise<void> {
   // boot.ts fetches /data.json first thing — queue this response
   // ahead of anything the test adds so the fetch chain resolves to
   // our data before Comments.init fires /comments and before any
-  // test-specific POST.
+  // test-specific POST. Comments.init's /comments fetch is queued
+  // immediately after so it consumes the comments response (or an
+  // empty default) rather than whatever the test queues later.
   queueFetchResponse({ status: 200, body: data });
+  queueFetchResponse({ status: 200, body: { comments: opts.comments ?? [] } });
   // Execute viewer.js as a fresh IIFE in the current realm so it
   // picks up our stubs. `new Function` ensures strict-mode + clean
   // scope. The IIFE returns synchronously; the boot continues on
@@ -416,6 +425,77 @@ describe("streaming events", () => {
     // render — verified indirectly: the intent slot has the empty class.
     const intent = document.querySelector(".hunk-intent")!;
     expect(intent.classList.contains("empty")).toBe(true);
+  });
+});
+
+
+describe("ingested PR comments", () => {
+  test("renders author + body_html + permalink, hides edit/delete", async () => {
+    const ingested = {
+      id: "gh-7",
+      file: "a.py",
+      side: "new",
+      line: 1,
+      body: "Use Path.",
+      body_html: "<p>Use <code>Path</code>.</p>",
+      created_at: 1.0,
+      updated_at: 1.0,
+      source: "github",
+      author: "alice",
+      author_avatar_url: "https://example/alice.png",
+      html_url: "https://github.com/o/r/pull/1#discussion_r7",
+      in_reply_to_id: null,
+    };
+    // Boot with the fold mode set to "off" so all hunk rows render —
+    // default fold is "hunks" which collapses the diff body.
+    window.location.hash = "#fold=off";
+    await bootViewer(makeData({ pending: false }), { comments: [ingested] });
+    // Comment re-attach happens after the store load Promise resolves.
+    // One extra tick lets it settle.
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    const annot = document.querySelector(
+      '.row-annotation.annot-comment[data-comment-id="gh-7"]',
+    ) as HTMLElement | null;
+    expect(annot).not.toBeNull();
+    expect(annot!.classList.contains("annot-comment-ingested")).toBe(true);
+    // Author chip + permalink rendered.
+    expect(annot!.querySelector(".comment-author")!.textContent).toBe("@alice");
+    expect(annot!.querySelector<HTMLAnchorElement>(".comment-permalink")!.href)
+      .toBe("https://github.com/o/r/pull/1#discussion_r7");
+    // body_html injected verbatim — the <code> tag is real DOM.
+    expect(annot!.querySelector(".comment-body-html code")!.textContent).toBe("Path");
+    // No edit/delete buttons on ingested comments.
+    expect(annot!.querySelector(".comment-btn-edit")).toBeNull();
+    expect(annot!.querySelector(".comment-btn-del")).toBeNull();
+  });
+
+  test("reply gets the annot-comment-reply class for indentation", async () => {
+    window.location.hash = "#fold=off";
+    await bootViewer(makeData({ pending: false }), {
+      comments: [
+        {
+          id: "gh-1", file: "a.py", side: "new", line: 1,
+          body: "parent", created_at: 1, updated_at: 1,
+          source: "github", author: "alice",
+        },
+        {
+          id: "gh-2", file: "a.py", side: "new", line: 1,
+          body: "child", created_at: 2, updated_at: 2,
+          source: "github", author: "bob", in_reply_to_id: "gh-1",
+        },
+      ],
+    });
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const reply = document.querySelector(
+      '.row-annotation[data-comment-id="gh-2"]',
+    ) as HTMLElement | null;
+    expect(reply).not.toBeNull();
+    expect(reply!.classList.contains("annot-comment-reply")).toBe(true);
+    const parent = document.querySelector(
+      '.row-annotation[data-comment-id="gh-1"]',
+    ) as HTMLElement | null;
+    expect(parent!.classList.contains("annot-comment-reply")).toBe(false);
   });
 });
 

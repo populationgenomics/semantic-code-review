@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
-from .comments import CommentStore
+from .comments import CommentStore, ReadOnlyCommentError
 
 
 log = logging.getLogger(__name__)
@@ -369,6 +369,9 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             try:
                 c = self.ctx.store.upsert(payload)
+            except ReadOnlyCommentError as e:
+                self._json(403, {"error": str(e)})
+                return
             except Exception as e:  # noqa: BLE001 — pydantic throws many kinds
                 self._json(400, {"error": str(e)})
                 return
@@ -461,7 +464,11 @@ class _Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path.startswith("/comments/"):
             comment_id = path[len("/comments/"):]
-            existed = self.ctx.store.delete(comment_id)
+            try:
+                existed = self.ctx.store.delete(comment_id)
+            except ReadOnlyCommentError as e:
+                self._json(403, {"error": str(e)})
+                return
             self._json(200 if existed else 404, {"ok": existed})
             return
         self._json(404, {"error": "not found"})

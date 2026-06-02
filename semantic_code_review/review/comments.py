@@ -16,6 +16,11 @@ from pydantic import BaseModel, Field
 CommentSource = Literal["local", "github"]
 
 
+class ReadOnlyCommentError(Exception):
+    """Raised by CommentStore when the caller tries to mutate a comment
+    that wasn't authored in this run (e.g. an ingested PR comment)."""
+
+
 class Comment(BaseModel):
     id: str
     file: str
@@ -71,10 +76,17 @@ class CommentStore:
         with self._lock:
             now = time.time()
             existing = self._items.get(payload.get("id", ""))
+            if existing is not None and not existing.is_writable:
+                raise ReadOnlyCommentError(
+                    f"comment {existing.id} is from {existing.source}; not editable"
+                )
             if existing is None:
                 c = Comment.model_validate(payload)
                 c.created_at = payload.get("created_at", now)
                 c.updated_at = now
+                # Ignore any source claim on the wire — newly-authored
+                # comments are always local.
+                c.source = "local"
             else:
                 data = existing.model_dump()
                 data.update({k: v for k, v in payload.items() if k in {"body", "line", "side", "file"}})
@@ -86,10 +98,16 @@ class CommentStore:
 
     def delete(self, comment_id: str) -> bool:
         with self._lock:
-            existed = self._items.pop(comment_id, None) is not None
-            if existed:
-                self._flush_locked()
-            return existed
+            existing = self._items.get(comment_id)
+            if existing is None:
+                return False
+            if not existing.is_writable:
+                raise ReadOnlyCommentError(
+                    f"comment {existing.id} is from {existing.source}; not deletable"
+                )
+            del self._items[comment_id]
+            self._flush_locked()
+            return True
 
     def all(self) -> list[Comment]:
         with self._lock:

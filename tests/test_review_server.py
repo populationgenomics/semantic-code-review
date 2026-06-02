@@ -6,6 +6,7 @@ import asyncio
 import json
 import threading
 import time
+import urllib.error
 import urllib.request
 from http.client import HTTPConnection
 from pathlib import Path
@@ -112,6 +113,74 @@ def test_post_invalid_comment_400(server) -> None:
         urllib.request.urlopen(req, timeout=5)
     except urllib.error.HTTPError as e:
         assert e.code == 400
+
+
+def test_post_cannot_overwrite_ingested_comment(server, tmp_path: Path) -> None:
+    """Ingested PR comments (source != local) are read-only — the server
+    rejects an upsert that targets one with 403 rather than letting the
+    body get rewritten in place."""
+    # Seed comments.json with an ingested comment, then re-create the
+    # server so it loads from the file we just wrote.
+    (tmp_path / "comments.json").write_text(json.dumps({
+        "comments": [{
+            "id": "gh-1", "file": "a.py", "side": "new", "line": 1,
+            "body": "upstream", "source": "github", "author": "alice",
+            "created_at": 1.0, "updated_at": 1.0,
+        }],
+    }))
+    server.stop()
+    srv2 = ReviewServer(run_dir=tmp_path, viewer_json={"version": "1", "files": []})
+    srv2.start()
+    try:
+        try:
+            _request(srv2.url() + "/comments", "POST", {
+                "id": "gh-1", "file": "a.py", "side": "new", "line": 1,
+                "body": "overwritten",
+            })
+        except urllib.error.HTTPError as e:
+            assert e.code == 403
+        else:
+            raise AssertionError("expected 403 for overwrite of ingested comment")
+        # On disk the body is unchanged.
+        data = json.loads((tmp_path / "comments.json").read_text())
+        assert data["comments"][0]["body"] == "upstream"
+    finally:
+        srv2.stop()
+
+
+def test_delete_cannot_remove_ingested_comment(server, tmp_path: Path) -> None:
+    (tmp_path / "comments.json").write_text(json.dumps({
+        "comments": [{
+            "id": "gh-1", "file": "a.py", "side": "new", "line": 1,
+            "body": "upstream", "source": "github", "author": "alice",
+            "created_at": 1.0, "updated_at": 1.0,
+        }],
+    }))
+    server.stop()
+    srv2 = ReviewServer(run_dir=tmp_path, viewer_json={"version": "1", "files": []})
+    srv2.start()
+    try:
+        conn = HTTPConnection("127.0.0.1", int(srv2.url().rsplit(":", 1)[1]), timeout=5)
+        conn.request("DELETE", "/comments/gh-1")
+        r = conn.getresponse()
+        assert r.status == 403
+        # Still on disk.
+        data = json.loads((tmp_path / "comments.json").read_text())
+        assert len(data["comments"]) == 1
+    finally:
+        srv2.stop()
+
+
+def test_post_resets_source_to_local_on_new_comment(server, tmp_path: Path) -> None:
+    """A new comment claiming source=github on the wire is still stored
+    as local — provenance can only be set by the ingest path, not by a
+    client POST."""
+    code, body = _request(server.url() + "/comments", "POST", {
+        "id": "c1", "file": "a.py", "side": "new", "line": 1, "body": "x",
+        "source": "github", "author": "evil",
+    })
+    assert code == 200
+    assert body["source"] == "local"
 
 
 def test_delete_comment(server, tmp_path: Path) -> None:
