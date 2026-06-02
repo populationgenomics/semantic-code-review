@@ -1,9 +1,10 @@
-"""Transform an AugmentedDiff + run metadata into the viewer JSON schema.
+"""Transform an AnnotatedDiff + run metadata into the viewer JSON schema.
 
 The viewer's JS consumes this structure directly; it does not re-parse
-the unified diff. Per-hunk `rows` are pre-paired here (sequential `-`/`+`
-matching) so the renderer can emit the side-by-side DOM without running
-a diff algorithm in the browser.
+the unified diff. Per-hunk `rows` are pre-paired in
+``viewer/hunk_layout.py`` (sequential `-`/`+` matching) so the renderer
+can emit the side-by-side DOM without running a diff algorithm in the
+browser.
 """
 
 from __future__ import annotations
@@ -13,9 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from ..augment.schemas import (
-    SMELL_CATALOGUE, AugmentedDiff, FilePatch, Hunk, Segment,
+    SMELL_CATALOGUE, AnnotatedDiff, AnnotatedFile, FileAnnotations, Overview,
+    PRInfo, lift_file,
 )
-from .rows import build_rows, compute_fold_regions
+from ..format.parse import parse_raw_diff
+from .hunk_layout import build_hunk_viewer_block
 
 
 #: cap — files with more than this many lines don't bundle head_lines.
@@ -23,7 +26,7 @@ _HEAD_LINES_CAP = 5000
 
 
 def build_viewer_json(
-    diff: AugmentedDiff,
+    diff: AnnotatedDiff,
     meta: dict[str, Any],
     head_dir: Path | None = None,
 ) -> dict[str, Any]:
@@ -43,16 +46,43 @@ def build_viewer_json(
     }
 
 
-def _group_blocks(diff: AugmentedDiff) -> list[dict[str, Any]]:
+def build_pending_viewer_json(run_dir: Path) -> dict[str, Any]:
+    """Build viewer JSON from raw.diff alone, before augmentation runs.
+
+    All annotations are empty; the page renders the file/hunk structure
+    with the top-level `pending` flag set so the viewer JS shows
+    "analysing…" placeholders in each hunk's intent slot. Replaced by a
+    full re-render when the augmentation pass completes.
+    """
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    parsed = parse_raw_diff((run_dir / "raw.diff").read_text(encoding="utf-8"))
+    pr = PRInfo(
+        pr_url=meta.get("url", ""),
+        base_sha=meta.get("baseRefOid", ""),
+        head_sha=meta.get("headRefOid", ""),
+        model="",
+    )
+    diff = AnnotatedDiff(
+        version=parsed.version,
+        pr=pr,
+        files=[lift_file(pf, ann=FileAnnotations()) for pf in parsed.files],
+    )
+    head_dir = run_dir / "head"
+    data = build_viewer_json(diff, meta, head_dir=head_dir if head_dir.exists() else None)
+    data["pending"] = True
+    return data
+
+
+def _group_blocks(diff: AnnotatedDiff) -> list[dict[str, Any]]:
     """Translate Overview.groups into viewer-friendly blocks.
 
     Each member's (path, hunk_index) becomes a stable viewer hunk id
-    of the form "H{fileIdx}_{hunkIdx}", matching _hunk_block below.
+    of the form "H{fileIdx}_{hunkIdx}", matching the per-hunk block.
     Members whose path isn't in the diff (e.g. the file got filtered
     after the overview ran) are silently dropped.
     """
     ov = diff.overview
-    if ov is None or not ov.groups:
+    if not isinstance(ov, Overview) or not ov.groups:
         return []
     path_to_file_idx = {fp.path: i for i, fp in enumerate(diff.files)}
     out: list[dict[str, Any]] = []
@@ -74,8 +104,8 @@ def _group_blocks(diff: AugmentedDiff) -> list[dict[str, Any]]:
     return out
 
 
-def _pr_block(diff: AugmentedDiff, meta: dict[str, Any]) -> dict[str, Any]:
-    ov = diff.overview
+def _pr_block(diff: AnnotatedDiff, meta: dict[str, Any]) -> dict[str, Any]:
+    ov = diff.overview if isinstance(diff.overview, Overview) else None
     return {
         "title": meta.get("title", ""),
         "number": _try_int(meta.get("number") or _number_from_url(meta.get("url", ""))),
@@ -93,26 +123,28 @@ def _pr_block(diff: AugmentedDiff, meta: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _file_block(f: FilePatch, idx: int, head_dir: Path | None = None) -> dict[str, Any]:
-    adds = sum(sum(1 for ln in h.body.splitlines() if ln.startswith("+")) for h in f.hunks)
-    dels = sum(sum(1 for ln in h.body.splitlines() if ln.startswith("-")) for h in f.hunks)
+def _file_block(f: AnnotatedFile, idx: int, head_dir: Path | None = None) -> dict[str, Any]:
+    hunks = [build_hunk_viewer_block(h, idx, hi) for hi, h in enumerate(f.hunks)]
+    adds = sum(h["adds"] for h in hunks)
+    dels = sum(h["dels"] for h in hunks)
     head_lines = _load_head_lines(f, head_dir)
+    ann = f.ann
     return {
         "id": f"F{idx}",
         "path": f.path,
         "old_path": f.old_path,
-        "status": f.role.value if f.role else "modified",
-        "language": f.lang or _lang_from_path(f.path),
+        "status": ann.role.value if ann.role else "modified",
+        "language": ann.lang or _lang_from_path(f.path),
         "adds": adds,
         "dels": dels,
-        "summary": f.summary,
-        "symbols": f.symbols.model_dump() if f.symbols else {"added": [], "modified": [], "removed": []},
+        "summary": ann.summary,
+        "symbols": ann.symbols.model_dump() if ann.symbols else {"added": [], "modified": [], "removed": []},
         "head_lines": head_lines,
-        "hunks": [_hunk_block(h, idx, hi, f) for hi, h in enumerate(f.hunks)],
+        "hunks": hunks,
     }
 
 
-def _load_head_lines(f: FilePatch, head_dir: Path | None) -> list[str] | None:
+def _load_head_lines(f: AnnotatedFile, head_dir: Path | None) -> list[str] | None:
     """Return the full head-file content split into lines, or None if we skip.
 
     Skipped when: no head_dir available, file is GENERATED/BINARY, head file
@@ -120,7 +152,8 @@ def _load_head_lines(f: FilePatch, head_dir: Path | None) -> list[str] | None:
     """
     if head_dir is None:
         return None
-    if f.role is not None and f.role.value in ("generated", "binary", "deleted"):
+    role = f.ann.role
+    if role is not None and role.value in ("generated", "binary", "deleted"):
         return None
     path = head_dir / f.path
     if not path.exists() or not path.is_file():
@@ -133,56 +166,6 @@ def _load_head_lines(f: FilePatch, head_dir: Path | None) -> list[str] | None:
     if len(lines) > _HEAD_LINES_CAP:
         return None
     return lines
-
-
-def _hunk_block(h: Hunk, fi: int, hi: int, f: FilePatch) -> dict[str, Any]:
-    hunk_id = f"H{fi}_{hi}"
-    rows = build_rows(h)
-    regions = compute_fold_regions(rows)
-    # Match LLM-generated summaries to regions by (new_start, new_count).
-    summary_by_range = {(fd.new_start, fd.new_count): fd.summary for fd in h.fold_descriptions}
-    fold_region_blocks: list[dict[str, Any]] = []
-    for reg in regions:
-        summary = ""
-        if reg.new_start is not None and reg.new_end is not None:
-            count = reg.new_end - reg.new_start + 1
-            summary = summary_by_range.get((reg.new_start, count), "")
-        fold_region_blocks.append({
-            "header_idx": reg.header_idx,
-            "body_start_idx": reg.body_start_idx,
-            "body_end_idx": reg.body_end_idx,
-            "new_start": reg.new_start,
-            "new_end": reg.new_end,
-            "has_changes": reg.has_changes,
-            "summary": summary,
-        })
-    return {
-        "id": hunk_id,
-        "header": h.header,
-        "old_start": h.old_start, "old_count": h.old_count,
-        "new_start": h.new_start, "new_count": h.new_count,
-        "intent": h.intent,
-        "smells": [s.model_dump() for s in h.smells],
-        "confidence": h.confidence,
-        "context": h.context,
-        "refs": [r.model_dump() for r in h.refs],
-        "line_notes": [ln.model_dump() for ln in h.line_notes],
-        "segments": [_segment_block(s, hunk_id, si) for si, s in enumerate(h.segments)],
-        "rows": [r.to_dict() for r in rows],
-        "fold_regions": fold_region_blocks,
-    }
-
-
-def _segment_block(s: Segment, parent_id: str, si: int) -> dict[str, Any]:
-    return {
-        "id": f"{parent_id}_S{si}",
-        "new_start": s.new_start,
-        "new_count": s.new_count,
-        "intent": s.intent,
-        "smells": [sm.model_dump() for sm in s.smells],
-        "context": s.context,
-        "refs": [r.model_dump() for r in s.refs],
-    }
 
 
 _LANG_BY_EXT = {

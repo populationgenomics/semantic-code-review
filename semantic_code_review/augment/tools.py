@@ -3,15 +3,33 @@
 Every tool is read-only, operates on the fetched worktrees, and returns
 text. Large results are truncated and flagged so the model can narrow
 its query.
+
+`RepoTools` is the single source of truth for the tool surface. Methods
+decorated with `@_tool` are exported to two consumers:
+
+  * pydantic-ai SDK Agents — via `TOOL_FUNCTIONS`, a list of `RunContext`-
+    wrapping callables produced from the decorated methods.
+  * The MCP stdio server (`mcp_server.py`) — via `mcp_tool_schemas()` for
+    the `tools/list` payload and `mcp_dispatch()` for `tools/call`.
+
+Both surfaces are derived by introspection: rename a `RepoTools` method
+and both update with no other edits.
 """
 
 from __future__ import annotations
 
+import inspect
 import os
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Callable
+
+from pydantic_ai import RunContext
+from pydantic_ai.tools import Tool
+
+from .. import git_ops
 
 
 TOOL_RESULT_CAP_BYTES = 20 * 1024
@@ -19,6 +37,15 @@ TOOL_RESULT_CAP_BYTES = 20 * 1024
 
 # Resolved once at import; tests that want to force a path can monkeypatch.
 _HAS_RIPGREP = shutil.which("rg") is not None
+
+
+_TOOL_EXPORT_ATTR = "_repo_tool_export"
+
+
+def _tool(method: Callable) -> Callable:
+    """Mark a `RepoTools` method as part of the LLM-facing tool surface."""
+    setattr(method, _TOOL_EXPORT_ATTR, True)
+    return method
 
 
 @dataclass
@@ -30,8 +57,15 @@ class RepoTools:
 
     # --- file reads -------------------------------------------------------
 
+    @_tool
     def read_file(self, path: str, start_line: int | None = None, end_line: int | None = None) -> str:
-        """Read a file from the head worktree, optionally a line range."""
+        """Read a file from the head worktree. Returns up to 20 KB of text.
+
+        Args:
+            path: Path relative to repo root.
+            start_line: 1-indexed start line (optional).
+            end_line: 1-indexed end line inclusive (optional).
+        """
         full = (self.head_worktree / path).resolve()
         if not _is_inside(full, self.head_worktree):
             return f"error: path outside worktree: {path}"
@@ -43,22 +77,39 @@ class RepoTools:
             return f"error: could not read {path}: {e}"
         return _slice_and_cap(text, start_line, end_line)
 
+    @_tool
     def read_file_at(self, sha: str, path: str, start_line: int | None = None, end_line: int | None = None) -> str:
-        """Read a file at an arbitrary SHA via `git show`."""
-        result = subprocess.run(
-            ["git", "show", f"{sha}:{path}"],
-            cwd=self.repo_git, capture_output=True, text=True, check=False,
+        """Read a file at a specific commit SHA (e.g. the PR base).
+
+        Use for pre-change content.
+
+        Args:
+            sha: Commit SHA.
+            path: Path relative to repo root.
+            start_line: 1-indexed start line (optional).
+            end_line: 1-indexed end line inclusive (optional).
+        """
+        rc, stdout, stderr = git_ops.git_capture(
+            self.repo_git, "show", f"{sha}:{path}",
         )
-        if result.returncode != 0:
-            return f"error: git show {sha}:{path} failed: {result.stderr.strip()}"
-        return _slice_and_cap(result.stdout, start_line, end_line)
+        if rc != 0:
+            return f"error: git show {sha}:{path} failed: {stderr.strip()}"
+        return _slice_and_cap(stdout, start_line, end_line)
 
     # --- search -----------------------------------------------------------
 
+    @_tool
     def grep(self, pattern: str, path_glob: str | None = None, max_hits: int = 50) -> str:
-        """Search the head worktree. Prefers ripgrep; falls back to `git grep`.
+        """Search the head worktree with ripgrep.
 
-        Output is ``path:line:text`` with worktree prefix stripped.
+        Returns path:line:text matches, capped at 50 by default. Falls back
+        to `git grep` when ripgrep is unavailable. Output is ``path:line:text``
+        with worktree prefix stripped.
+
+        Args:
+            pattern: Pattern to search for.
+            path_glob: Restrict to matching files (e.g. 'src/**/*.py').
+            max_hits: Maximum matches to return.
         """
         if _HAS_RIPGREP:
             return self._grep_rg(pattern, path_glob, max_hits)
@@ -81,22 +132,20 @@ class RepoTools:
     def _grep_git(self, pattern: str, path_glob: str | None, max_hits: int) -> str:
         """Fallback search via ``git grep`` — always available since git is a
         hard requirement. Respects .gitignore; only searches tracked files."""
-        args = ["git", "grep", "-n", "-I", "--max-count", str(max_hits), "-e", pattern]
-        if path_glob:
-            # git grep wants pathspecs after ``--``.
-            args += ["--", path_glob]
-        result = subprocess.run(
-            args, cwd=self.head_worktree, capture_output=True, text=True, check=False,
-        )
-        # git grep exits 1 on no matches, like rg; 128+ on error.
-        if result.returncode not in (0, 1):
-            return f"error: git grep failed: {result.stderr.strip()}"
-        return _cap(result.stdout)
+        try:
+            return _cap(git_ops.grep(self.head_worktree, pattern, path_glob, max_hits))
+        except git_ops.GitError as e:
+            return f"error: {e}"
 
     # --- listing ----------------------------------------------------------
 
+    @_tool
     def list_dir(self, path: str = "") -> str:
-        """Shallow listing of a directory in the head worktree."""
+        """List a directory in the head worktree (shallow, hidden files skipped).
+
+        Args:
+            path: Path relative to repo root (empty for root).
+        """
         full = (self.head_worktree / path).resolve() if path else self.head_worktree
         if not _is_inside(full, self.head_worktree):
             return f"error: path outside worktree: {path}"
@@ -112,15 +161,20 @@ class RepoTools:
 
     # --- git --------------------------------------------------------------
 
+    @_tool
     def git_log(self, path: str, limit: int = 5) -> str:
-        """Short git log for a path (relative to repo root)."""
-        result = subprocess.run(
-            ["git", "log", f"-n{limit}", "--oneline", "--", path],
-            cwd=self.repo_git, capture_output=True, text=True, check=False,
-        )
-        if result.returncode != 0:
-            return f"error: git log failed: {result.stderr.strip()}"
-        return _cap(result.stdout)
+        """Recent commits touching a path (short form).
+
+        Args:
+            path: Path relative to repo root.
+            limit: Maximum commits to return.
+        """
+        try:
+            return _cap(git_ops.git(
+                self.repo_git, "log", f"-n{limit}", "--oneline", "--", path,
+            ))
+        except git_ops.GitError as e:
+            return f"error: {e}"
 
 
 def _is_inside(child: Path, parent: Path) -> bool:
@@ -150,3 +204,91 @@ def _slice_and_cap(text: str, start_line: int | None, end_line: int | None) -> s
     return _cap("".join(lines[s:e]))
 
 
+# ---------------------------------------------------------------------------
+# Tool surface — derived from `RepoTools`
+# ---------------------------------------------------------------------------
+#
+# Both the pydantic-ai Agent (`tools=TOOL_FUNCTIONS`) and the MCP stdio
+# server (`mcp_tool_schemas`, `mcp_dispatch`) read from the same set of
+# `@_tool`-marked methods. Adding/renaming a tool means editing one
+# method — the wire surface follows.
+
+
+def _exported_methods() -> list[tuple[str, Callable]]:
+    """Return `(name, func)` for each `@_tool`-marked method, in source order."""
+    out: list[tuple[str, Callable]] = []
+    for name, attr in vars(RepoTools).items():
+        if callable(attr) and getattr(attr, _TOOL_EXPORT_ATTR, False):
+            out.append((name, attr))
+    return out
+
+
+def _make_tool_fn(method_name: str, method: Callable) -> Callable:
+    """Wrap a `RepoTools` method as a pydantic-ai-compatible tool function.
+
+    The returned callable takes `RunContext[RepoTools]` followed by the
+    method's parameters (minus `self`), and forwards to the matching
+    method on `ctx.deps`. Name, docstring, signature, and annotations
+    are copied so pydantic-ai's introspection produces the same schema
+    a hand-written wrapper would.
+    """
+    sig = inspect.signature(method)
+    method_params = list(sig.parameters.values())[1:]  # drop self
+    ctx_param = inspect.Parameter(
+        "ctx",
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        annotation=RunContext[RepoTools],
+    )
+    new_sig = sig.replace(
+        parameters=[ctx_param, *method_params],
+        return_annotation=str,
+    )
+
+    async def fn(ctx: RunContext[RepoTools], **kwargs: Any) -> str:
+        return getattr(ctx.deps, method_name)(**kwargs)
+
+    fn.__name__ = method_name
+    fn.__qualname__ = method_name
+    fn.__doc__ = method.__doc__
+    fn.__signature__ = new_sig  # type: ignore[attr-defined]
+    annotations: dict[str, Any] = {
+        p.name: p.annotation
+        for p in (ctx_param, *method_params)
+        if p.annotation is not inspect.Parameter.empty
+    }
+    annotations["return"] = str
+    fn.__annotations__ = annotations
+    return fn
+
+
+TOOL_FUNCTIONS: list = [_make_tool_fn(n, m) for n, m in _exported_methods()]
+
+
+def mcp_tool_schemas() -> list[dict[str, Any]]:
+    """MCP `tools/list` payload, derived from `TOOL_FUNCTIONS`."""
+    out: list[dict[str, Any]] = []
+    for fn in TOOL_FUNCTIONS:
+        tool = Tool(fn)
+        out.append(
+            {
+                "name": tool.name,
+                "description": tool.description or "",
+                "inputSchema": tool.function_schema.json_schema,
+            }
+        )
+    return out
+
+
+def mcp_dispatch(repo_tools: RepoTools, name: str, args: dict[str, Any]) -> str:
+    """Run a tool by name against `repo_tools` for the MCP `tools/call` path.
+
+    Only methods marked with `@_tool` on `RepoTools` are reachable —
+    private helpers and dunder attrs are rejected.
+    """
+    method = getattr(repo_tools, name, None)
+    if not callable(method) or not getattr(method, _TOOL_EXPORT_ATTR, False):
+        return f"error: unknown tool {name!r}"
+    try:
+        return method(**args)
+    except TypeError as e:
+        return f"error: bad args for {name}: {e}"

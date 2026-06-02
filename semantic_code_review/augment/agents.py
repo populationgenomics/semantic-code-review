@@ -6,10 +6,11 @@ the per-run `RepoTools` is supplied via `deps=` to `Agent.run`.
 
 `model` accepts either a fully-qualified pydantic-ai model id string
 (e.g. `anthropic:claude-opus-4-7` or `google-vertex:gemini-2.5-pro`)
-*or* a `pydantic_ai.models.Model` instance — the CLI subprocess
-backends in `cli_models.py` are Model subclasses that wrap the
-`claude -p` / `gemini -p` clients. `cli._select_client` is the single
-place that decides which form an unqualified model name maps to.
+*or* a `pydantic_ai.models.Model` instance — the CLI drivers in
+`backends/claude_cli.py` and `backends/gemini_cli.py` are Model
+subclasses that wrap the `claude -p` / `gemini -p` clients.
+`cli._select_client` is the single place that decides which form an
+unqualified model name maps to.
 """
 
 from __future__ import annotations
@@ -21,9 +22,8 @@ from pydantic_ai.models import Model
 from pydantic_ai.output import ToolOutput
 
 from .prompts import HUNK_SYSTEM, OVERVIEW_SYSTEM
-from .repo_tool_fns import TOOL_FUNCTIONS
 from .schemas import HunkAnnotations, OverviewSubmission
-from .tools import RepoTools
+from .tools import TOOL_FUNCTIONS, RepoTools
 
 
 def make_overview_agent(model: str | Model) -> Agent[None, OverviewSubmission]:
@@ -59,19 +59,19 @@ def make_hunk_agent(model: str | Model) -> Agent[RepoTools, HunkAnnotations]:
 
 
 @dataclass
-class Backend:
+class Client:
     """Pipeline-side handle for an LLM backend.
 
     Holds either a pydantic-ai model id string (for SDK backends) or
-    a `pydantic_ai.models.Model` instance (for CLI subprocess backends,
-    see `cli_models.py`). The pipeline calls `make_*_agent(backend.model)`
-    to build pass-specific agents.
+    a `pydantic_ai.models.Model` instance (for CLI subprocess backends —
+    the CLI drivers under `backends/`). The pipeline calls
+    `make_*_agent(client.model)` to build pass-specific agents.
 
     `set_repo_tools` proxies to the inner CLI Model when present so the
     subprocess can spawn an MCP server bound to the run's worktree;
     SDK string models have no repo-tool concept here — the SDK Agent
     receives `deps=repo_tools` at `Agent.run` call time. The pipeline
-    calls both: `backend.set_repo_tools(rt)` for the CLI side, and
+    calls both: `client.set_repo_tools(rt)` for the CLI side, and
     passes `rt` as `deps=` for the SDK side.
 
     `aclose()` is delegated to the inner Model. SDK string models have

@@ -2,33 +2,206 @@
 
 Spawned by ``scr review``; dies when the viewer POSTs /exit or when the
 idle timeout elapses. No external deps — stdlib ``http.server``.
+
+The server also publishes Server-Sent Events on ``GET /events`` so the
+viewer can react to back-channel updates (today: the augmentation pass
+completing). Each connected client gets a blocking queue; ``publish()``
+fans events out and never blocks the caller.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import queue
 import threading
 import time
-from dataclasses import dataclass
+from collections.abc import Awaitable
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
-from .comments import CommentStore
+from .comments import CommentStore, ReadOnlyCommentError
 
 
 log = logging.getLogger(__name__)
+
+
+# --- Static asset resolution --------------------------------------------
+# Mirrors the build-dir-aware lookup that render_html.py used to do for
+# viewer.js: a SCR_VIEWER_BUILD_DIR override (set by the bin/scr
+# bootstrap) wins over the in-tree assets/ directory. Falls back to the
+# packaged assets when no override is set. Only viewer.js is expected
+# to live in the build dir; everything else (CSS, vendor, index.html)
+# is always read from the in-tree assets/.
+
+import os
+ASSETS_DIR = Path(__file__).resolve().parent.parent / "viewer" / "assets"
+
+
+def _resolve_asset(rel: str) -> Path:
+    """Locate a static asset, honouring SCR_VIEWER_BUILD_DIR for
+    build artefacts.
+
+    The build dir only ever holds the bundled viewer.js (esbuild
+    output); everything else — index.html, CSS, vendored highlight
+    bundle — is always read from the in-tree assets/ directory.
+    The trailing path-traversal guard keeps `_serve_static`'s
+    whitelist from being the only line of defence.
+    """
+    if ".." in Path(rel).parts:
+        raise FileNotFoundError(f"refused path-traversal asset: {rel!r}")
+    build_dir = os.environ.get("SCR_VIEWER_BUILD_DIR")
+    if build_dir and rel == "viewer.js":
+        p = Path(build_dir) / rel
+        if p.exists():
+            return p
+    p = ASSETS_DIR / rel
+    if p.exists():
+        return p
+    raise FileNotFoundError(f"asset not found: {rel} (looked in {ASSETS_DIR}{', '+build_dir if build_dir else ''})")
+
+
+# Sentinel pushed onto subscriber queues to ask the handler thread to
+# release the connection at shutdown (so the daemon thread doesn't pin
+# the process). Distinct from any real event payload.
+_CLOSE = object()
+
+
+def _parse_last_event_id(raw: str | None) -> int:
+    """Coerce the `Last-Event-ID` header to an int, treating anything
+    non-numeric (or missing) as 0 — i.e. "give me everything"."""
+    if not raw:
+        return 0
+    try:
+        return int(raw.strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+def _parse_hunk_id(hunk_id: str) -> tuple[int, int]:
+    """`"H{fi}_{hi}"` → (fi, hi). Raises ValueError on malformed input."""
+    if not hunk_id.startswith("H") or "_" not in hunk_id:
+        raise ValueError(f"malformed hunk_id {hunk_id!r}")
+    try:
+        fi_str, hi_str = hunk_id[1:].split("_", 1)
+        return int(fi_str), int(hi_str)
+    except ValueError as e:
+        raise ValueError(f"malformed hunk_id {hunk_id!r}") from e
+
+
+def _update_viewer_json_fold(
+    viewer_json: dict[str, Any], payload: dict[str, Any],
+) -> None:
+    """Patch the matching fold_regions[i].summary in the viewer JSON
+    so a fresh `/data.json` fetch sees the result.
+
+    Walks every hunk in the addressed file looking for a region whose
+    (context, right_start/end, left_start/end) match — the regions are
+    addressed at the file level by the v2 protocol but still attached
+    to individual hunks in the per-hunk fold_regions block.
+    """
+    files = viewer_json.get("files") or []
+    fi = payload.get("file_idx")
+    if fi is None or fi >= len(files):
+        return
+    context = payload.get("context")
+    rs = payload.get("right_start", 0); re_ = payload.get("right_end", 0)
+    ls = payload.get("left_start", 0); le = payload.get("left_end", 0)
+    summary = payload.get("summary", "")
+    for hunk in files[fi].get("hunks") or []:
+        for reg in hunk.get("fold_regions") or []:
+            if (
+                reg.get("context") == context
+                and (reg.get("right_start") or 0) == rs
+                and (reg.get("right_end") or 0) == re_
+                and (reg.get("left_start") or 0) == ls
+                and (reg.get("left_end") or 0) == le
+            ):
+                reg["summary"] = summary
+                return
+
+
+def _range_from_payload(payload: dict[str, Any], side: str) -> tuple[int, int] | None:
+    """Pull (start, end) for a side out of the request payload, or None
+    if the keys aren't both present + parsable."""
+    try:
+        s = int(payload[f"{side}_start"])
+        e = int(payload[f"{side}_end"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (s, e)
+
+
+def _ctx_publish(ctx: ServerContext, event_type: str, payload: dict[str, Any]) -> None:
+    """Append an event to the buffer + broadcast to subscribers.
+
+    Shared by `ReviewServer.publish` and route handlers so the
+    /fold-summary route can fan out to other tabs without round-
+    tripping through the ReviewServer instance.
+    """
+    with ctx.state_lock:
+        ev = _BufferedEvent(
+            id=ctx.next_event_id, event_type=event_type, payload=payload,
+        )
+        ctx.next_event_id += 1
+        ctx.buffer.append(ev)
+        if len(ctx.buffer) > _BUFFER_CAP:
+            del ctx.buffer[: len(ctx.buffer) - _BUFFER_CAP]
+        subs = list(ctx.subscribers)
+    for q in subs:
+        q.put(ev)
+
+
+#: Upper bound on the replay buffer. A 200-hunk PR emits ~200 hunk
+#: events plus overview/done; even at a few KB per event the buffer
+#: stays well under a megabyte. Anything beyond this cap drops the
+#: oldest entries, which is fine — the buffer is a reconnect safety
+#: net, not durable history.
+_BUFFER_CAP = 2000
+
+
+@dataclass
+class _BufferedEvent:
+    """One SSE frame, retained for `Last-Event-ID` replay on reconnect."""
+
+    id: int
+    event_type: str
+    payload: dict[str, Any]
+
+
+#: Signature of the on-demand fold summariser closure. The server
+#: resolves hunk_id → file/hunk from the persisted sidecar and passes
+#: (AnnotatedFile, AnnotatedHunk, overview_json, new_start, new_count).
+#: The closure encapsulates model selection, cache, trace dir, etc;
+#: the server stays diff-source-agnostic. Stored as ``Any`` here to
+#: avoid pulling the augment-side schemas into the stdlib-only server
+#: module — the actual signature is in `review/runner.py`.
+FoldSummariser = Callable[..., Awaitable[str]]
 
 
 @dataclass
 class ServerContext:
     run_dir: Path
     store: CommentStore
-    html_path: Path
     viewer_json: dict[str, Any]
     done_event: threading.Event
     last_activity: float = 0.0
+    # Optional, wired by serve_review when an LLM backend is available.
+    # The /fold-summary route returns 409 until this is set (the augment
+    # pass has to finish first so the sidecar exists).
+    fold_summariser: FoldSummariser | None = None
+    # SSE fan-out + replay buffer. Subscribers and `buffer` are mutated
+    # by both publishing threads and request-handling threads; the
+    # single ``state_lock`` covers both so a reconnecting client sees a
+    # consistent snapshot (replay-then-subscribe is atomic w.r.t.
+    # concurrent publishes).
+    subscribers: list[queue.Queue] = field(default_factory=list)
+    buffer: list[_BufferedEvent] = field(default_factory=list)
+    next_event_id: int = 1
+    state_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -76,12 +249,10 @@ class _Handler(BaseHTTPRequestHandler):
         self._touch()
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
-            try:
-                html = self.ctx.html_path.read_bytes()
-            except OSError as e:
-                self._json(500, {"error": str(e)})
-                return
-            self._text(200, "text/html; charset=utf-8", html)
+            self._serve_asset("index.html", "text/html; charset=utf-8")
+            return
+        if path.startswith("/static/"):
+            self._serve_static(path[len("/static/"):])
             return
         if path == "/data.json":
             self._json(200, self.ctx.viewer_json)
@@ -89,7 +260,103 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/comments":
             self._json(200, {"comments": [c.model_dump() for c in self.ctx.store.all()]})
             return
+        if path == "/events":
+            self._stream_events()
+            return
         self._json(404, {"error": "not found"})
+
+    #: Whitelist of asset basenames that may be served via /static/.
+    #: Keeps the route from doubling as a generic file-read primitive
+    #: even though _resolve_static guards against path traversal too.
+    _STATIC_ASSETS: dict[str, str] = {
+        "viewer.css": "text/css; charset=utf-8",
+        "viewer.js":  "application/javascript; charset=utf-8",
+        "vendor/highlight.min.js":   "application/javascript; charset=utf-8",
+        "vendor/github.min.css":     "text/css; charset=utf-8",
+        "vendor/github-dark.min.css": "text/css; charset=utf-8",
+    }
+
+    def _serve_static(self, rel: str) -> None:
+        ctype = self._STATIC_ASSETS.get(rel)
+        if ctype is None:
+            self._json(404, {"error": "not found"})
+            return
+        self._serve_asset(rel, ctype)
+
+    def _serve_asset(self, rel: str, ctype: str) -> None:
+        try:
+            path = _resolve_asset(rel)
+        except FileNotFoundError as e:
+            self._json(500, {"error": str(e)})
+            return
+        try:
+            body = path.read_bytes()
+        except OSError as e:
+            self._json(500, {"error": str(e)})
+            return
+        self._text(200, ctype, body)
+
+    def _stream_events(self) -> None:
+        """Serve the SSE channel until the client disconnects or the
+        server signals shutdown via the close sentinel.
+
+        Honours the EventSource ``Last-Event-ID`` reconnect header so a
+        page refresh / dropped connection picks up where it left off —
+        every buffered event newer than the supplied id is replayed
+        before the live stream resumes.
+        """
+        last_id = _parse_last_event_id(self.headers.get("Last-Event-ID"))
+        q: queue.Queue = queue.Queue()
+        # Snapshot the replay slice and register the subscriber under a
+        # single lock acquisition so a publish racing this connect can't
+        # land an event that's neither in the replay nor in the queue.
+        with self.ctx.state_lock:
+            replay = [ev for ev in self.ctx.buffer if ev.id > last_id]
+            self.ctx.subscribers.append(q)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "keep-alive")
+            # Disable proxy buffering in case anyone front-proxies this
+            # localhost server (rare but cheap).
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            # Initial comment line tells the browser the connection is
+            # open before any real event arrives; some EventSource
+            # implementations wait for the first byte before firing
+            # ``open``.
+            try:
+                self.wfile.write(b": ok\n\n")
+                self.wfile.flush()
+            except OSError:
+                return
+            for ev in replay:
+                if not self._write_event(ev):
+                    return
+            while True:
+                item = q.get()
+                if item is _CLOSE:
+                    return
+                ev = item  # _BufferedEvent
+                if not self._write_event(ev):
+                    return
+        finally:
+            with self.ctx.state_lock:
+                try:
+                    self.ctx.subscribers.remove(q)
+                except ValueError:
+                    pass
+
+    def _write_event(self, ev: "_BufferedEvent") -> bool:
+        body = json.dumps(ev.payload, ensure_ascii=False)
+        frame = f"id: {ev.id}\nevent: {ev.event_type}\ndata: {body}\n\n".encode("utf-8")
+        try:
+            self.wfile.write(frame)
+            self.wfile.flush()
+        except OSError:
+            return False
+        return True
 
     def do_POST(self) -> None:  # noqa: N802
         self._touch()
@@ -102,6 +369,9 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             try:
                 c = self.ctx.store.upsert(payload)
+            except ReadOnlyCommentError as e:
+                self._json(403, {"error": str(e)})
+                return
             except Exception as e:  # noqa: BLE001 — pydantic throws many kinds
                 self._json(400, {"error": str(e)})
                 return
@@ -113,14 +383,92 @@ class _Handler(BaseHTTPRequestHandler):
             # Defer the event set slightly so the response flushes.
             threading.Thread(target=self._signal_done, daemon=True).start()
             return
+        if path == "/fold-summary":
+            try:
+                payload = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": f"invalid json: {e}"})
+                return
+            self._handle_fold_summary(payload)
+            return
         self._json(404, {"error": "not found"})
+
+    def _handle_fold_summary(self, payload: dict[str, Any]) -> None:
+        """Parse + validate the request, dispatch to the wired-in
+        fold-summary task, broadcast the result.
+
+        Wire format (slice 1 of fold-anywhere):
+            { file_idx: int,
+              context: "right" | "left" | "both",
+              right_start?, right_end?,    # iff context != "left"
+              left_start?,  left_end?      # iff context != "right"
+            }
+        Line numbers are 1-indexed into head/<path> (right) and
+        base/<path> (left). Domain work (sidecar I/O, schema mutation,
+        persistence) lives in :func:`apply_fold_summary_to_run`; this
+        method is transport.
+        """
+        if self.ctx.fold_summariser is None:
+            self._json(409, {"error": "augmentation still in progress"})
+            return
+        context = str(payload.get("context", ""))
+        if context not in ("right", "left", "both"):
+            self._json(400, {"error": "context must be 'right', 'left', or 'both'"})
+            return
+        try:
+            file_idx = int(payload.get("file_idx"))
+        except (TypeError, ValueError):
+            self._json(400, {"error": "file_idx must be an integer"})
+            return
+
+        right_range = _range_from_payload(payload, "right") if context != "left" else None
+        left_range = _range_from_payload(payload, "left") if context != "right" else None
+        if context in ("right", "both") and right_range is None:
+            self._json(400, {"error": "right_start/right_end required"})
+            return
+        if context in ("left", "both") and left_range is None:
+            self._json(400, {"error": "left_start/left_end required"})
+            return
+
+        # Map typed errors from the apply step to HTTP statuses.
+        from ..augment.fold_summary import (
+            FoldSummaryFileIndexError, FoldSummaryNotReady,
+        )
+
+        try:
+            result = asyncio.run(self.ctx.fold_summariser(
+                file_idx, context, right_range, left_range,
+            ))
+        except FoldSummaryNotReady as e:
+            self._json(409, {"error": str(e)})
+            return
+        except FoldSummaryFileIndexError as e:
+            self._json(404, {"error": str(e)})
+            return
+        except Exception as e:  # noqa: BLE001
+            log.exception(
+                "fold-summary failed for file_idx=%s context=%s right=%s left=%s",
+                file_idx, context, right_range, left_range,
+            )
+            self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            return
+
+        _update_viewer_json_fold(self.ctx.viewer_json, result)
+        _ctx_publish(self.ctx, "fold-summary", result)
+        # Caller's RPC response carries the summary so the requesting
+        # tab doesn't need to wait for its own SSE event to round-trip.
+        self._json(200, result)
 
     def do_DELETE(self) -> None:  # noqa: N802
         self._touch()
         path = self.path.split("?", 1)[0]
         if path.startswith("/comments/"):
             comment_id = path[len("/comments/"):]
-            existed = self.ctx.store.delete(comment_id)
+            try:
+                existed = self.ctx.store.delete(comment_id)
+            except ReadOnlyCommentError as e:
+                self._json(403, {"error": str(e)})
+                return
             self._json(200 if existed else 404, {"ok": existed})
             return
         self._json(404, {"error": "not found"})
@@ -135,7 +483,7 @@ class ReviewServer:
 
     Usage:
 
-    >>> srv = ReviewServer(run_dir=..., html_path=..., viewer_json=...)
+    >>> srv = ReviewServer(run_dir=..., viewer_json=...)
     >>> srv.start()
     >>> url = srv.url()
     >>> srv.wait_until_done(timeout=3600)
@@ -146,7 +494,6 @@ class ReviewServer:
         self,
         *,
         run_dir: Path,
-        html_path: Path,
         viewer_json: dict[str, Any],
         host: str = "127.0.0.1",
         port: int = 0,
@@ -157,7 +504,6 @@ class ReviewServer:
         self.ctx = ServerContext(
             run_dir=run_dir,
             store=self.store,
-            html_path=html_path,
             viewer_json=viewer_json,
             done_event=self.done_event,
             last_activity=time.time(),
@@ -185,6 +531,35 @@ class ReviewServer:
     def url(self) -> str:
         return f"http://{self._host}:{self._port}"
 
+    def publish(self, event_type: str, payload: dict[str, Any]) -> None:
+        """Broadcast an SSE event to every connected /events client and
+        append it to the replay buffer.
+
+        Caller-thread-safe and non-blocking — each subscriber has its
+        own queue. Disconnected clients drain themselves at the
+        handler-thread side; the snapshot taken inside the lock is just
+        to avoid holding it while putting onto queues.
+        """
+        _ctx_publish(self.ctx, event_type, payload)
+
+    def set_fold_summariser(self, summariser: FoldSummariser | None) -> None:
+        """Install (or clear) the on-demand fold-summary closure.
+
+        serve_review calls this once the augmentation pass has finished
+        and the sidecar is on disk. Before then, /fold-summary returns
+        409 because the diff can't be resolved.
+        """
+        self.ctx.fold_summariser = summariser
+
+    def update_viewer_json(self, viewer_json: dict[str, Any]) -> None:
+        """Replace the JSON returned by ``GET /data.json``.
+
+        Used after the augmentation pass completes so any late
+        ``data.json`` fetch (a tab opened post-augment, a manual reload)
+        sees the full state.
+        """
+        self.ctx.viewer_json = viewer_json
+
     def wait_until_done(
         self,
         *,
@@ -205,6 +580,14 @@ class ReviewServer:
         return True
 
     def stop(self) -> None:
+        # Wake any SSE handler threads parked on their queue so they
+        # return out of ``_stream_events`` before we tear down the
+        # socket — otherwise ``server_close`` can race the still-open
+        # connections and the process pins on the daemon threads.
+        with self.ctx.state_lock:
+            subs = list(self.ctx.subscribers)
+        for q in subs:
+            q.put(_CLOSE)
         if self._httpd is not None:
             self._httpd.shutdown()
             self._httpd.server_close()

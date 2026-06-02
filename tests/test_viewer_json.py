@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from semantic_code_review.format.parse import parse_augmented_diff
-from semantic_code_review.viewer.build_json import build_viewer_json
-from semantic_code_review.viewer.render_html import render_html
+from semantic_code_review.viewer.build_json import (
+    build_pending_viewer_json, build_viewer_json,
+)
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample.augmented.diff"
@@ -70,26 +72,46 @@ def test_viewer_json_files_and_hunks() -> None:
     assert rows[-1]["new_line"] == 7 and rows[-1]["old_line"] is None
 
 
-def test_render_html_has_key_elements() -> None:
-    d = _data()
-    html = render_html(d)
-    assert "<title>Introduce pagination</title>" in html
-    assert "Semantic Code Review" not in html or "viewer" in html.lower()  # sanity
-    assert "fold-slider" in html
-    assert 'data-fold="files"' in html and 'data-fold="hunks"' in html
-    assert 'id="scr-data"' in html
-    # The embedded JSON must be safely encoded (no raw </script>).
-    assert "</script>" not in html.split('id="scr-data"')[1].split("</script>")[0]
-    # Viewer JS is inlined.
-    assert "renderHunk" in html
-    # CSS variables defined.
-    assert "--accent" in html
+_RAW_DIFF = """diff --git a/foo.py b/foo.py
+index 0123456..89abcde 100644
+--- a/foo.py
++++ b/foo.py
+@@ -1,2 +1,2 @@
+ def foo():
+-    return 1
++    return 2
+"""
 
 
-def test_render_html_self_contained_contains_expected_text() -> None:
-    """The HTML should inline intent text and segment intents verbatim (via JSON)."""
-    d = _data()
-    html = render_html(d)
-    assert "Pagination is introduced" in html
-    assert "paginate() helper" in html
-    assert "string-sql" in html
+def test_build_pending_viewer_json_emits_skeleton_with_pending_flag(tmp_path: Path) -> None:
+    """Pre-augment JSON carries file/hunk structure but no annotations
+    and is tagged `pending: true` so the viewer JS shows a spinner
+    placeholder instead of the failure copy."""
+    (tmp_path / "raw.diff").write_text(_RAW_DIFF, encoding="utf-8")
+    (tmp_path / "meta.json").write_text(json.dumps({
+        "title": "Bump return value",
+        "author": {"login": "tester"},
+        "url": "",
+        "baseRefOid": "aaa",
+        "headRefOid": "bbb",
+    }), encoding="utf-8")
+
+    data = build_pending_viewer_json(tmp_path)
+
+    assert data["pending"] is True
+    assert data["pr"]["title"] == "Bump return value"
+    assert data["pr"]["base_sha"] == "aaa"
+    assert data["pr"]["head_sha"] == "bbb"
+    # Structure is present even though annotations are empty.
+    assert len(data["files"]) == 1
+    f = data["files"][0]
+    assert f["path"] == "foo.py"
+    assert f["adds"] == 1 and f["dels"] == 1
+    assert len(f["hunks"]) == 1
+    h = f["hunks"][0]
+    assert h["id"] == "H0_0"
+    assert h["intent"] == ""
+    assert h["smells"] == []
+    # No overview yet → no themes / groups.
+    assert data["pr"]["themes"] == []
+    assert data["groups"] == []

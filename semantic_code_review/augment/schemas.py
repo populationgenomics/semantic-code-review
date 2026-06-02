@@ -3,11 +3,23 @@
 These types are the canonical structured representation. `format.emit`
 writes them out as an augmented unified diff; `format.parse` reads them
 back. The same types flow into the viewer JSON bundle.
+
+Two stages exist as distinct types:
+
+- `ParsedDiff` / `ParsedFile` / `ParsedHunk` — what comes out of parsing
+  a raw git diff: structure only, no annotations.
+- `AnnotatedDiff` / `AnnotatedFile` / `AnnotatedHunk` — pairs the parsed
+  structure with annotation payloads (`Overview | SkippedOverview` at the
+  diff root, `FileAnnotations` per file, `HunkAnnotations` per hunk).
+
+`emit_augmented_diff` requires the annotated form. The augment pipeline
+takes a `ParsedDiff` and produces an `AnnotatedDiff` via pure functions.
 """
 
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -80,32 +92,32 @@ class Segment(BaseModel):
 
 
 class FoldDescription(BaseModel):
-    """One-line summary of the change inside an indent fold region.
+    """One-line summary of the body inside an indent fold region.
 
-    `new_start`/`new_count` target post-image lines the region covers.
-    Emitted by the LLM for every fold region that contains changed text.
+    Addressed by 1-indexed line ranges into the *files* the diff
+    relates — never into the hunk's row sequence — so the
+    representation is stable across re-renders and lets folds span
+    expanded context as well as hunk bodies.
+
+    `context` picks which side(s) the fold covers:
+      - "right": post-image lines only (the common case — describe
+        what the new code does). Address with right_start/right_end
+        as 1-indexed line numbers in head/<path>.
+      - "left": pre-image lines only (a pure deletion fold).
+        Address with left_start/left_end in base/<path>.
+      - "both": fold straddles changed content. Both ranges populated.
+
+    Generated lazily by the review server's `/fold-summary` route
+    the first time the reviewer collapses a region; cached so
+    subsequent reviews skip the call.
     """
 
-    new_start: int
-    new_count: int
+    context: Literal["right", "left", "both"] = "right"
+    right_start: int = 0
+    right_end: int = 0
+    left_start: int = 0
+    left_end: int = 0
     summary: str
-
-
-class Hunk(BaseModel):
-    header: str
-    old_start: int
-    old_count: int
-    new_start: int
-    new_count: int
-    body: str = ""
-    intent: str = ""
-    smells: list[Smell] = Field(default_factory=list)
-    context: str = ""
-    refs: list[Ref] = Field(default_factory=list)
-    confidence: int | None = None
-    line_notes: list[LineNote] = Field(default_factory=list)
-    segments: list[Segment] = Field(default_factory=list)
-    fold_descriptions: list[FoldDescription] = Field(default_factory=list)
 
 
 class FileRole(str, Enum):
@@ -123,22 +135,6 @@ class FileSymbols(BaseModel):
     added: list[str] = Field(default_factory=list)
     modified: list[str] = Field(default_factory=list)
     removed: list[str] = Field(default_factory=list)
-
-
-class FilePatch(BaseModel):
-    """One file's section of the unified diff plus its annotations."""
-
-    path: str
-    old_path: str | None = None
-    diff_git_line: str
-    extra_header_lines: list[str] = Field(default_factory=list)
-    old_file_marker: str = ""
-    new_file_marker: str = ""
-    role: FileRole | None = None
-    summary: str = ""
-    lang: str | None = None
-    symbols: FileSymbols | None = None
-    hunks: list[Hunk] = Field(default_factory=list)
 
 
 class OverviewSymbol(BaseModel):
@@ -189,6 +185,17 @@ class Overview(BaseModel):
     groups: list[OverviewGroup] = Field(default_factory=list)
 
 
+class SkippedOverview(BaseModel):
+    """Sentinel for `AnnotatedDiff.overview` when the overview pass was
+    not run (or was skipped via `--no-overview`).
+
+    Distinct from `Overview()` (the pass ran and produced empty fields):
+    the viewer can render "no overview was generated" differently from
+    "the overview is intentionally empty".
+    """
+    pass
+
+
 class PRInfo(BaseModel):
     pr_url: str
     base_sha: str
@@ -196,24 +203,89 @@ class PRInfo(BaseModel):
     model: str = ""
 
 
-class AugmentedDiff(BaseModel):
+# ---------------------------------------------------------------------------
+# Stage 1 — Parsed structure (no annotations).
+# ---------------------------------------------------------------------------
+
+
+class ParsedHunk(BaseModel):
+    """One hunk's structural state as it came off the diff stream."""
+
+    header: str
+    old_start: int
+    old_count: int
+    new_start: int
+    new_count: int
+    body: str = ""
+
+
+class ParsedFile(BaseModel):
+    """One file's section of the unified diff (no annotations)."""
+
+    path: str
+    old_path: str | None = None
+    diff_git_line: str
+    extra_header_lines: list[str] = Field(default_factory=list)
+    old_file_marker: str = ""
+    new_file_marker: str = ""
+    hunks: list[ParsedHunk] = Field(default_factory=list)
+
+
+class ParsedDiff(BaseModel):
     version: int = 1
     pr: PRInfo
-    overview: Overview | None = None
-    files: list[FilePatch] = Field(default_factory=list)
+    files: list[ParsedFile] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
-# Submission shapes — what the LLM is asked to emit.
+# Annotation payloads — what the LLM emits per pass.
 #
-# These models represent the wire format of `submit_overview` /
-# `submit_annotations`. Their JSON schemas (via `model_json_schema`)
-# replace the hand-written tool input_schemas in `prompts.py`, giving
-# us one source of truth for "what we ask the model for" and "how we
-# parse it back". A submission is a strict subset of the parsing-side
-# state above: post-processing splits / merges / drops fields as
-# needed in `apply_overview_to_diff` / `apply_hunk_annotations`.
+# `OverviewSubmission` and `HunkAnnotations` are the wire format of
+# `submit_overview` / `submit_annotations`. Their JSON schemas (via
+# `model_json_schema`) replace the hand-written tool input_schemas in
+# `prompts.py`, giving us one source of truth for "what we ask the model
+# for" and "how we parse it back".
 # ---------------------------------------------------------------------------
+
+
+class HunkAnnotations(BaseModel):
+    """Wire format of `submit_annotations` and the per-hunk annotation
+    block carried on `AnnotatedHunk.ann`."""
+
+    intent: str = Field(description="1-2 sentences of MOTIVE, not mechanics.")
+    segments: list[Segment] = Field(
+        default_factory=list,
+        description=(
+            "Split the hunk into semantically distinct edits when present "
+            "(e.g. a refactor plus an unrelated fix). Each segment carries "
+            "post-image new_start/new_count and its own intent. Omit if "
+            "the hunk is single-intent."
+        ),
+    )
+    smells: list[Smell] = Field(default_factory=list)
+    context: str = Field(
+        default="",
+        description="Cross-file dependencies the reviewer can't see from the diff.",
+    )
+    refs: list[Ref] = Field(default_factory=list)
+    confidence: int | None = Field(default=None, ge=0, le=100)
+    line_notes: list[LineNote] = Field(default_factory=list)
+    fold_descriptions: list[FoldDescription] = Field(
+        default_factory=list,
+        description=(
+            "One short sentence per indent fold region containing changes. "
+            "Match each region's new_start/new_count exactly."
+        ),
+    )
+
+
+class FileAnnotations(BaseModel):
+    """Per-file annotations carried on `AnnotatedFile.ann`."""
+
+    role: FileRole | None = None
+    summary: str = ""
+    lang: str | None = None
+    symbols: FileSymbols | None = None
 
 
 class OverviewFileSubmission(BaseModel):
@@ -256,31 +328,79 @@ class OverviewSubmission(BaseModel):
     )
 
 
-class HunkAnnotations(BaseModel):
-    """Wire format of `submit_annotations`. Consumed by `apply_hunk_annotations`."""
+# ---------------------------------------------------------------------------
+# Stage 2 — Annotated form (parsed structure + annotation payloads).
+# ---------------------------------------------------------------------------
 
-    intent: str = Field(description="1-2 sentences of MOTIVE, not mechanics.")
-    segments: list[Segment] = Field(
-        default_factory=list,
-        description=(
-            "Split the hunk into semantically distinct edits when present "
-            "(e.g. a refactor plus an unrelated fix). Each segment carries "
-            "post-image new_start/new_count and its own intent. Omit if "
-            "the hunk is single-intent."
-        ),
+
+def _empty_hunk_annotations() -> HunkAnnotations:
+    return HunkAnnotations(intent="")
+
+
+class AnnotatedHunk(BaseModel):
+    """A parsed hunk paired with its annotation payload."""
+
+    parsed: ParsedHunk
+    ann: HunkAnnotations = Field(default_factory=_empty_hunk_annotations)
+
+
+class AnnotatedFile(BaseModel):
+    """A parsed file paired with its annotation payload and annotated hunks.
+
+    Structural fields are flat (mirroring `ParsedFile`) so callers can
+    write `f.path` rather than `f.parsed.path`. The hunks list carries
+    `AnnotatedHunk` items, which themselves wrap a `ParsedHunk`.
+    """
+
+    path: str
+    old_path: str | None = None
+    diff_git_line: str
+    extra_header_lines: list[str] = Field(default_factory=list)
+    old_file_marker: str = ""
+    new_file_marker: str = ""
+    ann: FileAnnotations = Field(default_factory=FileAnnotations)
+    hunks: list[AnnotatedHunk] = Field(default_factory=list)
+
+
+class AnnotatedDiff(BaseModel):
+    version: int = 1
+    pr: PRInfo
+    overview: Overview | SkippedOverview = Field(default_factory=SkippedOverview)
+    files: list[AnnotatedFile] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Lifting helpers — wrap parsed values in annotated form with empty defaults.
+# ---------------------------------------------------------------------------
+
+
+def lift_hunk(parsed: ParsedHunk, ann: HunkAnnotations | None = None) -> AnnotatedHunk:
+    return AnnotatedHunk(parsed=parsed, ann=ann or _empty_hunk_annotations())
+
+
+def lift_file(
+    parsed: ParsedFile,
+    *,
+    ann: FileAnnotations | None = None,
+    hunks: list[AnnotatedHunk] | None = None,
+) -> AnnotatedFile:
+    return AnnotatedFile(
+        path=parsed.path,
+        old_path=parsed.old_path,
+        diff_git_line=parsed.diff_git_line,
+        extra_header_lines=list(parsed.extra_header_lines),
+        old_file_marker=parsed.old_file_marker,
+        new_file_marker=parsed.new_file_marker,
+        ann=ann or FileAnnotations(),
+        hunks=hunks if hunks is not None else [lift_hunk(h) for h in parsed.hunks],
     )
-    smells: list[Smell] = Field(default_factory=list)
-    context: str = Field(
-        default="",
-        description="Cross-file dependencies the reviewer can't see from the diff.",
-    )
-    refs: list[Ref] = Field(default_factory=list)
-    confidence: int | None = Field(default=None, ge=0, le=100)
-    line_notes: list[LineNote] = Field(default_factory=list)
-    fold_descriptions: list[FoldDescription] = Field(
-        default_factory=list,
-        description=(
-            "One short sentence per indent fold region containing changes. "
-            "Match each region's new_start/new_count exactly."
-        ),
+
+
+def lift_diff(parsed: ParsedDiff) -> AnnotatedDiff:
+    """Lift a `ParsedDiff` into an `AnnotatedDiff` with empty annotations."""
+    return AnnotatedDiff(
+        version=parsed.version,
+        pr=parsed.pr,
+        overview=SkippedOverview(),
+        files=[lift_file(f) for f in parsed.files],
     )

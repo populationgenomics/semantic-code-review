@@ -12,15 +12,10 @@
 // no idea what "old" vs "new" means. Callers decide which anchor each
 // annotation targets; styling is chosen via `variant`.
 //
-// Compiled by tsc to `annotations.js` alongside this file. The compiled
-// output is inlined into the viewer HTML by `render_html.py` and must
-// expose `window.ScrAnnotations` for the classic-script `viewer.js` to
-// reach (there is no module loader in the HTML).
-
-// Top-level declarations use no `export` keyword so tsc with
-// `module: "none"` emits classic-script output (no CommonJS wrapper).
-// Types are internal to this file; callers that want to reference
-// them import from `annotations.types.ts` which re-exports.
+// Types declared here are internal to this file. The wider viewer
+// data contract (ViewerData / FileBlock / HunkBlock / …) lives in
+// `types.d.ts` and is available to every .ts file in this directory
+// without an explicit import.
 
 type ColumnMode = "auto" | "absolute" | "explicit";
 type StackPolicy = "auto" | "fixed" | "grouped";
@@ -535,11 +530,9 @@ function insertAfter(node: Node, ref: Node): void {
 // Facade
 // ---------------------------------------------------------------------------
 
-// The single runtime surface: assigned to window.ScrAnnotations below
-// and the only thing viewer.js reaches for. tsc's `module: "none"`
-// strips no code; the file is a classic script that runs top-to-bottom
-// when inlined into the viewer HTML.
-const Annotations = {
+// The single runtime surface. Imported by boot.ts and any other
+// module that attaches annotation rows.
+export const Annotations = {
   attach,
   detach,
   reflow,
@@ -551,10 +544,5 @@ const Annotations = {
   _setRectProvider: setRectProvider,
 };
 
-// Register on the global. The cast to `unknown` sidesteps the need
-// for a `declare global` Window augmentation (which requires a
-// module context, which tsc with `module: "none"` refuses to give us).
-if (typeof window !== "undefined") {
-  (window as unknown as { ScrAnnotations: typeof Annotations }).ScrAnnotations = Annotations;
-}
+export type { AnnotationHandle, AttachOptions };
 

@@ -17,7 +17,7 @@ from pydantic_ai.models import Model, ModelRequestParameters
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RequestUsage
 
-from semantic_code_review.augment.agents import Backend
+from semantic_code_review.augment.agents import Client
 from semantic_code_review.augment.pipeline import augment_run_dir
 from semantic_code_review.format.parse import parse_augmented_diff
 
@@ -79,9 +79,9 @@ class _CannedModel(Model):
         )
 
 
-def _make_canned_backend(overview_args: dict, hunk_args_list: list[dict]) -> tuple[Backend, _CannedModel]:
+def _make_canned_backend(overview_args: dict, hunk_args_list: list[dict]) -> tuple[Client, _CannedModel]:
     model = _CannedModel(overview_args, hunk_args_list)
-    return Backend(model=model), model
+    return Client(model=model), model
 
 
 def _make_run_dir(tmp_path: Path) -> Path:
@@ -144,15 +144,16 @@ async def test_augment_produces_parseable_output(tmp_path: Path) -> None:
     assert augmented_path.exists()
     assert sidecar_path.exists()
 
+    from semantic_code_review.augment.schemas import Overview
     text = augmented_path.read_text(encoding="utf-8")
     reparsed = parse_augmented_diff(text)
-    assert reparsed.overview is not None
+    assert isinstance(reparsed.overview, Overview)
     assert reparsed.overview.summary == "Bumps two constants."
     assert reparsed.files[0].path == "f.py"
-    assert reparsed.files[0].summary == "x and y bumped"
+    assert reparsed.files[0].ann.summary == "x and y bumped"
     assert len(reparsed.files[0].hunks) == 2
-    assert reparsed.files[0].hunks[0].intent.startswith("Bump x")
-    assert reparsed.files[0].hunks[1].intent.startswith("Bump y")
+    assert reparsed.files[0].hunks[0].ann.intent.startswith("Bump x")
+    assert reparsed.files[0].hunks[1].ann.intent.startswith("Bump y")
     assert canned.calls == 3  # 1 overview + 2 hunks
 
 
@@ -181,3 +182,130 @@ async def test_augment_max_hunks_caps_calls(tmp_path: Path) -> None:
         run, model="t", concurrency=1, client=backend, cache=None, max_hunks=1,
     )
     assert canned.calls == 2  # overview + 1 hunk
+
+
+async def test_augment_publishes_overview_and_per_hunk_events(tmp_path: Path) -> None:
+    """The on_event hook fires once for overview and once per hunk
+    completion, carrying enough payload for the viewer to patch."""
+    run = _make_run_dir(tmp_path)
+    backend, _ = _make_canned_backend(
+        overview_args={
+            "summary": "Bumps two constants.",
+            "themes": ["constants"],
+            "files": [{"path": "f.py", "summary": "x and y bumped"}],
+        },
+        hunk_args_list=[
+            {"intent": "Bump x from 1 to 2", "confidence": 90, "smells": []},
+            {"intent": "Bump y from 1 to 2", "confidence": 90, "smells": []},
+        ],
+    )
+
+    events: list[tuple[str, dict]] = []
+    def collect(event_type: str, payload: dict) -> None:
+        events.append((event_type, payload))
+
+    await augment_run_dir(
+        run, model="t", concurrency=1, client=backend, cache=None,
+        on_event=collect,
+    )
+
+    types = [t for t, _ in events]
+    assert types.count("overview-start") == 1
+    assert types.count("overview") == 1
+    # overview-start precedes the completion event.
+    assert types.index("overview-start") < types.index("overview")
+    # Two start events + two completion events for the two hunks; each
+    # start always precedes its matching completion (same indices).
+    assert types.count("hunk-start") == 2
+    hunk_events = [p for t, p in events if t == "hunk"]
+    assert len(hunk_events) == 2
+    start_events = [p for t, p in events if t == "hunk-start"]
+    assert {(p["file_idx"], p["hunk_idx"]) for p in start_events} == {(0, 0), (0, 1)}
+    # Identity + payload shape — sufficient for the viewer to patch.
+    indices = {(p["file_idx"], p["hunk_idx"]) for p in hunk_events}
+    assert indices == {(0, 0), (0, 1)}
+    for p in hunk_events:
+        assert p["ok"] is True
+        assert p["block"]["id"] == f"H{p['file_idx']}_{p['hunk_idx']}"
+        assert p["block"]["intent"].startswith("Bump ")
+
+    overview_payload = next(p for t, p in events if t == "overview")
+    assert overview_payload["pr"]["summary"] == "Bumps two constants."
+    assert overview_payload["pr"]["themes"] == ["constants"]
+    assert overview_payload["files"][0]["summary"] == "x and y bumped"
+
+
+async def test_augment_event_consumer_failure_does_not_break_pipeline(
+    tmp_path: Path,
+) -> None:
+    """A consumer that throws on every event must not abort the run —
+    the on_event hook is a best-effort progress channel."""
+    run = _make_run_dir(tmp_path)
+    backend, _ = _make_canned_backend(
+        overview_args={"summary": "ok", "files": []},
+        hunk_args_list=[{"intent": "ok"}, {"intent": "ok"}],
+    )
+
+    def explode(_event_type: str, _payload: dict) -> None:
+        raise RuntimeError("consumer is on fire")
+
+    await augment_run_dir(
+        run, model="t", concurrency=1, client=backend, cache=None,
+        on_event=explode,
+    )
+    # Run still produced parseable output.
+    assert (run / "augmented.diff").exists()
+
+
+class _BlowsUpModel(_CannedModel):
+    """Canned model that returns the overview normally and raises on
+    the first hunk request — simulating UsageLimitExceeded / any other
+    mid-run agent failure for trace-on-failure testing."""
+
+    async def request(  # type: ignore[override]
+        self, messages, model_settings, model_request_parameters,
+    ):
+        self.calls += 1
+        tool_name = (
+            model_request_parameters.output_tools[0].name
+            if model_request_parameters.output_tools else ""
+        )
+        if tool_name == "submit_annotations":
+            raise RuntimeError("simulated request_limit of 50 exceeded")
+        return await super().request(messages, model_settings, model_request_parameters)
+
+
+async def test_per_hunk_trace_written_on_agent_failure(tmp_path: Path) -> None:
+    """When the per-hunk agent raises mid-run, the trace file must
+    still appear, carry the prompt that was sent, and record the
+    failure type+message so we can diagnose the next outlier."""
+    import json as _json
+
+    run = _make_run_dir(tmp_path)
+    blowup = _BlowsUpModel(
+        overview_args={"summary": "ok", "files": []},
+        hunk_args_list=[{"intent": "n/a"}, {"intent": "n/a"}],
+    )
+    backend = Client(model=blowup)
+
+    # Pipeline-level: the failing hunks are caught and accounted as
+    # `failed`; the run still completes.
+    await augment_run_dir(run, model="t", concurrency=1, client=backend, cache=None)
+
+    trace_dir = run / "trace"
+    hunk_traces = list(trace_dir.glob("hunk-*.json"))
+    assert hunk_traces, "no hunk traces were written"
+    # At least one hunk trace carries the error block we just wired in.
+    failures = []
+    for p in hunk_traces:
+        data = _json.loads(p.read_text(encoding="utf-8"))
+        if "error" in data:
+            failures.append((p, data))
+    assert failures, "expected at least one failed hunk trace with error metadata"
+    _, sample = failures[0]
+    assert sample["error"]["type"] == "RuntimeError"
+    assert "request_limit" in sample["error"]["message"]
+    # The user prompt that was sent is preserved (so reviewers can see
+    # what the model was working from when it ran out of budget).
+    sent = sample["iterations"][0]["messages_sent"]
+    assert sent and sent[0]["role"] == "user"

@@ -15,48 +15,36 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 from ..augment.schemas import (
-    AugmentedDiff, FilePatch, FoldDescription, Hunk, LineNote, Ref, Segment, Smell,
+    AnnotatedDiff, AnnotatedFile, AnnotatedHunk, FoldDescription,
+    HunkAnnotations, LineNote, Overview, ParsedHunk, Ref, Segment, Smell,
+    SkippedOverview,
 )
 from ..cache.store import CacheStore
-from ..viewer.rows import build_rows, compute_fold_regions
-from .agents import Backend, make_hunk_agent
+from .agents import Client, make_hunk_agent
 from .prompts import HUNK_SYSTEM, PROMPT_VERSION
-from .repo_tool_fns import TOOL_FUNCTIONS
-from .tools import RepoTools
-from .trace_adapter import submit_args_from_result, write_pydantic_ai_trace
+from .tools import TOOL_FUNCTIONS, RepoTools
+from .trace_adapter import (
+    submit_args_from_result, write_partial_trace, write_pydantic_ai_trace,
+)
 
 
-def format_hunk_prompt(fp: FilePatch, hunk: Hunk, overview_json: str, file_summary: str) -> list[dict[str, Any]]:
+def format_hunk_prompt(
+    fp: AnnotatedFile,
+    hunk: AnnotatedHunk,
+    overview_json: str,
+    file_summary: str,
+) -> list[dict[str, Any]]:
     """Assemble the user content blocks for one hunk call.
 
     Three blocks: overview (cached), file summary (cached), hunk-specific
-    (not cached). The hunk-specific block also lists any indent fold
-    regions that contain changed lines — the LLM is expected to return a
-    one-line description per region.
+    (not cached). Fold-region summaries are no longer produced here —
+    the review server fires a focused call on first fold-close; see
+    `augment.fold_summary`.
     """
-    rows = build_rows(hunk)
-    regions = compute_fold_regions(rows)
-    changed_regions = [
-        r for r in regions
-        if r.has_changes and r.new_start is not None and r.new_end is not None
-    ]
-
-    fold_block = ""
-    if changed_regions:
-        bullet_lines = [
-            f"  +{r.new_start}..+{r.new_end}" for r in changed_regions
-        ]
-        fold_block = (
-            "\n# Indent fold regions (post-image, contain changes)\n"
-            + "\n".join(bullet_lines)
-            + "\nReturn a one-liner for each in `fold_descriptions`."
-        )
-
     hunk_text = (
         f"# File\npath: {fp.path}\n"
-        f"lang: {fp.lang or ''}\n\n"
-        f"# Hunk\n{hunk.header}\n{hunk.body}"
-        f"{fold_block}"
+        f"lang: {fp.ann.lang or ''}\n\n"
+        f"# Hunk\n{hunk.parsed.header}\n{hunk.parsed.body}"
     )
     return [
         {"type": "text", "text": f"# PR overview\n{overview_json}",
@@ -68,10 +56,10 @@ def format_hunk_prompt(fp: FilePatch, hunk: Hunk, overview_json: str, file_summa
 
 
 async def run_hunk_pass(
-    backend: Backend,
+    client: Client,
     *,
-    fp: FilePatch,
-    hunk: Hunk,
+    fp: AnnotatedFile,
+    hunk: AnnotatedHunk,
     overview_json: str,
     file_summary: str,
     repo_tools: RepoTools,
@@ -84,7 +72,7 @@ async def run_hunk_pass(
     trace_path = None
     if trace_dir is not None:
         safe_file = fp.path.replace("/", "_")
-        safe_hunk = hunk.header.replace(" ", "_").replace("@", "").replace(",", "_").replace("+", "p").replace("-", "m")
+        safe_hunk = hunk.parsed.header.replace(" ", "_").replace("@", "").replace(",", "_").replace("+", "p").replace("-", "m")
         trace_path = trace_dir / f"hunk-{safe_file}-{safe_hunk[:40]}.json"
 
     if cache is not None:
@@ -95,8 +83,8 @@ async def run_hunk_pass(
             overview_json,
             file_summary,
             fp.path,
-            hunk.header,
-            hunk.body,
+            hunk.parsed.header,
+            hunk.parsed.body,
         )
         entry = cache.get(key)
         if entry is not None:
@@ -116,14 +104,35 @@ async def run_hunk_pass(
     # prompt-caching breakpoints. Provider-side caching is a v0.13
     # follow-up; correctness comes first.
     user_text = "\n\n".join(b["text"] for b in user_content)
-    agent = make_hunk_agent(backend.model)
-    run_result = await agent.run(user_text, deps=repo_tools)
+    agent = make_hunk_agent(client.model)
+    # Drive the run via agent.iter() so the partial message history is
+    # accessible on `AgentRun` even if the inner loop raises (most
+    # commonly UsageLimitExceeded once a hunk's tool-use loop blows the
+    # default request cap). Without this, failed hunks leave no trace
+    # — the most diagnostic case is the one with no diagnostics.
+    async with agent.iter(user_text, deps=repo_tools) as agent_run:
+        try:
+            async for _ in agent_run:
+                pass
+        except BaseException as exc:
+            if trace_path is not None:
+                write_partial_trace(
+                    list(agent_run.all_messages()),
+                    trace_path=trace_path,
+                    model=str(client.model),
+                    system=HUNK_SYSTEM,
+                    tool_names=[fn.__name__ for fn in TOOL_FUNCTIONS],
+                    submit_tool="submit_annotations",
+                    error=exc,
+                )
+            raise
+        run_result = agent_run.result
     submit_args = submit_args_from_result(run_result)
     if trace_path is not None:
         write_pydantic_ai_trace(
             run_result,
             trace_path=trace_path,
-            model=str(backend.model),
+            model=str(client.model),
             system=HUNK_SYSTEM,
             tool_names=[fn.__name__ for fn in TOOL_FUNCTIONS],
             submit_tool="submit_annotations",
@@ -135,52 +144,46 @@ async def run_hunk_pass(
     if cache is not None:
         cache.put(
             key,
-            request={"file": fp.path, "header": hunk.header, "body_len": len(hunk.body)},
+            request={"file": fp.path, "header": hunk.parsed.header, "body_len": len(hunk.parsed.body)},
             response=submit_args,
             tokens_in=tokens_in, tokens_out=tokens_out,
         )
     return submit_args
 
 
-def apply_hunk_annotations(hunk: Hunk, submit_args: dict[str, Any]) -> None:
-    """Fold a submit_annotations payload into a Hunk in place.
+def build_hunk_annotations(parsed: ParsedHunk, submit_args: dict[str, Any]) -> HunkAnnotations:
+    """Validate a submit_annotations payload against `parsed` and return
+    a `HunkAnnotations` record.
 
-    Drops segments that fall outside the hunk's post-image range or
-    overlap a previously-kept segment — the LLM occasionally emits
+    Drops segments/fold_descriptions outside the hunk's post-image range
+    or overlapping a previously-kept segment — the LLM occasionally emits
     pre-image line numbers or off-by-a-few ranges.
     """
-    hunk.intent = submit_args.get("intent", "") or ""
-    hunk.context = submit_args.get("context", "") or ""
-    hunk.confidence = submit_args.get("confidence")
-    hunk.smells = [_smell(s) for s in submit_args.get("smells") or []]
-    hunk.refs = [Ref(**_ref(r)) for r in submit_args.get("refs") or []]
-    hunk.line_notes = [LineNote(**ln) for ln in submit_args.get("line_notes") or []
-                       if _line_in_hunk(int(ln["line"]), hunk)]
+    hunk_end = parsed.new_start + parsed.new_count - 1
 
-    hunk.segments = []
-    hunk_end = hunk.new_start + hunk.new_count - 1
-    last_end = hunk.new_start - 1  # so a segment starting at new_start is allowed
+    segments: list[Segment] = []
+    last_end = parsed.new_start - 1
     for seg in submit_args.get("segments") or []:
         try:
             start = int(seg["new_start"])
             count = int(seg["new_count"])
         except (KeyError, TypeError, ValueError):
-            log.warning("hunk %s: malformed segment %r — dropped", hunk.header, seg)
+            log.warning("hunk %s: malformed segment %r — dropped", parsed.header, seg)
             continue
         end = start + count - 1
-        if count <= 0 or start < hunk.new_start or end > hunk_end:
+        if count <= 0 or start < parsed.new_start or end > hunk_end:
             log.warning(
                 "hunk %s: segment +%d..+%d outside range +%d..+%d — dropped",
-                hunk.header, start, end, hunk.new_start, hunk_end,
+                parsed.header, start, end, parsed.new_start, hunk_end,
             )
             continue
         if start <= last_end:
             log.warning(
                 "hunk %s: segment +%d..+%d overlaps previous (ends +%d) — dropped",
-                hunk.header, start, end, last_end,
+                parsed.header, start, end, last_end,
             )
             continue
-        hunk.segments.append(
+        segments.append(
             Segment(
                 new_start=start, new_count=count,
                 intent=seg.get("intent", "") or "",
@@ -191,31 +194,52 @@ def apply_hunk_annotations(hunk: Hunk, submit_args: dict[str, Any]) -> None:
         )
         last_end = end
 
-    hunk.fold_descriptions = []
+    fold_descriptions: list[FoldDescription] = []
     for fd in submit_args.get("fold_descriptions") or []:
         try:
             start = int(fd["new_start"])
             count = int(fd["new_count"])
         except (KeyError, TypeError, ValueError):
-            log.warning("hunk %s: malformed fold_description %r — dropped", hunk.header, fd)
+            log.warning("hunk %s: malformed fold_description %r — dropped", parsed.header, fd)
             continue
         end = start + count - 1
-        if count <= 0 or start < hunk.new_start or end > hunk_end:
+        if count <= 0 or start < parsed.new_start or end > hunk_end:
             log.warning(
                 "hunk %s: fold +%d..+%d outside range — dropped",
-                hunk.header, start, end,
+                parsed.header, start, end,
             )
             continue
         summary = (fd.get("summary") or "").strip()
         if not summary:
             continue
-        hunk.fold_descriptions.append(
+        fold_descriptions.append(
             FoldDescription(new_start=start, new_count=count, summary=summary)
         )
 
+    line_notes = [
+        LineNote(**ln) for ln in submit_args.get("line_notes") or []
+        if _line_in_hunk(int(ln["line"]), parsed)
+    ]
 
-def _line_in_hunk(line: int, hunk: Hunk) -> bool:
-    return hunk.new_start <= line <= hunk.new_start + hunk.new_count - 1
+    return HunkAnnotations(
+        intent=submit_args.get("intent", "") or "",
+        context=submit_args.get("context", "") or "",
+        confidence=submit_args.get("confidence"),
+        smells=[_smell(s) for s in submit_args.get("smells") or []],
+        refs=[Ref(**_ref(r)) for r in submit_args.get("refs") or []],
+        line_notes=line_notes,
+        segments=segments,
+        fold_descriptions=fold_descriptions,
+    )
+
+
+def apply_hunk_annotations(hunk: AnnotatedHunk, submit_args: dict[str, Any]) -> AnnotatedHunk:
+    """Return a new AnnotatedHunk with `ann` set from `submit_args`."""
+    return hunk.model_copy(update={"ann": build_hunk_annotations(hunk.parsed, submit_args)})
+
+
+def _line_in_hunk(line: int, parsed: ParsedHunk) -> bool:
+    return parsed.new_start <= line <= parsed.new_start + parsed.new_count - 1
 
 
 def _smell(d: dict[str, Any]) -> Smell:
@@ -226,9 +250,9 @@ def _ref(d: dict[str, Any]) -> dict[str, Any]:
     return {"path": d["path"], "line": int(d["line"]), "reason": d.get("reason", "") or ""}
 
 
-def overview_to_prompt_json(diff: AugmentedDiff) -> str:
+def overview_to_prompt_json(diff: AnnotatedDiff) -> str:
     """Serialize the overview into a compact JSON string for the hunk prompt."""
-    if diff.overview is None:
+    if not isinstance(diff.overview, Overview):
         return "{}"
     payload = {
         "summary": diff.overview.summary,

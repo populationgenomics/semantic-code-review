@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from semantic_code_review.augment.repo_tool_fns import mcp_dispatch
 from semantic_code_review.augment.tools import (
     TOOL_RESULT_CAP_BYTES,
     RepoTools,
+    mcp_dispatch,
 )
 
 

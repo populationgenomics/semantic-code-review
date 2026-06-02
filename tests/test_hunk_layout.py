@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from semantic_code_review.augment.schemas import Hunk
-from semantic_code_review.viewer.rows import build_rows, compute_fold_regions
+from semantic_code_review.augment.schemas import ParsedHunk
+from semantic_code_review.viewer.hunk_layout import build_rows, compute_fold_regions
 
 
-def _hunk(body: str, *, old_start: int = 1, old_count: int = 1, new_start: int = 1, new_count: int = 1) -> Hunk:
-    return Hunk(
+def _hunk(body: str, *, old_start: int = 1, old_count: int = 1, new_start: int = 1, new_count: int = 1) -> ParsedHunk:
+    return ParsedHunk(
         header=f"@@ -{old_start},{old_count} +{new_start},{new_count} @@",
         old_start=old_start, old_count=old_count,
         new_start=new_start, new_count=new_count,
@@ -122,7 +122,7 @@ def test_fold_regions_simple_function() -> None:
     assert regions[0].header_idx == 0
     assert regions[0].body_start_idx == 1 and regions[0].body_end_idx == 2
     assert regions[0].has_changes is False
-    assert regions[0].new_start == 1 and regions[0].new_end == 3
+    assert regions[0].right_start == 1 and regions[0].right_end == 3
     # Second region
     assert regions[1].header_idx == 3
     assert regions[1].body_start_idx == 4 and regions[1].body_end_idx == 4
@@ -167,3 +167,40 @@ def test_fold_regions_ignores_blank_lines() -> None:
     regions = compute_fold_regions(rows)
     assert len(regions) == 1
     assert regions[0].body_end_idx == 3  # last indented row, not the blank
+
+
+def test_fold_regions_pure_deletion_picks_left_context() -> None:
+    """A fold region whose body is entirely deleted has no post-image
+    lines to address. compute_fold_regions falls back to left context
+    (pre-image addressing) so /fold-summary can still reach it."""
+    body = (
+        "-def removed():\n"
+        "-    x = 1\n"
+        "-    y = 2\n"
+    )
+    rows = build_rows(_hunk(body, old_count=3, new_count=0, old_start=10, new_start=1))
+    regions = compute_fold_regions(rows)
+    assert len(regions) == 1
+    r = regions[0]
+    assert r.context == "left"
+    assert r.right_start is None and r.right_end is None
+    assert r.left_start == 10 and r.left_end == 12
+    assert r.has_changes is True
+
+
+def test_fold_regions_pair_with_changes_picks_both_context() -> None:
+    """A fold region with both sides populated AND contains changes
+    addresses as 'both' so the server can emit a diff-style body."""
+    body = (
+        " def foo():\n"
+        "-    x = 1\n"
+        "+    x = 2\n"
+        "     return x\n"
+    )
+    rows = build_rows(_hunk(body, old_count=3, new_count=3))
+    regions = compute_fold_regions(rows)
+    assert len(regions) == 1
+    r = regions[0]
+    assert r.context == "both"
+    assert r.right_start is not None and r.right_end is not None
+    assert r.left_start is not None and r.left_end is not None

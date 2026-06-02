@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,17 +20,38 @@ import fnmatch
 
 from ..cache.store import CacheStore
 from ..format.emit import emit_augmented_diff
-from ..format.parse import parse_augmented_diff
+from ..format.parse import parse_raw_diff
 from ..format.sidecar import dump_sidecar
-from .agents import Backend
+from ..viewer.hunk_layout import build_hunk_viewer_block
+from .agents import Client
 from .hunks import (
-    apply_hunk_annotations, overview_to_prompt_json, run_hunk_pass,
+    apply_hunk_annotations, build_hunk_annotations, overview_to_prompt_json,
+    run_hunk_pass,
 )
 from .overview import apply_overview_to_diff, run_overview_pass
 from .progress import ProgressMeter
 from .prompts import PROMPT_VERSION
-from .schemas import AugmentedDiff, FileRole, PRInfo
+from .schemas import (
+    AnnotatedDiff, AnnotatedFile, AnnotatedHunk, FileAnnotations, FileRole,
+    HunkAnnotations, Overview, PRInfo, ParsedDiff, lift_file,
+)
 from .tools import RepoTools
+
+
+# Callable signature for streaming progress events. Wired up to the
+# review server's SSE channel by `serve_review`; unset elsewhere
+# (CLI-only augment, tests). Calls are best-effort — pipeline must not
+# fail if the consumer raises.
+OnEvent = Callable[[str, dict[str, Any]], None]
+
+
+def _safe_emit(on_event: OnEvent | None, event_type: str, payload: dict[str, Any]) -> None:
+    if on_event is None:
+        return
+    try:
+        on_event(event_type, payload)
+    except Exception:  # noqa: BLE001 — pipeline progresses regardless of consumer health
+        log.exception("on_event consumer raised for %s; continuing", event_type)
 
 
 # Paths we do not send to the LLM — lock files, vendored bundles, binary
@@ -64,20 +86,21 @@ async def augment_run_dir(
     *,
     model: str = "claude-opus-4-7",
     concurrency: int = 8,
-    client: Backend | None = None,
+    client: Client | None = None,
     cache: CacheStore | None = None,
     only_files: list[str] | None = None,
     max_hunks: int | None = None,
     skip_overview: bool = False,
     skip_context: bool = False,
     show_progress: bool = True,
+    on_event: OnEvent | None = None,
 ) -> Path:
     """Augment a fetch run directory. Returns the augmented.diff path."""
     if client is None:
         # Default to the Anthropic SDK path via pydantic-ai. Callers that
         # need a different backend (CLI, Gemini, tests) construct the
         # backend explicitly via `_select_client` or a stub.
-        client = Backend(model=f"anthropic:{model}")
+        client = Client(model=f"anthropic:{model}")
     # cache=None means "no disk caching"; callers pass a CacheStore to enable.
 
     raw_diff_path = run_dir / "raw.diff"
@@ -87,24 +110,31 @@ async def augment_run_dir(
 
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     raw = raw_diff_path.read_text(encoding="utf-8")
-    diff = parse_augmented_diff(raw)
-    diff.pr = PRInfo(
+    parsed = parse_raw_diff(raw)
+    pr = PRInfo(
         pr_url=meta.get("url", ""),
         base_sha=meta.get("baseRefOid", ""),
         head_sha=meta.get("headRefOid", ""),
         model=model,
     )
-
+    parsed_files = parsed.files
     if only_files:
-        diff.files = [f for f in diff.files if f.path in only_files]
+        parsed_files = [f for f in parsed_files if f.path in only_files]
 
-    # Mark generated files; their hunks stay in the diff but don't go to the LLM.
-    skipped_files = set()
-    for fp in diff.files:
-        if _should_skip(fp.path):
-            fp.role = FileRole.GENERATED
-            fp.summary = "Generated / lock file — not analysed."
-            skipped_files.add(fp.path)
+    # Lift to AnnotatedDiff with empty annotations. Skipped (lock / binary)
+    # files get their FileAnnotations pre-populated so that downstream
+    # passes leave them alone and the viewer renders the right label.
+    skipped_files: set[str] = set()
+    diff_files: list[AnnotatedFile] = []
+    for pfile in parsed_files:
+        if _should_skip(pfile.path):
+            ann = FileAnnotations(role=FileRole.GENERATED, summary="Generated / lock file — not analysed.")
+            skipped_files.add(pfile.path)
+        else:
+            ann = FileAnnotations()
+        diff_files.append(lift_file(pfile, ann=ann))
+    diff = AnnotatedDiff(version=parsed.version, pr=pr, files=diff_files)
+
     if skipped_files:
         log.info("skipping %d generated file(s): %s",
                  len(skipped_files), ", ".join(sorted(skipped_files)))
@@ -116,14 +146,14 @@ async def augment_run_dir(
     # Enumerate hunks ahead of dispatch so we know the total up front
     # (the progress meter wants this; the dispatch loop wants ordinal
     # indices to attribute start/finish events to the right square).
-    queued: list[tuple[Any, Any, int]] = []
-    for fp in diff.files:
+    queued: list[tuple[int, int, int]] = []  # (file_idx, hunk_idx, ordinal)
+    for fi, fp in enumerate(diff.files):
         if fp.path in skipped_files:
             continue
-        for h in fp.hunks:
+        for hi in range(len(fp.hunks)):
             if max_hunks is not None and len(queued) >= max_hunks:
                 break
-            queued.append((fp, h, len(queued)))
+            queued.append((fi, hi, len(queued)))
         if max_hunks is not None and len(queued) >= max_hunks:
             break
 
@@ -141,15 +171,18 @@ async def augment_run_dir(
         if not skip_overview:
             log.info("overview pass for %d files", len(diff.files))
             meter.start_overview()
+            _safe_emit(on_event, "overview-start", {})
             try:
                 ov = await run_overview_pass(
                     client, diff=diff, meta=meta, model=model,
                     cache=cache, trace_dir=trace_dir,
                 )
-                apply_overview_to_diff(diff, ov)
+                diff = apply_overview_to_diff(diff, ov)
                 meter.finish_overview(ok=True)
+                _safe_emit(on_event, "overview", _overview_event_payload(diff))
             except Exception:
                 meter.finish_overview(ok=False)
+                _safe_emit(on_event, "overview-failed", {})
                 raise
 
         # --- Per-hunk pass -------------------------------------------------
@@ -174,20 +207,24 @@ async def augment_run_dir(
         async with contextlib.aclosing(client):
             sem = asyncio.Semaphore(concurrency)
             stats = _HunkStats()
+            results: dict[tuple[int, int], HunkAnnotations] = {}
             tasks = [
                 asyncio.create_task(
                     _augment_one_hunk(
-                        idx, meter, sem, client, fp, h, overview_json,
-                        (fp.summary or "").strip(), repo_tools, model,
-                        cache, trace_dir, stats,
+                        ord_idx, meter, sem, client, diff, fi, hi,
+                        overview_json, repo_tools, model, cache,
+                        trace_dir, stats, results, on_event,
                     )
                 )
-                for fp, h, idx in queued
+                for fi, hi, ord_idx in queued
             ]
 
             log.info("per-hunk pass: %d hunks queued (concurrency=%d)",
                      len(tasks), concurrency)
             await asyncio.gather(*tasks)
+
+        # Merge per-hunk results back into the diff in one pass.
+        diff = _merge_hunk_results(diff, results)
 
         # --- Emit ----------------------------------------------------------
         augmented_text = emit_augmented_diff(diff)
@@ -227,48 +264,144 @@ class _HunkStats:
 
 
 async def _augment_one_hunk(
-    idx: int,
+    ord_idx: int,
     meter: ProgressMeter,
     sem: asyncio.Semaphore,
-    client: Backend,
-    fp: Any,
-    h: Any,
+    client: Client,
+    diff: AnnotatedDiff,
+    fi: int,
+    hi: int,
     overview_json: str,
-    file_summary: str,
     repo_tools: RepoTools | None,
     model: str,
     cache: CacheStore | None,
     trace_dir: Path,
     stats: _HunkStats,
+    results: dict[tuple[int, int], HunkAnnotations],
+    on_event: OnEvent | None,
 ) -> None:
+    fp = diff.files[fi]
+    hunk = fp.hunks[hi]
+    file_summary = (fp.ann.summary or "").strip()
     async with sem:
         # Mark the square live only AFTER acquiring the semaphore so
         # queued-but-unstarted hunks still render as pending dots.
-        meter.start_hunk(idx)
+        meter.start_hunk(ord_idx)
+        _safe_emit(on_event, "hunk-start", {"file_idx": fi, "hunk_idx": hi})
         try:
             if repo_tools is None:
-                repo_tools = RepoTools(
+                rt = RepoTools(
                     head_worktree=Path("/dev/null"), repo_git=Path("/dev/null"),
                     base_sha="", head_sha="",
                 )
+            else:
+                rt = repo_tools
             submit = await run_hunk_pass(
-                client, fp=fp, hunk=h,
+                client, fp=fp, hunk=hunk,
                 overview_json=overview_json, file_summary=file_summary,
-                repo_tools=repo_tools, model=model, cache=cache,
+                repo_tools=rt, model=model, cache=cache,
                 trace_dir=trace_dir,
             )
-            apply_hunk_annotations(h, submit)
+            ann = build_hunk_annotations(hunk.parsed, submit)
+            results[(fi, hi)] = ann
             stats.ok += 1
-            meter.finish_hunk(idx, ok=True)
+            meter.finish_hunk(ord_idx, ok=True)
             log.info("hunk %s @ %s: intent=%r smells=%d segs=%d",
-                     fp.path, h.header, (h.intent or "")[:80], len(h.smells), len(h.segments))
+                     fp.path, hunk.parsed.header,
+                     (ann.intent or "")[:80], len(ann.smells), len(ann.segments))
+            block = build_hunk_viewer_block(
+                AnnotatedHunk(parsed=hunk.parsed, ann=ann), fi, hi,
+            )
+            _safe_emit(on_event, "hunk", {
+                "file_idx": fi, "hunk_idx": hi, "ok": True, "block": block,
+            })
         except Exception as e:  # noqa: BLE001
             stats.failed += 1
-            meter.finish_hunk(idx, ok=False)
+            meter.finish_hunk(ord_idx, ok=False)
             log.warning(
                 "hunk %s @ %s failed: %s: %s",
-                fp.path, h.header, type(e).__name__, e,
+                fp.path, hunk.parsed.header, type(e).__name__, e,
             )
+            _safe_emit(on_event, "hunk", {
+                "file_idx": fi, "hunk_idx": hi, "ok": False,
+                "error": f"{type(e).__name__}: {e}",
+            })
+
+
+def _overview_event_payload(diff: AnnotatedDiff) -> dict[str, Any]:
+    """Build the `overview` SSE payload from the post-overview diff.
+
+    Carries the PR-level fields the viewer wants to update (summary,
+    themes, symbols, callgraph), the semantic groups the sidebar
+    filters by, and per-file summaries/symbols that show up in the
+    file header. Mirrors the relevant slices of `build_viewer_json`'s
+    output so the viewer can patch in place without re-fetching
+    `data.json`.
+    """
+    ov = diff.overview if isinstance(diff.overview, Overview) else None
+    path_to_file_idx = {fp.path: i for i, fp in enumerate(diff.files)}
+    groups: list[dict[str, Any]] = []
+    if ov is not None:
+        for gi, g in enumerate(ov.groups):
+            hunk_ids: list[str] = []
+            for m in g.members:
+                fi = path_to_file_idx.get(m.path)
+                if fi is None:
+                    continue
+                hunk_ids.append(f"H{fi}_{m.hunk_index}")
+            if not hunk_ids:
+                continue
+            groups.append({
+                "id": f"G{gi}", "title": g.title,
+                "rationale": g.rationale, "hunk_ids": hunk_ids,
+            })
+    file_patches = [
+        {
+            "file_idx": i,
+            "path": fp.path,
+            "summary": fp.ann.summary,
+            "language": fp.ann.lang or "",
+            "symbols": (
+                fp.ann.symbols.model_dump() if fp.ann.symbols
+                else {"added": [], "modified": [], "removed": []}
+            ),
+            "status": fp.ann.role.value if fp.ann.role else "modified",
+        }
+        for i, fp in enumerate(diff.files)
+    ]
+    return {
+        "pr": {
+            "summary": ov.summary if ov else "",
+            "themes": ov.themes if ov else [],
+            "symbols_added": [s.model_dump() for s in (ov.symbols_added if ov else [])],
+            "symbols_modified": [s.model_dump() for s in (ov.symbols_modified if ov else [])],
+            "symbols_removed": [s.model_dump() for s in (ov.symbols_removed if ov else [])],
+            "callgraph_edges": [
+                e.model_dump(by_alias=True) for e in (ov.callgraph_edges if ov else [])
+            ],
+        },
+        "groups": groups,
+        "files": file_patches,
+    }
+
+
+def _merge_hunk_results(
+    diff: AnnotatedDiff,
+    results: dict[tuple[int, int], HunkAnnotations],
+) -> AnnotatedDiff:
+    if not results:
+        return diff
+    new_files: list[AnnotatedFile] = []
+    for fi, fp in enumerate(diff.files):
+        new_hunks: list[AnnotatedHunk] = []
+        for hi, h in enumerate(fp.hunks):
+            ann = results.get((fi, hi))
+            if ann is None:
+                new_hunks.append(h)
+            else:
+                new_hunks.append(h.model_copy(update={"ann": ann}))
+        new_files.append(fp.model_copy(update={"hunks": new_hunks}))
+    return diff.model_copy(update={"files": new_files})
 
 
 def _attach_file_log(path: Path) -> None:

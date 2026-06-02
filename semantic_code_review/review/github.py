@@ -9,19 +9,22 @@ Three responsibilities:
 3. Post the inline comments collected by the viewer back to GitHub
    as a single `COMMENT`-event review.
 
-All GitHub I/O goes through the `gh` CLI subprocess so we don't take
-on a Python GitHub-client dependency. Auth and host config piggy-back
-on whatever `gh auth status` reports.
+All GitHub I/O goes through `git_ops`'s `gh` wrappers; auth and host
+config piggy-back on whatever `gh auth status` reports. Callers
+preflight `gh` once at the CLI boundary (`fetch.preflight_gh`).
 """
 
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess
+import logging
 import sys
 from dataclasses import dataclass
 from typing import Any, Iterable
+
+from .. import git_ops
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -51,10 +54,23 @@ class OpenPR:
 
 @dataclass(frozen=True)
 class PostedComment:
-    path: str
-    line: int
-    side: str    # "LEFT" or "RIGHT"
+    """One inline review comment, ready to feed into a GraphQL mutation.
+
+    Either *anchored* — ``path`` + ``line`` + ``side`` set, ``in_reply_to_node_id``
+    is None — for a new thread (becomes addPullRequestReviewThread), or a
+    *reply* — ``in_reply_to_node_id`` set, anchor fields None — to an
+    existing upstream comment (becomes addPullRequestReviewComment with
+    inReplyTo set). The GraphQL post pipeline dispatches per shape.
+    """
     body: str
+    path: str | None = None
+    line: int | None = None
+    side: str | None = None  # "LEFT" or "RIGHT" for anchored comments.
+    in_reply_to_node_id: str | None = None
+
+    @property
+    def is_reply(self) -> bool:
+        return self.in_reply_to_node_id is not None
 
 
 @dataclass(frozen=True)
@@ -67,24 +83,19 @@ class PostResult:
     posted: int
 
 
-class GhError(RuntimeError):
-    """Any non-zero exit from a `gh` subprocess we can't handle."""
-
-
-def require_gh() -> str:
-    """Resolve the `gh` binary path or raise GhError."""
-    path = shutil.which("gh")
-    if not path:
-        raise GhError(
-            "`gh` (GitHub CLI) not found on PATH. Install it from "
-            "https://cli.github.com/ or via your package manager."
-        )
-    return path
+# Public alias kept so callers that catch posting failures by name
+# don't need to import from git_ops.
+GhError = git_ops.GhError
 
 
 # ---------------------------------------------------------------------------
 # PR resolution
 # ---------------------------------------------------------------------------
+
+_LIST_FIELDS = [
+    "number", "title", "author", "headRefName", "baseRefName", "updatedAt", "url",
+]
+
 
 def list_review_requested_prs(repo: str) -> list[OpenPR]:
     """Open PRs in `repo` where the gh user is a requested reviewer.
@@ -93,18 +104,15 @@ def list_review_requested_prs(repo: str) -> list[OpenPR]:
     `review-requested:@me` which is exactly the filter we want and
     keeps the auth/host story inside `gh`.
     """
-    gh = require_gh()
-    cmd = [
-        gh, "pr", "list",
-        "--repo", repo,
+    rc, stdout, stderr = git_ops.gh_capture(
+        "pr", "list", "--repo", repo,
         "--search", "is:open review-requested:@me",
-        "--json", "number,title,author,headRefName,baseRefName,updatedAt,url",
+        "--json", ",".join(_LIST_FIELDS),
         "--limit", "100",
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    if proc.returncode != 0:
-        raise GhError(f"`gh pr list` failed: {proc.stderr.strip() or proc.stdout.strip()}")
-    raw = json.loads(proc.stdout or "[]")
+    )
+    if rc != 0:
+        raise GhError(f"`gh pr list` failed: {stderr.strip() or stdout.strip()}")
+    raw = json.loads(stdout or "[]")
     return [_open_pr_from_json(item) for item in raw]
 
 
@@ -165,77 +173,84 @@ def map_side(viewer_side: str) -> str:
     raise ValueError(f"unknown viewer side: {viewer_side!r}")
 
 
+def _comment_get(c: Any, key: str) -> Any:
+    return c.get(key) if isinstance(c, dict) else getattr(c, key, None)
+
+
 def comments_to_github(comments: Iterable[Any]) -> list[PostedComment]:
     """Map the viewer's `Comment` objects (or dicts) into the shape
-    GitHub's review-comments API accepts. We use the line+side form,
-    which is the recommended modern variant.
+    the GraphQL post pipeline expects.
+
+    Pass *all* comments (local + ingested) so reply lookups can find
+    their parent's ``node_id``. The returned list contains only the
+    new-local comments, dispatch-ready: anchored ``PostedComment`` for
+    new threads, ``in_reply_to_node_id``-set for replies.
+
+    Filtering rules:
+
+    - ``source != "local"`` drops out (ingested comments are already
+      on GitHub; re-posting would duplicate).
+    - Local comments with ``in_reply_to_id`` pointing at an ingested
+      parent that carries a ``node_id`` become reply entries.
+    - Local replies whose parent has no ``node_id`` (e.g. ingest
+      happened before the node_id field landed, or the parent itself
+      is a local draft) are skipped with a warning — there's nothing
+      upstream to thread to in a single post.
+    - Anything missing body / anchor is dropped quietly.
     """
+    all_list = list(comments)
+    by_id: dict[str, Any] = {}
+    for c in all_list:
+        cid = _comment_get(c, "id")
+        if isinstance(cid, str):
+            by_id[cid] = c
+
     out: list[PostedComment] = []
-    for c in comments:
-        path = getattr(c, "file", None) if not isinstance(c, dict) else c.get("file")
-        side = getattr(c, "side", None) if not isinstance(c, dict) else c.get("side")
-        line = getattr(c, "line", None) if not isinstance(c, dict) else c.get("line")
-        body = getattr(c, "body", None) if not isinstance(c, dict) else c.get("body")
-        if not path or side is None or line is None or not body:
-            # Dropped: a malformed entry shouldn't sink the whole post.
+    for c in all_list:
+        source = _comment_get(c, "source") or "local"
+        if source != "local":
+            continue
+        body = _comment_get(c, "body")
+        if not body:
+            continue
+        body_str = str(body)
+        parent_id = _comment_get(c, "in_reply_to_id")
+        if parent_id:
+            parent = by_id.get(str(parent_id))
+            if parent is None:
+                log.warning(
+                    "skipping local reply: parent %r not in the comment "
+                    "set — nothing to thread to", parent_id,
+                )
+                continue
+            parent_node = _comment_get(parent, "node_id")
+            if not parent_node:
+                log.warning(
+                    "skipping local reply: parent %r has no node_id "
+                    "(local draft or pre-ingest record) — can't reply "
+                    "in a single submission", parent_id,
+                )
+                continue
+            out.append(PostedComment(
+                body=body_str,
+                in_reply_to_node_id=str(parent_node),
+            ))
+            continue
+        path = _comment_get(c, "file")
+        side = _comment_get(c, "side")
+        line = _comment_get(c, "line")
+        if not path or side is None or line is None:
             continue
         out.append(PostedComment(
+            body=body_str,
             path=str(path),
             line=int(line),
             side=map_side(str(side)),
-            body=str(body),
         ))
     return out
 
 
-def post_inline_review(
-    repo: str,
-    number: int,
-    head_sha: str,
-    comments: Iterable[Any],
-    *,
-    event: str = "COMMENT",
-    body: str = "",
-) -> PostResult:
-    """POST a single review with all the inline comments grouped under
-    it. Always `event = "COMMENT"` for now (verdicts stay on
-    github.com — see plan non-goals); the parameter exists so future
-    flags can flip it without touching this signature.
-    """
-    gh = require_gh()
-    posted = comments_to_github(comments)
-    if not posted:
-        raise GhError("no postable comments after mapping (all entries malformed?)")
-    payload = {
-        "commit_id": head_sha,
-        "event": event,
-        "body": body,
-        "comments": [
-            {"path": c.path, "line": c.line, "side": c.side, "body": c.body}
-            for c in posted
-        ],
-    }
-    cmd = [
-        gh, "api", "-X", "POST",
-        f"repos/{repo}/pulls/{number}/reviews",
-        "--input", "-",
-    ]
-    proc = subprocess.run(
-        cmd,
-        input=json.dumps(payload),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if proc.returncode != 0:
-        # gh's stderr is usually informative; pass it through verbatim.
-        raise GhError(
-            f"`gh api` POST review failed (exit {proc.returncode}): "
-            f"{proc.stderr.strip() or proc.stdout.strip()}"
-        )
-    response = json.loads(proc.stdout or "{}")
-    return PostResult(
-        review_id=int(response.get("id", 0)),
-        review_url=str(response.get("html_url", "")),
-        posted=len(posted),
-    )
+# Posting comments back to GitHub lives in
+# :mod:`semantic_code_review.review.github_graphql` — the REST bulk-POST
+# endpoint we used here historically had a model gap (no "append to
+# existing review" operation) that GraphQL fills cleanly.

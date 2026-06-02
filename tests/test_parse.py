@@ -27,15 +27,17 @@ def _diff(body: str, *, old: int = 1, new: int = 1, trailer: str = "") -> str:
 
 def test_parses_minimal_diff() -> None:
     d = parse_augmented_diff(_diff("-x\n+y\n"))
-    assert d.files[0].hunks[0].old_count == 1
-    assert d.files[0].hunks[0].new_count == 1
-    assert d.files[0].hunks[0].body == "-x\n+y\n"
+    h = d.files[0].hunks[0]
+    assert h.parsed.old_count == 1
+    assert h.parsed.new_count == 1
+    assert h.parsed.body == "-x\n+y\n"
 
 
 def test_parses_empty_preamble_directive() -> None:
+    from semantic_code_review.augment.schemas import SkippedOverview
     # scr-pr is required; ensure we can still parse without overview/model.
     d = parse_augmented_diff(_diff("-x\n+y\n"))
-    assert d.overview is None
+    assert isinstance(d.overview, SkippedOverview)
     assert d.pr.model == ""
 
 
@@ -100,7 +102,7 @@ def test_rejects_malformed_hunk_header() -> None:
 def test_no_newline_marker_in_body() -> None:
     body = "-x\n+y\n\\ No newline at end of file\n"
     d = parse_augmented_diff(_diff(body))
-    assert d.files[0].hunks[0].body.endswith("\\ No newline at end of file\n")
+    assert d.files[0].hunks[0].parsed.body.endswith("\\ No newline at end of file\n")
 
 
 def test_continuation_joins_with_space() -> None:
@@ -115,4 +117,4 @@ def test_continuation_joins_with_space() -> None:
         "#scr>   Continued text.\n"
     )
     d = parse_augmented_diff(text)
-    assert d.files[0].hunks[0].intent == "First sentence. Continued text."
+    assert d.files[0].hunks[0].ann.intent == "First sentence. Continued text."

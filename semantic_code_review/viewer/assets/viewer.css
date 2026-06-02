@@ -82,7 +82,8 @@ body {
 .group-sidebar #app + & { /* never triggered, but documents: sidebar left of #app */ }
 .layout > main#app { flex: 1 1 auto; min-width: 0; }
 
-.group-sidebar-header h3 {
+.group-sidebar-header h3,
+.group-axis-header h3 {
   margin: 0 0 8px 2px;
   font-size: 11px;
   text-transform: uppercase;
@@ -90,6 +91,14 @@ body {
   color: var(--fg-muted);
   font-weight: 600;
 }
+
+/* Each grouping axis lives in its own stacked section so reviewers
+ * can scan every axis at once without flipping a tab. Themes sits
+ * above Files; the "Show all" button sits above both axes and
+ * clears whichever pill is active. */
+.group-axis { margin-bottom: 14px; }
+.group-axis:last-child { margin-bottom: 0; }
+.group-axis-header h3 { margin-top: 6px; }
 .group-btn {
   display: flex;
   align-items: center;
@@ -131,6 +140,29 @@ body {
 .group-btn.active .group-btn-count {
   background: var(--accent);
   color: var(--bg);
+}
+/* Comment-thread tally on Files-axis pills: unresolved/total. Sits
+ * next to the hunk-count badge. Muted when every thread is resolved;
+ * amber when there's outstanding discussion to chase. */
+.group-btn-comments {
+  flex: 0 0 auto;
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 11px;
+  min-width: 28px;
+  text-align: center;
+}
+.group-btn-comments.has-unresolved {
+  background: transparent;
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  padding: 0 5px;
+}
+.group-btn.active .group-btn-comments {
+  background: var(--bg);
+  color: var(--fg);
 }
 .group-btn-all {
   margin-bottom: 10px;
@@ -226,6 +258,55 @@ body {
   align-self: start;
 }
 .hunk-intent.empty { color: var(--fg-dim); font-style: italic; }
+.hunk-intent.pending {
+  color: var(--fg-dim); font-style: italic;
+  animation: scr-pulse 1.4s ease-in-out infinite;
+}
+.hunk-intent.queued { color: var(--fg-dim); font-style: italic; opacity: 0.7; }
+@keyframes scr-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+
+/* Progress strip — shown only while augmentation is streaming. */
+.scr-progress {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 6px 14px;
+  background: var(--bg-alt); border-bottom: 1px solid var(--border);
+  font-size: 12px; color: var(--fg-muted);
+}
+.scr-progress.hidden { display: none; }
+.scr-progress-summary { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.scr-progress-overview {
+  display: inline-block; padding: 1px 8px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--bg);
+}
+.scr-progress-overview[data-state="pending"] { color: var(--fg-muted); }
+.scr-progress-overview[data-state="running"] {
+  color: var(--accent); border-color: var(--accent);
+  animation: scr-pulse 1.4s ease-in-out infinite;
+}
+.scr-progress-overview[data-state="ok"]     { color: var(--ok);  border-color: var(--ok); }
+.scr-progress-overview[data-state="failed"] { color: var(--err); border-color: var(--err); }
+.scr-progress-hunks { color: var(--fg); font-weight: 500; }
+.scr-progress-detail { color: var(--fg-dim); }
+.scr-progress-grid {
+  display: flex; flex-wrap: wrap; gap: 3px;
+  padding-top: 2px;
+}
+.scr-progress-grid .sq {
+  width: 10px; height: 10px; border-radius: 2px;
+  background: var(--bg); border: 1px solid var(--border);
+  cursor: pointer;
+}
+.scr-progress-grid .sq[data-state="queued"]  { background: var(--bg); }
+.scr-progress-grid .sq[data-state="running"] {
+  background: var(--accent); border-color: var(--accent);
+  animation: scr-pulse 1.4s ease-in-out infinite;
+}
+.scr-progress-grid .sq[data-state="ok"]     { background: var(--ok);  border-color: var(--ok); }
+.scr-progress-grid .sq[data-state="failed"] { background: var(--err); border-color: var(--err); }
+.scr-progress-grid .sq:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .hunk-meta { grid-area: meta; display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
 .confidence {
   font-size: 11px; color: var(--fg-muted); padding: 1px 6px; border-radius: 10px;
@@ -463,6 +544,17 @@ body {
   color: var(--fg-dim);
   border-left-color: var(--fg-dim);
 }
+.diff .annot-box.pending {
+  color: var(--fg-muted);
+  border-left-color: var(--accent);
+  font-style: italic;
+  animation: scr-pulse 1.4s ease-in-out infinite;
+}
+.diff .annot-box.failed {
+  color: var(--err);
+  border-left-color: var(--err);
+  cursor: pointer;
+}
 
 /* Reviewer comment variant (amber/warn border so it stands out from the
  * blue LLM fold descriptions). */
@@ -479,6 +571,147 @@ body {
   max-height: none;
 }
 .comment-body { white-space: pre-wrap; font-size: 100%; }
+
+/* Header strip on ingested comments: avatar, @author, permalink. Pure
+ * local comments don't get a header (no `author`), so this only shows
+ * up on PR-sourced rows. */
+.comment-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.comment-avatar {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: block;
+}
+.comment-author { font-weight: 600; color: var(--fg); }
+.comment-permalink {
+  margin-left: auto;
+  text-decoration: none;
+  color: var(--fg-muted);
+}
+.comment-permalink:hover { color: var(--accent); }
+
+/* Anchor-status chip on the thread root. Surfaces when the original
+ * (commit_id, line) had to be propagated to head — "was line 42",
+ * "line removed since abc1234", etc. Compact + low-key so it doesn't
+ * compete with the author name. */
+.comment-anchor-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  font-size: 10px;
+  text-transform: lowercase;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  background: var(--bg-panel);
+}
+.comment-anchor-chip.chip-shifted   { border-color: var(--accent); color: var(--accent); }
+.comment-anchor-chip.chip-orphaned,
+.comment-anchor-chip.chip-file_gone {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.comment-anchor-chip.chip-commit_unavailable {
+  border-color: var(--err);
+  color: var(--err);
+}
+
+/* GitHub-rendered body: drop the pre-wrap white-space rule so block
+ * elements (<p>, <pre>, <ul>) lay out naturally. */
+.comment-body.comment-body-html { white-space: normal; }
+.comment-body.comment-body-html p { margin: 0 0 6px; }
+.comment-body.comment-body-html p:last-child { margin-bottom: 0; }
+.comment-body.comment-body-html pre {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 4px 6px;
+  overflow-x: auto;
+  font-size: 12px;
+}
+.comment-body.comment-body-html code {
+  font-family: var(--mono);
+  background: var(--bg-panel);
+  padding: 0 3px;
+  border-radius: 2px;
+}
+.comment-body.comment-body-html pre code {
+  background: transparent;
+  padding: 0;
+}
+.comment-body.comment-body-html blockquote {
+  margin: 0 0 6px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+  color: var(--fg-muted);
+}
+.comment-body.comment-body-html a { color: var(--accent); }
+.comment-body.comment-body-html img { max-width: 100%; }
+
+/* Thread block: all comments at one anchor share a single annotation
+ * box and arrow. Replies are indented inside that box rather than
+ * occupying their own annotation rows. */
+.comment-thread { display: flex; flex-direction: column; gap: 8px; }
+.comment-thread-entry {
+  /* Stacked entries get a divider between them so individual comments
+   * read as distinct without each needing its own box. */
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+.comment-thread-entry:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+/* Replies aren't visually indented — the thread is a flat stack and
+ * the divider between entries is enough. (The .comment-thread-reply
+ * class still attaches for any future treatment that wants to target
+ * replies specifically.) */
+.comment-thread-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+.comment-btn-reply { padding: 2px 10px; }
+
+/* Resolved thread: collapsed header bar at the top of the thread block.
+ * The annot-box still surrounds the whole thread; the header is just
+ * the first child, with a softer tone so a wall of resolved threads
+ * doesn't shout. */
+.diff .annot-comment-resolved .annot-box {
+  border-left-color: var(--fg-muted);
+}
+.comment-thread-resolved-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 0;
+  cursor: pointer;
+  text-align: left;
+}
+.comment-thread-resolved-header:hover {
+  color: var(--fg);
+}
+.comment-thread-chev { width: 1em; display: inline-block; text-align: center; }
+.comment-thread-resolved-tag {
+  color: var(--ok, #6cf09e);
+  font-weight: 600;
+}
+.comment-thread-resolved-meta { color: var(--fg-muted); }
 
 /* The comment editor should not inherit the annot-box width/height
  * clamps — it grows freely with the user's text. */
@@ -604,11 +837,19 @@ body {
 .gap-expansion .gap-collapse:hover { color: var(--fg); border-color: var(--accent); }
 
 /* --- Status bar ----------------------------------------------------------- */
+/* `position: sticky; bottom: 0` only pins relative to a scrolling
+ * ancestor, not the viewport — for a body-level footer it just sits
+ * at the end of the document flow. Use `fixed` to anchor it to the
+ * viewport bottom regardless of scroll position, and reserve space
+ * with body padding so the last content row isn't hidden behind it. */
 .status-bar {
-  position: sticky; bottom: 0; background: var(--bg-alt); border-top: 1px solid var(--border);
+  position: fixed; bottom: 0; left: 0; right: 0;
+  background: var(--bg-alt); border-top: 1px solid var(--border);
   padding: 6px 16px; color: var(--fg-muted); font-size: 12px;
   display: flex; gap: 16px;
+  z-index: 40;
 }
+body { padding-bottom: 30px; }
 
 /* --- Help overlay --------------------------------------------------------- */
 .help-overlay {

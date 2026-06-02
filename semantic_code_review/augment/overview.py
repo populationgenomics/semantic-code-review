@@ -2,26 +2,32 @@
 
 Input: PR metadata + diffstat + per-file hunk headers (bodies omitted
 to save tokens). Output: the `Overview` object plus per-file summary
-text and optional `lang` override that populate `FilePatch` fields.
+text and optional `lang` override that populate `FileAnnotations` fields.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from ..augment.schemas import (
-    AugmentedDiff, FilePatch, FileSymbols, Overview, OverviewEdge,
-    OverviewGroup, OverviewGroupMember, OverviewSymbol,
+    AnnotatedDiff, AnnotatedFile, FileAnnotations, FileSymbols, Overview,
+    OverviewEdge, OverviewGroup, OverviewGroupMember, OverviewSymbol,
 )
 from ..cache.store import CacheStore
-from .agents import Backend, make_overview_agent
+from .agents import Client, make_overview_agent
 from .prompts import OVERVIEW_SYSTEM, PROMPT_VERSION
-from .trace_adapter import submit_args_from_result, write_pydantic_ai_trace
+from .trace_adapter import (
+    submit_args_from_result, write_partial_trace, write_pydantic_ai_trace,
+)
 
 
-def format_overview_prompt(diff: AugmentedDiff, meta: dict[str, Any]) -> str:
+log = logging.getLogger(__name__)
+
+
+def format_overview_prompt(diff: AnnotatedDiff, meta: dict[str, Any]) -> str:
     """Produce the user-message text for the overview call."""
     parts: list[str] = []
     title = meta.get("title", "")
@@ -35,11 +41,8 @@ def format_overview_prompt(diff: AugmentedDiff, meta: dict[str, Any]) -> str:
 
     parts.append("# Diffstat")
     for f in diff.files:
-        adds = sum(1 for ln in f.hunks[0].body.splitlines() if ln.startswith("+")) if f.hunks else 0
-        dels = sum(1 for ln in f.hunks[0].body.splitlines() if ln.startswith("-")) if f.hunks else 0
-        # more accurate: sum across hunks
-        adds = sum(sum(1 for ln in h.body.splitlines() if ln.startswith("+")) for h in f.hunks)
-        dels = sum(sum(1 for ln in h.body.splitlines() if ln.startswith("-")) for h in f.hunks)
+        adds = sum(sum(1 for ln in h.parsed.body.splitlines() if ln.startswith("+")) for h in f.hunks)
+        dels = sum(sum(1 for ln in h.parsed.body.splitlines() if ln.startswith("-")) for h in f.hunks)
         parts.append(f"  {f.path}  +{adds} -{dels}  ({len(f.hunks)} hunks)")
 
     # Each hunk header is prefixed with its 0-based `hunk_index` within
@@ -49,15 +52,15 @@ def format_overview_prompt(diff: AugmentedDiff, meta: dict[str, Any]) -> str:
     for f in diff.files:
         parts.append(f"{f.path}")
         for i, h in enumerate(f.hunks):
-            parts.append(f"  [{i}] {h.header}")
+            parts.append(f"  [{i}] {h.parsed.header}")
 
     return "\n".join(parts) + "\n"
 
 
 async def run_overview_pass(
-    backend: Backend,
+    client: Client,
     *,
-    diff: AugmentedDiff,
+    diff: AnnotatedDiff,
     meta: dict[str, Any],
     model: str,
     cache: CacheStore | None = None,
@@ -76,14 +79,32 @@ async def run_overview_pass(
 
     trace_path = (trace_dir / "overview.json") if trace_dir is not None else None
 
-    agent = make_overview_agent(backend.model)
-    run_result = await agent.run(user_text)
+    agent = make_overview_agent(client.model)
+    # See `hunks.run_hunk_pass` for the rationale on driving the run
+    # via `iter()` rather than `run()` — partial trace on failure.
+    async with agent.iter(user_text) as agent_run:
+        try:
+            async for _ in agent_run:
+                pass
+        except BaseException as exc:
+            if trace_path is not None:
+                write_partial_trace(
+                    list(agent_run.all_messages()),
+                    trace_path=trace_path,
+                    model=str(client.model),
+                    system=OVERVIEW_SYSTEM,
+                    tool_names=[],
+                    submit_tool="submit_overview",
+                    error=exc,
+                )
+            raise
+        run_result = agent_run.result
     submit_args = submit_args_from_result(run_result)
     if trace_path is not None:
         write_pydantic_ai_trace(
             run_result,
             trace_path=trace_path,
-            model=str(backend.model),
+            model=str(client.model),
             system=OVERVIEW_SYSTEM,
             tool_names=[],
             submit_tool="submit_overview",
@@ -112,9 +133,16 @@ def _write_cache_hit_marker(path: Path, pass_name: str, entry: dict[str, Any]) -
     )
 
 
-def apply_overview_to_diff(diff: AugmentedDiff, submit_args: dict[str, Any]) -> None:
-    """Fold a submit_overview payload into an AugmentedDiff in place."""
-    diff.overview = Overview(
+def apply_overview_to_diff(diff: AnnotatedDiff, submit_args: dict[str, Any]) -> AnnotatedDiff:
+    """Fold a submit_overview payload into an AnnotatedDiff. Returns a new
+    AnnotatedDiff; `diff` is not mutated.
+
+    Per-file fields named in the submission overwrite existing
+    `FileAnnotations.summary`/`lang`/`symbols`; files not named are
+    untouched (preserving e.g. the `GENERATED` role pre-set by the
+    pipeline for skipped files).
+    """
+    overview = Overview(
         summary=submit_args.get("summary", ""),
         symbols_added=[OverviewSymbol(**s) for s in submit_args.get("symbols_added", [])],
         symbols_modified=[OverviewSymbol(**s) for s in submit_args.get("symbols_modified", [])],
@@ -124,33 +152,33 @@ def apply_overview_to_diff(diff: AugmentedDiff, submit_args: dict[str, Any]) -> 
         groups=_resolve_groups(diff, submit_args.get("groups") or []),
     )
     by_path = {f["path"]: f for f in submit_args.get("files", [])}
+    new_files: list[AnnotatedFile] = []
     for fp in diff.files:
         entry = by_path.get(fp.path)
         if entry is None:
+            new_files.append(fp)
             continue
-        fp.summary = entry.get("summary", "")
-        lang = entry.get("lang")
-        if lang:
-            fp.lang = lang
         sym = entry.get("symbols")
-        if isinstance(sym, dict):
-            fp.symbols = FileSymbols(
+        ann = fp.ann.model_copy(update={
+            "summary": entry.get("summary", ""),
+            **({"lang": entry["lang"]} if entry.get("lang") else {}),
+            **({"symbols": FileSymbols(
                 added=list(sym.get("added", [])),
                 modified=list(sym.get("modified", [])),
                 removed=list(sym.get("removed", [])),
-            )
+            )} if isinstance(sym, dict) else {}),
+        })
+        new_files.append(fp.model_copy(update={"ann": ann}))
+    return diff.model_copy(update={"overview": overview, "files": new_files})
 
 
-def _resolve_groups(diff: AugmentedDiff, raw_groups: list[dict[str, Any]]) -> list[OverviewGroup]:
+def _resolve_groups(diff: AnnotatedDiff, raw_groups: list[dict[str, Any]]) -> list[OverviewGroup]:
     """Build OverviewGroup instances from raw submit_overview payload.
 
     Members whose (path, hunk_index) don't resolve to a real hunk in
-    the diff are dropped with a warning, the same defensive pattern
-    hunks.py uses for out-of-range segments. A group whose members
-    all get dropped is itself dropped.
+    the diff are dropped with a warning. A group whose members all get
+    dropped is itself dropped.
     """
-    import logging
-    log = logging.getLogger(__name__)
     hunks_per_path: dict[str, int] = {fp.path: len(fp.hunks) for fp in diff.files}
 
     out: list[OverviewGroup] = []

@@ -1,70 +1,49 @@
-"""PR fetch stage: gh + sparse worktrees."""
+"""Sources that produce a [[run-directory]] from some input.
+
+Two sources today, behind a shared shape:
+
+* :mod:`semantic_code_review.fetch.github` — GitHub PR URL → run dir
+  (gh subprocess + fresh bare clone).
+* :mod:`semantic_code_review.fetch.local` — git ref/range against the
+  cwd repo → run dir (existing-repo worktrees, optional working-state
+  symlink for head).
+
+Both build a `RunSpec` (the shared shape, see `.run_source`); each
+adds per-source worktree mechanics. The high-level entry points
+``materialize_github_pr_run`` and ``materialize_local_diff_run``
+return a run-directory path for callers that just want one.
+"""
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass
-from pathlib import Path
-
-from .gh import (
-    GhFetchError, PRRef, fetch_pr_diff, fetch_pr_meta, parse_pr_url,
-    preflight_gh,
+from .github import (
+    GhFetchError, GhMissingError,
+    GithubResolved, PRRef,
+    materialize_github_pr_run,
+    parse_pr_url, preflight_gh,
+    resolve_github_pr, setup_github_worktrees,
 )
-from .worktree import init_worktrees, run_dir_name
-
-
-@dataclass
-class FetchResult:
-    run_dir: Path
-    ref: PRRef
-    meta: dict
-    base_sha: str
-    head_sha: str
-    base_worktree: Path
-    head_worktree: Path
-    raw_diff_path: Path
-
-
-def fetch(pr_url: str, runs_root: Path) -> FetchResult:
-    """Fetch PR metadata, diff, and worktrees into the runs root.
-
-    Returns paths to the artefacts. Idempotent: re-running with the same
-    head SHA does not re-download.
-    """
-    ref = parse_pr_url(pr_url)
-    meta = fetch_pr_meta(ref)
-    base_sha = meta["baseRefOid"]
-    head_sha = meta["headRefOid"]
-
-    run_dir = runs_root / run_dir_name(ref, head_sha)
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    (run_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-
-    raw_diff_path = run_dir / "raw.diff"
-    if not raw_diff_path.exists():
-        diff = fetch_pr_diff(ref)
-        raw_diff_path.write_text(diff, encoding="utf-8")
-
-    files_txt = run_dir / "files.txt"
-    paths = [f["path"] for f in meta.get("files", [])]
-    files_txt.write_text("\n".join(paths) + "\n", encoding="utf-8")
-
-    base_wt, head_wt = init_worktrees(run_dir, ref, base_sha, head_sha)
-
-    return FetchResult(
-        run_dir=run_dir,
-        ref=ref,
-        meta=meta,
-        base_sha=base_sha,
-        head_sha=head_sha,
-        base_worktree=base_wt,
-        head_worktree=head_wt,
-        raw_diff_path=raw_diff_path,
-    )
+from .local import (
+    EmptyDiff, LocalDiffError,
+    LocalResolved,
+    materialize_local_diff_run,
+    resolve_local_diff, setup_local_worktrees,
+)
+from .run_source import RunSpec, materialize_run_metadata
 
 
 __all__ = [
-    "FetchResult", "GhFetchError", "PRRef",
-    "fetch", "parse_pr_url", "preflight_gh",
+    # Shared shape
+    "RunSpec", "materialize_run_metadata",
+    # GitHub-PR source
+    "GhFetchError", "GhMissingError",
+    "GithubResolved", "PRRef",
+    "materialize_github_pr_run",
+    "parse_pr_url", "preflight_gh",
+    "resolve_github_pr", "setup_github_worktrees",
+    # Local-diff source
+    "EmptyDiff", "LocalDiffError",
+    "LocalResolved",
+    "materialize_local_diff_run",
+    "resolve_local_diff", "setup_local_worktrees",
 ]

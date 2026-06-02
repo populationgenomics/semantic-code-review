@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="scr-session-endpoint" content="">
+  <title>Semantic Code Review</title>
+  <link rel="stylesheet" media="(prefers-color-scheme: dark)" href="/static/vendor/github-dark.min.css">
+  <link rel="stylesheet" media="(prefers-color-scheme: light)" href="/static/vendor/github.min.css">
+  <link rel="stylesheet" href="/static/viewer.css">
+</head>
+<body>
+  <header class="pr-bar">
+    <div class="pr-title">
+      <span class="pr-meta"></span>
+    </div>
+    <div class="fold-slider" role="tablist" aria-label="Fold level">
+      <button data-fold="files" title="Collapse to files (1)">Files</button>
+      <button data-fold="hunks" title="Collapse to hunks (2)">Hunks</button>
+      <button data-fold="segments" title="Collapse to segments (3)">Segments</button>
+      <button data-fold="off" title="Fully expanded (4)">Off</button>
+    </div>
+    <button id="reset-btn" class="reset-btn" title="Clear per-region overrides">Reset</button>
+    <button id="help-btn" class="help-btn" title="Help (?)" aria-label="Help">?</button>
+  </header>
+
+  <div id="scr-progress" class="scr-progress hidden" aria-live="polite">
+    <div class="scr-progress-summary">
+      <span class="scr-progress-overview" data-state="pending">Overview</span>
+      <span class="scr-progress-hunks">Hunks <span class="scr-progress-done">0</span>/<span class="scr-progress-total">0</span></span>
+      <span class="scr-progress-detail">
+        (<span class="scr-progress-running">0</span> running &middot;
+        <span class="scr-progress-queued">0</span> queued &middot;
+        <span class="scr-progress-failed">0</span> failed)
+      </span>
+    </div>
+    <div class="scr-progress-grid" role="list" aria-label="Hunk progress"></div>
+  </div>
+
+  <div class="layout">
+    <aside id="group-sidebar" class="group-sidebar"></aside>
+    <main id="app"></main>
+  </div>
+
+  <footer id="status-bar" class="status-bar"></footer>
+
+  <div id="help-overlay" class="help-overlay hidden" role="dialog" aria-label="Help">
+    <div class="help-card">
+      <h3>Keyboard shortcuts</h3>
+      <p><kbd>1</kbd> fold to files &middot; <kbd>2</kbd> hunks &middot; <kbd>3</kbd> segments &middot; <kbd>4</kbd> expand</p>
+      <p><kbd>?</kbd> toggle this help &middot; <kbd>Esc</kbd> close</p>
+      <p>Click any region header to toggle its fold state independently.
+         "Reset" clears per-region overrides and applies the global fold level.</p>
+    </div>
+  </div>
+
+  <script src="/static/vendor/highlight.min.js"></script>
+  <script src="/static/viewer.js"></script>
+</body>
+</html>

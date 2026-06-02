@@ -1,4 +1,4 @@
-"""Emit a structured `AugmentedDiff` as augmented-unified-diff text.
+"""Emit a structured `AnnotatedDiff` as augmented-unified-diff text.
 
 Canonical form: deterministic byte output for any structured input, so
 `parse(emit(x)) == x` and `emit(parse(y)) == y` when y is already canonical.
@@ -18,12 +18,12 @@ import textwrap
 from typing import Any
 
 from ..augment.schemas import (
-    AugmentedDiff,
-    FilePatch,
-    FoldDescription,
-    Hunk,
+    AnnotatedDiff,
+    AnnotatedFile,
+    AnnotatedHunk,
     Overview,
     Segment,
+    SkippedOverview,
     Smell,
 )
 
@@ -32,7 +32,7 @@ _MAX_WIDTH = 100  # total characters per emitted line
 _WRAP_WIDTH = 92  # body width for wrapped text directives
 
 
-def emit_augmented_diff(diff: AugmentedDiff) -> str:
+def emit_augmented_diff(diff: AnnotatedDiff) -> str:
     out: list[str] = []
     out.extend(_emit_preamble(diff))
     for f in diff.files:
@@ -40,7 +40,7 @@ def emit_augmented_diff(diff: AugmentedDiff) -> str:
     return "\n".join(out) + "\n"
 
 
-def _emit_preamble(diff: AugmentedDiff) -> list[str]:
+def _emit_preamble(diff: AnnotatedDiff) -> list[str]:
     lines: list[str] = []
     lines.extend(_text("scr-version", str(diff.version)))
     lines.extend(_text("scr-pr", diff.pr.pr_url))
@@ -48,7 +48,7 @@ def _emit_preamble(diff: AugmentedDiff) -> list[str]:
     lines.extend(_text("scr-head", diff.pr.head_sha))
     if diff.pr.model:
         lines.extend(_text("scr-model", diff.pr.model))
-    if diff.overview is not None:
+    if isinstance(diff.overview, Overview):
         lines.extend(_json("scr-overview", _overview_to_jsonable(diff.overview)))
     return lines
 
@@ -64,49 +64,59 @@ def _overview_to_jsonable(ov: Overview) -> dict[str, Any]:
     }
 
 
-def _emit_file(f: FilePatch) -> list[str]:
+def _emit_file(f: AnnotatedFile) -> list[str]:
     lines: list[str] = [f.diff_git_line]
     lines.extend(f.extra_header_lines)
     if f.old_file_marker:
         lines.append(f.old_file_marker)
     if f.new_file_marker:
         lines.append(f.new_file_marker)
-    if f.summary:
-        lines.extend(_text("scr-file-summary", f.summary))
-    if f.role is not None:
-        lines.extend(_text("scr-file-role", f.role.value))
-    if f.lang:
-        lines.extend(_text("scr-file-lang", f.lang))
-    if f.symbols is not None:
-        lines.extend(_json("scr-file-symbols", f.symbols.model_dump()))
+    ann = f.ann
+    if ann.summary:
+        lines.extend(_text("scr-file-summary", ann.summary))
+    if ann.role is not None:
+        lines.extend(_text("scr-file-role", ann.role.value))
+    if ann.lang:
+        lines.extend(_text("scr-file-lang", ann.lang))
+    if ann.symbols is not None:
+        lines.extend(_json("scr-file-symbols", ann.symbols.model_dump()))
     for h in f.hunks:
         lines.extend(_emit_hunk(h))
     return lines
 
 
-def _emit_hunk(h: Hunk) -> list[str]:
-    lines: list[str] = [h.header]
-    body = h.body
+def _emit_hunk(h: AnnotatedHunk) -> list[str]:
+    lines: list[str] = [h.parsed.header]
+    body = h.parsed.body
     if body.endswith("\n"):
         body = body[:-1]
     if body:
         lines.extend(body.split("\n"))
-    if h.intent:
-        lines.extend(_text("scr-hunk-intent", h.intent))
-    for s in h.smells:
+    ann = h.ann
+    if ann.intent:
+        lines.extend(_text("scr-hunk-intent", ann.intent))
+    for s in ann.smells:
         lines.extend(_text("scr-hunk-smell", _smell_value(s)))
-    if h.context:
-        lines.extend(_text("scr-hunk-context", h.context))
-    if h.refs:
-        lines.extend(_json("scr-hunk-refs", [r.model_dump() for r in h.refs]))
-    if h.confidence is not None:
-        lines.extend(_text("scr-hunk-confidence", str(h.confidence)))
-    for seg in h.segments:
+    if ann.context:
+        lines.extend(_text("scr-hunk-context", ann.context))
+    if ann.refs:
+        lines.extend(_json("scr-hunk-refs", [r.model_dump() for r in ann.refs]))
+    if ann.confidence is not None:
+        lines.extend(_text("scr-hunk-confidence", str(ann.confidence)))
+    for seg in ann.segments:
         lines.extend(_emit_segment(seg))
-    for fd in h.fold_descriptions:
-        end = fd.new_start + fd.new_count - 1
-        lines.extend(_text("scr-fold", f'+{fd.new_start}..+{end} "{fd.summary}"'))
-    for ln in h.line_notes:
+    for fd in ann.fold_descriptions:
+        if fd.context == "right":
+            body = f'right {fd.right_start}..{fd.right_end} "{fd.summary}"'
+        elif fd.context == "left":
+            body = f'left {fd.left_start}..{fd.left_end} "{fd.summary}"'
+        else:  # both
+            body = (
+                f'both R{fd.right_start}..{fd.right_end} '
+                f'L{fd.left_start}..{fd.left_end} "{fd.summary}"'
+            )
+        lines.extend(_text("scr-fold", body))
+    for ln in ann.line_notes:
         lines.extend(_text("scr-line", f'+{ln.line} "{ln.body}"'))
     return lines
 

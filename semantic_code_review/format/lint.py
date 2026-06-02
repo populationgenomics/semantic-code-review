@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..augment.schemas import SMELL_TAGS, AugmentedDiff
+from ..augment.schemas import SMELL_TAGS, AnnotatedDiff
 from .emit import emit_augmented_diff
 from .parse import parse_augmented_diff
 from .sidecar import load_sidecar
@@ -57,14 +57,14 @@ def lint_text(text: str, sidecar_path: Path | None = None) -> LintResult:
     return result
 
 
-def _check_smell_tags(diff: AugmentedDiff, result: LintResult) -> None:
+def _check_smell_tags(diff: AnnotatedDiff, result: LintResult) -> None:
     for f in diff.files:
         for h in f.hunks:
-            for s in h.smells:
+            for s in h.ann.smells:
                 if s.tag not in SMELL_TAGS:
                     result.ok = False
-                    result.errors.append(f"unknown smell tag {s.tag!r} on hunk {h.header}")
-            for seg in h.segments:
+                    result.errors.append(f"unknown smell tag {s.tag!r} on hunk {h.parsed.header}")
+            for seg in h.ann.segments:
                 for s in seg.smells:
                     if s.tag not in SMELL_TAGS:
                         result.ok = False

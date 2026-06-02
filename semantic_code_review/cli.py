@@ -11,8 +11,8 @@ from pathlib import Path
 import typer
 
 from .cache.store import CacheStore
-from .config import BackendType, ConfigError, ScrConfig
-from .fetch import fetch as fetch_pr
+from .config import ConfigError, ScrConfig
+from .fetch import materialize_github_pr_run
 from .format.lint import lint_text
 from .format.parse import parse_augmented_diff
 from .format.strip import strip_annotations
@@ -81,6 +81,8 @@ _load_dotenv()
 # shell env > .env > config[env]. Each layer uses `setdefault` so the
 # closer one wins. `_CONFIG` itself drives backend/model resolution
 # (per-flag, see `_select_client` and command bodies).
+# `_select_client` is a thin shim over `backends.get(...).resolve(...)` —
+# the dispatch lives in `semantic_code_review.backends`.
 try:
     _CONFIG = ScrConfig.load()
 except ConfigError as e:
@@ -113,311 +115,18 @@ def _configure_logging(verbose: bool) -> None:
         h.setLevel(level)
 
 
-_DEFAULT_GEMINI_API_MODEL = "gemini-2.5-pro"
-
-
-def _backend_choices() -> str:
-    return ", ".join(sorted(["auto", *_CONFIG.backends.keys()]))
-
-
 def _select_client(backend: str, *, model: str):
-    """Pick a backend handle based on env + explicit choice.
-
-    Returns a `Backend` regardless of the path: SDK backends carry a
-    pydantic-ai model id string, CLI backends carry a `Model` subclass
-    that wraps the `claude -p` / `gemini -p` subprocess client. The
-    pipeline calls `make_*_agent(backend.model)` either way.
+    """Resolve a backend name to a `Client` for the augment pipeline.
 
     `backend` is "auto" or any name in `_CONFIG.backends` (builtins +
-    user-defined `[backends.<name>]` entries). "auto" picks claude-api
-    if `ANTHROPIC_API_KEY` is set, else claude-cli if `claude` is on
-    PATH, else raises. Both Gemini backends are opt-in only.
+    user-defined `[backends.<name>]` entries). All dispatch lives in
+    `semantic_code_review.backends`; this is the CLI's only entry point.
     """
+    from . import backends as _backends
+
     if backend == "auto":
-        backend = _resolve_auto_backend()
-
-    bdef = _CONFIG.backends.get(backend)
-    if bdef is None:
-        raise typer.BadParameter(
-            f"unknown backend {backend!r}; expected one of: {_backend_choices()}."
-        )
-
-    btype = bdef.type
-    if btype is BackendType.ANTHROPIC_SDK:
-        return _make_anthropic_sdk_backend(backend, model, bdef)
-    if btype is BackendType.CLAUDE_CLI:
-        return _make_claude_cli_backend(backend, model)
-    if btype is BackendType.GOOGLE_SDK:
-        return _make_google_sdk_backend(backend, model, bdef)
-    if btype is BackendType.GEMINI_CLI:
-        return _make_gemini_cli_backend(backend, model, bdef.default_model)
-    if btype is BackendType.OPENAI_COMPAT:
-        return _make_openai_compat_backend(backend, model, bdef)
-    raise typer.BadParameter(f"backend {backend!r} has unknown type {btype!r}")
-
-
-def _resolve_auto_backend() -> str:
-    import shutil as _shutil
-
-    bdef = _CONFIG.backends.get("claude-api")
-    if bdef is not None and (bdef.api_key_env or bdef.api_key_command):
-        try:
-            _resolve_api_key("claude-api", bdef)
-        except typer.BadParameter:
-            pass
-        else:
-            return "claude-api"
-    if _shutil.which("claude"):
-        return "claude-cli"
-    raise typer.BadParameter(
-        "No Anthropic credentials available: set ANTHROPIC_API_KEY "
-        "(or ANTHROPIC_API_TOKEN in .env), install the `claude` CLI "
-        "for subscription-based fallback, or pass --backend=gemini-cli "
-        "(CLI subprocess) / --backend=gemini-api (Google SDK) to opt "
-        "into a Gemini backend."
-    )
-
-
-def _make_anthropic_sdk_backend(name: str, model: str, bdef):
-    from .augment.agents import Backend
-
-    _resolve_and_inject_key(name, bdef, sdk_env="ANTHROPIC_API_KEY")
-    return Backend(model=f"anthropic:{model}")
-
-
-def _make_claude_cli_backend(name: str, model: str):
-    import shutil as _shutil
-
-    from .augment.agents import Backend
-    from .augment.cli_models import ClaudeCLIModel
-
-    if not _shutil.which("claude"):
-        raise typer.BadParameter(
-            f"--backend={name} but `claude` is not on PATH "
-            "(install Claude Code CLI or set ANTHROPIC_API_KEY)."
-        )
-    _warn_cli_fallback()
-    return Backend(model=ClaudeCLIModel(model=model), is_subprocess_backend=True)
-
-
-def _make_google_sdk_backend(name: str, model: str, bdef):
-    from .augment.agents import Backend
-
-    gem_model = _coerce_gemini_model(model, bdef.default_model)
-    # GOOGLE_CLOUD_PROJECT short-circuits to Vertex via ADC and skips
-    # API-key resolution entirely — Vertex doesn't use a bearer token,
-    # ADC does. Only when there's no GCP project do we need a key.
-    if os.environ.get("GOOGLE_CLOUD_PROJECT"):
-        return Backend(model=f"google-vertex:{gem_model}")
-
-    if bdef.api_key_env or bdef.api_key_command:
-        _resolve_and_inject_key(name, bdef, sdk_env="GEMINI_API_KEY")
-    elif not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
-        raise typer.BadParameter(
-            f"--backend={name} but no Gemini credentials found. "
-            "Set GEMINI_API_KEY (AI Studio), GOOGLE_API_KEY, or "
-            "GOOGLE_CLOUD_PROJECT (Vertex via ADC)."
-        )
-    return Backend(model=f"google-gla:{gem_model}")
-
-
-def _make_gemini_cli_backend(name: str, model: str, default_model: str | None):
-    import shutil as _shutil
-
-    from .augment.agents import Backend
-    from .augment.cli_models import GeminiCLIModel
-
-    if not _shutil.which("gemini"):
-        raise typer.BadParameter(
-            f"--backend={name} but `gemini` is not on PATH "
-            "(install via `npm install -g @google/gemini-cli`)."
-        )
-    if not (
-        os.environ.get("GEMINI_API_KEY")
-        or os.environ.get("GOOGLE_API_KEY")
-        or (Path.home() / ".gemini" / "oauth_creds.json").exists()
-    ):
-        raise typer.BadParameter(
-            f"--backend={name} but no Gemini credentials found. Set "
-            "GEMINI_API_KEY (AI Studio) or GOOGLE_API_KEY (Vertex), "
-            "or run `gemini` once interactively to complete the "
-            "OAuth flow."
-        )
-    _warn_gemini_fallback()
-    gem_model = _coerce_gemini_model(model, default_model)
-    return Backend(
-        model=GeminiCLIModel(model=gem_model),
-        is_subprocess_backend=True,
-    )
-
-
-def _make_openai_compat_backend(name: str, model: str, bdef):
-    from .augment.agents import Backend
-    from .config import BackendDef
-
-    assert isinstance(bdef, BackendDef)
-    if not bdef.base_url:
-        raise typer.BadParameter(
-            f"--backend={name} (type=openai-compat) has no base_url; "
-            f"set [backends.{name}] base_url in config."
-        )
-    if bdef.api_key_env or bdef.api_key_command:
-        api_key = _resolve_api_key(name, bdef)
-    else:
-        # Local servers (Ollama, llama.cpp) typically require *some*
-        # non-empty bearer; use a sentinel that's clearly not a key.
-        api_key = "not-needed"
-
-    from pydantic_ai.models.openai import OpenAIChatModel
-    from pydantic_ai.providers.openai import OpenAIProvider
-
-    return Backend(
-        model=OpenAIChatModel(
-            model_name=model,
-            provider=OpenAIProvider(base_url=bdef.base_url, api_key=api_key),
-        ),
-        # Not a CLI subprocess — this stays False so the in-loop repo
-        # tools and full pydantic-ai message flow remain enabled.
-        is_subprocess_backend=False,
-    )
-
-
-def _resolve_and_inject_key(name: str, bdef, *, sdk_env: str) -> None:
-    """Resolve via env-or-command, then write into the env var the SDK reads.
-
-    SDK backends (Anthropic, Google SDK) read their credential from a
-    fixed env var on construction; pydantic-ai's `anthropic:<model>` /
-    `google-gla:<model>` strings give us no way to inject a key
-    explicitly, so we set the env var for them. When `bdef.api_key_env`
-    matches `sdk_env` (the common case, since the builtins set them
-    to the same name), the write is idempotent.
-
-    Raises if neither env nor command is configured AND `sdk_env` is
-    not already set in the environment — same precondition the legacy
-    inline code enforced.
-    """
-    if not (bdef.api_key_env or bdef.api_key_command):
-        if not os.environ.get(sdk_env):
-            raise typer.BadParameter(
-                f"--backend={name} but ${sdk_env} is not set "
-                "(load a .env or export the variable)."
-            )
-        return
-    key = _resolve_api_key(name, bdef)
-    target = bdef.api_key_env or sdk_env
-    os.environ[target] = key
-    # Also mirror to the canonical env var the SDK reads, in case the
-    # user pointed api_key_env at a custom name.
-    if target != sdk_env:
-        os.environ[sdk_env] = key
-
-
-def _resolve_api_key(name: str, bdef) -> str:
-    """Resolve a backend's bearer credential.
-
-    Order: `api_key_env` (if set and non-empty) → `api_key_command`
-    stdout (if set and exits 0 with non-empty output) → BadParameter
-    explaining what's missing. The command runs without shell
-    interpretation (argv list) so commands like `gh auth token` and
-    `gcloud secrets versions access ...` are safe to embed in config.
-    """
-    import subprocess as _sp
-
-    from .config import BackendDef
-
-    assert isinstance(bdef, BackendDef)
-
-    if bdef.api_key_env:
-        v = os.environ.get(bdef.api_key_env)
-        if v:
-            return v
-
-    if bdef.api_key_command:
-        cmd_str = " ".join(bdef.api_key_command)
-        fallback_hint = (
-            f" (or set ${bdef.api_key_env} directly)" if bdef.api_key_env else ""
-        )
-        try:
-            proc = _sp.run(
-                list(bdef.api_key_command),
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-        except FileNotFoundError:
-            raise typer.BadParameter(
-                f"--backend={name}: api_key_command not on PATH: "
-                f"{bdef.api_key_command[0]}{fallback_hint}"
-            ) from None
-        except _sp.TimeoutExpired:
-            raise typer.BadParameter(
-                f"--backend={name}: api_key_command timed out: {cmd_str}"
-            ) from None
-        if proc.returncode != 0:
-            stderr = (proc.stderr or "").strip()
-            tail = f"\n{stderr}" if stderr else ""
-            raise typer.BadParameter(
-                f"--backend={name}: api_key_command exited "
-                f"{proc.returncode}: {cmd_str}{tail}{fallback_hint}"
-            )
-        key = (proc.stdout or "").strip()
-        if not key:
-            raise typer.BadParameter(
-                f"--backend={name}: api_key_command produced empty "
-                f"output: {cmd_str}{fallback_hint}"
-            )
-        return key
-
-    # Reached only when api_key_env was set but the var was empty and
-    # there's no api_key_command fallback (callers gate on
-    # `api_key_env or api_key_command` before calling, so the
-    # "neither configured" form is unreachable).
-    raise typer.BadParameter(
-        f"--backend={name} but ${bdef.api_key_env} is not set."
-    )
-
-
-def _coerce_gemini_model(model: str, default_model: str | None) -> str:
-    """If a Gemini backend gets a Claude model id (because `[model] default`
-    was set globally for an Anthropic config), substitute the backend's
-    own default. Avoids surprising the user with a 404 on the wrong vendor.
-    """
-    if model.startswith("claude"):
-        return default_model or _DEFAULT_GEMINI_API_MODEL
-    return model
-
-
-_FALLBACK_WARNED = False
-
-
-def _warn_cli_fallback() -> None:
-    global _FALLBACK_WARNED
-    if _FALLBACK_WARNED:
-        return
-    _FALLBACK_WARNED = True
-    sys.stderr.write(
-        "scr: no ANTHROPIC_API_KEY; falling back to `claude -p` subprocess. "
-        "Note: no prompt caching, reduced concurrency, no in-loop repo tools "
-        "(annotation quality will be lower).\n"
-    )
-    sys.stderr.flush()
-
-
-_GEMINI_WARNED = False
-
-
-def _warn_gemini_fallback() -> None:
-    global _GEMINI_WARNED
-    if _GEMINI_WARNED:
-        return
-    _GEMINI_WARNED = True
-    sys.stderr.write(
-        "scr: using `gemini -p` subprocess backend. Note: no prompt caching, "
-        "no JSON-schema-constrained output (we validate client-side and retry "
-        "once on failure), reduced concurrency.\n"
-    )
-    sys.stderr.flush()
+        backend = _backends.resolve_auto(config=_CONFIG)
+    return _backends.get(backend, config=_CONFIG).resolve(model=model)
 
 
 @app.command()
@@ -435,11 +144,11 @@ def fetch(
     runs_root = runs_root or _default_runs_root()
     try:
         preflight_gh()
-        result = fetch_pr(pr_url, runs_root)
+        run_dir = materialize_github_pr_run(pr_url, runs_root)
     except GhFetchError as e:
         typer.echo(f"scr: {e}", err=True)
         raise typer.Exit(code=2)
-    typer.echo(f"run directory: {result.run_dir}")
+    typer.echo(f"run directory: {run_dir}")
 
 
 @app.command()
@@ -484,64 +193,6 @@ def augment(
         )
     )
     typer.echo(f"wrote {path}")
-
-
-@app.command()
-def render(
-    run_dir: Path = typer.Argument(...),
-    out: Path = typer.Option(None, help="Output HTML path (default <run_dir>/review.html)."),
-) -> None:
-    """Render an augmented run directory as a self-contained HTML viewer."""
-    from .viewer.render_html import render_run_dir
-
-    out_path = out or (run_dir / "review.html")
-    render_run_dir(run_dir, out_path)
-    typer.echo(f"wrote {out_path}")
-
-
-@app.command()
-def run(
-    pr_url: str = typer.Argument(...),
-    runs_root: Path = typer.Option(
-        None, help="Root directory for run artefacts (default: ~/.cache/scr/runs/<repo-fingerprint>/)."
-    ),
-    model: str = typer.Option(None),
-    concurrency: int = typer.Option(8),
-    no_cache: bool = typer.Option(False),
-    backend: str = typer.Option(None),
-    verbose: bool = typer.Option(False, "--verbose", "-v"),
-) -> None:
-    """Fetch + augment + render in one shot."""
-    _configure_logging(verbose)
-    from .augment.pipeline import augment_run_dir
-    from .augment.prompts import PROMPT_VERSION
-    from .fetch import GhFetchError, preflight_gh
-    from .viewer.render_html import render_run_dir
-
-    backend = _CONFIG.resolve_backend(backend)
-    model = _CONFIG.resolve_model(backend=backend, cli_value=model)
-    runs_root = runs_root or _default_runs_root()
-    try:
-        preflight_gh()
-        fetch_result = fetch_pr(pr_url, runs_root)
-    except GhFetchError as e:
-        typer.echo(f"scr: {e}", err=True)
-        raise typer.Exit(code=2)
-    cache = None if no_cache else CacheStore(prompt_version=PROMPT_VERSION)
-    client = _select_client(backend, model=model)
-    asyncio.run(
-        augment_run_dir(
-            fetch_result.run_dir,
-            model=model,
-            concurrency=concurrency,
-            cache=cache,
-            client=client,
-            show_progress=not verbose,
-        )
-    )
-    out = fetch_result.run_dir / "review.html"
-    render_run_dir(fetch_result.run_dir, out)
-    typer.echo(f"done: {out}")
 
 
 @app.command()
@@ -613,7 +264,7 @@ def review(
 ) -> None:
     """Review a local git diff; round-trip reviewer comments to stdout."""
     _configure_logging(verbose)
-    from .review.git import EmptyDiff, LocalDiffError
+    from .fetch import EmptyDiff, LocalDiffError
     from .review.runner import ReviewOptions, run_review
 
     backend = _CONFIG.resolve_backend(backend)
@@ -684,15 +335,15 @@ def pr(
 ) -> None:
     """Review a GitHub PR; round-trip reviewer comments back as a single review."""
     _configure_logging(verbose)
-    import asyncio
     import json as _json
     from .augment.prompts import PROMPT_VERSION
     from .cache.store import CacheStore
     from .review.github import (
-        GhError, list_review_requested_prs, pick_pr_interactive, post_inline_review,
+        GhError, list_review_requested_prs, pick_pr_interactive,
     )
+    from .review.github_graphql import post_review_via_graphql
     from .review.runner import serve_review
-    from .fetch import GhFetchError, fetch as fetch_pr, preflight_gh
+    from .fetch import GhFetchError, preflight_gh
 
     backend = _CONFIG.resolve_backend(backend)
     model = _CONFIG.resolve_model(backend=backend, cli_value=model)
@@ -737,25 +388,35 @@ def pr(
 
     runs_root = runs_root or _default_runs_root()
     try:
-        fetch_result = fetch_pr(pr_url, runs_root)
+        run_dir = materialize_github_pr_run(pr_url, runs_root)
     except GhFetchError as e:
         typer.echo(f"scr pr: {e}", err=True)
         raise typer.Exit(code=2)
-    run_dir = fetch_result.run_dir
 
+    augment_task = None
+    fold_summary_task = None
     if augment:
         from .augment.pipeline import augment_run_dir
+        from .review.runner import _build_fold_summary_task
 
         cache = None if no_cache else CacheStore(root=cache_dir, prompt_version=PROMPT_VERSION)
-        asyncio.run(
-            augment_run_dir(
-                run_dir,
+
+        async def augment_task(rd, publish):  # noqa: F811 — closes over local config
+            await augment_run_dir(
+                rd,
                 model=model,
                 concurrency=concurrency,
                 cache=cache,
                 client=client,
-                show_progress=not verbose,
+                # Page carries the progress display now; suppress the
+                # terminal meter to avoid duplicate noise and to keep
+                # the listening-URL / warning lines unobstructed.
+                show_progress=False,
+                on_event=publish,
             )
+
+        fold_summary_task = _build_fold_summary_task(
+            client=client, model=model, cache=cache, run_dir=run_dir,
         )
     else:
         # Mirror cli.review's behaviour: copy raw → augmented so render has
@@ -767,21 +428,21 @@ def pr(
 
     result = serve_review(
         run_dir,
+        augment=augment_task,
+        fold_summary=fold_summary_task,
         port=port,
         timeout=timeout,
         open_browser=not no_open,
     )
 
     # Markdown to stdout for parity with `scr review` (the slash-command
-    # downstream expects to read it). GitHub posting is in addition to,
-    # not instead of, this.
+    # downstream expects to read it). Only the *new* (session-local)
+    # comments belong in the markdown — re-printing every ingested
+    # upstream comment would drown the reviewer's actual notes.
     from .review.comments import format_markdown
-    sys.stdout.write(format_markdown(result.comments, run_slug=run_dir.name))
+    local_comments = [c for c in result.comments if c.source == "local"]
+    sys.stdout.write(format_markdown(local_comments, run_slug=run_dir.name))
     sys.stdout.flush()
-
-    if not result.comments:
-        # Nothing to post; exit clean.
-        raise typer.Exit(code=0 if result.clean else 2)
 
     # Need the head SHA from meta.json so GitHub anchors the review at
     # the commit the reviewer actually saw.
@@ -791,10 +452,31 @@ def pr(
         typer.echo("scr pr: meta.json is missing headRefOid; can't anchor review", err=True)
         raise typer.Exit(code=2)
 
+    # Map + filter once: ingested comments drop out, local replies to
+    # ingested threads become reply entries. The prompt + the post both
+    # work off this filtered list so the count we promise matches what
+    # we actually send.
+    from .review.github import comments_to_github
+    mapped = comments_to_github(result.comments)
+    if not mapped:
+        sys.stderr.write(
+            "scr pr: no new local comments to post; "
+            f"comments are in {run_dir / 'comments.json'}.\n"
+        )
+        raise typer.Exit(code=0 if result.clean else 2)
+    n_threads = sum(1 for c in mapped if not c.is_reply)
+    n_replies = len(mapped) - n_threads
+    descr_parts: list[str] = []
+    if n_threads:
+        descr_parts.append(f"{n_threads} new thread{'s' if n_threads != 1 else ''}")
+    if n_replies:
+        descr_parts.append(f"{n_replies} repl{'ies' if n_replies != 1 else 'y'}")
+    descr = " + ".join(descr_parts)
+
     if not yes:
         sys.stderr.write(
-            f"\nAbout to post {len(result.comments)} inline comment(s) as a "
-            f"COMMENT review on {repo}#{number} (commit {head_sha[:8]}…).\n"
+            f"\nAbout to post {descr} as a COMMENT review on "
+            f"{repo}#{number} (commit {head_sha[:8]}…).\n"
             f"Continue? [y/N] "
         )
         sys.stderr.flush()
@@ -808,7 +490,7 @@ def pr(
             raise typer.Exit(code=1)
 
     try:
-        post = post_inline_review(repo, number, head_sha, result.comments)
+        post = post_review_via_graphql(repo, number, mapped)
     except GhError as e:
         typer.echo(f"scr pr: posting failed: {e}", err=True)
         sys.stderr.write(

@@ -28,6 +28,10 @@ The shape:
             "output_tokens": int,
             "cache_read_tokens": int,
         },
+        "error": {                  # present iff the run failed before submit
+            "type": str,            # exception class name
+            "message": str,         # str(exc)
+        },
     }
 """
 
@@ -49,11 +53,18 @@ from pydantic_ai.messages import (
 )
 
 
+#: Cap for the fallback `repr` on unrecognised parts. Long thinking
+#: blocks can be tens of KB; trimming keeps traces inspectable.
+_FALLBACK_REPR_CAP = 5000
+
+
 def _request_to_sent(req: ModelRequest) -> list[dict[str, Any]]:
     """Translate a ModelRequest's parts into the legacy `messages_sent` shape.
 
     System prompts are intentionally dropped — the trace records the
-    system prompt once at the top level.
+    system prompt once at the top level. Anything else we don't have
+    explicit handling for (FilePart, InstructionPart, …) falls through
+    to a generic dump so the trace doesn't silently lose information.
     """
     out: list[dict[str, Any]] = []
     for part in req.parts:
@@ -88,25 +99,59 @@ def _request_to_sent(req: ModelRequest) -> list[dict[str, Any]]:
                     ],
                 }
             )
+        else:
+            out.append({"role": "unknown", "content": _fallback_part(part)})
     return out
 
 
 def _response_content(resp: ModelResponse) -> list[dict[str, Any]]:
-    """Flatten ModelResponse parts into the legacy assistant `content` blocks."""
+    """Flatten ModelResponse parts into the legacy assistant `content` blocks.
+
+    Parts the legacy shape doesn't have a slot for (ThinkingPart,
+    BuiltinToolCallPart, …) fall through to a generic dump so a
+    misbehaving model run's trace still shows what the model emitted.
+    """
     out: list[dict[str, Any]] = []
     for part in resp.parts:
         if isinstance(part, TextPart):
             out.append({"type": "text", "text": part.content})
         elif isinstance(part, ToolCallPart):
+            try:
+                input_ = part.args_as_dict()
+            except Exception as e:  # noqa: BLE001 — args may be unparseable JSON
+                # The malformed args themselves are exactly what we
+                # want to see when a tool-output validation fails.
+                input_ = {
+                    "_raw": getattr(part, "args", None),
+                    "_parse_error": f"{type(e).__name__}: {e}",
+                }
             out.append(
                 {
                     "type": "tool_use",
                     "id": part.tool_call_id or "",
                     "name": part.tool_name,
-                    "input": part.args_as_dict(),
+                    "input": input_,
                 }
             )
+        else:
+            out.append(_fallback_part(part))
     return out
+
+
+def _fallback_part(part: Any) -> dict[str, Any]:
+    """Generic dump for message parts we don't render specifically.
+
+    Carries the class name and a truncated `repr` so trace readers can
+    see at minimum what kind of part the model emitted, and (for short
+    parts) its content. Common targets: ThinkingPart from extended-
+    thinking models, BuiltinToolCallPart / BuiltinToolReturnPart from
+    server-side tool surfaces, FilePart / InstructionPart from
+    multimodal prompts.
+    """
+    text = repr(part)
+    if len(text) > _FALLBACK_REPR_CAP:
+        text = text[:_FALLBACK_REPR_CAP] + "…(truncated)"
+    return {"type": type(part).__name__, "repr": text}
 
 
 def _response_to_dict(resp: ModelResponse) -> dict[str, Any]:
@@ -168,8 +213,38 @@ def write_pydantic_ai_trace(
     tool_names: list[str],
     submit_tool: str,
 ) -> None:
-    """Render `result` (an `AgentRunResult`) into the legacy trace shape."""
-    messages = list(result.all_messages())
+    """Render an `AgentRunResult` into the legacy trace shape and write it."""
+    submit_args = _submit_args_from_output(getattr(result, "output", None))
+    write_partial_trace(
+        list(result.all_messages()),
+        trace_path=trace_path,
+        model=model,
+        system=system,
+        tool_names=tool_names,
+        submit_tool=submit_tool,
+        submit_args=submit_args,
+    )
+
+
+def write_partial_trace(
+    messages: list[Any],
+    *,
+    trace_path: Path,
+    model: str,
+    system: str,
+    tool_names: list[str],
+    submit_tool: str,
+    submit_args: dict[str, Any] | None = None,
+    error: BaseException | None = None,
+) -> None:
+    """Write a trace for a (possibly partial) message history.
+
+    Distinct entry point from ``write_pydantic_ai_trace`` because the
+    caller drives ``agent.iter()`` rather than ``agent.run()`` — on a
+    `UsageLimitExceeded` or similar mid-run failure there is no
+    `AgentRunResult` to extract `output`/`all_messages()` from, but
+    the partial message history is still on the `AgentRun`.
+    """
     requests = [m for m in messages if isinstance(m, ModelRequest)]
     responses = [m for m in messages if isinstance(m, ModelResponse)]
 
@@ -193,6 +268,21 @@ def write_pydantic_ai_trace(
             }
         )
 
+    # Trailing request with no matching response — happens on the
+    # failure path when the agent loop raised before the model
+    # replied (e.g. usage-limit fired on the first call, or the
+    # provider returned an error). Surface the prompt anyway so the
+    # diagnostic trace shows what was sent.
+    if len(requests) > len(responses):
+        cumulative.extend(_request_to_sent(requests[len(responses)]))
+        iterations.append(
+            {
+                "messages_sent": [dict(m) for m in cumulative],
+                "response": None,
+                "tool_results": [],
+            }
+        )
+
     input_t = output_t = cache_t = 0
     for resp in responses:
         u = resp.usage
@@ -202,11 +292,7 @@ def write_pydantic_ai_trace(
         output_t += u.output_tokens or 0
         cache_t += u.cache_read_tokens or 0
 
-    submit_args: dict[str, Any]
-    output = getattr(result, "output", None)
-    if output is not None and hasattr(output, "model_dump"):
-        submit_args = output.model_dump(by_alias=True)
-    else:
+    if submit_args is None:
         submit_args = {}
 
     tool_calls: list[dict[str, Any]] = []
@@ -228,7 +314,7 @@ def write_pydantic_ai_trace(
                     }
                 )
 
-    trace = {
+    trace: dict[str, Any] = {
         "model": model,
         "system": system,
         "tools": tool_names,
@@ -242,8 +328,18 @@ def write_pydantic_ai_trace(
             "cache_read_tokens": cache_t,
         },
     }
+    if error is not None:
+        trace["error"] = {"type": type(error).__name__, "message": str(error)}
     trace_path.parent.mkdir(parents=True, exist_ok=True)
     trace_path.write_text(json.dumps(trace, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _submit_args_from_output(output: Any) -> dict[str, Any]:
+    if output is None:
+        return {}
+    if hasattr(output, "model_dump"):
+        return output.model_dump(by_alias=True)
+    return {}
 
 
 def submit_args_from_result(result: Any) -> dict[str, Any]:
