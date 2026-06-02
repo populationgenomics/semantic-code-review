@@ -6,9 +6,9 @@ without re-inventing vocabulary.
 
 This file grows incrementally — add an entry when a refactor needs a
 term, not all at once. Terms not yet listed but recurring in code
-include: **hunk**, **fold**, **pass** (overview / hunk / fold-summary),
-**annotation**, **viewer JSON**. Pin these the next time a refactor
-brushes against them.
+include: **pass** (overview / hunk / fold-summary), **annotation**,
+**row**, **segment**, **smell**, **theme**. Pin these the next time a
+refactor brushes against them.
 
 ## Terms
 
@@ -72,6 +72,65 @@ remote fetch for GitHub, `worktree add` against the cwd repo (or a
 symlink for working-state mode) for local. Unifying them would have
 meant a multi-axis conditional inside `materialize_run_metadata` for
 no callsite benefit.
+
+**Hunk**
+A contiguous range of changed lines in a diff, with its `@@` header
+plus old/new start+count. Both on-disk forms — the
+[[augmented-diff]] text and its sidecar — model files as ordered
+lists of hunks. The augment pipeline runs the per-hunk LLM pass once
+per hunk (`HunkAnnotations`); the [[viewer-data]] addresses each
+hunk by a stable id of the form `"H<file_idx>_<hunk_idx>"`.
+
+**Fold region**
+A collapsible region within a [[hunk]] in the viewer. Addressed by
+`(file_idx, context, right_range, left_range)`:
+
+- `context = "right"` — unchanged-context fold (collapses lines that
+  exist in the post-image only). Pure-context folds are the common
+  case.
+- `context = "left"` — deletion-only fold (lines present pre-image,
+  removed in post).
+- `context = "both"` — straddles changed content; the LLM sees a
+  unified-diff view of the region.
+
+Summaries are produced on demand by the fold-summary pass the first
+time a region is collapsed, then persisted in the
+`augmented.scr.json` sidecar as a `FoldDescription` on the file's
+first hunk — a stable home pending a schema migration that lifts
+fold descriptions up to `AnnotatedFile`.
+
+**Viewer data**
+The in-memory runtime data structure served as `/data.json` by the
+review server and consumed by the TS viewer. Defined by the
+`ViewerData` interface in `viewer/assets/types.d.ts`, with subtypes
+`FileBlock`, `HunkBlock`, `RowBlock`, `FoldRegion`, etc. Built from
+the [[augmented-diff]] sidecar by `viewer/build_json.py` +
+`viewer/hunk_layout.py`, augmented with metadata from `meta.json`.
+
+Distinct from the [[augmented-diff]] sidecar in two ways: (1) it
+includes pre-rendered row layout (the diff's two-column structure
+expanded into row objects) which the sidecar leaves implicit; (2)
+it carries transient runtime flags (e.g. `pending` while the
+augment pass is still streaming) that have no place on the
+persisted sidecar.
+
+The TS side has no single owner for the in-memory tree today —
+`boot.ts` fetches it and mutates it in response to SSE events,
+while every other module reads from the same global reference. A
+deepening to give it a typed owner is in flight.
+
+**Reviewer comment**
+A reviewer-authored inline comment anchored to a specific
+`(file, side, line)`. Round-trips between the viewer and the
+review server's `/comments` route during a session; persisted to
+`comments.json` in the [[run-directory]], or to browser
+`localStorage` when no session endpoint is present (e.g. opening
+a `scr render` output offline).
+
+Named `ReviewerComment` in TypeScript and `Comment` in Python —
+the TS name is qualified because `lib.dom.Comment` (a `Node`
+subtype) is in the global namespace and an unqualified `Comment`
+would shadow it.
 
 **Backend**
 A registered LLM provider that the CLI resolves a name to. Each backend
