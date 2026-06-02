@@ -518,6 +518,111 @@ describe("ingested PR comments", () => {
     expect(entries[2].classList.contains("comment-thread-reply")).toBe(true);
   });
 
+  test("shifted comment anchors at head_line with a 'was line N' chip", async () => {
+    window.location.hash = "#fold=off";
+    await bootViewer(makeData({ pending: false }), {
+      comments: [{
+        id: "gh-1", file: "a.py", side: "new",
+        line: 99,            // original line in commit_id's tree
+        head_line: 2,        // propagated to line 2 at head (rendered data has rows at lines 1,2)
+        anchor_status: "shifted",
+        body: "still relevant", created_at: 1, updated_at: 1,
+        source: "github", author: "alice",
+        commit_id: "abc1234567890",
+      }],
+    });
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    // Anchor row is the one with linenumber 2 on the new side.
+    const annot = document.querySelector(
+      '.row-annotation.annot-comment[data-thread-id="gh-1"]',
+    ) as HTMLElement | null;
+    expect(annot).not.toBeNull();
+    // Chip rendered with original line number.
+    const chip = annot!.querySelector(".comment-anchor-chip") as HTMLElement;
+    expect(chip).not.toBeNull();
+    expect(chip.textContent).toBe("was line 99");
+    expect(chip.classList.contains("chip-shifted")).toBe(true);
+  });
+
+  test("orphaned comment chip names the commit it was lost since", async () => {
+    window.location.hash = "#fold=off";
+    await bootViewer(makeData({ pending: false }), {
+      comments: [{
+        id: "gh-1", file: "a.py", side: "new",
+        line: 42, head_line: 1,
+        anchor_status: "orphaned",
+        body: "was this removed?", created_at: 1, updated_at: 1,
+        source: "github", author: "alice",
+        commit_id: "deadbeef1111",
+      }],
+    });
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const chip = document.querySelector(".comment-anchor-chip") as HTMLElement;
+    expect(chip).not.toBeNull();
+    expect(chip.textContent).toBe("line removed since deadbee");
+    expect(chip.classList.contains("chip-orphaned")).toBe(true);
+  });
+
+  test("anchored comment shows no anchor chip", async () => {
+    window.location.hash = "#fold=off";
+    await bootViewer(makeData({ pending: false }), {
+      comments: [{
+        id: "gh-1", file: "a.py", side: "new",
+        line: 1, head_line: 1,
+        anchor_status: "anchored",
+        body: "still here", created_at: 1, updated_at: 1,
+        source: "github", author: "alice",
+      }],
+    });
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(document.querySelector(".comment-anchor-chip")).toBeNull();
+  });
+
+  test("file_gone comments are skipped (no annotation row)", async () => {
+    window.location.hash = "#fold=off";
+    await bootViewer(makeData({ pending: false }), {
+      comments: [{
+        id: "gh-1", file: "a.py", side: "new",
+        line: 1, head_line: null,
+        anchor_status: "file_gone",
+        body: "file is gone", created_at: 1, updated_at: 1,
+        source: "github", author: "alice",
+      }],
+    });
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(document.querySelector(".row-annotation.annot-comment")).toBeNull();
+  });
+
+  test("chip is only on the thread root, not on replies", async () => {
+    window.location.hash = "#fold=off";
+    await bootViewer(makeData({ pending: false }), {
+      comments: [
+        {
+          id: "gh-1", file: "a.py", side: "new",
+          line: 50, head_line: 1, anchor_status: "shifted",
+          body: "root", created_at: 1, updated_at: 1,
+          source: "github", author: "alice", commit_id: "aaa",
+        },
+        {
+          id: "gh-2", file: "a.py", side: "new",
+          line: 50, head_line: 1, anchor_status: "shifted",
+          body: "reply", created_at: 2, updated_at: 2,
+          source: "github", author: "bob", commit_id: "aaa",
+          in_reply_to_id: "gh-1",
+        },
+      ],
+    });
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const chips = document.querySelectorAll(".comment-anchor-chip");
+    expect(chips).toHaveLength(1);
+    // Chip lives on the root entry.
+    const rootEntry = document.querySelector(
+      '.comment-thread-entry[data-comment-id="gh-1"]',
+    ) as HTMLElement;
+    expect(rootEntry.querySelector(".comment-anchor-chip")).not.toBeNull();
+  });
+
   test("resolved thread renders collapsed; clicking the header expands", async () => {
     window.location.hash = "#fold=off";
     await bootViewer(makeData({ pending: false }), {

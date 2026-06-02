@@ -54,6 +54,20 @@ function init(data: ViewerData): void {
   _store.load().then(renderAll);
 }
 
+/** The line in the *currently rendered* head-side diff that a
+ *  comment should attach to. For ingested comments propagated through
+ *  to head_sha this is the post-propagation `head_line`; for everything
+ *  else it's the comment's original `line`. Returns null when the
+ *  anchor can't be placed at any head row (file_gone /
+ *  commit_unavailable) — those comments are skipped during render. */
+function _displayLine(c: ReviewerComment): number | null {
+  if (c.anchor_status === "file_gone" || c.anchor_status === "commit_unavailable") {
+    return null;
+  }
+  if (c.head_line != null) return c.head_line;
+  return c.line;
+}
+
 /** Re-attach comment rows for the currently-rendered DOM. Called
  *  from render() after every full re-render so saved comments
  *  survive. No-op when there are no comments to render. */
@@ -62,7 +76,9 @@ function renderAll(): void {
   if (all.length === 0) return;
   const byAnchor: Record<string, ReviewerComment[]> = Object.create(null);
   for (const c of all) {
-    const k = `${c.file}|${c.side}|${c.line}`;
+    const ln = _displayLine(c);
+    if (ln == null) continue;
+    const k = `${c.file}|${c.side}|${ln}`;
     (byAnchor[k] ||= []).push(c);
   }
   document.querySelectorAll(".file").forEach((fileEl) => {
@@ -86,9 +102,8 @@ function renderAll(): void {
 // --- Anchor lookup ------------------------------------------------------
 
 function _commentsFor(file: string, side: "old" | "new", line: number): ReviewerComment[] {
-  const k = `${file}|${side}|${line}`;
   return _store.getAll().filter(
-    (c) => `${c.file}|${c.side}|${c.line}` === k,
+    (c) => c.file === file && c.side === side && _displayLine(c) === line,
   );
 }
 
@@ -246,8 +261,28 @@ function _buildThreads(comments: ReviewerComment[]): Thread[] {
 
 // --- Per-entry chrome --------------------------------------------------
 
-function _buildEntryHeader(c: ReviewerComment): HTMLElement | null {
-  if (!c.author) return null;
+function _anchorChipText(c: ReviewerComment): string | null {
+  switch (c.anchor_status) {
+    case "shifted":
+      return `was line ${c.line}`;
+    case "orphaned": {
+      const sha = (c.commit_id || "").slice(0, 7);
+      return sha ? `line removed since ${sha}` : "line removed";
+    }
+    case "file_gone": {
+      const sha = (c.commit_id || "").slice(0, 7);
+      return sha ? `file removed since ${sha}` : "file removed";
+    }
+    case "commit_unavailable":
+      return "commit unavailable";
+    default:
+      return null;
+  }
+}
+
+function _buildEntryHeader(c: ReviewerComment, isRoot: boolean): HTMLElement | null {
+  const chipText = isRoot ? _anchorChipText(c) : null;
+  if (!c.author && !chipText) return null;
   const header = _el("div", "comment-header");
   if (c.author_avatar_url) {
     const avatar = document.createElement("img");
@@ -257,7 +292,13 @@ function _buildEntryHeader(c: ReviewerComment): HTMLElement | null {
     avatar.referrerPolicy = "no-referrer";
     header.appendChild(avatar);
   }
-  header.appendChild(_el("span", "comment-author", `@${c.author}`));
+  if (c.author) {
+    header.appendChild(_el("span", "comment-author", `@${c.author}`));
+  }
+  if (chipText && c.anchor_status) {
+    const chip = _el("span", `comment-anchor-chip chip-${c.anchor_status}`, chipText);
+    header.appendChild(chip);
+  }
   if (c.html_url) {
     const link = document.createElement("a");
     link.className = "comment-permalink";
@@ -293,7 +334,10 @@ function _buildEntry(
   if (_isIngested(c)) entry.classList.add("comment-thread-entry-ingested");
   entry.dataset.commentId = c.id;
 
-  const header = _buildEntryHeader(c);
+  // Anchor chip is only meaningful on the thread root — every entry
+  // in a thread shares the same commit_id/anchor_status, so chipping
+  // each one is just noise.
+  const header = _buildEntryHeader(c, !isReply);
   if (header) entry.appendChild(header);
   entry.appendChild(_buildEntryBody(c));
 

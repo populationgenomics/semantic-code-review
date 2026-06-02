@@ -574,6 +574,32 @@ body {
 }
 .comment-permalink:hover { color: var(--accent); }
 
+/* Anchor-status chip on the thread root. Surfaces when the original
+ * (commit_id, line) had to be propagated to head — "was line 42",
+ * "line removed since abc1234", etc. Compact + low-key so it doesn't
+ * compete with the author name. */
+.comment-anchor-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  font-size: 10px;
+  text-transform: lowercase;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  background: var(--bg-panel);
+}
+.comment-anchor-chip.chip-shifted   { border-color: var(--accent); color: var(--accent); }
+.comment-anchor-chip.chip-orphaned,
+.comment-anchor-chip.chip-file_gone {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.comment-anchor-chip.chip-commit_unavailable {
+  border-color: var(--err);
+  color: var(--err);
+}
+
 /* GitHub-rendered body: drop the pre-wrap white-space rule so block
  * elements (<p>, <pre>, <ul>) lay out naturally. */
 .comment-body.comment-body-html { white-space: normal; }
