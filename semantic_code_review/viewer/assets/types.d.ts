@@ -294,4 +294,8 @@ interface ReviewerComment {
   /** Provider-rendered HTML of the body. When present the viewer
    *  injects this verbatim instead of treating `body` as markdown. */
   body_html?: string | null;
+  /** True when the upstream review thread containing this comment is
+   *  marked resolved. Denormalised onto every member of the thread —
+   *  the viewer reads it from the root entry. */
+  thread_resolved?: boolean;
 }

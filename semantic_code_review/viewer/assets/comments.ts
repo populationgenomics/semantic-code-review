@@ -18,6 +18,11 @@ import { type CommentStore, makeLocalStore, makeServerStore } from "./comment_st
 // bother to init() don't crash on stray click-handlers.
 let _store: CommentStore = makeLocalStore("scr-comments:uninit");
 
+// Per-session override of resolved-thread collapse state. Thread ids
+// the user has manually expanded sit here; clicking the header again
+// removes the override so the thread re-collapses.
+const _expandedResolved = new Set<string>();
+
 function _sessionEndpoint(): string | null {
   if (typeof document === "undefined") return null;
   const m = document.querySelector('meta[name="scr-session-endpoint"]');
@@ -307,6 +312,13 @@ function _buildEntry(
 
 // --- Thread row --------------------------------------------------------
 
+function _isThreadResolved(thread: Thread): boolean {
+  // Resolution is denormalised onto every member, but the root's flag is
+  // the canonical one — a local reply that re-opens the thread doesn't
+  // carry the flag, and we still want to honour it.
+  return Boolean(thread.entries[0]?.thread_resolved);
+}
+
 function _buildThreadRow(
   thread: Thread, anchor: Anchor, anchorRowEl: HTMLElement,
 ): AnnotationHandle {
@@ -316,8 +328,11 @@ function _buildThreadRow(
   // still the right anchor for in-session grouping.
   const replyTarget = thread.entries.find(_isIngested)?.id ?? root.id;
   const ingestedThread = thread.entries.some(_isIngested);
+  const resolved = _isThreadResolved(thread);
+  const expanded = !resolved || _expandedResolved.has(thread.id);
 
   const container = _el("div", "comment-thread");
+  if (resolved) container.classList.add("comment-thread-resolved");
 
   let handle: AnnotationHandle | null = null;
   const refresh = (): void => {
@@ -325,37 +340,47 @@ function _buildThreadRow(
     _refreshForAnchor(anchorRowEl, anchor);
   };
 
-  thread.entries.forEach((c, idx) => {
-    const entry = _buildEntry(
-      c, idx > 0,
-      () => {
+  if (resolved) {
+    // Collapsed header sits at the top of every resolved thread; the
+    // body below is hidden until the user expands it.
+    const header = _buildResolvedHeader(thread, expanded, () => {
+      if (_expandedResolved.has(thread.id)) _expandedResolved.delete(thread.id);
+      else _expandedResolved.add(thread.id);
+      refresh();
+    });
+    container.appendChild(header);
+  }
+
+  if (expanded) {
+    thread.entries.forEach((c, idx) => {
+      const entry = _buildEntry(
+        c, idx > 0,
+        () => {
+          handle?.remove();
+          _openEditor({
+            rowEl: anchorRowEl, side: c.side, line: c.line,
+            file: c.file, existing: c,
+          });
+        },
+        () => _store.delete(c.id).then(refresh),
+      );
+      container.appendChild(entry);
+    });
+
+    if (ingestedThread) {
+      const actions = _el("div", "comment-thread-actions");
+      const reply = _el("button", "comment-btn comment-btn-reply", "Reply");
+      reply.addEventListener("click", (e) => {
+        e.stopPropagation();
         handle?.remove();
         _openEditor({
-          rowEl: anchorRowEl, side: c.side, line: c.line,
-          file: c.file, existing: c,
+          rowEl: anchorRowEl, side: anchor.side, line: anchor.line,
+          file: anchor.file, replyTo: replyTarget,
         });
-      },
-      () => _store.delete(c.id).then(refresh),
-    );
-    container.appendChild(entry);
-  });
-
-  // Thread actions live once at the bottom of the block — Reply only
-  // shows on threads with an ingested root (otherwise the user just
-  // clicked the gutter + and would be editing the comment itself).
-  if (ingestedThread) {
-    const actions = _el("div", "comment-thread-actions");
-    const reply = _el("button", "comment-btn comment-btn-reply", "Reply");
-    reply.addEventListener("click", (e) => {
-      e.stopPropagation();
-      handle?.remove();
-      _openEditor({
-        rowEl: anchorRowEl, side: anchor.side, line: anchor.line,
-        file: anchor.file, replyTo: replyTarget,
       });
-    });
-    actions.appendChild(reply);
-    container.appendChild(actions);
+      actions.appendChild(reply);
+      container.appendChild(actions);
+    }
   }
 
   handle = Annotations.attach({
@@ -366,11 +391,33 @@ function _buildThreadRow(
     onInsert: (elRoot) => {
       elRoot.dataset.threadId = thread.id;
       if (ingestedThread) elRoot.classList.add("annot-comment-ingested");
+      if (resolved) elRoot.classList.add("annot-comment-resolved");
+      if (resolved && !expanded) elRoot.classList.add("annot-comment-collapsed");
       const box = elRoot.querySelector(".annot-box");
       if (box) box.classList.add("comment-display");
     },
   });
   return handle;
+}
+
+function _buildResolvedHeader(
+  thread: Thread, expanded: boolean, onToggle: () => void,
+): HTMLElement {
+  const header = _el("button", "comment-thread-resolved-header");
+  header.setAttribute("type", "button");
+  const chev = _el("span", "comment-thread-chev", expanded ? "▾" : "▸");
+  header.appendChild(chev);
+  header.appendChild(_el("span", "comment-thread-resolved-tag", "✓ Resolved"));
+  const n = thread.entries.length;
+  const noun = n === 1 ? "comment" : "comments";
+  const root = thread.entries[0];
+  const meta = root.author ? `${n} ${noun} · @${root.author}` : `${n} ${noun}`;
+  header.appendChild(_el("span", "comment-thread-resolved-meta", meta));
+  header.addEventListener("click", (e) => {
+    e.stopPropagation();
+    onToggle();
+  });
+  return header;
 }
 
 interface Anchor { file: string; side: "old" | "new"; line: number; }

@@ -518,6 +518,49 @@ describe("ingested PR comments", () => {
     expect(entries[2].classList.contains("comment-thread-reply")).toBe(true);
   });
 
+  test("resolved thread renders collapsed; clicking the header expands", async () => {
+    window.location.hash = "#fold=off";
+    await bootViewer(makeData({ pending: false }), {
+      comments: [
+        {
+          id: "gh-1", file: "a.py", side: "new", line: 1,
+          body: "looks good now", created_at: 1, updated_at: 1,
+          source: "github", author: "alice", thread_resolved: true,
+        },
+        {
+          id: "gh-2", file: "a.py", side: "new", line: 1,
+          body: "ack", created_at: 2, updated_at: 2,
+          source: "github", author: "bob", in_reply_to_id: "gh-1",
+          thread_resolved: true,
+        },
+      ],
+    });
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    const annot = document.querySelector(
+      '.row-annotation.annot-comment[data-thread-id="gh-1"]',
+    ) as HTMLElement | null;
+    expect(annot).not.toBeNull();
+    expect(annot!.classList.contains("annot-comment-resolved")).toBe(true);
+    expect(annot!.classList.contains("annot-comment-collapsed")).toBe(true);
+    // Collapsed: header present, no entry bodies in the DOM.
+    expect(annot!.querySelector(".comment-thread-resolved-header")).not.toBeNull();
+    expect(annot!.querySelectorAll(".comment-thread-entry")).toHaveLength(0);
+    // Header meta surfaces the count + author.
+    expect(annot!.querySelector(".comment-thread-resolved-meta")!.textContent)
+      .toContain("2 comments");
+    expect(annot!.querySelector(".comment-thread-resolved-meta")!.textContent)
+      .toContain("@alice");
+
+    // Click the header → thread expands, entries appear.
+    annot!.querySelector<HTMLElement>(".comment-thread-resolved-header")!.click();
+    const expanded = document.querySelector(
+      '.row-annotation.annot-comment[data-thread-id="gh-1"]',
+    ) as HTMLElement;
+    expect(expanded.classList.contains("annot-comment-collapsed")).toBe(false);
+    expect(expanded.querySelectorAll(".comment-thread-entry")).toHaveLength(2);
+  });
+
   test("Reply opens the editor and saves with in_reply_to_id set", async () => {
     window.location.hash = "#fold=off";
     await bootViewer(makeData({ pending: false }), {

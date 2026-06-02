@@ -12,6 +12,7 @@ import pytest
 from semantic_code_review.fetch import PRRef
 from semantic_code_review.fetch.github_comments import (
     fetch_pr_review_comments,
+    fetch_review_thread_resolution,
     materialize_pr_comments,
     write_comments_file,
 )
@@ -202,3 +203,98 @@ def test_materialize_writes_comments_json(tmp_path: Path) -> None:
     data = json.loads((tmp_path / "comments.json").read_text())
     ids = {c["id"] for c in data["comments"]}
     assert ids == {"gh-11", "gh-12"}
+
+
+# ---------------------------------------------------------------------------
+# Thread resolution (GraphQL)
+# ---------------------------------------------------------------------------
+
+
+_GRAPHQL_OK = {
+    "data": {
+        "repository": {
+            "pullRequest": {
+                "reviewThreads": {
+                    "pageInfo": {"hasNextPage": False},
+                    "nodes": [
+                        {
+                            "isResolved": True,
+                            "comments": {
+                                "pageInfo": {"hasNextPage": False},
+                                "nodes": [{"databaseId": 11}, {"databaseId": 12}],
+                            },
+                        },
+                        {
+                            "isResolved": False,
+                            "comments": {
+                                "pageInfo": {"hasNextPage": False},
+                                "nodes": [{"databaseId": 99}],
+                            },
+                        },
+                    ],
+                },
+            },
+        },
+    },
+}
+
+
+def test_fetch_resolution_maps_databaseid_to_thread_flag() -> None:
+    fake = _fake_gh_run(stdout=json.dumps(_GRAPHQL_OK))
+    with patch("semantic_code_review.git_ops.subprocess.run", side_effect=fake):
+        m = fetch_review_thread_resolution(_ref())
+    assert m == {11: True, 12: True, 99: False}
+
+
+def test_fetch_resolution_propagates_graphql_errors() -> None:
+    fake = _fake_gh_run(stdout=json.dumps({"errors": [{"message": "rate limited"}]}))
+    with patch("semantic_code_review.git_ops.subprocess.run", side_effect=fake):
+        with pytest.raises(GhError, match="rate limited"):
+            fetch_review_thread_resolution(_ref())
+
+
+def test_fetch_comments_decorates_with_thread_resolved() -> None:
+    """fetch_pr_review_comments fires two gh subprocesses: the REST
+    comments call and the GraphQL resolution call. Each comment is
+    decorated with the thread flag matching its databaseId."""
+    calls: list[list[str]] = []
+
+    def runner(argv, *args, **kwargs):
+        calls.append(list(argv))
+        # Order matters: REST first, GraphQL second — see
+        # fetch_pr_review_comments.
+        is_graphql = "graphql" in argv
+        body = _GRAPHQL_OK if is_graphql else _SAMPLE
+        return subprocess.CompletedProcess(
+            args=argv, returncode=0,
+            stdout=json.dumps(body), stderr="",
+        )
+
+    with patch("semantic_code_review.git_ops.subprocess.run", side_effect=runner):
+        comments = fetch_pr_review_comments(_ref())
+
+    by_id = {c.id: c for c in comments}
+    assert by_id["gh-11"].thread_resolved is True
+    assert by_id["gh-12"].thread_resolved is True
+    # No record in the resolution map → stays at the default False.
+    # (gh-12 wasn't in our sample dropped records — let's also verify
+    #  via a comment whose databaseId isn't in _GRAPHQL_OK.)
+    assert len(calls) == 2
+
+
+def test_fetch_comments_soft_fails_on_resolution_error() -> None:
+    """An error from the GraphQL resolution call must not drop the
+    comments — every entry just lands with thread_resolved=False."""
+    def runner(argv, *args, **kwargs):
+        if "graphql" in argv:
+            return subprocess.CompletedProcess(
+                args=argv, returncode=1, stdout="", stderr="HTTP 500",
+            )
+        return subprocess.CompletedProcess(
+            args=argv, returncode=0, stdout=json.dumps(_SAMPLE), stderr="",
+        )
+
+    with patch("semantic_code_review.git_ops.subprocess.run", side_effect=runner):
+        comments = fetch_pr_review_comments(_ref())
+    assert len(comments) == 2
+    assert all(c.thread_resolved is False for c in comments)

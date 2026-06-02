@@ -43,6 +43,11 @@ class Comment(BaseModel):
     # GitHub-rendered body. When present the viewer prefers it over `body`
     # so we don't ship a markdown parser to the client.
     body_html: str | None = None
+    # True when the upstream review thread containing this comment is
+    # marked resolved on GitHub. Denormalised onto every member of the
+    # thread; the viewer reads it from the root entry to decide whether
+    # to collapse the thread by default.
+    thread_resolved: bool = False
 
     @property
     def is_writable(self) -> bool:

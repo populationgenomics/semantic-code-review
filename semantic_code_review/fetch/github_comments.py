@@ -101,12 +101,93 @@ def _comment_from_payload(payload: dict[str, Any]) -> Comment | None:
     )
 
 
+_RESOLUTION_QUERY = """
+query($owner:String!, $repo:String!, $number:Int!) {
+  repository(owner:$owner, name:$repo) {
+    pullRequest(number:$number) {
+      reviewThreads(first:100) {
+        pageInfo { hasNextPage }
+        nodes {
+          isResolved
+          comments(first:100) {
+            pageInfo { hasNextPage }
+            nodes { databaseId }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def fetch_review_thread_resolution(ref: PRRef) -> dict[int, bool]:
+    """Map each review-comment ``databaseId`` to its thread's resolution flag.
+
+    The REST endpoint we use for the comment bodies does not expose
+    thread membership or ``isResolved``; the GraphQL ``reviewThreads``
+    connection does, and it's cheap (one round-trip for the whole PR).
+    We denormalise the thread-level flag onto each member so the viewer
+    can decide per-comment whether to start collapsed.
+
+    Pagination is capped at 100 threads / 100 comments per thread — a
+    `hasNextPage=true` response logs a warning and the remaining flags
+    default to False. Real-world PRs comfortably fit; the cap is a
+    deliberate v1 simplification, not a permanent constraint.
+    """
+    rc, stdout, stderr = git_ops.gh_capture(
+        "api", "graphql",
+        "-f", f"query={_RESOLUTION_QUERY}",
+        "-F", f"owner={ref.owner}",
+        "-F", f"repo={ref.repo}",
+        "-F", f"number={ref.number}",
+    )
+    if rc != 0:
+        raise GhError(f"gh api graphql failed: {stderr.strip()}")
+    try:
+        body = json.loads(stdout)
+    except ValueError as e:
+        raise GhError(f"gh api graphql: unparseable JSON: {e}") from e
+    if not isinstance(body, dict):
+        raise GhError(f"gh api graphql: expected object, got {type(body).__name__}")
+    if body.get("errors"):
+        raise GhError(f"gh api graphql: {body['errors']}")
+
+    pr = ((body.get("data") or {}).get("repository") or {}).get("pullRequest") or {}
+    threads = (pr.get("reviewThreads") or {})
+    if threads.get("pageInfo", {}).get("hasNextPage"):
+        log.warning(
+            "PR %s has >100 review threads; resolution flags on the "
+            "remainder will default to false", ref.url,
+        )
+    out: dict[int, bool] = {}
+    for t in threads.get("nodes") or []:
+        if not isinstance(t, dict):
+            continue
+        resolved = bool(t.get("isResolved"))
+        comments = (t.get("comments") or {})
+        if comments.get("pageInfo", {}).get("hasNextPage"):
+            log.warning(
+                "review thread in %s has >100 comments; trailing "
+                "resolution flags may be incomplete", ref.url,
+            )
+        for c in comments.get("nodes") or []:
+            dbid = c.get("databaseId") if isinstance(c, dict) else None
+            if isinstance(dbid, int):
+                out[dbid] = resolved
+    return out
+
+
 def fetch_pr_review_comments(ref: PRRef) -> list[Comment]:
     """Return all review comments on the PR, mapped to `Comment` records.
 
     Calls `gh api --paginate` with `Accept: application/vnd.github.full+json`
     so each record carries server-rendered `body_html` — saves us shipping
     a markdown parser to the client. Pagination is delegated to gh.
+
+    Thread resolution state is fetched in a second GraphQL call and
+    denormalised onto each comment. The two-call approach keeps the
+    REST mapping path simple; a future deepening could merge them.
 
     Raises `GhError` on subprocess / API failures. Callers wrapping a
     user-facing pipeline should catch and degrade to "no comments".
@@ -140,6 +221,26 @@ def fetch_pr_review_comments(ref: PRRef) -> list[Comment]:
         c = _comment_from_payload(rec)
         if c is not None:
             out.append(c)
+
+    # Decorate with thread-resolution state. The resolution call is
+    # best-effort: an error here leaves every thread looking unresolved,
+    # which is a strictly safer default than dropping the comments.
+    try:
+        resolved_map = fetch_review_thread_resolution(ref)
+    except GhError as e:
+        log.warning("could not fetch review-thread resolution for %s: %s", ref.url, e)
+        resolved_map = {}
+    if resolved_map:
+        for c in out:
+            # Comment ids look like "gh-<databaseId>" — strip the prefix
+            # to look up the resolution map.
+            if c.id.startswith("gh-"):
+                try:
+                    dbid = int(c.id[3:])
+                except ValueError:
+                    continue
+                if resolved_map.get(dbid):
+                    c.thread_resolved = True
     return out
 
 
@@ -183,6 +284,7 @@ def materialize_pr_comments(run_dir: Path, ref: PRRef) -> int:
 
 __all__ = [
     "fetch_pr_review_comments",
+    "fetch_review_thread_resolution",
     "materialize_pr_comments",
     "write_comments_file",
 ]

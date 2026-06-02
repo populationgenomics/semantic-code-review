@@ -637,6 +637,36 @@ body {
 }
 .comment-btn-reply { padding: 2px 10px; }
 
+/* Resolved thread: collapsed header bar at the top of the thread block.
+ * The annot-box still surrounds the whole thread; the header is just
+ * the first child, with a softer tone so a wall of resolved threads
+ * doesn't shout. */
+.diff .annot-comment-resolved .annot-box {
+  border-left-color: var(--fg-muted);
+}
+.comment-thread-resolved-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 0;
+  cursor: pointer;
+  text-align: left;
+}
+.comment-thread-resolved-header:hover {
+  color: var(--fg);
+}
+.comment-thread-chev { width: 1em; display: inline-block; text-align: center; }
+.comment-thread-resolved-tag {
+  color: var(--ok, #6cf09e);
+  font-weight: 600;
+}
+.comment-thread-resolved-meta { color: var(--fg-muted); }
+
 /* The comment editor should not inherit the annot-box width/height
  * clamps — it grows freely with the user's text. */
 .diff .annot-editor .annot-box.comment-editor-box {
