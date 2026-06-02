@@ -192,10 +192,17 @@ def materialize_github_pr_run(pr_url: str, runs_root: Path) -> Path:
     Returns the run-directory path. Idempotent: re-running for the
     same head SHA re-resolves but does not re-download artefacts that
     are already on disk.
+
+    Also seeds `comments.json` from the PR's review comments on first
+    materialise, so the reviewer sees existing discussion alongside
+    the diff. Imported lazily to avoid a cycle: github_comments imports
+    PRRef from this module.
     """
     resolved = resolve_github_pr(pr_url)
     run_dir = materialize_run_metadata(resolved.spec, runs_root)
     setup_github_worktrees(run_dir, resolved)
+    from .github_comments import materialize_pr_comments
+    materialize_pr_comments(run_dir, resolved.ref)
     return run_dir
 
 

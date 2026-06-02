@@ -1,0 +1,188 @@
+"""Fetch GitHub PR review comments into the run directory.
+
+GitHub exposes two kinds of PR comments:
+
+- *Review comments* anchored to (path, side, line) — what GitHub's UI
+  shows inline against a hunk. These are what we care about; they
+  round-trip cleanly into SCR's [[reviewer-comment]] model.
+- *Issue comments* / *review summaries* with no file anchor. v1 skips
+  them — they need a different display surface than a gutter pin.
+
+The fetch is best-effort: any failure (auth, rate-limit, schema drift)
+is logged and the run continues with no ingested comments. Reviewing
+the diff must not block on the comments API.
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+import json
+import logging
+from pathlib import Path
+from typing import Any
+
+from .. import git_ops
+from ..git_ops import GhError
+from ..review.comments import Comment
+from .github import PRRef
+
+log = logging.getLogger(__name__)
+
+
+def _parse_iso8601(s: str) -> float:
+    """GitHub timestamps are ISO 8601 with a trailing 'Z'. Convert to
+    a Unix epoch float so it lines up with `time.time()` values used
+    by the local comment path."""
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    return _dt.datetime.fromisoformat(s).timestamp()
+
+
+def _side_from_github(raw: str | None) -> str | None:
+    if raw == "RIGHT":
+        return "new"
+    if raw == "LEFT":
+        return "old"
+    return None
+
+
+def _comment_from_payload(payload: dict[str, Any]) -> Comment | None:
+    """Map one GitHub review-comment record to a `Comment`.
+
+    Returns None when the comment is not line-anchored in a way SCR
+    can pin (e.g. a multi-line comment that was outdated and lost its
+    `line` even on the original revision)."""
+    gh_id = payload.get("id")
+    path = payload.get("path")
+    side = _side_from_github(payload.get("side"))
+    if gh_id is None or not path or side is None:
+        return None
+
+    # `line` is null on outdated comments; fall back to the original
+    # line so the comment still pins where it was first written.
+    line = payload.get("line")
+    if line is None:
+        line = payload.get("original_line")
+    if not isinstance(line, int) or line <= 0:
+        return None
+
+    body = payload.get("body") or ""
+    body_html = payload.get("body_html")  # only present with full+json accept
+    user = payload.get("user") or {}
+    author = user.get("login")
+    avatar = user.get("avatar_url")
+    in_reply_to = payload.get("in_reply_to_id")
+    commit_id = payload.get("commit_id") or payload.get("original_commit_id")
+    html_url = payload.get("html_url")
+
+    created_at_raw = payload.get("created_at")
+    updated_at_raw = payload.get("updated_at") or created_at_raw
+    try:
+        created_at = _parse_iso8601(created_at_raw) if created_at_raw else 0.0
+        updated_at = _parse_iso8601(updated_at_raw) if updated_at_raw else created_at
+    except ValueError:
+        return None
+
+    return Comment(
+        id=f"gh-{gh_id}",
+        file=path,
+        side=side,
+        line=line,
+        body=body,
+        body_html=body_html,
+        created_at=created_at,
+        updated_at=updated_at,
+        source="github",
+        author=author,
+        author_avatar_url=avatar,
+        in_reply_to_id=f"gh-{in_reply_to}" if in_reply_to is not None else None,
+        commit_id=commit_id,
+        html_url=html_url,
+    )
+
+
+def fetch_pr_review_comments(ref: PRRef) -> list[Comment]:
+    """Return all review comments on the PR, mapped to `Comment` records.
+
+    Calls `gh api --paginate` with `Accept: application/vnd.github.full+json`
+    so each record carries server-rendered `body_html` — saves us shipping
+    a markdown parser to the client. Pagination is delegated to gh.
+
+    Raises `GhError` on subprocess / API failures. Callers wrapping a
+    user-facing pipeline should catch and degrade to "no comments".
+    """
+    endpoint = f"repos/{ref.slug}/pulls/{ref.number}/comments"
+    rc, stdout, stderr = git_ops.gh_capture(
+        "api", endpoint,
+        "--paginate",
+        "-H", "Accept: application/vnd.github.full+json",
+    )
+    if rc != 0:
+        raise GhError(f"gh api {endpoint} failed: {stderr.strip()}")
+
+    raw = stdout.strip()
+    if not raw:
+        return []
+    # gh --paginate concatenates the per-page arrays into one outer array
+    # (it parses each page's JSON and re-emits). We can json.loads the whole
+    # response and iterate.
+    try:
+        records = json.loads(raw)
+    except ValueError as e:
+        raise GhError(f"gh api {endpoint}: unparseable JSON: {e}") from e
+    if not isinstance(records, list):
+        raise GhError(f"gh api {endpoint}: expected list, got {type(records).__name__}")
+
+    out: list[Comment] = []
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        c = _comment_from_payload(rec)
+        if c is not None:
+            out.append(c)
+    return out
+
+
+def write_comments_file(path: Path, comments: list[Comment]) -> None:
+    """Seed `comments.json` with ingested comments.
+
+    Same on-disk shape as `CommentStore._flush_locked` — sorted by
+    (file, line, created_at) so a re-fetch is order-stable. We write
+    directly rather than going through CommentStore so this path
+    stays free of the runtime lock + flush machinery; the server only
+    instantiates a store once the file exists.
+    """
+    ordered = sorted(comments, key=lambda c: (c.file, c.line, c.created_at))
+    payload = {"comments": [c.model_dump() for c in ordered]}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+def materialize_pr_comments(run_dir: Path, ref: PRRef) -> int:
+    """Fetch + persist PR review comments into the run directory.
+
+    Returns the number of comments written. Best-effort: GhError is
+    logged and treated as "no comments" rather than failing the run.
+    No-op if `comments.json` already exists (a prior fetch, or
+    session-local comments from a previous review) so we don't clobber
+    in-flight reviewer state on a re-materialise.
+    """
+    target = run_dir / "comments.json"
+    if target.exists():
+        return 0
+    try:
+        comments = fetch_pr_review_comments(ref)
+    except GhError as e:
+        log.warning("skipping PR comment ingest for %s: %s", ref.url, e)
+        return 0
+    write_comments_file(target, comments)
+    return len(comments)
+
+
+__all__ = [
+    "fetch_pr_review_comments",
+    "materialize_pr_comments",
+    "write_comments_file",
+]
