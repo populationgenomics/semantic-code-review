@@ -30,6 +30,7 @@ from pydantic_ai.output import ToolOutput
 
 from ..cache.store import CacheStore
 from .agents import Client
+from .schemas import AnnotatedDiff, FoldDescription
 from .trace_adapter import (
     submit_args_from_result, write_partial_trace, write_pydantic_ai_trace,
 )
@@ -266,6 +267,148 @@ async def summarise_fold(
             tokens_in=tokens_in, tokens_out=tokens_out,
         )
     return str(submit_args.get("summary", "")).strip()
+
+
+class FoldSummaryNotReady(RuntimeError):
+    """The run dir doesn't yet hold an `augmented.scr.json`.
+
+    Maps to HTTP 409 at the review-server boundary — the augmentation
+    pass is still in flight or was skipped entirely.
+    """
+
+
+class FoldSummaryFileIndexError(LookupError):
+    """`file_idx` from the request doesn't address a file in the diff.
+
+    Maps to HTTP 404 at the review-server boundary.
+    """
+
+
+async def apply_fold_summary_to_run(
+    client: Client,
+    *,
+    run_dir: Path,
+    file_idx: int,
+    context: FoldContext,
+    right_range: tuple[int, int] | None,
+    left_range: tuple[int, int] | None,
+    model: str,
+    cache: CacheStore | None = None,
+    trace_dir: Path | None = None,
+) -> dict[str, Any]:
+    """End-to-end fold-summary: resolve, call LLM, persist, return payload.
+
+    Loads the sidecar, looks up `file_idx`, calls :func:`summarise_fold`
+    against the resolved file, writes the new `FoldDescription` back to
+    `augmented.scr.json` + `augmented.diff`, and returns the broadcast
+    payload (the dict the review server fans out as an SSE event and
+    sends back to the requesting tab).
+
+    Raises :class:`FoldSummaryNotReady` if the sidecar isn't on disk
+    and :class:`FoldSummaryFileIndexError` if `file_idx` is out of
+    range. Other exceptions (LLM failures, write errors) propagate.
+    """
+    sidecar = run_dir / "augmented.scr.json"
+    if not sidecar.exists():
+        raise FoldSummaryNotReady(
+            "augmented.scr.json missing — augment not complete"
+        )
+
+    # Lazy: keeps the augment-side format machinery off the import
+    # path for callers that only want :func:`summarise_fold`.
+    from ..format.emit import emit_augmented_diff
+    from ..format.sidecar import dump_sidecar, load_sidecar
+    from .hunks import overview_to_prompt_json
+
+    diff = load_sidecar(sidecar)
+    if not (0 <= file_idx < len(diff.files)):
+        raise FoldSummaryFileIndexError(
+            f"file_idx {file_idx} not in diff"
+        )
+
+    fp = diff.files[file_idx]
+    summary = await summarise_fold(
+        client,
+        run_dir=run_dir,
+        file_path=fp.path,
+        file_summary=(fp.ann.summary or "").strip(),
+        overview_json=overview_to_prompt_json(diff),
+        context=context,
+        right_range=right_range,
+        left_range=left_range,
+        model=model,
+        cache=cache,
+        trace_dir=trace_dir,
+    )
+
+    rs, re_ = right_range or (0, 0)
+    ls, le = left_range or (0, 0)
+
+    # Persist iff there's a hunk to stash the description on; see the
+    # comment on _attach_fold_summary for why the file's first hunk is
+    # the chosen home.
+    if fp.hunks:
+        updated_diff = _attach_fold_summary(
+            diff, file_idx=file_idx, context=context,
+            right=(rs, re_), left=(ls, le), summary=summary,
+        )
+        dump_sidecar(updated_diff, sidecar)
+        (run_dir / "augmented.diff").write_text(
+            emit_augmented_diff(updated_diff), encoding="utf-8",
+        )
+
+    return {
+        "file_idx": file_idx, "context": context,
+        "right_start": rs, "right_end": re_,
+        "left_start": ls, "left_end": le,
+        "summary": summary,
+    }
+
+
+def _attach_fold_summary(
+    diff: AnnotatedDiff,
+    *,
+    file_idx: int,
+    context: FoldContext,
+    right: tuple[int, int],
+    left: tuple[int, int],
+    summary: str,
+) -> AnnotatedDiff:
+    """Return `diff` with the matching `FoldDescription` replaced or
+    appended on the addressed file's first hunk's annotations.
+
+    Fold descriptions live at the hunk level for legacy reasons; for
+    v2 (file-level) addressing they describe content addressed at the
+    *file* level, so we stash them on the file's first hunk (chosen as
+    a stable home) until the schema migrates `fold_descriptions` up to
+    `AnnotatedFile`.
+    """
+    fp = diff.files[file_idx]
+    rs, re_ = right
+    ls, le = left
+    hunk = fp.hunks[0]
+    new_folds = [
+        fd for fd in hunk.ann.fold_descriptions
+        if not (
+            fd.context == context
+            and fd.right_start == rs and fd.right_end == re_
+            and fd.left_start == ls and fd.left_end == le
+        )
+    ]
+    new_folds.append(FoldDescription(
+        context=context,
+        right_start=rs, right_end=re_,
+        left_start=ls, left_end=le,
+        summary=summary,
+    ))
+    updated_ann = hunk.ann.model_copy(update={"fold_descriptions": new_folds})
+    updated_hunk = hunk.model_copy(update={"ann": updated_ann})
+    updated_hunks = list(fp.hunks)
+    updated_hunks[0] = updated_hunk
+    updated_file = fp.model_copy(update={"hunks": updated_hunks})
+    updated_files = list(diff.files)
+    updated_files[file_idx] = updated_file
+    return diff.model_copy(update={"files": updated_files})
 
 
 def _trace_path(

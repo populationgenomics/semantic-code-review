@@ -259,27 +259,19 @@ def test_fold_summary_returns_409_when_summariser_not_wired(server) -> None:
     conn.close()
 
 
-def test_fold_summary_persists_and_publishes(tmp_path: Path) -> None:
-    """When the summariser is wired and the sidecar is on disk, the
-    route calls the closure, writes the result back to the sidecar +
-    /data.json, and fans out a `fold-summary` SSE event."""
-    from semantic_code_review.format.parse import parse_augmented_diff
-    from semantic_code_review.format.sidecar import dump_sidecar
+def test_fold_summary_broadcasts_and_patches_viewer_json(tmp_path: Path) -> None:
+    """Transport-only: the route dispatches to the wired-in task, then
+    patches the in-memory `viewer_json` and fans out an SSE event.
+
+    Sidecar mutation lives in :func:`apply_fold_summary_to_run`; its
+    coverage is in tests/test_fold_summary_apply.py.
+    """
     from semantic_code_review.review.server import ReviewServer
 
-    # Use the augmented fixture (carries an overview + per-hunk
-    # annotations) so the sidecar resolves cleanly.
-    fixture = Path(__file__).parent / "fixtures" / "sample.augmented.diff"
-    diff = parse_augmented_diff(fixture.read_text(encoding="utf-8"))
-    sidecar = tmp_path / "augmented.scr.json"
-    dump_sidecar(diff, sidecar)
-    (tmp_path / "augmented.diff").write_text(
-        fixture.read_text(encoding="utf-8"), encoding="utf-8",
-    )
     viewer_json = {
         "version": "1",
         "files": [{
-            "id": "F0", "path": diff.files[0].path,
+            "id": "F0", "path": "src/x.py",
             "hunks": [{
                 "id": "H0_0",
                 "fold_regions": [{
@@ -289,43 +281,35 @@ def test_fold_summary_persists_and_publishes(tmp_path: Path) -> None:
             }],
         }],
     }
-    # head/<path> needs to exist so the summariser closure can read
-    # it; we use an empty file because our stub doesn't actually read.
-    (tmp_path / "head").mkdir()
-    (tmp_path / "head" / diff.files[0].path).parent.mkdir(parents=True, exist_ok=True)
-    (tmp_path / "head" / diff.files[0].path).write_text("noop\n", encoding="utf-8")
 
-    srv = ReviewServer(
-        run_dir=tmp_path,
-        viewer_json=viewer_json,
-    )
+    srv = ReviewServer(run_dir=tmp_path, viewer_json=viewer_json)
     srv.start()
     try:
         captured = {}
 
-        async def summariser(
-            file_path, file_summary, overview_json,
-            context, right_range, left_range,
-        ):
-            captured["called"] = True
-            captured["file_path"] = file_path
+        async def fake_task(file_idx, context, right_range, left_range):
+            captured["file_idx"] = file_idx
             captured["context"] = context
             captured["right_range"] = right_range
             captured["left_range"] = left_range
-            return "wraps the body in a try/except to fail-soft on bad input"
+            return {
+                "file_idx": file_idx, "context": context,
+                "right_start": (right_range or (0, 0))[0],
+                "right_end": (right_range or (0, 0))[1],
+                "left_start": (left_range or (0, 0))[0],
+                "left_end": (left_range or (0, 0))[1],
+                "summary": "wraps the body in a try/except",
+            }
 
-        srv.set_fold_summariser(summariser)
+        srv.set_fold_summariser(fake_task)
 
         # Subscribe to /events so we can assert the broadcast happened.
         conn = HTTPConnection("127.0.0.1", int(srv.url().rsplit(":", 1)[1]), timeout=5)
         conn.request("GET", "/events")
         events_resp = conn.getresponse()
         assert events_resp.status == 200
-        # Consume the priming frame.
         events_resp.fp.readline()
         events_resp.fp.readline()
-
-        # Wait for the subscriber to actually register.
         for _ in range(50):
             with srv.ctx.state_lock:
                 if srv.ctx.subscribers:
@@ -338,20 +322,12 @@ def test_fold_summary_persists_and_publishes(tmp_path: Path) -> None:
         )
         assert code == 200
         assert body["summary"].startswith("wraps the body")
-        assert captured["called"] is True
+        # Task saw the parsed-out request, not raw payload.
+        assert captured["file_idx"] == 0
         assert captured["context"] == "right"
         assert captured["right_range"] == (1, 3)
         assert captured["left_range"] is None
 
-        # Sidecar now carries the summary.
-        from semantic_code_review.format.sidecar import load_sidecar
-        reloaded = load_sidecar(sidecar)
-        folds = reloaded.files[0].hunks[0].ann.fold_descriptions
-        assert any(
-            fd.context == "right" and fd.right_start == 1 and fd.right_end == 3
-            and fd.summary.startswith("wraps the body")
-            for fd in folds
-        )
         # `/data.json` reflects the patched viewer_json.
         code, data = _request(srv.url() + "/data.json")
         assert code == 200
@@ -359,7 +335,7 @@ def test_fold_summary_persists_and_publishes(tmp_path: Path) -> None:
             "wraps the body"
         )
         # The SSE channel broadcast the same payload.
-        id_line = events_resp.fp.readline()
+        events_resp.fp.readline()  # id
         event_line = events_resp.fp.readline()
         data_line = events_resp.fp.readline()
         events_resp.fp.readline()  # trailing blank
@@ -370,53 +346,31 @@ def test_fold_summary_persists_and_publishes(tmp_path: Path) -> None:
         srv.stop()
 
 
-def test_fold_summary_for_left_context_resolves_and_persists(tmp_path: Path) -> None:
+def test_fold_summary_for_left_context_passes_ranges_through(tmp_path: Path) -> None:
     """A pure-deletion fold posts {context:'left', left_start, left_end};
-    the server routes to the same summariser and persists with
-    context='left'."""
-    from semantic_code_review.format.parse import parse_augmented_diff
-    from semantic_code_review.format.sidecar import dump_sidecar, load_sidecar
+    the server routes to the same task with right_range=None and the
+    left tuple populated."""
     from semantic_code_review.review.server import ReviewServer
 
-    fixture = Path(__file__).parent / "fixtures" / "sample.augmented.diff"
-    diff = parse_augmented_diff(fixture.read_text(encoding="utf-8"))
-    sidecar = tmp_path / "augmented.scr.json"
-    dump_sidecar(diff, sidecar)
-    (tmp_path / "augmented.diff").write_text(
-        fixture.read_text(encoding="utf-8"), encoding="utf-8",
-    )
-    viewer_json = {
-        "version": "1",
-        "files": [{
-            "id": "F0", "path": diff.files[0].path,
-            "hunks": [{
-                "id": "H0_0",
-                "fold_regions": [{
-                    "context": "left", "right_start": 0, "right_end": 0,
-                    "left_start": 12, "left_end": 14, "summary": "",
-                }],
-            }],
-        }],
-    }
-
-    srv = ReviewServer(
-        run_dir=tmp_path,
-        viewer_json=viewer_json,
-    )
+    viewer_json = {"version": "1", "files": []}
+    srv = ReviewServer(run_dir=tmp_path, viewer_json=viewer_json)
     srv.start()
     try:
         seen = {}
 
-        async def summariser(
-            file_path, file_summary, overview_json,
-            context, right_range, left_range,
-        ):
+        async def fake_task(file_idx, context, right_range, left_range):
             seen["context"] = context
             seen["right_range"] = right_range
             seen["left_range"] = left_range
-            return "drops the legacy retry loop"
+            return {
+                "file_idx": file_idx, "context": context,
+                "right_start": 0, "right_end": 0,
+                "left_start": (left_range or (0, 0))[0],
+                "left_end": (left_range or (0, 0))[1],
+                "summary": "drops the legacy retry loop",
+            }
 
-        srv.set_fold_summariser(summariser)
+        srv.set_fold_summariser(fake_task)
         code, body = _request(
             srv.url() + "/fold-summary", "POST",
             {"file_idx": 0, "context": "left", "left_start": 12, "left_end": 14},
@@ -426,13 +380,55 @@ def test_fold_summary_for_left_context_resolves_and_persists(tmp_path: Path) -> 
             "context": "left", "right_range": None, "left_range": (12, 14),
         }
         assert body["context"] == "left" and body["left_start"] == 12
+    finally:
+        srv.stop()
 
-        reloaded = load_sidecar(sidecar)
-        folds = reloaded.files[0].hunks[0].ann.fold_descriptions
-        assert any(
-            fd.context == "left" and fd.left_start == 12 and fd.left_end == 14
-            for fd in folds
+
+def test_fold_summary_typed_errors_map_to_http_codes(tmp_path: Path) -> None:
+    """`FoldSummaryNotReady` → 409; `FoldSummaryFileIndexError` → 404."""
+    from semantic_code_review.augment.fold_summary import (
+        FoldSummaryFileIndexError, FoldSummaryNotReady,
+    )
+    from semantic_code_review.review.server import ReviewServer
+
+    srv = ReviewServer(run_dir=tmp_path, viewer_json={"files": []})
+    srv.start()
+    try:
+        host = "127.0.0.1"
+        port = int(srv.url().rsplit(":", 1)[1])
+
+        def _post(payload: dict) -> tuple[int, dict]:
+            # urlopen raises on non-2xx; HTTPConnection lets us read the body.
+            conn = HTTPConnection(host, port, timeout=5)
+            conn.request(
+                "POST", "/fold-summary",
+                body=json.dumps(payload),
+                headers={"Content-Type": "application/json"},
+            )
+            r = conn.getresponse()
+            body = json.loads(r.read())
+            conn.close()
+            return r.status, body
+
+        async def raises_not_ready(file_idx, context, right_range, left_range):
+            raise FoldSummaryNotReady("sidecar gone walkabout")
+
+        srv.set_fold_summariser(raises_not_ready)
+        code, body = _post(
+            {"file_idx": 0, "context": "right", "right_start": 1, "right_end": 3},
         )
+        assert code == 409
+        assert "walkabout" in body["error"]
+
+        async def raises_oob(file_idx, context, right_range, left_range):
+            raise FoldSummaryFileIndexError("file_idx 999 not in diff")
+
+        srv.set_fold_summariser(raises_oob)
+        code, body = _post(
+            {"file_idx": 999, "context": "right", "right_start": 1, "right_end": 3},
+        )
+        assert code == 404
+        assert "999" in body["error"]
     finally:
         srv.stop()
 

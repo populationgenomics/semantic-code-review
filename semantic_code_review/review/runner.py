@@ -46,16 +46,17 @@ AugmentCallable = Callable[
 
 
 #: Signature of the on-demand fold-summary callable accepted by
-#: ``serve_review``. The closure does the actual LLM call (with the
-#: backend that augment_run_dir is wired against) given the file
-#: identifiers + line ranges the server resolved from the request.
-#: Wired up only when an LLM backend is available (i.e.
-#: ``opts.augment is True``); ``--no-augment`` reviews leave this
-#: at ``None`` and the route returns 409 unconditionally.
+#: ``serve_review``. The closure resolves the sidecar, calls the LLM
+#: against the addressed file, persists the new ``FoldDescription``,
+#: and returns the broadcast payload (the dict the server fans out as
+#: an SSE event and sends back to the requesting tab). Wired up only
+#: when an LLM backend is available (``opts.augment is True``);
+#: ``--no-augment`` reviews leave this at ``None`` and the route
+#: returns 409 unconditionally.
 FoldSummaryCallable = Callable[
-    # (file_path, file_summary, overview_json, context, right_range, left_range)
-    [str, str, str, str, "tuple[int, int] | None", "tuple[int, int] | None"],
-    Awaitable[str],
+    # (file_idx, context, right_range, left_range)
+    [int, str, "tuple[int, int] | None", "tuple[int, int] | None"],
+    Awaitable[dict],
 ]
 
 
@@ -251,24 +252,22 @@ def _build_fold_summary_task(
     """
     # Lazy import: keeps the SDK / pydantic-ai dep out of the
     # `--no-augment` path.
-    from ..augment.fold_summary import summarise_fold
+    from ..augment.fold_summary import apply_fold_summary_to_run
 
     async def task(
-        file_path: str, file_summary: str, overview_json: str,
+        file_idx: int,
         context: str,
         right_range: "tuple[int, int] | None",
         left_range: "tuple[int, int] | None",
-    ) -> str:
+    ) -> dict:
         # client is None only when augment is False; in that path
         # serve_review never wires this task up, so a None here would
         # be a wiring bug — fail loudly.
         assert client is not None, "fold-summary task called without an LLM backend"
-        return await summarise_fold(
+        return await apply_fold_summary_to_run(
             client,
             run_dir=run_dir,
-            file_path=file_path,
-            file_summary=file_summary,
-            overview_json=overview_json,
+            file_idx=file_idx,
             context=context,  # type: ignore[arg-type]
             right_range=right_range,
             left_range=left_range,

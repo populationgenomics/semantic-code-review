@@ -391,9 +391,8 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
     def _handle_fold_summary(self, payload: dict[str, Any]) -> None:
-        """Resolve file + ranges from the payload, call the summariser,
-        persist the result, push a `fold-summary` SSE event, and return
-        the summary in the HTTP response.
+        """Parse + validate the request, dispatch to the wired-in
+        fold-summary task, broadcast the result.
 
         Wire format (slice 1 of fold-anywhere):
             { file_idx: int,
@@ -402,7 +401,9 @@ class _Handler(BaseHTTPRequestHandler):
               left_start?,  left_end?      # iff context != "right"
             }
         Line numbers are 1-indexed into head/<path> (right) and
-        base/<path> (left).
+        base/<path> (left). Domain work (sidecar I/O, schema mutation,
+        persistence) lives in :func:`apply_fold_summary_to_run`; this
+        method is transport.
         """
         if self.ctx.fold_summariser is None:
             self._json(409, {"error": "augmentation still in progress"})
@@ -426,94 +427,34 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": "left_start/left_end required"})
             return
 
-        sidecar = self.ctx.run_dir / "augmented.scr.json"
-        if not sidecar.exists():
-            self._json(409, {"error": "augmented.scr.json missing — augment not complete"})
-            return
-
-        # Local imports keep stdlib-only modules importable even when
-        # the augment / format machinery isn't installed (tests that
-        # exercise the server in isolation).
-        from ..format.emit import emit_augmented_diff
-        from ..format.sidecar import dump_sidecar, load_sidecar
-
-        diff = load_sidecar(sidecar)
-        if file_idx < 0 or file_idx >= len(diff.files):
-            self._json(404, {"error": f"file_idx {file_idx} not in diff"})
-            return
-
-        fp = diff.files[file_idx]
-        file_path = fp.path
-        file_summary = (fp.ann.summary or "").strip()
-        from ..augment.hunks import overview_to_prompt_json
-
-        overview_json = overview_to_prompt_json(diff)
+        # Map typed errors from the apply step to HTTP statuses.
+        from ..augment.fold_summary import (
+            FoldSummaryFileIndexError, FoldSummaryNotReady,
+        )
 
         try:
-            summary = asyncio.run(self.ctx.fold_summariser(
-                file_path, file_summary, overview_json,
-                context, right_range, left_range,
+            result = asyncio.run(self.ctx.fold_summariser(
+                file_idx, context, right_range, left_range,
             ))
+        except FoldSummaryNotReady as e:
+            self._json(409, {"error": str(e)})
+            return
+        except FoldSummaryFileIndexError as e:
+            self._json(404, {"error": str(e)})
+            return
         except Exception as e:  # noqa: BLE001
             log.exception(
-                "fold-summary failed for %s context=%s right=%s left=%s",
-                file_path, context, right_range, left_range,
+                "fold-summary failed for file_idx=%s context=%s right=%s left=%s",
+                file_idx, context, right_range, left_range,
             )
             self._json(500, {"error": f"{type(e).__name__}: {e}"})
             return
 
-        # Persist: append or replace the matching FoldDescription on
-        # the file's first hunk's annotations. We carry fold descriptions
-        # at the hunk level for legacy reasons; for v2 addressing they
-        # describe content addressed at the *file* level, so we stash
-        # them on the file's first hunk (chosen as a stable home) until
-        # the schema migrates fold_descriptions up to AnnotatedFile.
-        from ..augment.schemas import FoldDescription
-
-        rs, re_ = right_range or (0, 0)
-        ls, le = left_range or (0, 0)
-        target_hunk_idx = 0 if fp.hunks else None
-        if target_hunk_idx is not None:
-            hunk = fp.hunks[target_hunk_idx]
-            new_folds = [
-                fd for fd in hunk.ann.fold_descriptions
-                if not (
-                    fd.context == context
-                    and fd.right_start == rs and fd.right_end == re_
-                    and fd.left_start == ls and fd.left_end == le
-                )
-            ]
-            new_folds.append(FoldDescription(
-                context=context,
-                right_start=rs, right_end=re_,
-                left_start=ls, left_end=le,
-                summary=summary,
-            ))
-            updated_ann = hunk.ann.model_copy(update={"fold_descriptions": new_folds})
-            updated_hunk = hunk.model_copy(update={"ann": updated_ann})
-            updated_hunks = list(fp.hunks)
-            updated_hunks[target_hunk_idx] = updated_hunk
-            updated_file = fp.model_copy(update={"hunks": updated_hunks})
-            updated_files = list(diff.files)
-            updated_files[file_idx] = updated_file
-            updated_diff = diff.model_copy(update={"files": updated_files})
-
-            dump_sidecar(updated_diff, sidecar)
-            (self.ctx.run_dir / "augmented.diff").write_text(
-                emit_augmented_diff(updated_diff), encoding="utf-8",
-            )
-
-        broadcast_payload = {
-            "file_idx": file_idx, "context": context,
-            "right_start": rs, "right_end": re_,
-            "left_start": ls, "left_end": le,
-            "summary": summary,
-        }
-        _update_viewer_json_fold(self.ctx.viewer_json, broadcast_payload)
-        _ctx_publish(self.ctx, "fold-summary", broadcast_payload)
+        _update_viewer_json_fold(self.ctx.viewer_json, result)
+        _ctx_publish(self.ctx, "fold-summary", result)
         # Caller's RPC response carries the summary so the requesting
         # tab doesn't need to wait for its own SSE event to round-trip.
-        self._json(200, broadcast_payload)
+        self._json(200, result)
 
     def do_DELETE(self) -> None:  # noqa: N802
         self._touch()
