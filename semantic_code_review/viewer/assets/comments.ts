@@ -117,17 +117,25 @@ interface EditorOpts {
   line: number;
   file: string;
   existing?: ReviewerComment;
+  /** When set, the new comment is saved as a reply (in_reply_to_id pinned
+   *  to this id). Ignored for edits of an existing comment. */
+  replyTo?: string | null;
 }
 
-function _openEditor({ rowEl, side, line, file, existing }: EditorOpts): void {
+function _openEditor({ rowEl, side, line, file, existing, replyTo }: EditorOpts): void {
   const bodyWrap = _el("div", "comment-editor-body");
   const ta = _el("textarea", "comment-editor-input") as HTMLTextAreaElement;
   ta.rows = 1;
-  ta.placeholder = "Write a comment… (Enter to save, Shift-Enter for newline, Esc to cancel)";
+  ta.placeholder = existing
+    ? "Edit comment… (Enter to save, Shift-Enter for newline, Esc to cancel)"
+    : replyTo
+      ? "Write a reply… (Enter to save, Shift-Enter for newline, Esc to cancel)"
+      : "Write a comment… (Enter to save, Shift-Enter for newline, Esc to cancel)";
   ta.value = existing ? existing.body : "";
   bodyWrap.appendChild(ta);
   const bar = _el("div", "comment-editor-bar");
-  const save = _el("button", "comment-btn comment-btn-save", existing ? "Update" : "Save");
+  const save = _el("button", "comment-btn comment-btn-save",
+                   existing ? "Update" : (replyTo ? "Reply" : "Save"));
   const cancel = _el("button", "comment-btn comment-btn-cancel", "Cancel");
   bar.appendChild(save);
   bar.appendChild(cancel);
@@ -159,6 +167,9 @@ function _openEditor({ rowEl, side, line, file, existing }: EditorOpts): void {
       id, file, side, line, body,
       created_at: existing ? existing.created_at : now,
       updated_at: now,
+      in_reply_to_id: existing
+        ? existing.in_reply_to_id ?? null
+        : (replyTo ?? null),
     };
     _store.save(c).then(() => {
       close();
@@ -185,85 +196,180 @@ function _isIngested(comment: ReviewerComment): boolean {
   return (comment.source || "local") !== "local";
 }
 
-function _buildReviewerCommentRow(comment: ReviewerComment, anchorRowEl: HTMLElement): AnnotationHandle {
-  const ingested = _isIngested(comment);
+// --- Thread building ----------------------------------------------------
 
-  const bodyWrap = _el("div", "comment-display-body");
-  if (comment.author) {
-    const header = _el("div", "comment-header");
-    if (comment.author_avatar_url) {
-      const avatar = document.createElement("img");
-      avatar.className = "comment-avatar";
-      avatar.src = comment.author_avatar_url;
-      avatar.alt = "";
-      avatar.referrerPolicy = "no-referrer";
-      header.appendChild(avatar);
+/** A thread is one root comment plus its replies in chronological order.
+ *  Local comments and ingested comments are grouped together when the
+ *  reply chain matches up — a local reply to an ingested root joins
+ *  that thread rather than starting its own. */
+interface Thread {
+  /** Identity of the thread for DOM lookup + remove. */
+  id: string;
+  /** Root + replies, in display order (root first). */
+  entries: ReviewerComment[];
+}
+
+function _buildThreads(comments: ReviewerComment[]): Thread[] {
+  // Sort by creation time so iteration order matches display order.
+  const sorted = [...comments].sort(
+    (a, b) => (a.created_at || 0) - (b.created_at || 0),
+  );
+  const byId = new Map<string, ReviewerComment>();
+  for (const c of sorted) byId.set(c.id, c);
+
+  /** Walk up the reply chain to find the thread's effective root.
+   *  An in_reply_to_id pointing outside this anchor's set is treated
+   *  as no parent — the comment becomes its own root. */
+  function rootIdOf(c: ReviewerComment): string {
+    let cur = c;
+    const seen = new Set<string>();
+    while (cur.in_reply_to_id && byId.has(cur.in_reply_to_id) && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      cur = byId.get(cur.in_reply_to_id)!;
     }
-    header.appendChild(_el("span", "comment-author", `@${comment.author}`));
-    if (comment.html_url) {
-      const link = document.createElement("a");
-      link.className = "comment-permalink";
-      link.href = comment.html_url;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      link.title = "open on GitHub";
-      link.textContent = "↗";  // ↗
-      header.appendChild(link);
-    }
-    bodyWrap.appendChild(header);
+    return cur.id;
   }
 
+  const groups = new Map<string, ReviewerComment[]>();
+  for (const c of sorted) {
+    const k = rootIdOf(c);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k)!.push(c);
+  }
+  return Array.from(groups, ([id, entries]) => ({ id, entries }));
+}
+
+// --- Per-entry chrome --------------------------------------------------
+
+function _buildEntryHeader(c: ReviewerComment): HTMLElement | null {
+  if (!c.author) return null;
+  const header = _el("div", "comment-header");
+  if (c.author_avatar_url) {
+    const avatar = document.createElement("img");
+    avatar.className = "comment-avatar";
+    avatar.src = c.author_avatar_url;
+    avatar.alt = "";
+    avatar.referrerPolicy = "no-referrer";
+    header.appendChild(avatar);
+  }
+  header.appendChild(_el("span", "comment-author", `@${c.author}`));
+  if (c.html_url) {
+    const link = document.createElement("a");
+    link.className = "comment-permalink";
+    link.href = c.html_url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.title = "open on GitHub";
+    link.textContent = "↗";
+    header.appendChild(link);
+  }
+  return header;
+}
+
+function _buildEntryBody(c: ReviewerComment): HTMLElement {
   const body = _el("div", "comment-body");
-  if (comment.body_html) {
-    // Trusted upstream rendering (the API call is authenticated as the
-    // user and goes through their own gh CLI). Inject verbatim rather
-    // than ship a markdown parser to the client.
+  if (c.body_html) {
     body.classList.add("comment-body-html");
-    body.innerHTML = comment.body_html;
+    body.innerHTML = c.body_html;
   } else {
-    body.textContent = comment.body;
+    body.textContent = c.body;
   }
-  bodyWrap.appendChild(body);
+  return body;
+}
 
-  let editBtn: HTMLElement | null = null;
-  let delBtn: HTMLElement | null = null;
-  if (!ingested) {
+function _buildEntry(
+  c: ReviewerComment,
+  isReply: boolean,
+  onEdit: () => void,
+  onDelete: () => void,
+): HTMLElement {
+  const entry = _el("div", "comment-thread-entry");
+  if (isReply) entry.classList.add("comment-thread-reply");
+  if (_isIngested(c)) entry.classList.add("comment-thread-entry-ingested");
+  entry.dataset.commentId = c.id;
+
+  const header = _buildEntryHeader(c);
+  if (header) entry.appendChild(header);
+  entry.appendChild(_buildEntryBody(c));
+
+  if (!_isIngested(c)) {
     const bar = _el("div", "comment-actions");
-    editBtn = _el("button", "comment-btn comment-btn-edit", "edit");
-    delBtn = _el("button", "comment-btn comment-btn-del", "delete");
+    const editBtn = _el("button", "comment-btn comment-btn-edit", "edit");
+    const delBtn = _el("button", "comment-btn comment-btn-del", "delete");
     bar.appendChild(editBtn);
     bar.appendChild(delBtn);
-    bodyWrap.appendChild(bar);
+    editBtn.addEventListener("click", (e) => { e.stopPropagation(); onEdit(); });
+    delBtn.addEventListener("click", (e) => { e.stopPropagation(); onDelete(); });
+    entry.appendChild(bar);
+  }
+  return entry;
+}
+
+// --- Thread row --------------------------------------------------------
+
+function _buildThreadRow(
+  thread: Thread, anchor: Anchor, anchorRowEl: HTMLElement,
+): AnnotationHandle {
+  const root = thread.entries[0];
+  // Reply target: prefer an ingested root so a reply nests on GitHub
+  // if we ever post it back. For local-only threads the root id is
+  // still the right anchor for in-session grouping.
+  const replyTarget = thread.entries.find(_isIngested)?.id ?? root.id;
+  const ingestedThread = thread.entries.some(_isIngested);
+
+  const container = _el("div", "comment-thread");
+
+  let handle: AnnotationHandle | null = null;
+  const refresh = (): void => {
+    handle?.remove();
+    _refreshForAnchor(anchorRowEl, anchor);
+  };
+
+  thread.entries.forEach((c, idx) => {
+    const entry = _buildEntry(
+      c, idx > 0,
+      () => {
+        handle?.remove();
+        _openEditor({
+          rowEl: anchorRowEl, side: c.side, line: c.line,
+          file: c.file, existing: c,
+        });
+      },
+      () => _store.delete(c.id).then(refresh),
+    );
+    container.appendChild(entry);
+  });
+
+  // Thread actions live once at the bottom of the block — Reply only
+  // shows on threads with an ingested root (otherwise the user just
+  // clicked the gutter + and would be editing the comment itself).
+  if (ingestedThread) {
+    const actions = _el("div", "comment-thread-actions");
+    const reply = _el("button", "comment-btn comment-btn-reply", "Reply");
+    reply.addEventListener("click", (e) => {
+      e.stopPropagation();
+      handle?.remove();
+      _openEditor({
+        rowEl: anchorRowEl, side: anchor.side, line: anchor.line,
+        file: anchor.file, replyTo: replyTarget,
+      });
+    });
+    actions.appendChild(reply);
+    container.appendChild(actions);
   }
 
-  const handle = Annotations.attach({
+  handle = Annotations.attach({
     anchor: anchorRowEl,
     shadowAnchor: (anchorRowEl as { _scrPair?: HTMLElement | null })._scrPair || null,
     variant: "comment",
-    content: bodyWrap,
+    content: container,
     onInsert: (elRoot) => {
-      elRoot.dataset.commentId = comment.id;
-      if (ingested) elRoot.classList.add("annot-comment-ingested");
-      if (comment.in_reply_to_id) elRoot.classList.add("annot-comment-reply");
+      elRoot.dataset.threadId = thread.id;
+      if (ingestedThread) elRoot.classList.add("annot-comment-ingested");
       const box = elRoot.querySelector(".annot-box");
       if (box) box.classList.add("comment-display");
     },
   });
-
-  if (editBtn && delBtn) {
-    editBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      handle.remove();
-      _openEditor({
-        rowEl: anchorRowEl, side: comment.side, line: comment.line,
-        file: comment.file, existing: comment,
-      });
-    });
-    delBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      _store.delete(comment.id).then(() => handle.remove());
-    });
-  }
   return handle;
 }
 
@@ -271,10 +377,10 @@ interface Anchor { file: string; side: "old" | "new"; line: number; }
 
 function _refreshForAnchor(anchorRowEl: HTMLElement, anchor: Anchor): void {
   _removeReviewerCommentRowsAfter(anchorRowEl);
-  const relevant = _commentsFor(anchor.file, anchor.side, anchor.line)
-    .sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
-  for (const c of relevant) {
-    _buildReviewerCommentRow(c, anchorRowEl);
+  const relevant = _commentsFor(anchor.file, anchor.side, anchor.line);
+  const threads = _buildThreads(relevant);
+  for (const thread of threads) {
+    _buildThreadRow(thread, anchor, anchorRowEl);
   }
   // Any LLM annotations (line_notes, fold summaries) that also
   // anchor at this row now sit further from it — reflow re-measures
@@ -286,14 +392,14 @@ function _removeReviewerCommentRowsAfter(anchorRowEl: HTMLElement): void {
   let n: ChildNode | null = anchorRowEl.nextSibling;
   while (n) {
     const next = n.nextSibling;
+    const el = n as HTMLElement;
     const isReviewerCommentRow = n.nodeType === 1
-      && (n as HTMLElement).classList.contains("row-annotation")
-      && (n as HTMLElement).classList.contains("annot-comment")
-      && !(n as HTMLElement).classList.contains("annot-editor")
-      && (n as HTMLElement).dataset
-      && (n as HTMLElement).dataset.commentId;
+      && el.classList.contains("row-annotation")
+      && el.classList.contains("annot-comment")
+      && !el.classList.contains("annot-editor")
+      && (el.dataset.threadId || el.dataset.commentId);
     if (!isReviewerCommentRow) break;
-    Annotations.detach(n as HTMLElement);
+    Annotations.detach(el);
     n = next;
   }
 }

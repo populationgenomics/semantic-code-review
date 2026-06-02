@@ -606,12 +606,36 @@ body {
 .comment-body.comment-body-html a { color: var(--accent); }
 .comment-body.comment-body-html img { max-width: 100%; }
 
-/* Replies stack under their parent at the same anchor — indent slightly
- * so the thread structure reads. */
-.diff .annot-comment-reply .annot-box {
-  margin-left: 18px;
-  border-left-color: var(--fg-muted);
+/* Thread block: all comments at one anchor share a single annotation
+ * box and arrow. Replies are indented inside that box rather than
+ * occupying their own annotation rows. */
+.comment-thread { display: flex; flex-direction: column; gap: 8px; }
+.comment-thread-entry {
+  /* Stacked entries get a divider between them so individual comments
+   * read as distinct without each needing its own box. */
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
 }
+.comment-thread-entry:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.comment-thread-reply {
+  /* Indent replies so the parent/child relationship is visible at a
+   * glance. The border-left mirrors the GitHub thread connector. */
+  margin-left: 16px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+}
+.comment-thread-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+.comment-btn-reply { padding: 2px 10px; }
 
 /* The comment editor should not inherit the annot-box width/height
  * clamps — it grows freely with the user's text. */

@@ -454,48 +454,108 @@ describe("ingested PR comments", () => {
     // One extra tick lets it settle.
     await new Promise<void>((r) => setTimeout(r, 0));
 
+    // A single-comment thread still gets a thread annotation row.
     const annot = document.querySelector(
-      '.row-annotation.annot-comment[data-comment-id="gh-7"]',
+      '.row-annotation.annot-comment[data-thread-id="gh-7"]',
     ) as HTMLElement | null;
     expect(annot).not.toBeNull();
     expect(annot!.classList.contains("annot-comment-ingested")).toBe(true);
+    const entry = annot!.querySelector(
+      '.comment-thread-entry[data-comment-id="gh-7"]',
+    ) as HTMLElement | null;
+    expect(entry).not.toBeNull();
     // Author chip + permalink rendered.
-    expect(annot!.querySelector(".comment-author")!.textContent).toBe("@alice");
-    expect(annot!.querySelector<HTMLAnchorElement>(".comment-permalink")!.href)
+    expect(entry!.querySelector(".comment-author")!.textContent).toBe("@alice");
+    expect(entry!.querySelector<HTMLAnchorElement>(".comment-permalink")!.href)
       .toBe("https://github.com/o/r/pull/1#discussion_r7");
     // body_html injected verbatim — the <code> tag is real DOM.
-    expect(annot!.querySelector(".comment-body-html code")!.textContent).toBe("Path");
-    // No edit/delete buttons on ingested comments.
-    expect(annot!.querySelector(".comment-btn-edit")).toBeNull();
-    expect(annot!.querySelector(".comment-btn-del")).toBeNull();
+    expect(entry!.querySelector(".comment-body-html code")!.textContent).toBe("Path");
+    // No edit/delete buttons on ingested entries.
+    expect(entry!.querySelector(".comment-btn-edit")).toBeNull();
+    expect(entry!.querySelector(".comment-btn-del")).toBeNull();
+    // Reply button at the bottom of the thread.
+    expect(annot!.querySelector(".comment-btn-reply")).not.toBeNull();
   });
 
-  test("reply gets the annot-comment-reply class for indentation", async () => {
+  test("thread groups parent + replies into one annotation, parent first", async () => {
     window.location.hash = "#fold=off";
     await bootViewer(makeData({ pending: false }), {
       comments: [
+        // Out-of-order on the wire: latest reply first. Sorted into
+        // root → first-reply → second-reply by created_at.
+        {
+          id: "gh-3", file: "a.py", side: "new", line: 1,
+          body: "later reply", created_at: 3, updated_at: 3,
+          source: "github", author: "carol", in_reply_to_id: "gh-1",
+        },
+        {
+          id: "gh-2", file: "a.py", side: "new", line: 1,
+          body: "earlier reply", created_at: 2, updated_at: 2,
+          source: "github", author: "bob", in_reply_to_id: "gh-1",
+        },
         {
           id: "gh-1", file: "a.py", side: "new", line: 1,
           body: "parent", created_at: 1, updated_at: 1,
           source: "github", author: "alice",
         },
-        {
-          id: "gh-2", file: "a.py", side: "new", line: 1,
-          body: "child", created_at: 2, updated_at: 2,
-          source: "github", author: "bob", in_reply_to_id: "gh-1",
-        },
       ],
     });
     await new Promise<void>((r) => setTimeout(r, 0));
-    const reply = document.querySelector(
-      '.row-annotation[data-comment-id="gh-2"]',
-    ) as HTMLElement | null;
-    expect(reply).not.toBeNull();
-    expect(reply!.classList.contains("annot-comment-reply")).toBe(true);
-    const parent = document.querySelector(
-      '.row-annotation[data-comment-id="gh-1"]',
-    ) as HTMLElement | null;
-    expect(parent!.classList.contains("annot-comment-reply")).toBe(false);
+
+    // Only one annotation row for the whole thread.
+    const annots = document.querySelectorAll(
+      '.row-annotation.annot-comment[data-thread-id="gh-1"]',
+    );
+    expect(annots).toHaveLength(1);
+    // Entries appear in chronological order, parent first.
+    const entries = Array.from(
+      (annots[0] as HTMLElement).querySelectorAll(".comment-thread-entry"),
+    ) as HTMLElement[];
+    expect(entries.map((e) => e.dataset.commentId)).toEqual(["gh-1", "gh-2", "gh-3"]);
+    // Replies (but not the root) carry the reply-indent class.
+    expect(entries[0].classList.contains("comment-thread-reply")).toBe(false);
+    expect(entries[1].classList.contains("comment-thread-reply")).toBe(true);
+    expect(entries[2].classList.contains("comment-thread-reply")).toBe(true);
+  });
+
+  test("Reply opens the editor and saves with in_reply_to_id set", async () => {
+    window.location.hash = "#fold=off";
+    await bootViewer(makeData({ pending: false }), {
+      comments: [{
+        id: "gh-1", file: "a.py", side: "new", line: 1,
+        body: "parent", created_at: 1, updated_at: 1,
+        source: "github", author: "alice",
+      }],
+    });
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    const replyBtn = document.querySelector<HTMLButtonElement>(".comment-btn-reply");
+    expect(replyBtn).not.toBeNull();
+    // /comments POST will be the next captured fetch — queue a 200.
+    let postedBody: Record<string, unknown> | null = null;
+    (globalThis.fetch as unknown as { mockImplementationOnce: (fn: typeof fetch) => void })
+      .mockImplementationOnce(((url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, init });
+        postedBody = JSON.parse(init!.body as string);
+        return Promise.resolve({
+          status: 200, ok: true,
+          json: () => Promise.resolve(postedBody),
+        } as Response);
+      }) as typeof fetch);
+
+    replyBtn!.click();
+    const ta = document.querySelector<HTMLTextAreaElement>(".comment-editor-input");
+    expect(ta).not.toBeNull();
+    ta!.value = "Acknowledged.";
+    document.querySelector<HTMLButtonElement>(".comment-btn-save")!.click();
+    // Let the save Promise resolve.
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    expect(postedBody).not.toBeNull();
+    expect(postedBody!.body).toBe("Acknowledged.");
+    expect(postedBody!.in_reply_to_id).toBe("gh-1");
+    expect(postedBody!.file).toBe("a.py");
+    expect(postedBody!.line).toBe(1);
   });
 });
 
