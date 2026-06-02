@@ -1,17 +1,22 @@
 // Reviewer comments — line-anchored, round-tripped via the live
-// review server (PUT/DELETE per mutation) or persisted to
-// localStorage when no session endpoint is set.
+// review server or persisted to localStorage. Storage strategy lives
+// in `comment_store.ts`; this module owns the gutter, the editor,
+// and the DOM re-attach pass.
 //
 // Each comment is anchored to {file, side, line}; the gutter
-// click-handler opens an inline editor, save persists the comment,
-// re-rendering re-attaches the existing rows via renderAll().
+// click-handler opens an inline editor, save persists the comment
+// through the store, re-rendering re-attaches the existing rows via
+// renderAll().
 //
 import { Annotations, type AnnotationHandle } from "./annotations";
+import { type CommentStore, makeLocalStore, makeServerStore } from "./comment_store";
 
 // --- State ---------------------------------------------------------------
 
-let _lsKey = "scr-comments:local";
-const _comments: Record<string, ReviewerComment> = Object.create(null);
+// Picked once at init(); never re-resolved. Until init runs, every
+// op short-circuits to a no-op store so jsdom unit tests that don't
+// bother to init() don't crash on stray click-handlers.
+let _store: CommentStore = makeLocalStore("scr-comments:uninit");
 
 function _sessionEndpoint(): string | null {
   if (typeof document === "undefined") return null;
@@ -30,21 +35,28 @@ function _el(tag: string, className: string | null, text?: string): HTMLElement 
 // --- Public API ----------------------------------------------------------
 
 function init(data: ViewerData): void {
-  _lsKey =
-    "scr-comments:"
-    + (data.pr && data.pr.head_sha ? data.pr.head_sha : "local");
+  const endpoint = _sessionEndpoint();
+  if (endpoint !== null) {
+    _store = makeServerStore(endpoint);
+  } else {
+    const lsKey =
+      "scr-comments:"
+      + (data.pr && data.pr.head_sha ? data.pr.head_sha : "local");
+    _store = makeLocalStore(lsKey);
+  }
   const app = document.getElementById("app");
   if (app) _installGutter(app);
-  _storageLoad();
+  _store.load().then(renderAll);
 }
 
 /** Re-attach comment rows for the currently-rendered DOM. Called
- *  from viewer.js's render() after every full re-render so saved
- *  comments survive. No-op when there are no comments to render. */
+ *  from render() after every full re-render so saved comments
+ *  survive. No-op when there are no comments to render. */
 function renderAll(): void {
-  if (Object.keys(_comments).length === 0) return;
+  const all = _store.getAll();
+  if (all.length === 0) return;
   const byAnchor: Record<string, ReviewerComment[]> = Object.create(null);
-  for (const c of Object.values(_comments)) {
+  for (const c of all) {
     const k = `${c.file}|${c.side}|${c.line}`;
     (byAnchor[k] ||= []).push(c);
   }
@@ -66,68 +78,11 @@ function renderAll(): void {
   });
 }
 
-// --- Storage (server-mediated, localStorage fallback) -------------------
-
-function _storageLoad(): void {
-  const endpoint = _sessionEndpoint();
-  if (endpoint !== null) {
-    fetch(`${endpoint}/comments`)
-      .then((r) => (r.ok ? r.json() : { comments: [] as ReviewerComment[] }))
-      .then((d: { comments?: ReviewerComment[] }) => {
-        for (const c of d.comments || []) _comments[c.id] = c;
-        renderAll();
-      })
-      .catch(() => { /* server may have exited; ignore */ });
-    return;
-  }
-  try {
-    const raw = localStorage.getItem(_lsKey);
-    if (!raw) return;
-    const data = JSON.parse(raw) as { comments?: ReviewerComment[] };
-    for (const c of data.comments || []) _comments[c.id] = c;
-    renderAll();
-  } catch (_) { /* ignore */ }
-}
-
-function _storageFlush(): void {
-  if (_sessionEndpoint() !== null) return;  // server round-trips per-mutation
-  const payload = { comments: Object.values(_comments) };
-  try { localStorage.setItem(_lsKey, JSON.stringify(payload)); } catch (_) { /* ignore */ }
-}
-
-function _save(c: ReviewerComment): Promise<ReviewerComment | null> {
-  _comments[c.id] = c;
-  const endpoint = _sessionEndpoint();
-  if (endpoint !== null) {
-    return fetch(`${endpoint}/comments`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(c),
-    })
-      .then((r) => (r.ok ? r.json() as Promise<ReviewerComment> : null))
-      .catch(() => null);
-  }
-  _storageFlush();
-  return Promise.resolve(c);
-}
-
-function _delete(id: string): Promise<void> {
-  delete _comments[id];
-  const endpoint = _sessionEndpoint();
-  if (endpoint !== null) {
-    return fetch(`${endpoint}/comments/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    }).then(() => undefined).catch(() => undefined);
-  }
-  _storageFlush();
-  return Promise.resolve();
-}
-
-// --- Anchor key + lookup ------------------------------------------------
+// --- Anchor lookup ------------------------------------------------------
 
 function _commentsFor(file: string, side: "old" | "new", line: number): ReviewerComment[] {
   const k = `${file}|${side}|${line}`;
-  return Object.values(_comments).filter(
+  return _store.getAll().filter(
     (c) => `${c.file}|${c.side}|${c.line}` === k,
   );
 }
@@ -205,7 +160,7 @@ function _openEditor({ rowEl, side, line, file, existing }: EditorOpts): void {
       created_at: existing ? existing.created_at : now,
       updated_at: now,
     };
-    _save(c).then(() => {
+    _store.save(c).then(() => {
       close();
       _refreshForAnchor(rowEl, { file, side, line });
     });
@@ -260,7 +215,7 @@ function _buildReviewerCommentRow(comment: ReviewerComment, anchorRowEl: HTMLEle
   });
   del.addEventListener("click", (e) => {
     e.stopPropagation();
-    _delete(comment.id).then(() => handle.remove());
+    _store.delete(comment.id).then(() => handle.remove());
   });
   return handle;
 }
