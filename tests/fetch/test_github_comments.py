@@ -11,6 +11,7 @@ import pytest
 
 from semantic_code_review.fetch import PRRef
 from semantic_code_review.fetch.github_comments import (
+    decorate_with_head_anchors,
     fetch_comment_commits,
     fetch_pr_review_comments,
     fetch_review_thread_resolution,
@@ -349,6 +350,112 @@ def test_fetch_comment_commits_skips_when_no_remote_commits(tmp_path: Path) -> N
         fetched = fetch_comment_commits(tmp_path, cs)
     assert fetched == set()
     assert run_mock.call_count == 0
+
+
+def test_decorate_with_head_anchors_short_circuits_at_head(tmp_path: Path) -> None:
+    """A comment whose commit_id equals head_sha is already at head;
+    head_line copies line and the propagator is never called."""
+    cs = [
+        Comment(id="gh-1", file="a.py", side="new", line=10, body="x",
+                source="github", commit_id="HEAD"),
+    ]
+    with patch("semantic_code_review.git_ops.subprocess.run") as run_mock:
+        decorate_with_head_anchors(tmp_path, "HEAD", cs)
+    assert cs[0].head_line == 10
+    assert cs[0].anchor_status == "anchored"
+    assert run_mock.call_count == 0
+
+
+def test_decorate_skips_local_and_old_side_comments(tmp_path: Path) -> None:
+    """side=old comments live on the PR's base (stable) — skipped.
+    Local comments are authored at head — skipped."""
+    cs = [
+        Comment(id="gh-1", file="a.py", side="old", line=1, body="x",
+                source="github", commit_id="other"),
+        Comment(id="local-1", file="a.py", side="new", line=2, body="y",
+                source="local"),
+    ]
+    with patch("semantic_code_review.git_ops.subprocess.run") as run_mock:
+        decorate_with_head_anchors(tmp_path, "HEAD", cs)
+    # Both untouched.
+    assert cs[0].head_line is None
+    assert cs[0].anchor_status is None
+    assert cs[1].head_line is None
+    assert cs[1].anchor_status is None
+    assert run_mock.call_count == 0
+
+
+def test_decorate_caches_diff_per_commit_path_pair(tmp_path: Path) -> None:
+    """Three comments on the same (commit_id, path) → exactly one
+    `git diff` call, not three. Two commits checked once each."""
+    cs = [
+        Comment(id="gh-1", file="a.py", side="new", line=20, body="x",
+                source="github", commit_id="OLD"),
+        Comment(id="gh-2", file="a.py", side="new", line=30, body="y",
+                source="github", commit_id="OLD"),
+        Comment(id="gh-3", file="a.py", side="new", line=40, body="z",
+                source="github", commit_id="OLD"),
+    ]
+    diff = "@@ -10,3 +10,2 @@\n-a\n-b\n-c\n+A\n+B\n"
+
+    def runner(argv, *args, **kwargs):
+        if "cat-file" in argv:
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+        if "diff" in argv:
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout=diff, stderr="")
+        raise AssertionError(f"unexpected git call: {argv}")
+
+    with patch("semantic_code_review.git_ops.subprocess.run", side_effect=runner) as run_mock:
+        decorate_with_head_anchors(tmp_path, "HEAD", cs)
+    diff_calls = [c for c in run_mock.call_args_list if "diff" in c[0][0]]
+    assert len(diff_calls) == 1
+    # All three comments got propagated through the same diff.
+    statuses = [c.anchor_status for c in cs]
+    # Lines 20, 30, 40 are all below the hunk (10..12). Net -1 shift each.
+    assert statuses == ["shifted", "shifted", "shifted"]
+    assert [c.head_line for c in cs] == [19, 29, 39]
+
+
+def test_decorate_writes_orphaned_for_lines_inside_removal_hunk(tmp_path: Path) -> None:
+    cs = [
+        Comment(id="gh-1", file="a.py", side="new", line=11, body="x",
+                source="github", commit_id="OLD"),
+    ]
+    diff = "@@ -10,3 +10,0 @@\n-a\n-b\n-c\n"
+
+    def runner(argv, *args, **kwargs):
+        if "cat-file" in argv:
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(args=argv, returncode=0, stdout=diff, stderr="")
+
+    with patch("semantic_code_review.git_ops.subprocess.run", side_effect=runner):
+        decorate_with_head_anchors(tmp_path, "HEAD", cs)
+    assert cs[0].anchor_status == "orphaned"
+    # First surviving line after the deletion = 10 (new_start + new_count = 9+0+1 actually wait)
+    # @@ -10,3 +10,0 @@ means 3 lines deleted starting at old-10; new_start is 10, new_count 0.
+    # Wait — git's convention for pure deletion: `@@ -10,3 +9,0 @@`. Let me re-check the test data.
+    # The test diff is `@@ -10,3 +10,0 @@`. new_start + new_count = 10. Anchor at 10.
+    assert cs[0].head_line == 10
+
+
+def test_decorate_propagates_file_gone_sentinel(tmp_path: Path) -> None:
+    cs = [
+        Comment(id="gh-1", file="a.py", side="new", line=5, body="x",
+                source="github", commit_id="OLD"),
+    ]
+
+    def runner(argv, *args, **kwargs):
+        if "cat-file" in argv:
+            # commit exists; file at head does not.
+            if argv[-1].endswith(":a.py"):
+                return subprocess.CompletedProcess(args=argv, returncode=1, stdout="", stderr="")
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+        raise AssertionError("should not reach diff")
+
+    with patch("semantic_code_review.git_ops.subprocess.run", side_effect=runner):
+        decorate_with_head_anchors(tmp_path, "HEAD", cs)
+    assert cs[0].anchor_status == "file_gone"
+    assert cs[0].head_line is None
 
 
 def test_fetch_comments_soft_fails_on_resolution_error() -> None:

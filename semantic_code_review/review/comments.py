@@ -48,6 +48,13 @@ class Comment(BaseModel):
     # thread; the viewer reads it from the root entry to decide whether
     # to collapse the thread by default.
     thread_resolved: bool = False
+    # Head-side anchor after diff-based propagation from `commit_id` to
+    # the run's `head_sha`. `head_line` is the propagated line number
+    # the viewer should pin to; `anchor_status` is one of
+    # `anchored | shifted | orphaned | file_gone | commit_unavailable`.
+    # Both null on session-local comments (which are always at head).
+    head_line: int | None = None
+    anchor_status: str | None = None
 
     @property
     def is_writable(self) -> bool:

@@ -298,4 +298,19 @@ interface ReviewerComment {
    *  marked resolved. Denormalised onto every member of the thread —
    *  the viewer reads it from the root entry. */
   thread_resolved?: boolean;
+  /** Head-side line number after diff-based propagation. Null when
+   *  no propagation could be computed (commit_unavailable / file_gone).
+   *  The viewer prefers this over `line` when present. */
+  head_line?: number | null;
+  /** Result of propagating the original anchor through to head:
+   *  - `anchored`: same line at head, nothing changed.
+   *  - `shifted`: same line content at head, different number.
+   *  - `orphaned`: line removed at head; head_line is the next surviving
+   *    line below.
+   *  - `file_gone`: path no longer exists at head_sha.
+   *  - `commit_unavailable`: commit_id couldn't be fetched (e.g. an old
+   *    force-pushed-over commit). */
+  anchor_status?:
+    | "anchored" | "shifted" | "orphaned"
+    | "file_gone" | "commit_unavailable" | null;
 }

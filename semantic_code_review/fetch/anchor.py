@@ -132,6 +132,57 @@ def _path_exists_at(repo_git: Path, sha: str, path: str) -> bool:
     return rc == 0
 
 
+@dataclass(frozen=True)
+class _PathDiff:
+    """Result of loading the diff for one (commit_id, path) pair.
+
+    ``hunks`` is the parsed list; ``sentinel`` is set instead when the
+    diff couldn't be computed at all (``file_gone`` / ``commit_unavailable``).
+    Either ``hunks`` is populated and ``sentinel`` is None, or vice
+    versa. A successful diff with no hunks is just an empty list — the
+    file is unchanged between the two commits.
+    """
+    hunks: list[_HunkHeader] | None
+    sentinel: AnchorStatus | None
+
+
+def load_path_diff(
+    repo_git: Path, commit_id: str, head_sha: str, path: str,
+) -> _PathDiff:
+    """Run ``git diff`` for one ``(commit_id, path)`` and return parsed
+    hunks (or the sentinel that explains why we can't).
+
+    Pulled out of :func:`propagate_anchor` so the batched ingest path
+    can cache one ``_PathDiff`` per pair — every comment in the same
+    PR push shares a ``commit_id``, so without this cache we re-parse
+    the same diff once per comment on the file.
+    """
+    if not _commit_exists(repo_git, commit_id):
+        return _PathDiff(None, "commit_unavailable")
+    if not _path_exists_at(repo_git, head_sha, path):
+        return _PathDiff(None, "file_gone")
+    rc, diff_out, _ = git_ops.git_capture(
+        repo_git,
+        "diff", "--unified=0", "--no-color",
+        f"{commit_id}..{head_sha}", "--", path,
+    )
+    if rc != 0:
+        # Both endpoints exist locally but the diff still failed — treat
+        # as unavailable rather than guess. Rare; surfaces in the chip.
+        return _PathDiff(None, "commit_unavailable")
+    return _PathDiff(_parse_hunk_headers(diff_out), None)
+
+
+def apply_path_diff(diff: _PathDiff, line: int) -> AnchorResult:
+    """Resolve one ``line`` against a loaded :class:`_PathDiff`."""
+    if diff.sentinel is not None:
+        return AnchorResult(diff.sentinel, None)
+    assert diff.hunks is not None  # invariant from load_path_diff
+    if not diff.hunks:
+        return AnchorResult("anchored", line)
+    return _propagate_through_hunks(diff.hunks, line)
+
+
 def propagate_anchor(
     repo_git: Path,
     commit_id: str,
@@ -144,32 +195,20 @@ def propagate_anchor(
 
     Returns an :class:`AnchorResult` describing where the comment
     should pin at ``head_sha``, plus a status for the viewer to chip.
-    Pure-ish — the only I/O is three ``git`` subprocesses (commit
-    existence check, path existence at head, the diff itself).
+    Convenience wrapper over :func:`load_path_diff` + :func:`apply_path_diff`
+    for one-off lookups; batch callers should hold the ``_PathDiff``
+    so they don't re-run ``git diff`` per comment.
     """
     if commit_id == head_sha:
         return AnchorResult("anchored", line)
-    if not _commit_exists(repo_git, commit_id):
-        return AnchorResult("commit_unavailable", None)
-    if not _path_exists_at(repo_git, head_sha, path):
-        return AnchorResult("file_gone", None)
-    rc, diff_out, _ = git_ops.git_capture(
-        repo_git,
-        "diff", "--unified=0", "--no-color",
-        f"{commit_id}..{head_sha}", "--", path,
-    )
-    if rc != 0:
-        # Both endpoints exist locally but the diff still failed — treat
-        # as unavailable rather than guess. Rare; surfaces in the chip.
-        return AnchorResult("commit_unavailable", None)
-    hunks = _parse_hunk_headers(diff_out)
-    if not hunks:
-        return AnchorResult("anchored", line)
-    return _propagate_through_hunks(hunks, line)
+    diff = load_path_diff(repo_git, commit_id, head_sha, path)
+    return apply_path_diff(diff, line)
 
 
 __all__ = [
     "AnchorResult",
     "AnchorStatus",
+    "apply_path_diff",
+    "load_path_diff",
     "propagate_anchor",
 ]

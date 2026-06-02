@@ -24,6 +24,7 @@ from typing import Any
 from .. import git_ops
 from ..git_ops import GhError
 from ..review.comments import Comment
+from .anchor import _PathDiff, apply_path_diff, load_path_diff
 from .github import PRRef
 
 log = logging.getLogger(__name__)
@@ -261,6 +262,37 @@ def write_comments_file(path: Path, comments: list[Comment]) -> None:
     tmp.replace(path)
 
 
+def decorate_with_head_anchors(
+    repo_git: Path, head_sha: str, comments: list[Comment],
+) -> None:
+    """Propagate every ingested side=new comment's anchor through to
+    ``head_sha`` and stamp ``head_line`` + ``anchor_status`` on each.
+
+    Mutates the comments in place. side=old comments are pinned on the
+    PR's base (which doesn't move for a non-rebased PR) so we skip them.
+    Session-local comments are already at head and skip too. The diff
+    for each ``(commit_id, path)`` is loaded once and reused across
+    every comment that shares the pair — one PR push typically leaves
+    a fistful of comments on the same file at the same commit.
+    """
+    diff_cache: dict[tuple[str, str], _PathDiff] = {}
+    for c in comments:
+        if c.source != "github" or c.side != "new":
+            continue
+        if not c.commit_id or c.commit_id == head_sha:
+            c.head_line = c.line
+            c.anchor_status = "anchored"
+            continue
+        key = (c.commit_id, c.file)
+        diff = diff_cache.get(key)
+        if diff is None:
+            diff = load_path_diff(repo_git, c.commit_id, head_sha, c.file)
+            diff_cache[key] = diff
+        result = apply_path_diff(diff, c.line)
+        c.head_line = result.head_line
+        c.anchor_status = result.status
+
+
 def fetch_comment_commits(repo_git: Path, comments: list[Comment]) -> set[str]:
     """Shallow-fetch every distinct commit_id referenced by an ingested
     comment, returning the set of SHAs now available in ``repo_git``.
@@ -281,7 +313,9 @@ def fetch_comment_commits(repo_git: Path, comments: list[Comment]) -> set[str]:
     return git_ops.try_fetch_depth1(repo_git, wanted)
 
 
-def materialize_pr_comments(run_dir: Path, ref: PRRef) -> int:
+def materialize_pr_comments(
+    run_dir: Path, ref: PRRef, head_sha: str | None = None,
+) -> int:
     """Fetch + persist PR review comments into the run directory.
 
     Returns the number of comments written. Best-effort: GhError is
@@ -291,8 +325,10 @@ def materialize_pr_comments(run_dir: Path, ref: PRRef) -> int:
     in-flight reviewer state on a re-materialise.
 
     Comment-anchor commits are shallow-fetched into ``run_dir/repo.git``
-    so the propagator (slice 2) can diff each comment's commit_id
-    against head_sha without an extra round-trip per anchor.
+    so the propagator can diff each comment's commit_id against
+    ``head_sha``. Passing ``head_sha`` enables anchor propagation; if
+    omitted, comments land with no ``head_line`` / ``anchor_status``
+    (used by callers that don't yet care about movement tracking).
     """
     target = run_dir / "comments.json"
     if target.exists():
@@ -305,11 +341,14 @@ def materialize_pr_comments(run_dir: Path, ref: PRRef) -> int:
     repo_git = run_dir / "repo.git"
     if repo_git.exists():
         fetch_comment_commits(repo_git, comments)
+        if head_sha is not None:
+            decorate_with_head_anchors(repo_git, head_sha, comments)
     write_comments_file(target, comments)
     return len(comments)
 
 
 __all__ = [
+    "decorate_with_head_anchors",
     "fetch_comment_commits",
     "fetch_pr_review_comments",
     "fetch_review_thread_resolution",

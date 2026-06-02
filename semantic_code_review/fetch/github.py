@@ -202,7 +202,7 @@ def materialize_github_pr_run(pr_url: str, runs_root: Path) -> Path:
     run_dir = materialize_run_metadata(resolved.spec, runs_root)
     setup_github_worktrees(run_dir, resolved)
     from .github_comments import materialize_pr_comments
-    materialize_pr_comments(run_dir, resolved.ref)
+    materialize_pr_comments(run_dir, resolved.ref, head_sha=resolved.spec.head_sha)
     return run_dir
 
 
