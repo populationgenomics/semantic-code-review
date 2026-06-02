@@ -15,11 +15,7 @@
 // is handled by `applyFoldSummary` in boot.ts.
 //
 import { Annotations, type AnnotationHandle } from "./annotations";
-
-interface RowWithEls extends RowBlock {
-  oldEl: HTMLElement;
-  newEl: HTMLElement;
-}
+import { FileRows, type RowWithEls } from "./file_rows";
 
 interface DetectedRegion {
   header_idx: number;
@@ -108,34 +104,30 @@ function _teardownFileFolds(fileId: string): void {
   delete _FILE_FOLD_STATE[fileId];
 }
 
-// Each .diff and .gap-expansion container stashes its row records
-// and the per-side DOM elements on itself (set by viewer.js's
-// render path); collect them in DOM order so folds across stretches
-// share an indexable row stream.
-interface FoldRowSource extends HTMLElement {
-  _scrRows?: RowBlock[];
-  _scrRowElsOld?: HTMLElement[];
-  _scrRowElsNew?: HTMLElement[];
-}
-
+// Walk the file body's .diff / .gap-expansion containers in DOM order,
+// pull each one's row stream out of `FileRows` (recorded by render.ts
+// at construction time), and flatten into one indexable list so folds
+// can straddle hunks and adjacent gap-context.
 function _collectFileRows(fileEl: HTMLElement): RowWithEls[] {
   const body = fileEl.querySelector(".file-body");
   if (!body) return [];
   const out: RowWithEls[] = [];
   for (const child of Array.from(body.children) as HTMLElement[]) {
     const cls = child.classList;
-    let source: FoldRowSource | null = null;
+    let source: HTMLElement | null = null;
     if (cls.contains("hunk")) {
-      source = child.querySelector(".diff") as FoldRowSource | null;
+      source = child.querySelector(".diff");
     } else if (cls.contains("gap-expansion")) {
-      source = child as FoldRowSource;
+      source = child;
     }
-    if (!source || !source._scrRows) continue;
-    const rows = source._scrRows;
-    const oldEls = source._scrRowElsOld || [];
-    const newEls = source._scrRowElsNew || [];
-    for (let i = 0; i < rows.length; i++) {
-      out.push({ ...rows[i], oldEl: oldEls[i], newEl: newEls[i] });
+    if (!source) continue;
+    const entry = FileRows.get(source);
+    if (!entry) continue;
+    for (let i = 0; i < entry.rows.length; i++) {
+      out.push({
+        ...entry.rows[i],
+        oldEl: entry.oldEls[i], newEl: entry.newEls[i],
+      });
     }
   }
   return out;

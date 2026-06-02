@@ -17,6 +17,7 @@
 
 import { Annotations } from "./annotations";
 import { Comments } from "./comments";
+import { FileRows } from "./file_rows";
 import { Folds } from "./folds";
 import { Progress } from "./progress";
 import { Sidebar } from "./sidebar";
@@ -337,14 +338,8 @@ function _renderGapChip(f: FileBlock, gap: GapDescriptor): HTMLElement {
   return chip;
 }
 
-interface GapRowSource extends HTMLElement {
-  _scrRows?: RowBlock[];
-  _scrRowElsOld?: HTMLElement[];
-  _scrRowElsNew?: HTMLElement[];
-}
-
 function _renderGapExpansion(f: FileBlock, gap: GapDescriptor): HTMLElement {
-  const container = _el("div", "gap-expansion") as GapRowSource;
+  const container = _el("div", "gap-expansion");
   const collapse = _el("button", "gap-collapse", "× collapse");
   collapse.title = "Hide these lines again";
   collapse.addEventListener("click", () => {
@@ -382,11 +377,9 @@ function _renderGapExpansion(f: FileBlock, gap: GapDescriptor): HTMLElement {
     rowElsNew.push(pair.new);
   }
 
-  // Stash row records + DOM refs on the container so the file-level
-  // fold walker (folds.ts) can recover them.
-  container._scrRows = rows;
-  container._scrRowElsOld = rowElsOld;
-  container._scrRowElsNew = rowElsNew;
+  // The file-level fold walker (folds.ts) needs to recover the row
+  // stream + per-side DOM elements; hand them off through FileRows.
+  FileRows.record(container, { rows, oldEls: rowElsOld, newEls: rowElsNew });
 
   container.appendChild(diff);
   return container;
@@ -533,16 +526,10 @@ function _renderSegmentFolded(s: SegmentBlock): HTMLElement {
   return div;
 }
 
-interface DiffRowSource extends HTMLElement {
-  _scrRows?: RowBlock[];
-  _scrRowElsOld?: HTMLElement[];
-  _scrRowElsNew?: HTMLElement[];
-}
-
 function _renderHunkDiff(h: HunkBlock, file: FileBlock): HTMLElement {
   const cached = _state.renderedDiffs[h.id];
   if (cached) return cached;
-  const container = _el("div", "diff") as DiffRowSource;
+  const container = _el("div", "diff");
   const halfOld = _el("div", "half half-old");
   const halfNew = _el("div", "half half-new");
   container.appendChild(halfOld);
@@ -560,11 +547,11 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock): HTMLElement {
     rowElsNew.push(pair.new);
   }
   _attachLineNotes(rowElsOld, rowElsNew, h.rows || [], h.line_notes || []);
-  // Stash row records + DOM refs on the .diff so folds.ts can build a
-  // unified row stream across this hunk and adjacent expanded context.
-  container._scrRows = h.rows || [];
-  container._scrRowElsOld = rowElsOld;
-  container._scrRowElsNew = rowElsNew;
+  // Record this hunk's rows so folds.ts can build a unified row stream
+  // across the hunk and adjacent expanded context.
+  FileRows.record(container, {
+    rows: h.rows || [], oldEls: rowElsOld, newEls: rowElsNew,
+  });
   _state.renderedDiffs[h.id] = container;
   return container;
 }
