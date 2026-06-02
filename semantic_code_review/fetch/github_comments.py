@@ -18,6 +18,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -102,7 +103,7 @@ def _comment_from_payload(payload: dict[str, Any]) -> Comment | None:
     )
 
 
-_RESOLUTION_QUERY = """
+_REVIEW_THREAD_QUERY = """
 query($owner:String!, $repo:String!, $number:Int!) {
   repository(owner:$owner, name:$repo) {
     pullRequest(number:$number) {
@@ -112,7 +113,7 @@ query($owner:String!, $repo:String!, $number:Int!) {
           isResolved
           comments(first:100) {
             pageInfo { hasNextPage }
-            nodes { databaseId }
+            nodes { id databaseId }
           }
         }
       }
@@ -122,23 +123,37 @@ query($owner:String!, $repo:String!, $number:Int!) {
 """
 
 
-def fetch_review_thread_resolution(ref: PRRef) -> dict[int, bool]:
-    """Map each review-comment ``databaseId`` to its thread's resolution flag.
+@dataclass(frozen=True)
+class _ReviewCommentMeta:
+    """Per-comment metadata pulled from the GraphQL reviewThreads
+    query. Both fields are denormalised from the thread + the comment:
+    ``thread_resolved`` is the thread-level flag applied to every
+    member, ``node_id`` is the opaque GraphQL id (distinct from the
+    REST ``databaseId``) that mutations need when referencing this
+    comment as a reply parent.
+    """
+    thread_resolved: bool
+    node_id: str
 
-    The REST endpoint we use for the comment bodies does not expose
-    thread membership or ``isResolved``; the GraphQL ``reviewThreads``
-    connection does, and it's cheap (one round-trip for the whole PR).
-    We denormalise the thread-level flag onto each member so the viewer
-    can decide per-comment whether to start collapsed.
 
-    Pagination is capped at 100 threads / 100 comments per thread — a
-    `hasNextPage=true` response logs a warning and the remaining flags
-    default to False. Real-world PRs comfortably fit; the cap is a
-    deliberate v1 simplification, not a permanent constraint.
+def fetch_review_thread_metadata(ref: PRRef) -> dict[int, _ReviewCommentMeta]:
+    """Map each review-comment ``databaseId`` to its thread state +
+    node id.
+
+    The REST comments endpoint we already hit exposes neither thread
+    membership / ``isResolved`` nor the GraphQL ``node_id`` we need
+    for reply mutations later — both fall out of this one GraphQL
+    call for the whole PR (cheap; one round-trip).
+
+    Pagination is capped at 100 threads / 100 comments per thread —
+    a ``hasNextPage=true`` response logs a warning and the remainder
+    is missing from the map (downstream just defaults to "unknown",
+    which is safer than dropping the comment). Real-world PRs
+    comfortably fit; the cap is a deliberate v1 simplification.
     """
     rc, stdout, stderr = git_ops.gh_capture(
         "api", "graphql",
-        "-f", f"query={_RESOLUTION_QUERY}",
+        "-f", f"query={_REVIEW_THREAD_QUERY}",
         "-F", f"owner={ref.owner}",
         "-F", f"repo={ref.repo}",
         "-F", f"number={ref.number}",
@@ -158,10 +173,10 @@ def fetch_review_thread_resolution(ref: PRRef) -> dict[int, bool]:
     threads = (pr.get("reviewThreads") or {})
     if threads.get("pageInfo", {}).get("hasNextPage"):
         log.warning(
-            "PR %s has >100 review threads; resolution flags on the "
-            "remainder will default to false", ref.url,
+            "PR %s has >100 review threads; trailing metadata "
+            "(resolution, node_id) will default to absent", ref.url,
         )
-    out: dict[int, bool] = {}
+    out: dict[int, _ReviewCommentMeta] = {}
     for t in threads.get("nodes") or []:
         if not isinstance(t, dict):
             continue
@@ -170,13 +185,27 @@ def fetch_review_thread_resolution(ref: PRRef) -> dict[int, bool]:
         if comments.get("pageInfo", {}).get("hasNextPage"):
             log.warning(
                 "review thread in %s has >100 comments; trailing "
-                "resolution flags may be incomplete", ref.url,
+                "metadata may be incomplete", ref.url,
             )
         for c in comments.get("nodes") or []:
-            dbid = c.get("databaseId") if isinstance(c, dict) else None
-            if isinstance(dbid, int):
-                out[dbid] = resolved
+            if not isinstance(c, dict):
+                continue
+            dbid = c.get("databaseId")
+            node_id = c.get("id")
+            if isinstance(dbid, int) and isinstance(node_id, str):
+                out[dbid] = _ReviewCommentMeta(
+                    thread_resolved=resolved, node_id=node_id,
+                )
     return out
+
+
+# Back-compat alias: the resolution-only return value used by the
+# original caller signature. Drop once nothing reads it.
+def fetch_review_thread_resolution(ref: PRRef) -> dict[int, bool]:
+    """Resolution flag per ``databaseId``. Thin wrapper over
+    :func:`fetch_review_thread_metadata` kept so existing imports keep
+    working — new code should use the richer function."""
+    return {dbid: meta.thread_resolved for dbid, meta in fetch_review_thread_metadata(ref).items()}
 
 
 def fetch_pr_review_comments(ref: PRRef) -> list[Comment]:
@@ -223,25 +252,29 @@ def fetch_pr_review_comments(ref: PRRef) -> list[Comment]:
         if c is not None:
             out.append(c)
 
-    # Decorate with thread-resolution state. The resolution call is
-    # best-effort: an error here leaves every thread looking unresolved,
-    # which is a strictly safer default than dropping the comments.
+    # Decorate with thread metadata (resolution flag + GraphQL node id).
+    # Best-effort: an error here leaves comments looking unresolved with
+    # no node_id, both of which the downstream paths tolerate.
     try:
-        resolved_map = fetch_review_thread_resolution(ref)
+        meta_map = fetch_review_thread_metadata(ref)
     except GhError as e:
-        log.warning("could not fetch review-thread resolution for %s: %s", ref.url, e)
-        resolved_map = {}
-    if resolved_map:
+        log.warning("could not fetch review-thread metadata for %s: %s", ref.url, e)
+        meta_map = {}
+    if meta_map:
         for c in out:
             # Comment ids look like "gh-<databaseId>" — strip the prefix
-            # to look up the resolution map.
+            # to look up the metadata map.
             if c.id.startswith("gh-"):
                 try:
                     dbid = int(c.id[3:])
                 except ValueError:
                     continue
-                if resolved_map.get(dbid):
+                meta = meta_map.get(dbid)
+                if meta is None:
+                    continue
+                if meta.thread_resolved:
                     c.thread_resolved = True
+                c.node_id = meta.node_id
     return out
 
 
@@ -351,6 +384,7 @@ __all__ = [
     "decorate_with_head_anchors",
     "fetch_comment_commits",
     "fetch_pr_review_comments",
+    "fetch_review_thread_metadata",
     "fetch_review_thread_resolution",
     "materialize_pr_comments",
     "write_comments_file",

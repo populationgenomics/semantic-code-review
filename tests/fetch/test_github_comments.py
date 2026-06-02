@@ -223,14 +223,17 @@ _GRAPHQL_OK = {
                             "isResolved": True,
                             "comments": {
                                 "pageInfo": {"hasNextPage": False},
-                                "nodes": [{"databaseId": 11}, {"databaseId": 12}],
+                                "nodes": [
+                                    {"id": "PRRC_node11", "databaseId": 11},
+                                    {"id": "PRRC_node12", "databaseId": 12},
+                                ],
                             },
                         },
                         {
                             "isResolved": False,
                             "comments": {
                                 "pageInfo": {"hasNextPage": False},
-                                "nodes": [{"databaseId": 99}],
+                                "nodes": [{"id": "PRRC_node99", "databaseId": 99}],
                             },
                         },
                     ],
@@ -248,6 +251,19 @@ def test_fetch_resolution_maps_databaseid_to_thread_flag() -> None:
     assert m == {11: True, 12: True, 99: False}
 
 
+def test_fetch_metadata_maps_databaseid_to_resolution_and_node_id() -> None:
+    """The richer metadata path returns both fields per comment so the
+    GraphQL post path has the node id it needs for reply mutations."""
+    from semantic_code_review.fetch.github_comments import fetch_review_thread_metadata
+    fake = _fake_gh_run(stdout=json.dumps(_GRAPHQL_OK))
+    with patch("semantic_code_review.git_ops.subprocess.run", side_effect=fake):
+        m = fetch_review_thread_metadata(_ref())
+    assert set(m.keys()) == {11, 12, 99}
+    assert m[11].thread_resolved is True and m[11].node_id == "PRRC_node11"
+    assert m[12].thread_resolved is True and m[12].node_id == "PRRC_node12"
+    assert m[99].thread_resolved is False and m[99].node_id == "PRRC_node99"
+
+
 def test_fetch_resolution_propagates_graphql_errors() -> None:
     fake = _fake_gh_run(stdout=json.dumps({"errors": [{"message": "rate limited"}]}))
     with patch("semantic_code_review.git_ops.subprocess.run", side_effect=fake):
@@ -255,10 +271,11 @@ def test_fetch_resolution_propagates_graphql_errors() -> None:
             fetch_review_thread_resolution(_ref())
 
 
-def test_fetch_comments_decorates_with_thread_resolved() -> None:
+def test_fetch_comments_decorates_with_thread_resolved_and_node_id() -> None:
     """fetch_pr_review_comments fires two gh subprocesses: the REST
-    comments call and the GraphQL resolution call. Each comment is
-    decorated with the thread flag matching its databaseId."""
+    comments call and the GraphQL metadata call. Each ingested comment
+    is decorated with the thread flag and the GraphQL node_id matching
+    its databaseId."""
     calls: list[list[str]] = []
 
     def runner(argv, *args, **kwargs):
@@ -277,10 +294,9 @@ def test_fetch_comments_decorates_with_thread_resolved() -> None:
 
     by_id = {c.id: c for c in comments}
     assert by_id["gh-11"].thread_resolved is True
+    assert by_id["gh-11"].node_id == "PRRC_node11"
     assert by_id["gh-12"].thread_resolved is True
-    # No record in the resolution map → stays at the default False.
-    # (gh-12 wasn't in our sample dropped records — let's also verify
-    #  via a comment whose databaseId isn't in _GRAPHQL_OK.)
+    assert by_id["gh-12"].node_id == "PRRC_node12"
     assert len(calls) == 2
 
 

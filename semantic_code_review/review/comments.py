@@ -55,6 +55,11 @@ class Comment(BaseModel):
     # Both null on session-local comments (which are always at head).
     head_line: int | None = None
     anchor_status: str | None = None
+    # GraphQL node id ("opaque string", distinct from the integer
+    # `databaseId` embedded in `id`). Required when GraphQL mutations
+    # reference this comment as a reply parent — addPullRequestReviewComment
+    # takes the node id, not the databaseId. Populated on ingest.
+    node_id: str | None = None
 
     @property
     def is_writable(self) -> bool:
