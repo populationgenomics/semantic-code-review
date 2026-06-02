@@ -64,11 +64,16 @@ jobs:
               exit 1
           fi
 
-      - name: Compile annotations.ts → annotations.js
+      - name: Compile TS sources → bundled viewer.js
         run: |
+          # Upstream 0.17.0 switched the viewer toolchain from a single
+          # annotations.ts emit to an esbuild bundle (boot.ts → viewer.js)
+          # that pulls every TS module under assets/. The wheel ships the
+          # built bundle as package_data; the post-build check confirms
+          # the bundle landed before we hand off to `python -m build`.
           npm ci --ignore-scripts
           npm run build
-          test -f semantic_code_review/viewer/assets/annotations.js
+          test -f semantic_code_review/viewer/assets/viewer.js
 
       - name: Build wheel + sdist
         run: |
