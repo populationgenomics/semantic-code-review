@@ -339,8 +339,9 @@ def pr(
     from .augment.prompts import PROMPT_VERSION
     from .cache.store import CacheStore
     from .review.github import (
-        GhError, list_review_requested_prs, pick_pr_interactive, post_inline_review,
+        GhError, list_review_requested_prs, pick_pr_interactive,
     )
+    from .review.github_graphql import post_review_via_graphql
     from .review.runner import serve_review
     from .fetch import GhFetchError, preflight_gh
 
@@ -491,7 +492,7 @@ def pr(
             raise typer.Exit(code=1)
 
     try:
-        post = post_inline_review(repo, number, head_sha, mapped)
+        post = post_review_via_graphql(repo, number, mapped)
     except GhError as e:
         typer.echo(f"scr pr: posting failed: {e}", err=True)
         sys.stderr.write(

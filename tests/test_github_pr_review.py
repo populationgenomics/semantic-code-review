@@ -69,31 +69,37 @@ def test_comments_to_github_filters_ingested_comments() -> None:
     assert [p.body for p in out] == ["new local"]
 
 
-def test_comments_to_github_emits_reply_payload_for_local_reply_to_gh_parent() -> None:
+def test_comments_to_github_emits_reply_using_parent_node_id() -> None:
     """A local comment with in_reply_to_id pointing at an ingested
-    comment becomes a reply payload (in_reply_to + body) rather than
-    a new anchored thread."""
+    parent becomes a reply payload that carries the *node id* (opaque
+    string), not the integer databaseId — that's what GraphQL's
+    addPullRequestReviewComment mutation wants."""
     cs = [
+        _comment(
+            id="gh-3331909762", source="github", body="upstream",
+            node_id="PRRC_kw1234",
+        ),
         _comment(
             id="local-1", source="local", body="reply text",
             in_reply_to_id="gh-3331909762",
         ),
     ]
     out = gh.comments_to_github(cs)
+    # Ingested parent filtered out; only the local reply remains.
     assert len(out) == 1
     p = out[0]
     assert p.is_reply
-    assert p.in_reply_to == 3331909762
+    assert p.in_reply_to_node_id == "PRRC_kw1234"
     assert p.body == "reply text"
     # Reply payload doesn't carry anchor fields.
     assert p.path is None and p.line is None and p.side is None
-    assert p.to_payload() == {"in_reply_to": 3331909762, "body": "reply text"}
 
 
-def test_comments_to_github_skips_local_reply_to_local_parent() -> None:
-    """A local reply to another local comment can't post in a single
-    review (the parent doesn't exist on GitHub yet) — drop with a
-    log warning rather than fail the whole batch."""
+def test_comments_to_github_skips_reply_whose_parent_has_no_node_id() -> None:
+    """A local reply to a parent that doesn't carry a node_id (a local
+    draft, or an old ingest from before the node_id field landed) gets
+    dropped with a warning — there's nothing upstream to thread to in
+    a single submission."""
     cs = [
         _comment(id="local-root", source="local", body="root"),
         _comment(
@@ -107,158 +113,11 @@ def test_comments_to_github_skips_local_reply_to_local_parent() -> None:
     assert out[0].is_reply is False
 
 
-def test_post_inline_review_serialises_mixed_threads_and_replies(monkeypatch) -> None:
-    """Anchored threads and replies coexist in the same review payload —
-    the comments[] array contains both shapes."""
-    captured: dict = {}
-
-    def fake_run(cmd, *, input=None, capture_output=False, text=False, check=False, **kw):
-        captured["cmd"] = cmd
-        captured["input"] = input
-        return _FakeProc(stdout=json.dumps({"id": 1, "html_url": ""}))
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    cs = [
-        _comment(id="local-1", source="local", body="new thread"),
-        _comment(
-            id="local-2", source="local", body="reply",
-            in_reply_to_id="gh-111",
-        ),
-        _comment(id="gh-222", source="github", body="should be filtered"),
-    ]
-    result = gh.post_inline_review("o/r", 1, "head", cs)
-    payload = json.loads(captured["input"])
-    assert payload["comments"] == [
-        {"path": "a.py", "line": 10, "side": "RIGHT", "body": "new thread"},
-        {"in_reply_to": 111, "body": "reply"},
-    ]
-    assert result.posted == 2
-
-
-def test_post_inline_review_accepts_already_mapped_PostedComments(monkeypatch) -> None:
-    """CLI maps once for the prompt count, then passes the mapped list
-    to post_inline_review — no double-filter, no surprise."""
-    captured: dict = {}
-
-    def fake_run(cmd, *, input=None, **kw):
-        captured["input"] = input
-        return _FakeProc(stdout=json.dumps({"id": 1, "html_url": ""}))
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    posted = [
-        gh.PostedComment(body="hi", path="x.py", line=2, side="RIGHT"),
-        gh.PostedComment(body="ack", in_reply_to=99),
-    ]
-    result = gh.post_inline_review("o/r", 1, "head", posted)
-    payload = json.loads(captured["input"])
-    assert payload["comments"] == [
-        {"path": "x.py", "line": 2, "side": "RIGHT", "body": "hi"},
-        {"in_reply_to": 99, "body": "ack"},
-    ]
-    assert result.posted == 2
-
-
-# ---------------------------------------------------------------------------
-# post_inline_review argv shape
-# ---------------------------------------------------------------------------
-
 class _FakeProc:
     def __init__(self, stdout: str = "", stderr: str = "", returncode: int = 0) -> None:
         self.stdout = stdout
         self.stderr = stderr
         self.returncode = returncode
-
-
-def test_post_inline_review_shells_gh_api(monkeypatch) -> None:
-    captured: dict = {}
-
-    def fake_run(cmd, *, input=None, capture_output=False, text=False, check=False, **kw):
-        captured["cmd"] = cmd
-        captured["input"] = input
-        return _FakeProc(stdout=json.dumps({"id": 999, "html_url": "https://github.com/o/r/pull/1#pullrequestreview-999"}))
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    comments = [_comment(side="new", line=42, body="nit"),
-                _comment(id="c2", file="b.py", side="old", line=7, body="why")]
-    result = gh.post_inline_review("o/r", 1, "ff2ab91deadbeef", comments)
-
-    cmd = captured["cmd"]
-    assert cmd[:5] == ["gh", "api", "-X", "POST", "repos/o/r/pulls/1/reviews"]
-    assert "--input" in cmd and cmd[-1] == "-"
-
-    payload = json.loads(captured["input"])
-    assert payload["commit_id"] == "ff2ab91deadbeef"
-    assert payload["event"] == "COMMENT"
-    assert payload["body"] == ""
-    assert payload["comments"] == [
-        {"path": "a.py", "line": 42, "side": "RIGHT", "body": "nit"},
-        {"path": "b.py", "line": 7, "side": "LEFT", "body": "why"},
-    ]
-    assert result.review_id == 999
-    assert result.posted == 2
-    assert "pullrequestreview-999" in result.review_url
-
-
-def test_post_inline_review_raises_when_no_postable(monkeypatch) -> None:
-    called = {"n": 0}
-
-    def fake_run(*a, **kw):  # pragma: no cover — should not be called
-        called["n"] += 1
-        return _FakeProc()
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    with pytest.raises(gh.GhError):
-        gh.post_inline_review("o/r", 1, "abc", [])
-    assert called["n"] == 0
-
-
-def test_post_inline_review_propagates_gh_failure(monkeypatch) -> None:
-    def fake_run(*a, **kw):
-        return _FakeProc(stderr="HTTP 422: line not in diff hunk", returncode=1)
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    with pytest.raises(gh.GhError) as exc:
-        gh.post_inline_review("o/r", 1, "abc", [_comment()])
-    assert "422" in str(exc.value)
-
-
-def test_post_inline_review_surfaces_github_body_message(monkeypatch) -> None:
-    """gh writes the response body to stdout on error; the wrapper
-    parses it so the user sees the real cause instead of just the
-    gh-side 'Unprocessable Entity' summary."""
-    body = json.dumps({
-        "message": "Validation Failed",
-        "errors": [{"message": "Line 5 must be part of the diff hunk"}],
-    })
-    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _FakeProc(
-        stdout=body, stderr="gh: Unprocessable Entity (HTTP 422)", returncode=1,
-    ))
-    with pytest.raises(gh.GhError) as exc:
-        gh.post_inline_review("o/r", 1, "abc", [_comment()])
-    text = str(exc.value)
-    assert "Validation Failed" in text
-    assert "Line 5 must be part of the diff hunk" in text
-
-
-def test_post_inline_review_hints_at_pending_draft_review(monkeypatch) -> None:
-    """The single most common foot-gun: a draft review left on
-    github.com blocks the bulk POST. Surface the fix path."""
-    body = json.dumps({
-        "message": "Unprocessable Entity",
-        "errors": ["User can only have one pending review per pull request"],
-        "status": "422",
-    })
-    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _FakeProc(
-        stdout=body, stderr="gh: Unprocessable Entity (HTTP 422)", returncode=1,
-    ))
-    with pytest.raises(gh.GhError) as exc:
-        gh.post_inline_review("o/r", 1, "abc", [_comment()])
-    text = str(exc.value)
-    assert "one pending review per pull request" in text
-    assert "submit or delete the pending review" in text.lower()
 
 
 # ---------------------------------------------------------------------------
