@@ -13,22 +13,19 @@ import asyncio
 import json
 import logging
 import sys
-import time
 import webbrowser
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
-from .. import git_ops
 from ..augment.agents import Client
 from ..augment.prompts import PROMPT_VERSION
 from ..cache.store import CacheStore
+from ..fetch import materialize_local_diff_run
 from ..format.parse import parse_augmented_diff
 from ..paths import default_runs_root as _default_runs_root
 from ..viewer.build_json import build_pending_viewer_json, build_viewer_json
 from .comments import CommentStore, format_markdown
-from .git import LocalDiff, build_local_diff
 from .server import ReviewServer
 
 
@@ -84,16 +81,14 @@ class ReviewOptions:
 
 def run_review(opts: ReviewOptions) -> int:
     """Run a full review session. Returns the process exit code."""
-    diff = build_local_diff(
+    run_dir = materialize_local_diff_run(
         opts.spec,
+        opts.runs_root,
         repo_root=opts.repo_root,
         no_staged=opts.no_staged,
         no_unstaged=opts.no_unstaged,
+        spec_md_path=opts.spec_markdown,
     )
-
-    run_dir = opts.runs_root / diff.slug
-    run_dir.mkdir(parents=True, exist_ok=True)
-    _populate_run_dir(run_dir, diff, spec_md=opts.spec_markdown)
 
     augment_task: AugmentCallable | None = None
     fold_summary_task: FoldSummaryCallable | None = None
@@ -137,7 +132,7 @@ def run_review(opts: ReviewOptions) -> int:
         timeout=opts.timeout,
         open_browser=opts.open_browser,
     )
-    markdown = format_markdown(result.comments, run_slug=diff.slug)
+    markdown = format_markdown(result.comments, run_slug=run_dir.name)
     sys.stdout.write(markdown)
     sys.stdout.flush()
     return 0 if result.clean else 2
@@ -275,85 +270,6 @@ def _build_fold_summary_task(
         )
 
     return task
-
-
-def _populate_run_dir(run_dir: Path, diff: LocalDiff, *, spec_md: Path | None) -> None:
-    (run_dir / "raw.diff").write_text(diff.raw_diff, encoding="utf-8")
-    (run_dir / "files.txt").write_text("\n".join(diff.files) + ("\n" if diff.files else ""),
-                                       encoding="utf-8")
-
-    spec_text = ""
-    if spec_md is not None:
-        spec_text = spec_md.read_text(encoding="utf-8")
-        (run_dir / "spec.md").write_text(spec_text, encoding="utf-8")
-
-    title = "Local review: " + diff.slug.removeprefix("local-")
-    body = ""
-    if spec_text:
-        body = "# Spec (ground truth)\n\n" + spec_text.strip() + "\n"
-    meta = {
-        "title": title,
-        "body": body,
-        "author": {"login": ""},
-        "url": "",
-        "baseRefOid": diff.base_sha,
-        "headRefOid": diff.head_sha,
-        "files": [{"path": p} for p in diff.files],
-        "number": None,
-        "labels": [],
-        "additions": 0,
-        "deletions": 0,
-        "changedFiles": len(diff.files),
-        "local": True,
-        "mode": diff.mode,
-        "head_is_working": diff.head_is_working,
-    }
-    (run_dir / "meta.json").write_text(
-        json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-
-    # Worktrees: for working-state mode, point head/ at the live repo via symlink
-    # so RepoTools can grep/read the current state. For committed-only modes,
-    # create real detached worktrees so the LLM sees the exact head-sha tree.
-    _setup_worktrees(run_dir, diff)
-
-
-def _setup_worktrees(run_dir: Path, diff: LocalDiff) -> None:
-    repo_git_link = run_dir / "repo.git"
-    if not repo_git_link.exists():
-        _symlink(repo_git_link, diff.repo_git)
-
-    head_link = run_dir / "head"
-    base_dir = run_dir / "base"
-
-    if diff.head_is_working:
-        # The head "tree" is the live checkout; symlink it so RepoTools.read_file
-        # hits the actual files the reviewer is editing.
-        if not head_link.exists():
-            _symlink(head_link, diff.head_worktree)
-    else:
-        # Committed-only mode — create a detached worktree at the resolved head SHA.
-        if not head_link.exists():
-            git_ops.worktree_add(
-                diff.repo_git.parent, head_link.resolve(), diff.head_sha,
-            )
-
-    # Base worktree (always real — we want the LLM to read pre-change code).
-    if not base_dir.exists():
-        # Strip synthetic suffixes from dirty head; base_sha is always real.
-        git_ops.worktree_add(
-            diff.repo_git.parent, base_dir.resolve(), diff.base_sha,
-        )
-
-
-def _symlink(link: Path, target: Path) -> None:
-    try:
-        link.symlink_to(target.resolve())
-    except OSError:
-        # Filesystems without symlink support (rare on macOS/Linux): create a
-        # marker file with the target path. Tools that rely on the path will
-        # fail more loudly and the user can switch modes.
-        link.write_text(str(target.resolve()) + "\n", encoding="utf-8")
 
 
 def _load_viewer_json(run_dir: Path) -> dict:

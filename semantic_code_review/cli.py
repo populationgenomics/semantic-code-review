@@ -12,7 +12,7 @@ import typer
 
 from .cache.store import CacheStore
 from .config import ConfigError, ScrConfig
-from .fetch import fetch as fetch_pr
+from .fetch import materialize_github_pr_run
 from .format.lint import lint_text
 from .format.parse import parse_augmented_diff
 from .format.strip import strip_annotations
@@ -144,11 +144,11 @@ def fetch(
     runs_root = runs_root or _default_runs_root()
     try:
         preflight_gh()
-        result = fetch_pr(pr_url, runs_root)
+        run_dir = materialize_github_pr_run(pr_url, runs_root)
     except GhFetchError as e:
         typer.echo(f"scr: {e}", err=True)
         raise typer.Exit(code=2)
-    typer.echo(f"run directory: {result.run_dir}")
+    typer.echo(f"run directory: {run_dir}")
 
 
 @app.command()
@@ -264,7 +264,7 @@ def review(
 ) -> None:
     """Review a local git diff; round-trip reviewer comments to stdout."""
     _configure_logging(verbose)
-    from .review.git import EmptyDiff, LocalDiffError
+    from .fetch import EmptyDiff, LocalDiffError
     from .review.runner import ReviewOptions, run_review
 
     backend = _CONFIG.resolve_backend(backend)
@@ -342,7 +342,7 @@ def pr(
         GhError, list_review_requested_prs, pick_pr_interactive, post_inline_review,
     )
     from .review.runner import serve_review
-    from .fetch import GhFetchError, fetch as fetch_pr, preflight_gh
+    from .fetch import GhFetchError, preflight_gh
 
     backend = _CONFIG.resolve_backend(backend)
     model = _CONFIG.resolve_model(backend=backend, cli_value=model)
@@ -387,11 +387,10 @@ def pr(
 
     runs_root = runs_root or _default_runs_root()
     try:
-        fetch_result = fetch_pr(pr_url, runs_root)
+        run_dir = materialize_github_pr_run(pr_url, runs_root)
     except GhFetchError as e:
         typer.echo(f"scr pr: {e}", err=True)
         raise typer.Exit(code=2)
-    run_dir = fetch_result.run_dir
 
     augment_task = None
     fold_summary_task = None

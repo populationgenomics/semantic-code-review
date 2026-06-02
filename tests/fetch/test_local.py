@@ -1,4 +1,9 @@
-"""review.git: resolve input specs into a diff + SHAs against a tmp repo."""
+"""fetch.local.resolve_local_diff: resolve input specs against a tmp repo.
+
+Probes the resolved object's structural fields (mode, head_is_working,
+raw_diff, head_sha, slug). Materialisation tests live separately; this
+file covers the resolve step alone.
+"""
 
 from __future__ import annotations
 
@@ -7,9 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from semantic_code_review.review.git import (
+from semantic_code_review.fetch import (
+    EmptyDiff,
     LocalDiffError,
-    build_local_diff,
+    resolve_local_diff,
 )
 
 
@@ -37,41 +43,41 @@ def repo(tmp_path: Path) -> Path:
 
 
 def test_range_two_dots(repo: Path) -> None:
-    d = build_local_diff("HEAD~1..HEAD", repo_root=repo)
-    assert d.mode == "range"
-    assert "a.py" in d.raw_diff
-    assert "-x = 1" in d.raw_diff and "+x = 2" in d.raw_diff
-    assert d.files == ["a.py"]
-    assert not d.head_is_working
+    r = resolve_local_diff("HEAD~1..HEAD", repo_root=repo)
+    assert r.mode == "range"
+    assert "a.py" in r.raw_diff
+    assert "-x = 1" in r.raw_diff and "+x = 2" in r.raw_diff
+    assert r.files == ["a.py"]
+    assert not r.head_is_working
 
 
 def test_range_three_dots(repo: Path) -> None:
-    d = build_local_diff("HEAD~1...HEAD", repo_root=repo)
-    assert d.mode == "range"
-    assert "+x = 2" in d.raw_diff
+    r = resolve_local_diff("HEAD~1...HEAD", repo_root=repo)
+    assert r.mode == "range"
+    assert "+x = 2" in r.raw_diff
 
 
 def test_range_rejects_flags(repo: Path) -> None:
     with pytest.raises(LocalDiffError, match="only apply"):
-        build_local_diff("HEAD~1..HEAD", repo_root=repo, no_staged=True)
+        resolve_local_diff("HEAD~1..HEAD", repo_root=repo, no_staged=True)
 
 
 def test_single_ref_clean(repo: Path) -> None:
-    d = build_local_diff("HEAD~1", repo_root=repo)
+    r = resolve_local_diff("HEAD~1", repo_root=repo)
     # clean working tree: equivalent to HEAD~1..HEAD
-    assert d.mode == "ref..HEAD"
-    assert "+x = 2" in d.raw_diff
-    assert not d.head_is_working or d.head_is_working  # either fine when clean
+    assert r.mode == "ref..HEAD"
+    assert "+x = 2" in r.raw_diff
+    assert not r.head_is_working or r.head_is_working  # either fine when clean
 
 
 def test_single_ref_dirty_picks_up_unstaged(repo: Path) -> None:
     (repo / "a.py").write_text("x = 3\n")
-    d = build_local_diff("HEAD~1", repo_root=repo)
-    assert d.mode == "ref-working"
-    assert d.head_is_working
-    assert "+x = 3" in d.raw_diff
+    r = resolve_local_diff("HEAD~1", repo_root=repo)
+    assert r.mode == "ref-working"
+    assert r.head_is_working
+    assert "+x = 3" in r.raw_diff
     # synthetic head sha has a -dirty- tag
-    assert "-dirty-" in d.head_sha
+    assert "-dirty-" in r.head_sha
 
 
 def test_no_staged_drops_staged(repo: Path) -> None:
@@ -79,49 +85,48 @@ def test_no_staged_drops_staged(repo: Path) -> None:
     (repo / "a.py").write_text("x = 3\n")
     _sh(repo, "git", "add", "a.py")
     (repo / "a.py").write_text("x = 4\n")  # unstaged on top
-    d = build_local_diff("HEAD~1", repo_root=repo, no_staged=True)
-    assert d.mode == "ref-working-no-staged"
+    r = resolve_local_diff("HEAD~1", repo_root=repo, no_staged=True)
+    assert r.mode == "ref-working-no-staged"
     # Committed portion yields +x = 2 (HEAD~1..HEAD); unstaged yields +x = 4.
-    assert "+x = 2" in d.raw_diff or "+x = 4" in d.raw_diff
+    assert "+x = 2" in r.raw_diff or "+x = 4" in r.raw_diff
 
 
 def test_no_unstaged(repo: Path) -> None:
     (repo / "a.py").write_text("x = 3\n")
     _sh(repo, "git", "add", "a.py")
     (repo / "a.py").write_text("x = 4\n")  # unstaged on top — should be excluded
-    d = build_local_diff("HEAD~1", repo_root=repo, no_unstaged=True)
-    assert d.mode == "ref-working-no-unstaged"
-    assert "+x = 3" in d.raw_diff and "+x = 4" not in d.raw_diff
+    r = resolve_local_diff("HEAD~1", repo_root=repo, no_unstaged=True)
+    assert r.mode == "ref-working-no-unstaged"
+    assert "+x = 3" in r.raw_diff and "+x = 4" not in r.raw_diff
 
 
 def test_both_flags_equiv_to_range(repo: Path) -> None:
     (repo / "a.py").write_text("x = 3\n")
     _sh(repo, "git", "add", "a.py")
-    d = build_local_diff("HEAD~1", repo_root=repo, no_staged=True, no_unstaged=True)
-    assert d.mode == "ref..HEAD"
-    assert "+x = 2" in d.raw_diff
-    assert "+x = 3" not in d.raw_diff
+    r = resolve_local_diff("HEAD~1", repo_root=repo, no_staged=True, no_unstaged=True)
+    assert r.mode == "ref..HEAD"
+    assert "+x = 2" in r.raw_diff
+    assert "+x = 3" not in r.raw_diff
 
 
 def test_empty_diff_errors(repo: Path) -> None:
     """EmptyDiff is a LocalDiffError subclass; old `match="no diff"`
     callers still catch the parent class. The CLI distinguishes the
     two so "nothing to review" exits 0 instead of crashing."""
-    from semantic_code_review.review.git import EmptyDiff
     with pytest.raises(EmptyDiff, match="no changes to review"):
-        build_local_diff("HEAD..HEAD", repo_root=repo)
+        resolve_local_diff("HEAD..HEAD", repo_root=repo)
     with pytest.raises(LocalDiffError):
-        build_local_diff("HEAD..HEAD", repo_root=repo)
+        resolve_local_diff("HEAD..HEAD", repo_root=repo)
 
 
 def test_slug_is_stable(repo: Path) -> None:
-    d1 = build_local_diff("HEAD~1..HEAD", repo_root=repo)
-    d2 = build_local_diff("HEAD~1..HEAD", repo_root=repo)
-    assert d1.slug == d2.slug
-    assert d1.slug.startswith("local-HEAD-1..HEAD-")
+    r1 = resolve_local_diff("HEAD~1..HEAD", repo_root=repo)
+    r2 = resolve_local_diff("HEAD~1..HEAD", repo_root=repo)
+    assert r1.slug == r2.slug
+    assert r1.slug.startswith("local-HEAD-1..HEAD-")
 
 
 def test_rejects_non_git_dir(tmp_path: Path) -> None:
     # A plain empty directory is not a repo.
     with pytest.raises(LocalDiffError):
-        build_local_diff("HEAD", repo_root=tmp_path)
+        resolve_local_diff("HEAD", repo_root=tmp_path)

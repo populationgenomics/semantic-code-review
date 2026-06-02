@@ -1,4 +1,4 @@
-"""PR URL parser: well-formed URLs accepted, garbage rejected."""
+"""fetch.github: URL parsing, resolve_github_pr error mapping, preflight."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-from semantic_code_review.fetch.gh import (
-    GhFetchError, PRRef, fetch_pr_meta, parse_pr_url, preflight_gh,
+from semantic_code_review.fetch import (
+    GhFetchError, PRRef, parse_pr_url, preflight_gh, resolve_github_pr,
 )
 
 
@@ -48,7 +48,7 @@ def test_rejects_garbage() -> None:
 
 
 # ---------------------------------------------------------------------------
-# fetch_pr_meta error translation
+# resolve_github_pr error mapping
 # ---------------------------------------------------------------------------
 
 
@@ -61,16 +61,13 @@ def _fake_run(stdout: str = "", stderr: str = "", returncode: int = 0):
     return runner
 
 
-def test_other_gh_failures_pass_through() -> None:
-    """Non-version errors (auth, network) keep their original stderr."""
-    ref = PRRef(owner="acme", repo="widgets", number=42)
-    fake = _fake_run(
-        stderr="HTTP 401: Bad credentials",
-        returncode=1,
-    )
+def test_gh_failure_surfaces_stderr() -> None:
+    """Non-zero gh exits map to GhFetchError with the stderr preserved."""
+    fake = _fake_run(stderr="HTTP 401: Bad credentials", returncode=1)
+    url = "https://github.com/acme/widgets/pull/42"
     with patch("semantic_code_review.git_ops.subprocess.run", side_effect=fake):
         with pytest.raises(GhFetchError, match="Bad credentials"):
-            fetch_pr_meta(ref)
+            resolve_github_pr(url)
 
 
 # ---------------------------------------------------------------------------

@@ -31,10 +31,8 @@ overridable with `--runs-root`. Contents:
 
 Each subsystem under `fetch/`, `review/`, `augment/`, and `viewer/`
 takes a `run_dir: Path` and operates inside it. The implicit contract
-is "everything I need to do my job lives under this one path" — the
-deepening opportunity flagged as candidate #5 is to make the act of
-*producing* a run directory itself a named seam (a "run source") so
-local-diff and GitHub-PR inputs share a shape.
+is "everything I need to do my job lives under this one path". The
+act of *producing* a run directory is named: see [[run-spec]].
 
 **Augmented diff**
 The output of the augment pipeline, kept on disk in two paired forms:
@@ -52,6 +50,28 @@ The output of the augment pipeline, kept on disk in two paired forms:
 The two are kept in sync — any code that mutates one rewrites the
 other. The sidecar is the canonical structural shape; the unified-diff
 form is the canonical wire shape.
+
+**RunSpec**
+The shared shape both [[run-directory]] sources hand to the
+materialise step. A `RunSpec` (in `fetch/run_source.py`) carries
+`slug`, `raw_diff`, `base_sha`, `head_sha`, `files`, `meta` (PR-shaped,
+written verbatim to `meta.json`), and an optional `spec_md_text`.
+`materialize_run_metadata(spec, runs_root) → Path` writes the shared
+artefacts (`raw.diff`, `files.txt`, `meta.json`, optional `spec.md`).
+
+Two sources today (`fetch/github.py`, `fetch/local.py`), each
+producing a `RunSpec` plus per-source extras carried on a wrapper —
+`GithubResolved` adds the `PRRef`; `LocalResolved` adds the cwd
+`.git` location, the working-state flag, and the diagnostic mode
+(`"range"`, `"ref-working"`, etc.). The wrapper is transient: once
+materialise + per-source worktree setup are done, downstream
+consumers see only `run_dir: Path`.
+
+Worktree mechanics stay per-source on purpose — fresh bare clone +
+remote fetch for GitHub, `worktree add` against the cwd repo (or a
+symlink for working-state mode) for local. Unifying them would have
+meant a multi-axis conditional inside `materialize_run_metadata` for
+no callsite benefit.
 
 **Backend**
 A registered LLM provider that the CLI resolves a name to. Each backend
