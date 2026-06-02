@@ -97,12 +97,35 @@ def test_line_below_all_hunks_shifts_by_cumulative_offset() -> None:
     assert _propagate_through_hunks(hs, 100) == AnchorResult("shifted", 101)
 
 
-def test_line_in_modification_hunk_is_orphaned_at_post_hunk_position() -> None:
-    # Lines 10-12 replaced with 10-11. Old line 11 is removed.
-    # Anchor falls to first surviving line after the hunk:
-    # new_start + new_count = 10 + 2 = 12.
+def test_line_in_modification_hunk_pairs_with_the_added_line_at_the_same_position() -> None:
+    """Edit-in-place: `@@ -10,3 +10,2 @@` rewrites old lines 10..12 as
+    new lines 10..11. Old line 10 pairs with new line 10 (anchored,
+    same number); old line 11 pairs with new line 11 (anchored — also
+    same number). Old line 12 has no partner and orphans at the
+    first surviving line after the hunk."""
     hs = [_h(10, 3, 10, 2)]
-    assert _propagate_through_hunks(hs, 11) == AnchorResult("orphaned", 12)
+    assert _propagate_through_hunks(hs, 10) == AnchorResult("anchored", 10)
+    assert _propagate_through_hunks(hs, 11) == AnchorResult("anchored", 11)
+    assert _propagate_through_hunks(hs, 12) == AnchorResult("orphaned", 12)
+
+
+def test_paragraph_rewrite_pairs_lines_into_their_new_positions() -> None:
+    """The themis-internal case: `@@ -53,2 +55,2 @@` is a two-line
+    paragraph rewrite. Both old lines pair into their new positions
+    instead of orphaning at the bottom of the hunk."""
+    hs = [_h(53, 2, 55, 2)]
+    assert _propagate_through_hunks(hs, 53) == AnchorResult("shifted", 55)
+    assert _propagate_through_hunks(hs, 54) == AnchorResult("shifted", 56)
+
+
+def test_asymmetric_shrink_orphans_only_the_unpartnered_tail() -> None:
+    # `@@ -10,5 +10,3 @@`: old lines 10..12 pair with new 10..12;
+    # old lines 13..14 are the tail with no `+` partner.
+    hs = [_h(10, 5, 10, 3)]
+    assert _propagate_through_hunks(hs, 10) == AnchorResult("anchored", 10)
+    assert _propagate_through_hunks(hs, 12) == AnchorResult("anchored", 12)
+    assert _propagate_through_hunks(hs, 13) == AnchorResult("orphaned", 13)
+    assert _propagate_through_hunks(hs, 14) == AnchorResult("orphaned", 13)
 
 
 def test_line_in_pure_deletion_hunk_is_orphaned() -> None:
@@ -240,9 +263,13 @@ diff --git a/x.py b/x.py
     g.expect(("cat-file", "-e", "new:x.py"), rc=0)
     g.expect(("diff", "--unified=0"), rc=0, stdout=diff)
     with patch("semantic_code_review.git_ops.subprocess.run", side_effect=g):
-        # Line 11 was inside the modification — orphaned at post-hunk
-        # position (new_start + new_count = 10 + 2 = 12).
+        # Line 11 was inside the modification but the hunk has two `+`
+        # lines paired by position — old 11 → new 11 (same number).
         assert propagate_anchor(repo_git, "old", "new", "x.py", 11) \
+            == AnchorResult("anchored", 11)
+        # Old line 12 has no `+` partner (3 removed, 2 added) so it
+        # orphans at the first surviving line below the hunk.
+        assert propagate_anchor(repo_git, "old", "new", "x.py", 12) \
             == AnchorResult("orphaned", 12)
         # Line 100 is well below the hunk; shifted by -1 (3→2 net).
         assert propagate_anchor(repo_git, "old", "new", "x.py", 100) \

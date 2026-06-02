@@ -105,12 +105,30 @@ def _propagate_through_hunks(hunks: list[_HunkHeader], line: int) -> AnchorResul
             # Hunk is below us; nothing further can shift `line`.
             break
         if h.old_start <= line <= old_end:
-            # Line was removed (with --unified=0 there's no in-place
-            # "kept" line inside a hunk). Anchor at the first surviving
-            # line after the hunk. Clamp to 1 for deletions at the top
-            # of the file (`@@ -1,k +0,0 @@` would otherwise yield 0).
-            anchor = max(1, h.new_start + h.new_count)
-            return AnchorResult("orphaned", anchor)
+            # Position-pair `-` lines with `+` lines inside the same
+            # hunk: the i-th removed line maps to the i-th added line
+            # if one exists. This is the common edit-in-place case —
+            # a `@@ -53,2 +55,2 @@` paragraph rewrite leaves both old
+            # lines paired with the rewritten versions rather than
+            # orphaned at the bottom of the hunk. Only the *tail* of
+            # an asymmetric shrink (`@@ -10,5 +10,3 @@` lines 13–14
+            # have no `+` partner) truly orphans.
+            #
+            # Note: pairing is positional, not content-based. A hunk
+            # that reorders or replaces wholesale will pair against
+            # the wrong `+` line; the chip still says "was line N" so
+            # the reviewer can see the original anchor and judge.
+            pos = line - h.old_start
+            if pos < h.new_count:
+                new_line = h.new_start + pos
+                return AnchorResult(
+                    "anchored" if new_line == line else "shifted",
+                    new_line,
+                )
+            # No paired addition — anchor at first surviving line
+            # below the hunk. Clamp to 1 for deletions at top of file
+            # (`@@ -1,k +0,0 @@` would otherwise yield 0).
+            return AnchorResult("orphaned", max(1, h.new_start + h.new_count))
         # line is below the hunk's old range — apply the shift and
         # keep walking.
         offset += h.new_count - h.old_count
