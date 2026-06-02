@@ -23,6 +23,11 @@ let _store: CommentStore = makeLocalStore("scr-comments:uninit");
 // removes the override so the thread re-collapses.
 const _expandedResolved = new Set<string>();
 
+// Fired after every store mutation or load. Boot wires this so the
+// sidebar can refresh per-file comment counts without comments.ts
+// having to import Sidebar (mutual imports kept off the boot path).
+let _onChange: (() => void) | null = null;
+
 function _sessionEndpoint(): string | null {
   if (typeof document === "undefined") return null;
   const m = document.querySelector('meta[name="scr-session-endpoint"]');
@@ -39,7 +44,16 @@ function _el(tag: string, className: string | null, text?: string): HTMLElement 
 
 // --- Public API ----------------------------------------------------------
 
-function init(data: ViewerData): void {
+interface InitOptions {
+  /** Notified after the initial load completes and after every
+   *  user-driven save/delete. The sidebar uses this to refresh
+   *  per-file comment counts without comments.ts having to import
+   *  Sidebar directly. */
+  onChange?: () => void;
+}
+
+function init(data: ViewerData, opts: InitOptions = {}): void {
+  _onChange = opts.onChange ?? null;
   const endpoint = _sessionEndpoint();
   if (endpoint !== null) {
     _store = makeServerStore(endpoint);
@@ -51,7 +65,17 @@ function init(data: ViewerData): void {
   }
   const app = document.getElementById("app");
   if (app) _installGutter(app);
-  _store.load().then(renderAll);
+  _store.load().then(() => {
+    renderAll();
+    _onChange?.();
+  });
+}
+
+/** Snapshot of currently-known comments. Read-only consumers (e.g.
+ *  the sidebar's per-file counters) should treat the returned array
+ *  as immutable. */
+function getAll(): ReviewerComment[] {
+  return _store.getAll();
 }
 
 /** The line in the *currently rendered* head-side diff that a
@@ -194,6 +218,7 @@ function _openEditor({ rowEl, side, line, file, existing, replyTo }: EditorOpts)
     _store.save(c).then(() => {
       close();
       _refreshForAnchor(rowEl, { file, side, line });
+      _onChange?.();
     });
   }
 
@@ -406,7 +431,7 @@ function _buildThreadRow(
             file: c.file, existing: c,
           });
         },
-        () => _store.delete(c.id).then(refresh),
+        () => _store.delete(c.id).then(() => { refresh(); _onChange?.(); }),
       );
       container.appendChild(entry);
     });
@@ -498,4 +523,5 @@ function _removeReviewerCommentRowsAfter(anchorRowEl: HTMLElement): void {
 export const Comments = {
   init,
   renderAll,
+  getAll,
 };

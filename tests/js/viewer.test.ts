@@ -429,6 +429,89 @@ describe("streaming events", () => {
 });
 
 
+describe("sidebar comment counts", () => {
+  test("Files-axis pill shows unresolved/total badge once comments load", async () => {
+    window.location.hash = "#fold=off";
+    await bootViewer(makeData({
+      pending: false,
+      files: [
+        {
+          id: "F0", path: "a.py", status: "modified", language: "python",
+          adds: 0, dels: 0, summary: "", head_lines: null,
+          symbols: { added: [], modified: [], removed: [] },
+          hunks: [makeHunkBlock("H0_0")],
+        },
+        {
+          id: "F1", path: "b.py", status: "modified", language: "python",
+          adds: 0, dels: 0, summary: "", head_lines: null,
+          symbols: { added: [], modified: [], removed: [] },
+          hunks: [makeHunkBlock("H1_0")],
+        },
+      ],
+    }), {
+      comments: [
+        // a.py: one unresolved root, one resolved root, one reply
+        // (replies don't count separately).
+        {
+          id: "gh-1", file: "a.py", side: "new", line: 1,
+          body: "still chasing", created_at: 1, updated_at: 1,
+          source: "github", author: "alice", thread_resolved: false,
+        },
+        {
+          id: "gh-1r", file: "a.py", side: "new", line: 1,
+          body: "ack", created_at: 2, updated_at: 2,
+          source: "github", author: "bob",
+          in_reply_to_id: "gh-1", thread_resolved: false,
+        },
+        {
+          id: "gh-2", file: "a.py", side: "new", line: 2,
+          body: "done", created_at: 3, updated_at: 3,
+          source: "github", author: "alice", thread_resolved: true,
+        },
+        // b.py: all-resolved.
+        {
+          id: "gh-3", file: "b.py", side: "new", line: 1,
+          body: "lgtm", created_at: 4, updated_at: 4,
+          source: "github", author: "alice", thread_resolved: true,
+        },
+      ],
+    });
+    // bootViewer waits one tick; sidebar refresh runs on the SECOND
+    // microtask (after Comments.init's load resolves), so one extra
+    // tick lets the badge land.
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    const filesSection = document.querySelector('[data-axis="files"]')!;
+    const pills = Array.from(
+      filesSection.querySelectorAll<HTMLElement>(".group-btn"),
+    );
+    expect(pills).toHaveLength(2);
+
+    // a.py: 1 unresolved of 2 threads (the reply doesn't add to the count).
+    const aPyBadge = pills[0].querySelector(".group-btn-comments") as HTMLElement;
+    expect(aPyBadge).not.toBeNull();
+    expect(aPyBadge.textContent).toBe("1/2");
+    expect(aPyBadge.classList.contains("has-unresolved")).toBe(true);
+
+    // b.py: 0 unresolved of 1 — badge present but no warn styling.
+    const bPyBadge = pills[1].querySelector(".group-btn-comments") as HTMLElement;
+    expect(bPyBadge).not.toBeNull();
+    expect(bPyBadge.textContent).toBe("0/1");
+    expect(bPyBadge.classList.contains("has-unresolved")).toBe(false);
+  });
+
+  test("pills with no comments get no comment badge", async () => {
+    window.location.hash = "#fold=off";
+    await bootViewer(makeData({ pending: false }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const filesSection = document.querySelector('[data-axis="files"]')!;
+    const pill = filesSection.querySelector(".group-btn") as HTMLElement;
+    expect(pill).not.toBeNull();
+    expect(pill.querySelector(".group-btn-comments")).toBeNull();
+  });
+});
+
+
 describe("ingested PR comments", () => {
   test("renders author + body_html + permalink, hides edit/delete", async () => {
     const ingested = {

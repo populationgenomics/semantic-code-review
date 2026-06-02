@@ -13,6 +13,7 @@
 // localStorage as `<axis>:<id>`.
 
 import { Annotations } from "./annotations";
+import { Comments } from "./comments";
 
 interface SidebarAxis {
   id: "themes" | "files";
@@ -141,12 +142,20 @@ function render(): void {
     const header = _el("div", "group-axis-header");
     header.appendChild(_el("h3", null, axis.label));
     section.appendChild(header);
+    const commentCounts = axis.id === "files" ? _commentCountsByFilePath() : null;
     for (const g of axis.groups) {
       const btn = _el("button", "group-btn");
       btn.dataset.axis = axis.id;
       btn.dataset.pillId = g.id;
       btn.appendChild(_el("span", "group-btn-label", g.title));
       btn.appendChild(_el("span", "group-btn-count", String((g.hunk_ids || []).length)));
+      if (commentCounts) {
+        // Files axis only — Themes axis is keyed by hunks, not paths,
+        // so there's no single "comments per pill" mapping to surface.
+        const cc = commentCounts[g.rationale] || { total: 0, unresolved: 0 };
+        const badge = _renderCommentCountBadge(cc);
+        if (badge) btn.appendChild(badge);
+      }
       if (g.rationale) btn.title = g.rationale;
       if (_isActivePill(axis.id, g.id)) btn.classList.add("active");
       btn.addEventListener("click", () => {
@@ -216,6 +225,66 @@ function applyFilter(): void {
   });
 }
 
+interface CommentCounts { total: number; unresolved: number }
+
+/** Tally comment threads per file path.
+ *
+ * "Threads" are counted as the root comments — i.e. those whose
+ * ``in_reply_to_id`` is null/absent. A local reply to an ingested
+ * root carries the parent's id; the parent (the ingested root) is
+ * what gets counted. This matches how the discussion is grouped in
+ * the diff view: one annotation block per thread.
+ *
+ * "Unresolved" mirrors the resolved-thread fold: a thread is
+ * resolved iff its root's ``thread_resolved`` is true. Pure-local
+ * threads (no upstream) default to unresolved — the reviewer hasn't
+ * told us otherwise. */
+function _commentCountsByFilePath(): Record<string, CommentCounts> {
+  const out: Record<string, CommentCounts> = Object.create(null);
+  for (const c of Comments.getAll()) {
+    if (c.in_reply_to_id) continue;            // only thread roots
+    if (!c.file) continue;
+    const bucket = (out[c.file] ||= { total: 0, unresolved: 0 });
+    bucket.total += 1;
+    if (!c.thread_resolved) bucket.unresolved += 1;
+  }
+  return out;
+}
+
+function _renderCommentCountBadge(cc: CommentCounts): HTMLElement | null {
+  if (cc.total === 0) return null;
+  const badge = _el(
+    "span",
+    "group-btn-comments" + (cc.unresolved > 0 ? " has-unresolved" : ""),
+    `${cc.unresolved}/${cc.total}`,
+  );
+  badge.title = cc.unresolved > 0
+    ? `${cc.unresolved} unresolved of ${cc.total} thread${cc.total === 1 ? "" : "s"}`
+    : `${cc.total} thread${cc.total === 1 ? "" : "s"} — all resolved`;
+  return badge;
+}
+
+/** Re-paint just the comment-count badges on existing Files-axis pills.
+ *  Boot wires this to Comments' onChange so the badges stay in sync
+ *  with the store without re-rendering the whole sidebar. */
+function refreshFileCommentCounts(): void {
+  const sidebar = document.getElementById("group-sidebar");
+  if (!sidebar) return;
+  const filesSection = sidebar.querySelector('[data-axis="files"]');
+  if (!filesSection) return;
+  const counts = _commentCountsByFilePath();
+  filesSection.querySelectorAll<HTMLElement>(".group-btn").forEach((btn) => {
+    const pillId = btn.dataset.pillId || "";
+    const group = FILES_AXIS.byId[pillId];
+    if (!group) return;
+    const cc = counts[group.rationale] || { total: 0, unresolved: 0 };
+    const existing = btn.querySelector(".group-btn-comments");
+    if (existing) existing.remove();
+    const fresh = _renderCommentCountBadge(cc);
+    if (fresh) btn.appendChild(fresh);
+  });
+}
+
 function _shortenPath(path: string): string {
   if (!path) return "";
   if (path.length <= 28) return path;
@@ -235,6 +304,7 @@ export const Sidebar = {
   render,
   refreshThemes,
   rebuildFilesAxis,
+  refreshFileCommentCounts,
   setActivePill,
   applyFilter,
 };

@@ -43,7 +43,11 @@ const SESSION_ENDPOINT: string | null = (() => {
 // --- Boot ----------------------------------------------------------------
 
 function boot(): void {
-  Comments.init(DATA);     // wires gutter + loads existing
+  Comments.init(DATA, {
+    // Sidebar pills carry per-file unresolved/total counts; repaint
+    // them whenever the store changes (initial load, save, delete).
+    onChange: () => Sidebar.refreshFileCommentCounts(),
+  });
   installDoneButton();
   Sidebar.init(DATA);
   Render.init(DATA);       // wires hash + keyboard + initial paint
