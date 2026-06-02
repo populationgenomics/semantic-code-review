@@ -436,15 +436,13 @@ def pr(
     )
 
     # Markdown to stdout for parity with `scr review` (the slash-command
-    # downstream expects to read it). GitHub posting is in addition to,
-    # not instead of, this.
+    # downstream expects to read it). Only the *new* (session-local)
+    # comments belong in the markdown — re-printing every ingested
+    # upstream comment would drown the reviewer's actual notes.
     from .review.comments import format_markdown
-    sys.stdout.write(format_markdown(result.comments, run_slug=run_dir.name))
+    local_comments = [c for c in result.comments if c.source == "local"]
+    sys.stdout.write(format_markdown(local_comments, run_slug=run_dir.name))
     sys.stdout.flush()
-
-    if not result.comments:
-        # Nothing to post; exit clean.
-        raise typer.Exit(code=0 if result.clean else 2)
 
     # Need the head SHA from meta.json so GitHub anchors the review at
     # the commit the reviewer actually saw.

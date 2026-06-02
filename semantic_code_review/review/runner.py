@@ -132,7 +132,10 @@ def run_review(opts: ReviewOptions) -> int:
         timeout=opts.timeout,
         open_browser=opts.open_browser,
     )
-    markdown = format_markdown(result.comments, run_slug=run_dir.name)
+    # The markdown dump is the reviewer's "new notes" feed — ingested
+    # upstream comments are already on GitHub and would crowd it out.
+    local_comments = [c for c in result.comments if c.source == "local"]
+    markdown = format_markdown(local_comments, run_slug=run_dir.name)
     sys.stdout.write(markdown)
     sys.stdout.flush()
     return 0 if result.clean else 2
