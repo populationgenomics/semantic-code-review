@@ -459,12 +459,6 @@ function _anySegmentOverridden(h: HunkBlock, toValue: boolean): boolean {
   });
 }
 
-// Marker so the hunk renderer can mark a hunk as failed
-// (independent of the FoldRegion-only `_failed` we use elsewhere).
-interface HunkBlockExtended extends HunkBlock {
-  _failed?: boolean;
-}
-
 function _renderHunkHeader(h: HunkBlock, folded: boolean): HTMLElement {
   const hdr = _el("div", "hunk-header");
   hdr.appendChild(_chev(folded));
@@ -472,7 +466,7 @@ function _renderHunkHeader(h: HunkBlock, folded: boolean): HTMLElement {
   let intent: HTMLElement;
   if (h.intent) {
     intent = _el("span", "hunk-intent", h.intent);
-  } else if (_data.pending && !(h as HunkBlockExtended)._failed) {
+  } else if (_data.pending && !h._failed) {
     // Still streaming. Distinguish "queued, model hasn't looked yet"
     // (static, dim) from "running, model is working on it right now"
     // (pulse). State comes from the Progress module.

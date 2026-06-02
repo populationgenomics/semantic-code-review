@@ -8,6 +8,7 @@
 
 import { Annotations } from "./annotations";
 import { Comments } from "./comments";
+import { DataStore, type FoldRegionAddress } from "./data_store";
 import { Folds } from "./folds";
 import { Progress } from "./progress";
 import { Render } from "./render";
@@ -158,25 +159,17 @@ function installSessionEvents(): void {
 }
 
 // --- SSE → DATA patchers ------------------------------------------------
+// Each handler is a three-step shape: ask DataStore to mutate, then
+// hand the right view back to the right module to repaint. Mutation
+// logic itself lives in data_store.ts.
 
 function applyOverviewPatch(payload: SseOverviewEvent): void {
-  if (payload.pr) Object.assign(DATA.pr || (DATA.pr = {} as PRBlock), payload.pr);
-  if (Array.isArray(payload.files)) {
-    for (const fp of payload.files) {
-      const f = DATA.files && DATA.files[fp.file_idx];
-      if (!f) continue;
-      if (fp.summary !== undefined) f.summary = fp.summary;
-      if (fp.language) f.language = fp.language;
-      if (fp.symbols) f.symbols = fp.symbols;
-      if (fp.status) f.status = fp.status;
-    }
-  }
-  if (Array.isArray(payload.groups)) {
-    // Themes axis lives in sidebar.ts; refreshThemes mutates in
-    // place. Keep DATA.groups in sync for any consumer that still
-    // reads it directly.
+  const { groupsChanged } = DataStore.applyOverview(DATA, payload);
+  if (groupsChanged && payload.groups) {
+    // The themes axis is a sidebar concern; the DataStore wrote
+    // DATA.groups, but the rendered axis lives in module-private
+    // state we have to nudge separately.
     Sidebar.refreshThemes(payload.groups);
-    DATA.groups = payload.groups;
   }
   // PR header + sidebar live outside the hunk list and are cheap
   // to redraw; one full re-render keeps the logic consistent with
@@ -184,85 +177,39 @@ function applyOverviewPatch(payload: SseOverviewEvent): void {
   Render.render();
 }
 
-// Tracks the slice 5 `_failed` marker on hunks whose augmentation
-// returned an error — used by the renderer to distinguish "spinner
-// pending" from "model couldn't produce annotations". Not part of
-// the wire shape; viewer-side only.
-interface HunkBlockMutable extends HunkBlock { _failed?: boolean; }
-
 function applyHunkPatch(payload: SseHunkEvent): void {
-  const fi = payload.file_idx;
-  const hi = payload.hunk_idx;
-  if (!DATA.files || !DATA.files[fi]) return;
-  const file = DATA.files[fi];
-  if (!file.hunks || !file.hunks[hi]) return;
-  if (payload.ok && payload.block) {
-    file.hunks[hi] = payload.block;
-  } else {
-    // Failure: mark the slot so renderHunkHeader shows the re-run
-    // copy instead of the pending spinner.
-    file.hunks[hi].intent = "";
-    (file.hunks[hi] as HunkBlockMutable)._failed = true;
-  }
-  Render.renderHunkReplace(file, hi);
+  const file = (payload.ok && payload.block)
+    ? DataStore.replaceHunk(DATA, payload.file_idx, payload.hunk_idx, payload.block)
+    : DataStore.markHunkFailed(DATA, payload.file_idx, payload.hunk_idx);
+  if (file) Render.renderHunkReplace(file, payload.hunk_idx);
 }
 
-// FoldRegion gains a transient `_inflight` flag while a local POST
-// is in flight (set in folds.ts). The viewer-side patcher honours
-// it to avoid stomping the in-flight fetch handler's DOM update.
-interface FoldRegionMutable extends FoldRegion { _inflight?: boolean; }
-
 function applyFoldSummary(payload: SseFoldSummaryEvent): void {
-  if (!payload || payload.summary == null) return;
-  if (payload.file_idx == null) return;
-  const f = DATA.files && DATA.files[payload.file_idx];
-  if (!f) return;
-  const ctx = payload.context || "right";
-  const rs = payload.right_start || 0, re_ = payload.right_end || 0;
-  const ls = payload.left_start || 0, le = payload.left_end || 0;
-  // Regions live on individual hunks but are addressed at the file
-  // level; walk every hunk's fold_regions for the matching key.
-  let region: FoldRegionMutable | null = null;
-  let hostHunk: HunkBlock | null = null;
-  let hostHunkIdx = -1;
-  for (let hi = 0; hi < (f.hunks || []).length; hi++) {
-    const h = f.hunks[hi];
-    for (const r of h.fold_regions || []) {
-      if (
-        (r.context || "right") === ctx
-        && (r.right_start || 0) === rs && (r.right_end || 0) === re_
-        && (r.left_start || 0) === ls && (r.left_end || 0) === le
-      ) {
-        region = r; hostHunk = h; hostHunkIdx = hi; break;
-      }
-    }
-    if (region) break;
-  }
-  if (!region || !hostHunk) return;
-  // Idempotency: same payload, no work. Avoids a redundant re-render
-  // (and the fold popping back open) when our own POST also arrives
-  // via the SSE broadcast loop.
-  if (region.summary === payload.summary) return;
-  region.summary = payload.summary;
-  // If a local POST is in flight, the fetch handler will update the
-  // fold box in place; re-rendering here would rebuild the hunk and
-  // pop the user's just-closed fold back open. Let the local path
-  // own the DOM update.
-  if (region._inflight) return;
-  // Cross-tab path: replace the hunk DOM, then re-attach the
-  // file-level fold pass over the freshly-rendered rows.
-  Render.renderHunkReplace(f, hostHunkIdx);
+  if (!payload || payload.summary == null || payload.file_idx == null) return;
+  const addr: FoldRegionAddress = {
+    file_idx: payload.file_idx,
+    context: payload.context || "right",
+    right_start: payload.right_start || 0,
+    right_end: payload.right_end || 0,
+    left_start: payload.left_start || 0,
+    left_end: payload.left_end || 0,
+  };
+  const outcome = DataStore.applyFoldSummary(DATA, addr, payload.summary);
+  if (outcome !== "applied") return;
+  // Cross-tab path: the resolved region tells us which hunk hosts it
+  // so we can replace just that hunk's DOM, then re-attach folds over
+  // the freshly-rendered rows.
+  const resolved = DataStore.findFoldRegion(DATA, addr);
+  if (!resolved) return;
+  Render.renderHunkReplace(resolved.file, resolved.hostHunkIdx);
   const fileEl = document.querySelector(
-    '.file[data-id="' + _cssEscape(f.id) + '"]',
+    '.file[data-id="' + _cssEscape(resolved.file.id) + '"]',
   ) as HTMLElement | null;
-  if (fileEl) Folds.attachFileFolds(fileEl, f);
+  if (fileEl) Folds.attachFileFolds(fileEl, resolved.file);
 }
 
 function finaliseStreaming(): void {
-  // Drop the pending flag so any hunks the server never sent an
-  // event for (filtered, skipped, crashed mid-pass) render the
-  // failure copy on the next re-render instead of the spinner.
-  DATA.pending = false;
+  DataStore.finalisePending(DATA);
   // Hide the progress strip — only useful while streaming.
   Progress.finalise();
   Render.render();

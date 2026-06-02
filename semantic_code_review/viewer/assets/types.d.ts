@@ -119,6 +119,11 @@ interface HunkBlock {
   segments: SegmentBlock[];
   rows: RowBlock[];
   fold_regions: FoldRegion[];
+  /** Viewer-runtime only (not on the wire): set by DataStore when the
+   *  augment pass reported a hunk-level failure, so the renderer can
+   *  show "couldn't produce annotations" instead of the pending
+   *  spinner. */
+  _failed?: boolean;
 }
 
 interface SegmentBlock {
@@ -178,6 +183,11 @@ interface FoldRegion {
   left_end: number | null;
   has_changes: boolean;
   summary: string;
+  /** Viewer-runtime only (not on the wire): set by folds.ts while a
+   *  local POST /fold-summary is in flight, honoured by DataStore so
+   *  an echoing SSE event doesn't stomp the in-flight fetch handler's
+   *  DOM update. */
+  _inflight?: boolean;
 }
 
 // --- Sidebar groups ---------------------------------------------------------

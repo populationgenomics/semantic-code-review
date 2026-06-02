@@ -280,10 +280,6 @@ function _lastLine(
 
 // --- Attach + click ----------------------------------------------------
 
-interface FoldRegionRuntime extends FoldRegion {
-  _inflight?: boolean;
-}
-
 function _canRequestFoldSummary(
   fileIdx: number | null, region: FoldRegion,
 ): boolean {
@@ -309,7 +305,7 @@ function _foldAddress(region: FoldRegion): FoldRequestAddress | null {
 }
 
 function _requestFoldSummary(
-  fileIdx: number, region: FoldRegionRuntime,
+  fileIdx: number, region: FoldRegion,
   foldHandle: AnnotationHandle,
 ): void {
   if (region._inflight || region.summary) return;
