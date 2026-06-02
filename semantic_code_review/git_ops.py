@@ -143,6 +143,34 @@ def fetch_depth1(cwd: Path, *refs: str, remote: str = "origin") -> None:
     git(cwd, "fetch", "--depth", "1", remote, *refs)
 
 
+def try_fetch_depth1(cwd: Path, refs: list[str], remote: str = "origin") -> set[str]:
+    """Best-effort variant of :func:`fetch_depth1` that returns the SHAs
+    successfully fetched.
+
+    A single 404 (e.g. a force-pushed commit older than GitHub's 90-day
+    grace window) would otherwise sink the whole fetch — for the comment
+    anchor-propagation path we want to keep going and just mark the
+    affected comments orphaned. We do one batch fetch first (fast path);
+    if it fails we fall back to fetching SHAs one at a time and skip
+    the ones that 404, so a single bad commit can't poison the rest.
+    """
+    if not refs:
+        return set()
+    try:
+        fetch_depth1(cwd, *refs, remote=remote)
+        return set(refs)
+    except subprocess.CalledProcessError:
+        pass
+    out: set[str] = set()
+    for ref in refs:
+        try:
+            fetch_depth1(cwd, ref, remote=remote)
+            out.add(ref)
+        except subprocess.CalledProcessError:
+            continue
+    return out
+
+
 def worktree_add(repo_git: Path, path: Path, sha: str) -> None:
     """``git worktree add --detach <path> <sha>`` from ``repo_git``."""
     git(repo_git, "worktree", "add", "--detach", str(path), sha)

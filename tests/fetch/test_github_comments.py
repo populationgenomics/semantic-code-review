@@ -11,6 +11,7 @@ import pytest
 
 from semantic_code_review.fetch import PRRef
 from semantic_code_review.fetch.github_comments import (
+    fetch_comment_commits,
     fetch_pr_review_comments,
     fetch_review_thread_resolution,
     materialize_pr_comments,
@@ -280,6 +281,74 @@ def test_fetch_comments_decorates_with_thread_resolved() -> None:
     # (gh-12 wasn't in our sample dropped records — let's also verify
     #  via a comment whose databaseId isn't in _GRAPHQL_OK.)
     assert len(calls) == 2
+
+
+def test_fetch_comment_commits_batches_unique_ids(tmp_path: Path) -> None:
+    """One git-fetch with every distinct commit_id, deduped, sorted."""
+    cs = [
+        Comment(id="gh-1", file="a.py", side="new", line=1, body="x",
+                source="github", commit_id="aaa"),
+        Comment(id="gh-2", file="a.py", side="new", line=2, body="y",
+                source="github", commit_id="aaa"),  # duplicate
+        Comment(id="gh-3", file="a.py", side="new", line=3, body="z",
+                source="github", commit_id="bbb"),
+        # Skipped: missing commit_id, not github-sourced.
+        Comment(id="gh-4", file="a.py", side="new", line=4, body="w",
+                source="github"),
+        Comment(id="local-1", file="a.py", side="new", line=5, body="local",
+                source="local", commit_id="ccc"),
+    ]
+    fake = _fake_gh_run(stdout="", returncode=0)
+    with patch("semantic_code_review.git_ops.subprocess.run", side_effect=fake) as run_mock:
+        fetched = fetch_comment_commits(tmp_path, cs)
+    assert fetched == {"aaa", "bbb"}
+    # Single batched fetch, deduped + sorted.
+    cmds = [c[0][0] for c in run_mock.call_args_list]
+    fetches = [c for c in cmds if "fetch" in c]
+    assert len(fetches) == 1
+    assert fetches[0][-2:] == ["aaa", "bbb"]
+
+
+def test_fetch_comment_commits_falls_back_per_sha_on_failure(tmp_path: Path) -> None:
+    """A 404 on one commit (force-push >90d ago) doesn't sink the rest:
+    the batch fails, then we retry one-by-one and return the survivors."""
+    cs = [
+        Comment(id="gh-1", file="a.py", side="new", line=1, body="x",
+                source="github", commit_id="good1"),
+        Comment(id="gh-2", file="a.py", side="new", line=2, body="y",
+                source="github", commit_id="bad"),
+        Comment(id="gh-3", file="a.py", side="new", line=3, body="z",
+                source="github", commit_id="good2"),
+    ]
+
+    def runner(argv, *args, **kwargs):
+        # Batch call has all three SHAs at the end of argv. Fail it.
+        if argv[-3:] == ["bad", "good1", "good2"] or \
+           argv[-3:] == ["good1", "bad", "good2"] or \
+           argv[-3:] == ["good1", "good2", "bad"] or \
+           "bad" in argv and "good1" in argv and "good2" in argv:
+            raise subprocess.CalledProcessError(1, argv, stderr="HTTP 404")
+        # Per-SHA retry: fail only the bad one.
+        if argv[-1] == "bad":
+            raise subprocess.CalledProcessError(1, argv, stderr="HTTP 404")
+        return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+    with patch("semantic_code_review.git_ops.subprocess.run", side_effect=runner):
+        fetched = fetch_comment_commits(tmp_path, cs)
+    assert fetched == {"good1", "good2"}
+
+
+def test_fetch_comment_commits_skips_when_no_remote_commits(tmp_path: Path) -> None:
+    """No github-sourced commit_ids → no fetch at all (avoid pointless
+    network call for a runs that only ever held local comments)."""
+    cs = [
+        Comment(id="local-1", file="a.py", side="new", line=1, body="x",
+                source="local"),
+    ]
+    with patch("semantic_code_review.git_ops.subprocess.run") as run_mock:
+        fetched = fetch_comment_commits(tmp_path, cs)
+    assert fetched == set()
+    assert run_mock.call_count == 0
 
 
 def test_fetch_comments_soft_fails_on_resolution_error() -> None:

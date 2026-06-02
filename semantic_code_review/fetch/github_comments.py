@@ -261,6 +261,26 @@ def write_comments_file(path: Path, comments: list[Comment]) -> None:
     tmp.replace(path)
 
 
+def fetch_comment_commits(repo_git: Path, comments: list[Comment]) -> set[str]:
+    """Shallow-fetch every distinct commit_id referenced by an ingested
+    comment, returning the set of SHAs now available in ``repo_git``.
+
+    Anchor propagation needs to diff each comment's commit_id against
+    head_sha; only base_sha + head_sha are fetched by the run-dir
+    setup, so any comment left on an intermediate (or force-pushed-over)
+    commit needs its object pulled in explicitly. Best-effort per SHA:
+    a 404 on one commit (force-push >90d ago) leaves the rest fetchable
+    and the affected comments are marked orphaned downstream.
+    """
+    wanted = sorted({
+        c.commit_id for c in comments
+        if c.commit_id and c.source == "github"
+    })
+    if not wanted:
+        return set()
+    return git_ops.try_fetch_depth1(repo_git, wanted)
+
+
 def materialize_pr_comments(run_dir: Path, ref: PRRef) -> int:
     """Fetch + persist PR review comments into the run directory.
 
@@ -269,6 +289,10 @@ def materialize_pr_comments(run_dir: Path, ref: PRRef) -> int:
     No-op if `comments.json` already exists (a prior fetch, or
     session-local comments from a previous review) so we don't clobber
     in-flight reviewer state on a re-materialise.
+
+    Comment-anchor commits are shallow-fetched into ``run_dir/repo.git``
+    so the propagator (slice 2) can diff each comment's commit_id
+    against head_sha without an extra round-trip per anchor.
     """
     target = run_dir / "comments.json"
     if target.exists():
@@ -278,11 +302,15 @@ def materialize_pr_comments(run_dir: Path, ref: PRRef) -> int:
     except GhError as e:
         log.warning("skipping PR comment ingest for %s: %s", ref.url, e)
         return 0
+    repo_git = run_dir / "repo.git"
+    if repo_git.exists():
+        fetch_comment_commits(repo_git, comments)
     write_comments_file(target, comments)
     return len(comments)
 
 
 __all__ = [
+    "fetch_comment_commits",
     "fetch_pr_review_comments",
     "fetch_review_thread_resolution",
     "materialize_pr_comments",
