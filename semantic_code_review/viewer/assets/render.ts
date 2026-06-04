@@ -540,7 +540,7 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock): HTMLElement {
     rowElsOld.push(pair.old);
     rowElsNew.push(pair.new);
   }
-  _attachLineNotes(rowElsOld, rowElsNew, h.rows || [], h.line_notes || []);
+  _attachLineNotes(rowElsOld, rowElsNew, h.rows || [], h.line_notes || [], h.id, file.path);
   // Record this hunk's rows so folds.ts can build a unified row stream
   // across the hunk and adjacent expanded context.
   FileRows.record(container, {
@@ -553,6 +553,7 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock): HTMLElement {
 function _attachLineNotes(
   rowElsOld: HTMLElement[], rowElsNew: HTMLElement[],
   rows: RowBlock[], notes: LineNote[],
+  hunkId: string, filePath: string,
 ): void {
   if (!notes.length || !rows.length) return;
   const byNewLine = new Map<number, number>();
@@ -563,13 +564,53 @@ function _attachLineNotes(
   for (const note of notes) {
     const idx = byNewLine.get(note.line);
     if (idx === undefined) continue;
+    const noteId = `${hunkId}:line_note:${note.line}`;
+    // If this line_note has already been promoted to a local comment,
+    // skip rendering it — the comment now stands in its place. Keeps
+    // a re-augment from resurrecting an observation the reviewer has
+    // already turned into a comment.
+    if (Comments.isPromoted(noteId)) continue;
     Annotations.attach({
       anchor: rowElsNew[idx],
       shadowAnchor: rowElsOld[idx],
       variant: "note",
-      content: note.body || "",
+      content: _buildLineNoteContent(note, noteId, filePath, rowElsNew[idx]),
+      onInsert: (el) => { el.dataset.lineNoteId = noteId; },
     });
   }
+}
+
+/** Compose a line_note's annotation body: the LLM's text plus a small
+ *  "Add as comment" affordance that hands the body to the comment
+ *  editor pre-filled and anchored at the same row. */
+function _buildLineNoteContent(
+  note: LineNote, noteId: string, filePath: string, rowEl: HTMLElement,
+): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "line-note-body";
+  const text = document.createElement("div");
+  text.className = "line-note-text";
+  text.textContent = note.body || "";
+  wrap.appendChild(text);
+
+  const actions = document.createElement("div");
+  actions.className = "line-note-actions";
+  const promote = document.createElement("button");
+  promote.className = "comment-btn comment-btn-promote";
+  promote.type = "button";
+  promote.textContent = "Add as comment";
+  promote.title = "Open the comment editor pre-filled with this observation";
+  promote.addEventListener("click", (e) => {
+    e.stopPropagation();
+    Comments.openPromotionEditor({
+      rowEl, side: "new", line: note.line,
+      file: filePath, body: note.body || "",
+      derivedFrom: noteId,
+    });
+  });
+  actions.appendChild(promote);
+  wrap.appendChild(actions);
+  return wrap;
 }
 
 function _renderRow(row: RowBlock, file: FileBlock): { old: HTMLElement; new: HTMLElement } {

@@ -78,6 +78,35 @@ function getAll(): ReviewerComment[] {
   return _store.getAll();
 }
 
+/** True iff a local comment has been promoted from the given LLM
+ *  annotation id. The renderer uses this to hide annotations that have
+ *  already been turned into comments — keeps a re-augment from
+ *  resurrecting them. */
+function isPromoted(annotationId: string): boolean {
+  if (!annotationId) return false;
+  for (const c of _store.getAll()) {
+    if (c.derived_from === annotationId) return true;
+  }
+  return false;
+}
+
+/** Open the comment editor pre-filled with text from an LLM annotation.
+ *  On save the new local comment carries `derived_from` set to the
+ *  annotation's id, so the renderer can hide the source annotation. */
+function openPromotionEditor(opts: {
+  rowEl: HTMLElement;
+  side: "old" | "new";
+  line: number;
+  file: string;
+  body: string;
+  derivedFrom: string;
+}): void {
+  _openEditor({
+    rowEl: opts.rowEl, side: opts.side, line: opts.line, file: opts.file,
+    prefillBody: opts.body, derivedFrom: opts.derivedFrom,
+  });
+}
+
 /** The line in the *currently rendered* head-side diff that a
  *  comment should attach to. For ingested comments propagated through
  *  to head_sha this is the post-propagation `head_line`; for everything
@@ -97,6 +126,13 @@ function _displayLine(c: ReviewerComment): number | null {
  *  survive. No-op when there are no comments to render. */
 function renderAll(): void {
   const all = _store.getAll();
+  // Strip any LLM annotation rows whose source has been promoted to a
+  // local comment. Diff rendering runs before /comments resolves on
+  // the first paint, so promoted-on-load observations need this
+  // sweep to disappear — render-time isPromoted() returns false then.
+  for (const c of all) {
+    if (c.derived_from) _removeAnnotationByDerivedId(c.derived_from);
+  }
   if (all.length === 0) return;
   const byAnchor: Record<string, ReviewerComment[]> = Object.create(null);
   for (const c of all) {
@@ -164,18 +200,26 @@ interface EditorOpts {
   /** When set, the new comment is saved as a reply (in_reply_to_id pinned
    *  to this id). Ignored for edits of an existing comment. */
   replyTo?: string | null;
+  /** Prefill text for the editor (new comments only — edits use existing.body). */
+  prefillBody?: string;
+  /** Stable id of the LLM annotation this comment is being promoted from.
+   *  Persisted on the saved comment so the renderer can hide the source
+   *  annotation. Ignored for edits of an existing comment. */
+  derivedFrom?: string | null;
 }
 
-function _openEditor({ rowEl, side, line, file, existing, replyTo }: EditorOpts): void {
+function _openEditor({ rowEl, side, line, file, existing, replyTo, prefillBody, derivedFrom }: EditorOpts): void {
   const bodyWrap = _el("div", "comment-editor-body");
   const ta = _el("textarea", "comment-editor-input") as HTMLTextAreaElement;
   ta.rows = 1;
   ta.placeholder = existing
     ? "Edit comment… (Enter to save, Shift-Enter for newline, Esc to cancel)"
-    : replyTo
-      ? "Write a reply… (Enter to save, Shift-Enter for newline, Esc to cancel)"
-      : "Write a comment… (Enter to save, Shift-Enter for newline, Esc to cancel)";
-  ta.value = existing ? existing.body : "";
+    : derivedFrom
+      ? "Edit and save as a comment… (Enter to save, Shift-Enter for newline, Esc to cancel)"
+      : replyTo
+        ? "Write a reply… (Enter to save, Shift-Enter for newline, Esc to cancel)"
+        : "Write a comment… (Enter to save, Shift-Enter for newline, Esc to cancel)";
+  ta.value = existing ? existing.body : (prefillBody ?? "");
   bodyWrap.appendChild(ta);
   const bar = _el("div", "comment-editor-bar");
   const save = _el("button", "comment-btn comment-btn-save",
@@ -214,9 +258,16 @@ function _openEditor({ rowEl, side, line, file, existing, replyTo }: EditorOpts)
       in_reply_to_id: existing
         ? existing.in_reply_to_id ?? null
         : (replyTo ?? null),
+      derived_from: existing
+        ? existing.derived_from ?? null
+        : (derivedFrom ?? null),
     };
     _store.save(c).then(() => {
       close();
+      // If this save came from "Add as comment" on an LLM annotation,
+      // remove the source annotation row from the DOM so the
+      // observation visibly transitions into the comment.
+      if (c.derived_from) _removeAnnotationByDerivedId(c.derived_from);
       _refreshForAnchor(rowEl, { file, side, line });
       _onChange?.();
     });
@@ -504,6 +555,24 @@ function _refreshForAnchor(anchorRowEl: HTMLElement, anchor: Anchor): void {
   Annotations.reflow(anchorRowEl);
 }
 
+/** Walk the DOM and Annotations.detach any LLM-annotation row whose
+ *  stable id matches `derivedId`. Used right after a promotion save to
+ *  drop the source line_note / smell from the rendered diff. */
+function _removeAnnotationByDerivedId(derivedId: string): void {
+  // Today line_notes carry data-line-note-id; smells get data-smell-id
+  // when that slice lands. Querying both up-front so the helper stays
+  // shape-agnostic.
+  const selectors = [
+    `.row-annotation[data-line-note-id="${derivedId}"]`,
+    `.row-annotation[data-smell-id="${derivedId}"]`,
+  ];
+  for (const sel of selectors) {
+    document.querySelectorAll<HTMLElement>(sel).forEach((el) => {
+      Annotations.detach(el);
+    });
+  }
+}
+
 function _removeReviewerCommentRowsAfter(anchorRowEl: HTMLElement): void {
   let n: ChildNode | null = anchorRowEl.nextSibling;
   while (n) {
@@ -524,4 +593,6 @@ export const Comments = {
   init,
   renderAll,
   getAll,
+  isPromoted,
+  openPromotionEditor,
 };
