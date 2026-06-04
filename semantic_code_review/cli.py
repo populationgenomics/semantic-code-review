@@ -10,6 +10,7 @@ from pathlib import Path
 
 import typer
 
+from . import git_ops
 from .cache.store import CacheStore
 from .config import ConfigError, ScrConfig
 from .fetch import materialize_github_pr_run
@@ -626,23 +627,83 @@ def config_show() -> None:
 
 @config_app.command("edit")
 def config_edit(
+    subject: str = typer.Argument(
+        "config",
+        help=(
+            "What to edit. 'config' (default) opens the whole TOML file. "
+            "'prompt' extracts [augment].extra_prompt into a tempfile so "
+            "you can edit it as plain markdown without TOML triple-quote "
+            "escaping; the result is spliced back on save."
+        ),
+    ),
+    scope: str = typer.Option(
+        "user", "--scope",
+        help=(
+            "Which config to edit. 'user' (default) = "
+            "~/.config/scr/config.toml. 'repo' = <repo_root>/.scr/config.toml "
+            "for the current repo."
+        ),
+    ),
     template: str = typer.Option(
         None, "--template",
         help=(
-            "Append a [backends.<name>] block before opening. "
-            "<name> is any builtin (run `scr config show` for the list) "
-            "or 'openai-compat' for a generic placeholder scaffold."
+            "(config subject only) Append a [backends.<name>] block "
+            "before opening. <name> is any builtin (run `scr config show` "
+            "for the list) or 'openai-compat' for a generic placeholder."
         ),
     ),
 ) -> None:
-    """Open the user-level config in $EDITOR (or `vi`)."""
+    """Open the scr config in $EDITOR (or `vi`).
+
+    By default edits the whole user-global config file. Two args narrow
+    that: `prompt` round-trips just the extra-review prompt through a
+    markdown tempfile; `--scope=repo` targets the per-repo override
+    instead of the user-global file.
+    """
+    if scope not in ("user", "repo"):
+        raise typer.BadParameter(
+            f"--scope must be 'user' or 'repo', got {scope!r}"
+        )
+    if subject not in ("config", "prompt"):
+        raise typer.BadParameter(
+            f"subject must be 'config' or 'prompt', got {subject!r}"
+        )
+
+    path = _resolve_config_edit_path(scope)
+    if subject == "prompt":
+        if template is not None:
+            raise typer.BadParameter(
+                "--template only applies to the default 'config' subject"
+            )
+        _edit_inline_prompt(path)
+        return
+
+    _edit_full_config(path, template)
+
+
+def _resolve_config_edit_path(scope: str) -> Path:
+    """Locate the config file for ``scope``, creating parent dirs as needed."""
+    from .paths import default_config_path
+
+    if scope == "user":
+        return default_config_path()
+    # scope == "repo"
+    try:
+        root_text = git_ops.git(None, "rev-parse", "--show-toplevel").strip()
+    except git_ops.GitError as e:
+        typer.echo(f"scr: --scope=repo needs a git repo: {e}", err=True)
+        raise typer.Exit(code=2)
+    return Path(root_text) / ".scr" / "config.toml"
+
+
+def _edit_full_config(path: Path, template: str | None) -> None:
+    """Open the whole config file in ``$EDITOR``, with the optional
+    backend-template append from the legacy ``--template`` flag."""
     import subprocess as _sp
 
     from .config import BUILTIN_BACKENDS
     from .config_template import SCAFFOLD_SECTION_NAME, render_backend_template
-    from .paths import default_config_path
 
-    path = default_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         path.write_text(_CONFIG_TEMPLATE, encoding="utf-8")
@@ -670,6 +731,71 @@ def config_edit(
 
     editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
     _sp.run([editor, str(path)], check=False)
+
+
+def _edit_inline_prompt(path: Path) -> None:
+    """Extract `[augment].extra_prompt` into a tempfile, open $EDITOR
+    on it as markdown, then splice the result back into the config.
+
+    Keeps the round-trip atomic — if the user clears the file we
+    remove the assignment; if they cancel without changing anything,
+    the existing prompt is left alone. The rest of the config file
+    (other sections, comments) is preserved by editing-as-text rather
+    than re-serialising through tomllib.
+    """
+    import subprocess as _sp
+    import tempfile
+
+    from .config import ScrConfig, write_inline_extra_prompt
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text(_CONFIG_TEMPLATE, encoding="utf-8")
+
+    # Read the current prompt via the standard config loader so the
+    # tempfile starts with what `scr config show` would say. Empty
+    # body when no prompt is configured at this scope yet.
+    cfg = ScrConfig.load(user_path=path, repo_path=None)
+    current = cfg.extra_review_prompt or ""
+
+    # Initial contents: current prompt if set, else a placeholder
+    # comment-block. We compare the post-edit content against this
+    # initial text (not against ``current``) so the placeholder
+    # isn't mistakenly written back as the new prompt when the editor
+    # exits without changes.
+    placeholder = (
+        "# scr extra-review prompt — replace this comment block with\n"
+        "# the prompt body. Saving an empty file removes\n"
+        "# [augment].extra_prompt from the config.\n"
+    )
+    initial = (current + ("\n" if not current.endswith("\n") else "")) if current else placeholder
+
+    # Tempfile gets a .md suffix so editor markdown plugins activate.
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", prefix="scr-extra-prompt-",
+        delete=False, encoding="utf-8",
+    ) as fh:
+        fh.write(initial)
+        tmp_path = Path(fh.name)
+
+    try:
+        editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
+        _sp.run([editor, str(tmp_path)], check=False)
+        edited_raw = tmp_path.read_text(encoding="utf-8")
+        if edited_raw == initial:
+            typer.echo(f"scr: no changes; {path} unchanged.")
+            return
+        edited = edited_raw.strip()
+        write_inline_extra_prompt(path, edited)
+        if edited:
+            typer.echo(f"scr: updated [augment].extra_prompt in {path}.")
+        else:
+            typer.echo(f"scr: cleared [augment].extra_prompt in {path}.")
+    finally:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
 
 
 _CONFIG_TEMPLATE = """\

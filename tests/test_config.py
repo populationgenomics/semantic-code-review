@@ -445,3 +445,96 @@ def test_apply_env_sets_only_when_unset() -> None:
     cfg.apply_env(env)
     assert env["FOO"] == "from-shell"  # shell wins
     assert env["BAR"] == "from-config"  # config fills the gap
+
+
+# ---------------------------------------------------------------------------
+# write_inline_extra_prompt — round-trip helper
+# ---------------------------------------------------------------------------
+
+
+def test_write_inline_prompt_appends_section_when_absent(tmp_path: Path) -> None:
+    """No [augment] section yet — a new one is appended, with the
+    triple-quoted assignment underneath."""
+    from semantic_code_review.config import write_inline_extra_prompt
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text('backend = "claude-api"\n', encoding="utf-8")
+    write_inline_extra_prompt(cfg_path, "Look for race conditions.\nAlso typos.")
+    text = cfg_path.read_text(encoding="utf-8")
+    assert "backend = \"claude-api\"" in text   # other sections preserved
+    assert "[augment]" in text
+    # Body landed inside a triple-quoted block.
+    cfg = ScrConfig.load(user_path=cfg_path, repo_path=None)
+    assert cfg.extra_review_prompt == "Look for race conditions.\nAlso typos."
+
+
+def test_write_inline_prompt_replaces_existing_assignment(tmp_path: Path) -> None:
+    """An existing extra_prompt is replaced in place; the rest of the
+    file (header comment + other sections) is left alone."""
+    from semantic_code_review.config import write_inline_extra_prompt
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        "# user-added comment\n"
+        "backend = \"claude-api\"\n\n"
+        "[augment]\n"
+        "extra_prompt = \"old prompt\"\n\n"
+        "[env]\n"
+        "MY_VAR = \"x\"\n",
+        encoding="utf-8",
+    )
+    write_inline_extra_prompt(cfg_path, "new prompt")
+    text = cfg_path.read_text(encoding="utf-8")
+    assert "# user-added comment" in text
+    assert "[env]" in text
+    assert "MY_VAR" in text
+    assert "old prompt" not in text
+    cfg = ScrConfig.load(user_path=cfg_path, repo_path=None)
+    assert cfg.extra_review_prompt == "new prompt"
+
+
+def test_write_inline_prompt_empty_body_removes_assignment(tmp_path: Path) -> None:
+    """An empty body clears the assignment but leaves the [augment]
+    section header in place for any future keys."""
+    from semantic_code_review.config import write_inline_extra_prompt
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        "[augment]\n"
+        "extra_prompt = \"\"\"\nsome prompt\n\"\"\"\n",
+        encoding="utf-8",
+    )
+    write_inline_extra_prompt(cfg_path, "")
+    cfg = ScrConfig.load(user_path=cfg_path, repo_path=None)
+    assert cfg.extra_review_prompt is None
+    # Section header remains.
+    text = cfg_path.read_text(encoding="utf-8")
+    assert "[augment]" in text
+
+
+def test_write_inline_prompt_inserts_under_existing_augment_section(tmp_path: Path) -> None:
+    """[augment] section exists but no extra_prompt — the assignment
+    is inserted at the top of the section."""
+    from semantic_code_review.config import write_inline_extra_prompt
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        "[augment]\n"
+        "# future key goes here\n",
+        encoding="utf-8",
+    )
+    write_inline_extra_prompt(cfg_path, "new prompt")
+    cfg = ScrConfig.load(user_path=cfg_path, repo_path=None)
+    assert cfg.extra_review_prompt == "new prompt"
+    assert "future key goes here" in cfg_path.read_text(encoding="utf-8")
+
+
+def test_write_inline_prompt_creates_file_when_absent(tmp_path: Path) -> None:
+    """A missing config file: written from scratch with just [augment]."""
+    from semantic_code_review.config import write_inline_extra_prompt
+
+    cfg_path = tmp_path / "fresh.toml"
+    assert not cfg_path.exists()
+    write_inline_extra_prompt(cfg_path, "fresh prompt")
+    cfg = ScrConfig.load(user_path=cfg_path, repo_path=None)
+    assert cfg.extra_review_prompt == "fresh prompt"
