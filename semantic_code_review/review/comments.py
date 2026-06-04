@@ -60,6 +60,13 @@ class Comment(BaseModel):
     # reference this comment as a reply parent — addPullRequestReviewComment
     # takes the node id, not the databaseId. Populated on ingest.
     node_id: str | None = None
+    # Stable id of the LLM annotation this comment was promoted from,
+    # if any. Examples: "H0_3:line_note:42", "H0_3:smell:perf". The
+    # viewer hides any annotation whose id matches a derived_from on
+    # an existing local comment so the source annotation visibly
+    # "transitions" into the comment and a re-augment doesn't
+    # resurrect it. Null on comments authored from the gutter.
+    derived_from: str | None = None
 
     @property
     def is_writable(self) -> bool:

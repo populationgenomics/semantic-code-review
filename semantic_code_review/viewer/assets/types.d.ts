@@ -313,4 +313,9 @@ interface ReviewerComment {
   anchor_status?:
     | "anchored" | "shifted" | "orphaned"
     | "file_gone" | "commit_unavailable" | null;
+  /** Stable id of the LLM annotation this comment was promoted from.
+   *  When set, the viewer hides the source annotation so the comment
+   *  visibly replaces it. Examples: "H0_3:line_note:42",
+   *  "H0_3:smell:perf". */
+  derived_from?: string | null;
 }
