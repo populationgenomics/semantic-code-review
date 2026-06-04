@@ -308,11 +308,20 @@ body {
 .scr-progress-grid .sq[data-state="failed"] { background: var(--err); border-color: var(--err); }
 .scr-progress-grid .sq:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .hunk-meta { grid-area: meta; display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
-.confidence {
-  font-size: 11px; color: var(--fg-muted); padding: 1px 6px; border-radius: 10px;
-  background: var(--bg-alt); border: 1px solid var(--border);
+/* Subtle 3-star confidence indicator at the top-right of the hunk
+ * header. One filled star = low (the LLM hedged); three = high. The
+ * old `c=NN` chip was loud and numeric; stars read at a glance and
+ * stay out of the way. */
+.hunk-confidence {
+  display: inline-flex;
+  gap: 1px;
+  font-size: 10px;
+  color: var(--fg-muted);
+  letter-spacing: 0.5px;
 }
-.confidence.low { color: var(--err); border-color: var(--err); }
+.hunk-confidence .conf-star.on { color: var(--fg-muted); }
+.hunk-confidence[data-level="1"] .conf-star.on { color: var(--err); }
+.hunk-confidence[data-level="1"] { opacity: 1; }
 
 .context-icon {
   font-size: 13px; color: var(--accent); cursor: help;

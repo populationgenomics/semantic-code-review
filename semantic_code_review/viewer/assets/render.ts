@@ -185,6 +185,28 @@ interface SmellPromotion {
   line: number;
 }
 
+/** Bucket the LLM's 0-100 confidence into a subtle three-star
+ *  indicator that sits at the top-right of a hunk header. Returns
+ *  null when no confidence was emitted (so the slot is invisible
+ *  rather than rendering an empty rating). */
+function _confidenceStars(confidence: number | null | undefined): HTMLElement | null {
+  if (confidence == null) return null;
+  // Buckets chosen so a model that hedges (<50) gets one star and a
+  // confident answer (≥80) gets three. The middle band (50-79) is the
+  // most common "I think so, not 100%" outcome.
+  const filled = confidence >= 80 ? 3 : confidence >= 50 ? 2 : 1;
+  const wrap = _el("span", "hunk-confidence");
+  wrap.dataset.level = String(filled);
+  wrap.title = `Model confidence ${confidence}/100`
+    + (filled === 1 ? " — low, review carefully" : "");
+  for (let i = 0; i < 3; i++) {
+    const star = _el("span", "conf-star" + (i < filled ? " on" : ""));
+    star.textContent = i < filled ? "★" : "☆";
+    wrap.appendChild(star);
+  }
+  return wrap;
+}
+
 function _smellPill(smell: Smell, promotion?: SmellPromotion): HTMLElement {
   const def = _smells[smell.tag];
   const sev = def ? def.severity : "minor";
@@ -512,22 +534,13 @@ function _renderHunkHeader(h: HunkBlock, folded: boolean, f: FileBlock): HTMLEle
     smellId: `${h.id}:smell:${sm.tag}`,
     file: f.path, side: "new", line: h.new_start,
   }));
-  if (h.confidence != null) {
-    const conf = _el(
-      "span",
-      "confidence" + (h.confidence < 30 ? " low" : ""),
-      `c=${h.confidence}`,
-    );
-    conf.title = h.confidence < 30
-      ? "Low confidence — review carefully"
-      : "Model confidence";
-    meta.appendChild(conf);
-  }
   if (h.context) {
     const icon = _el("span", "context-icon", "ⓘ");
     icon.title = h.context;
     meta.appendChild(icon);
   }
+  const stars = _confidenceStars(h.confidence);
+  if (stars) meta.appendChild(stars);
   hdr.appendChild(meta);
   hdr.addEventListener("click", (e) => {
     e.stopPropagation();
