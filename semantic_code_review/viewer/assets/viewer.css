@@ -701,6 +701,15 @@ body {
 }
 .comment-btn-promote:hover { opacity: 1; }
 
+/* Smell pills that are click-to-promote get a subtle hover cue —
+ * pointer cursor + a hint underline. Non-promotable smells (the
+ * file-overview aggregator) stay static. */
+.smell.smell-promotable { cursor: pointer; }
+.smell.smell-promotable:hover {
+  outline: 1px solid currentColor;
+  outline-offset: -1px;
+}
+
 /* Resolved thread: collapsed header bar at the top of the thread block.
  * The annot-box still surrounds the whole thread; the header is just
  * the first child, with a softer tone so a wall of resolved threads

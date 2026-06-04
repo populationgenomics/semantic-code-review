@@ -484,6 +484,54 @@ describe("LLM observation → comment promotion", () => {
     )).toBeNull();
   });
 
+  test("smell pill click saves a comment immediately and detaches the pill", async () => {
+    window.location.hash = "#fold=off";
+    const data = makeData({
+      pending: false,
+      smells_catalogue: {
+        perf: { label: "perf concern", severity: "minor", color: "#888" },
+      },
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 0, dels: 0, summary: "", head_lines: null,
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock("H0_0", "real intent", {
+          smells: [{ tag: "perf", note: "tight loop in hot path" }],
+        })],
+      }],
+    });
+    await bootViewer(data);
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    // Smell pill carries the source id on its dataset.
+    const pill = document.querySelector<HTMLElement>(
+      `.smell[data-smell-id="H0_0:smell:perf"]`,
+    );
+    expect(pill).not.toBeNull();
+
+    // Capture the POST /comments call triggered by the smell promote.
+    let posted: Record<string, unknown> | null = null;
+    (globalThis.fetch as unknown as { mockImplementationOnce: (fn: typeof fetch) => void })
+      .mockImplementationOnce(((url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, init });
+        posted = JSON.parse(init!.body as string);
+        return Promise.resolve({
+          status: 200, ok: true, json: () => Promise.resolve(posted),
+        } as Response);
+      }) as typeof fetch);
+
+    pill!.click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    expect(posted).not.toBeNull();
+    expect(posted!.body).toBe("perf: tight loop in hot path");
+    expect(posted!.derived_from).toBe("H0_0:smell:perf");
+    expect(posted!.file).toBe("a.py");
+    expect(posted!.line).toBe(1);  // hunk new_start
+    // Pill is gone after promotion.
+    expect(document.querySelector(`.smell[data-smell-id="H0_0:smell:perf"]`)).toBeNull();
+  });
+
   test("line_note already promoted on initial load is hidden", async () => {
     window.location.hash = "#fold=off";
     const data = makeData({

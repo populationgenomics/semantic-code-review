@@ -107,6 +107,32 @@ function openPromotionEditor(opts: {
   });
 }
 
+/** One-click promote: save a local comment with the smell's body
+ *  immediately and detach the source pill. No mid-flight editor —
+ *  smells often live in a folded hunk header where there's no row to
+ *  anchor an inline editor on, and the user can edit/delete via the
+ *  comment's normal edit affordance once it's saved. */
+function promoteSmell(opts: {
+  smellId: string;
+  file: string;
+  side: "old" | "new";
+  line: number;
+  body: string;
+}): void {
+  const id = `c-${Math.random().toString(36).slice(2, 10)}`;
+  const now = Date.now() / 1000;
+  const c: ReviewerComment = {
+    id, file: opts.file, side: opts.side, line: opts.line, body: opts.body,
+    created_at: now, updated_at: now,
+    derived_from: opts.smellId,
+  };
+  _store.save(c).then(() => {
+    _removeAnnotationByDerivedId(opts.smellId);
+    renderAll();
+    _onChange?.();
+  });
+}
+
 /** The line in the *currently rendered* head-side diff that a
  *  comment should attach to. For ingested comments propagated through
  *  to head_sha this is the post-propagation `head_line`; for everything
@@ -555,22 +581,21 @@ function _refreshForAnchor(anchorRowEl: HTMLElement, anchor: Anchor): void {
   Annotations.reflow(anchorRowEl);
 }
 
-/** Walk the DOM and Annotations.detach any LLM-annotation row whose
- *  stable id matches `derivedId`. Used right after a promotion save to
- *  drop the source line_note / smell from the rendered diff. */
+/** Walk the DOM and remove any LLM-annotation element whose stable id
+ *  matches `derivedId`. Used right after a promotion save so the
+ *  source observation visibly transitions into the comment.
+ *
+ *  Two shapes today: line_notes attach as `.row-annotation` rows with
+ *  `data-line-note-id`; smells render as inline `.smell` pills with
+ *  `data-smell-id`. Annotation rows need Annotations.detach (resize
+ *  observers etc.); the pills are plain elements. */
 function _removeAnnotationByDerivedId(derivedId: string): void {
-  // Today line_notes carry data-line-note-id; smells get data-smell-id
-  // when that slice lands. Querying both up-front so the helper stays
-  // shape-agnostic.
-  const selectors = [
+  document.querySelectorAll<HTMLElement>(
     `.row-annotation[data-line-note-id="${derivedId}"]`,
-    `.row-annotation[data-smell-id="${derivedId}"]`,
-  ];
-  for (const sel of selectors) {
-    document.querySelectorAll<HTMLElement>(sel).forEach((el) => {
-      Annotations.detach(el);
-    });
-  }
+  ).forEach((el) => Annotations.detach(el));
+  document.querySelectorAll<HTMLElement>(
+    `.smell[data-smell-id="${derivedId}"]`,
+  ).forEach((el) => el.remove());
 }
 
 function _removeReviewerCommentRowsAfter(anchorRowEl: HTMLElement): void {
@@ -595,4 +620,5 @@ export const Comments = {
   getAll,
   isPromoted,
   openPromotionEditor,
+  promoteSmell,
 };
