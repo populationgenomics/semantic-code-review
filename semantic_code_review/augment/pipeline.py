@@ -215,7 +215,6 @@ async def augment_run_dir(
                         ord_idx, meter, sem, client, diff, fi, hi,
                         overview_json, repo_tools, model, cache,
                         trace_dir, stats, results, on_event,
-                        extra_review_prompt,
                     )
                 )
                 for fi, hi, ord_idx in queued
@@ -227,6 +226,38 @@ async def augment_run_dir(
 
         # Merge per-hunk results back into the diff in one pass.
         diff = _merge_hunk_results(diff, results)
+
+        # --- PR-level extra-review pass (opt-in) -------------------------
+        # Runs once over the whole diff so the user's prompt can catch
+        # cross-file concerns (schema migrations, missing tests, design
+        # consistency) that a per-hunk view fundamentally can't see.
+        # Best-effort: any failure leaves `diff` unchanged and logs.
+        if extra_review_prompt:
+            from .extra_review import run_pr_level_extra_review
+            diff_before = diff
+            diff = await run_pr_level_extra_review(
+                client, diff=diff, overview_json=overview_json,
+                diff_text=raw, prompt_text=extra_review_prompt,
+                model=model, cache=cache, trace_dir=trace_dir,
+            )
+            # Re-emit hunk SSE events for hunks whose line_notes grew.
+            # The streaming viewer already rendered the per-hunk blocks
+            # without extras; this pushes the augmented bodies so the
+            # promote-to-comment affordance lights up on the new notes
+            # without the user needing to refresh.
+            for fi, fp in enumerate(diff.files):
+                if fi >= len(diff_before.files):
+                    continue
+                old_fp = diff_before.files[fi]
+                for hi, hunk in enumerate(fp.hunks):
+                    if hi >= len(old_fp.hunks):
+                        continue
+                    if len(hunk.ann.line_notes) == len(old_fp.hunks[hi].ann.line_notes):
+                        continue
+                    block = build_hunk_viewer_block(hunk, fi, hi)
+                    _safe_emit(on_event, "hunk", {
+                        "file_idx": fi, "hunk_idx": hi, "ok": True, "block": block,
+                    })
 
         # --- Emit ----------------------------------------------------------
         augmented_text = emit_augmented_diff(diff)
@@ -281,7 +312,6 @@ async def _augment_one_hunk(
     stats: _HunkStats,
     results: dict[tuple[int, int], HunkAnnotations],
     on_event: OnEvent | None,
-    extra_review_prompt: str | None,
 ) -> None:
     fp = diff.files[fi]
     hunk = fp.hunks[hi]
@@ -306,22 +336,6 @@ async def _augment_one_hunk(
                 trace_dir=trace_dir,
             )
             ann = build_hunk_annotations(hunk.parsed, submit)
-            # Optional extra-review pass: a user-supplied prompt adds
-            # more line-anchored notes. Best-effort — failures here
-            # don't poison the main-pass output.
-            if extra_review_prompt:
-                from .extra_review import run_extra_review_pass
-                extra_notes = await run_extra_review_pass(
-                    client, fp=fp,
-                    hunk=AnnotatedHunk(parsed=hunk.parsed, ann=ann),
-                    overview_json=overview_json, file_summary=file_summary,
-                    prompt_text=extra_review_prompt,
-                    model=model, cache=cache, trace_dir=trace_dir,
-                )
-                if extra_notes:
-                    ann = ann.model_copy(
-                        update={"line_notes": list(ann.line_notes) + extra_notes},
-                    )
             results[(fi, hi)] = ann
             stats.ok += 1
             meter.finish_hunk(ord_idx, ok=True)
