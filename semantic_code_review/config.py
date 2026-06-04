@@ -42,6 +42,7 @@ startup, or a system keychain (future work).
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 import typing
 from dataclasses import dataclass, field, replace
@@ -480,6 +481,104 @@ def _pick_strs(
     )
 
 
+# --- inline-prompt round-trip --------------------------------------------
+# Lives here (not in cli.py) because the regexes have to know our own
+# write format and the read path is the same tomllib parser the rest of
+# config loading uses. Keeping read+write next to each other in one
+# module makes it harder for the two to drift.
+
+# Anchors a triple-quoted string assignment for `extra_prompt`. The body
+# matches the smallest run of characters between the opening and closing
+# `"""`. Newlines inside are fine — `re.DOTALL` makes `.` match them too.
+_RE_EXTRA_PROMPT_TRIPLE = re.compile(
+    r'^extra_prompt\s*=\s*"""(?P<body>.*?)"""\s*\n?',
+    re.MULTILINE | re.DOTALL,
+)
+# Single-line quoted form. Disjunct from the triple-quoted matcher so
+# the triple form's body isn't confused with a single-quoted assignment.
+_RE_EXTRA_PROMPT_QUOTED = re.compile(
+    r'^extra_prompt\s*=\s*"(?P<body>[^"\n]*)"\s*\n?',
+    re.MULTILINE,
+)
+_RE_AUGMENT_HEADER = re.compile(r"^\[augment\]\s*\n", re.MULTILINE)
+_RE_ANY_SECTION = re.compile(r"^\[", re.MULTILINE)
+
+
+def write_inline_extra_prompt(path: Path, new_body: str) -> None:
+    '''Splice ``[augment].extra_prompt = """..."""`` into ``path``.
+
+    Preserves all other sections + comments by editing the file as
+    text rather than re-serialising through tomllib. ``new_body`` is
+    the prompt content (no triple-quotes / no TOML escaping); we wrap
+    it as a triple-quoted block here. An empty / whitespace-only body
+    removes the assignment instead.
+
+    Three cases:
+    - No ``[augment]`` section yet → append one with the assignment.
+    - ``[augment]`` present, no ``extra_prompt`` → insert the
+      assignment at the top of the section.
+    - ``extra_prompt`` already present → replace just that assignment.
+
+    The file is created with a minimal header if it doesn't exist.
+    '''
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    body = (new_body or "").strip()
+
+    if not body:
+        # Remove the assignment; leave the [augment] section header
+        # in place even if it's now empty — a hand-edited section
+        # might gain other keys later. tomllib treats an empty table
+        # as no-op so this is safe.
+        for rx in (_RE_EXTRA_PROMPT_TRIPLE, _RE_EXTRA_PROMPT_QUOTED):
+            text = _replace_in_augment_section(text, rx, "")
+        path.write_text(text, encoding="utf-8")
+        return
+
+    # The standard form we write. Leading + trailing newlines inside
+    # the triple quotes so markdown bodies have breathing room and
+    # the closing `"""` lands flush left rather than mid-line.
+    new_block = f'extra_prompt = """\n{body}\n"""\n'
+
+    # Replace an existing assignment if present.
+    for rx in (_RE_EXTRA_PROMPT_TRIPLE, _RE_EXTRA_PROMPT_QUOTED):
+        new_text = _replace_in_augment_section(text, rx, new_block)
+        if new_text != text:
+            path.write_text(new_text, encoding="utf-8")
+            return
+        text = new_text
+
+    # No existing assignment. Insert under [augment] if it exists,
+    # else append a fresh section.
+    m = _RE_AUGMENT_HEADER.search(text)
+    if m is not None:
+        insert_at = m.end()
+        text = text[:insert_at] + new_block + text[insert_at:]
+    else:
+        sep = "" if text.endswith("\n\n") else ("\n" if text.endswith("\n") else "\n\n")
+        if not text:
+            sep = ""
+        text = text + sep + "[augment]\n" + new_block
+    path.write_text(text, encoding="utf-8")
+
+
+def _replace_in_augment_section(text: str, rx: re.Pattern[str], replacement: str) -> str:
+    """Run ``rx.sub(replacement, slice)`` against the body of the
+    ``[augment]`` section only, leaving the rest of the file untouched.
+    Returns the file unchanged when the section isn't present.
+    """
+    m = _RE_AUGMENT_HEADER.search(text)
+    if m is None:
+        return text
+    start = m.end()
+    nxt = _RE_ANY_SECTION.search(text, start)
+    end = nxt.start() if nxt else len(text)
+    section = text[start:end]
+    new_section, n = rx.subn(replacement, section, count=1)
+    if n == 0:
+        return text
+    return text[:start] + new_section + text[end:]
+
+
 __all__ = [
     "BUILTIN_BACKENDS",
     "BackendDef",
@@ -487,4 +586,5 @@ __all__ = [
     "ConfigError",
     "ScrConfig",
     "field_doc",
+    "write_inline_extra_prompt",
 ]
