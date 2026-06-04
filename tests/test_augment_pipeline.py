@@ -330,10 +330,10 @@ async def test_per_hunk_trace_written_on_agent_failure(tmp_path: Path) -> None:
     assert sent and sent[0]["role"] == "user"
 
 
-async def test_augment_extra_review_appends_line_notes(tmp_path: Path) -> None:
-    """`extra_review_prompt` triggers a per-hunk extra pass whose
-    returned notes merge into ann.line_notes, on top of whatever the
-    main pass produced."""
+async def test_augment_extra_review_buckets_notes_into_matching_hunks(tmp_path: Path) -> None:
+    """`extra_review_prompt` triggers a single PR-level extra pass; its
+    flat (file, line, body) notes get bucketed back into the matching
+    hunk's line_notes on top of whatever the main pass produced."""
     run = _make_run_dir(tmp_path)
     backend, canned = _make_canned_backend(
         overview_args={
@@ -345,8 +345,11 @@ async def test_augment_extra_review_appends_line_notes(tmp_path: Path) -> None:
             {"intent": "Bump y", "line_notes": []},
         ],
         extra_args_list=[
-            {"notes": [{"line": 1, "body": "extra: be careful"}]},
-            {"notes": [{"line": 10, "body": "extra: same here"}]},
+            # One whole-PR call: notes that span both hunks.
+            {"notes": [
+                {"file": "f.py", "line": 1, "body": "extra: be careful"},
+                {"file": "f.py", "line": 10, "body": "extra: same here"},
+            ]},
         ],
     )
     await augment_run_dir(
@@ -356,18 +359,19 @@ async def test_augment_extra_review_appends_line_notes(tmp_path: Path) -> None:
     reparsed = parse_augmented_diff((run / "augmented.diff").read_text())
     h0_notes = [(n.line, n.body) for n in reparsed.files[0].hunks[0].ann.line_notes]
     h1_notes = [(n.line, n.body) for n in reparsed.files[0].hunks[1].ann.line_notes]
-    # Hunk 0: main pass produced one note, extra pass added one — both land.
+    # Hunk 0 (line 1): main pass produced one note, extras added one.
     assert h0_notes == [(1, "main note"), (1, "extra: be careful")]
-    # Hunk 1: main produced none, extra produced one.
+    # Hunk 1 (line 10): main produced none, extras produced one.
     assert h1_notes == [(10, "extra: same here")]
-    # Calls: 1 overview + 2 main hunks + 2 extra = 5.
-    assert canned.calls == 5
+    # Calls: 1 overview + 2 main hunks + 1 PR-level extra = 4
+    # (was 5 under the old per-hunk model).
+    assert canned.calls == 4
 
 
-async def test_augment_extra_review_out_of_range_notes_dropped(tmp_path: Path) -> None:
-    """Extra-pass notes whose `line` falls outside the hunk's
-    post-image range get filtered (mirroring the main pass's segment
-    clamp). The model isn't trusted to stay in bounds."""
+async def test_augment_extra_review_drops_notes_outside_any_hunk(tmp_path: Path) -> None:
+    """Extra-pass notes whose `(file, line)` doesn't fall inside any
+    hunk's post-image range, or that point at a file the diff didn't
+    touch, get filtered with a warning. Empty bodies also drop."""
     run = _make_run_dir(tmp_path)
     backend, _ = _make_canned_backend(
         overview_args={"summary": "", "files": [{"path": "f.py", "summary": ""}]},
@@ -375,15 +379,13 @@ async def test_augment_extra_review_out_of_range_notes_dropped(tmp_path: Path) -
             {"intent": "Bump x", "line_notes": []},
             {"intent": "Bump y", "line_notes": []},
         ],
-        # Hunk 0 covers new line 1; line 99 is out of range. Hunk 1
-        # covers new line 10; an empty body should also drop.
         extra_args_list=[
             {"notes": [
-                {"line": 1, "body": "kept"},
-                {"line": 99, "body": "dropped — out of range"},
-            ]},
-            {"notes": [
-                {"line": 10, "body": "  "},  # empty after strip → dropped
+                # Hunk 0 covers line 1; hunk 1 covers line 10.
+                {"file": "f.py", "line": 1, "body": "kept"},
+                {"file": "f.py", "line": 99, "body": "dropped — outside any hunk"},
+                {"file": "other.py", "line": 1, "body": "dropped — unknown file"},
+                {"file": "f.py", "line": 10, "body": "   "},  # empty after strip
             ]},
         ],
     )
@@ -412,3 +414,41 @@ async def test_augment_no_extra_review_when_prompt_unset(tmp_path: Path) -> None
         # no extra_review_prompt
     )
     assert canned.calls == 3  # 1 overview + 2 main hunks; no extras.
+
+
+async def test_augment_extra_review_re_emits_sse_for_touched_hunks(tmp_path: Path) -> None:
+    """When the PR-level extras land notes into a hunk, an additional
+    `hunk` SSE event fires for that hunk so live viewers re-render
+    the block with the new notes (and the promote-to-comment
+    affordance lights up on them)."""
+    run = _make_run_dir(tmp_path)
+    backend, _ = _make_canned_backend(
+        overview_args={"summary": "", "files": [{"path": "f.py", "summary": ""}]},
+        hunk_args_list=[
+            {"intent": "Bump x", "line_notes": []},
+            {"intent": "Bump y", "line_notes": []},
+        ],
+        extra_args_list=[
+            # Notes land in hunk 0 only; hunk 1 should NOT re-emit.
+            {"notes": [{"file": "f.py", "line": 1, "body": "look here"}]},
+        ],
+    )
+    events: list[tuple[str, dict]] = []
+
+    def _capture(kind: str, payload: dict) -> None:
+        events.append((kind, payload))
+
+    await augment_run_dir(
+        run, model="t", concurrency=1, client=backend, cache=None,
+        extra_review_prompt="Reviewer prompt body",
+        on_event=_capture,
+    )
+    # Count `hunk` events targeting (file_idx=0, hunk_idx=*).
+    h0_events = [p for k, p in events if k == "hunk" and p["hunk_idx"] == 0]
+    h1_events = [p for k, p in events if k == "hunk" and p["hunk_idx"] == 1]
+    # Hunk 0: initial completion + extras-driven re-emit = 2.
+    assert len(h0_events) == 2
+    # Hunk 1: just the initial completion; extras didn't touch it.
+    assert len(h1_events) == 1
+    # The re-emitted block carries the new line_note in its body.
+    assert h0_events[-1]["block"]["line_notes"] == [{"line": 1, "body": "look here"}]
