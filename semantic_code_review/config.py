@@ -142,7 +142,10 @@ BUILTIN_BACKENDS: dict[str, BackendDef] = {
         default_model="claude-opus-4-7",
         description=(
             "`claude -p` subprocess — uses your Claude Code subscription, "
-            "no API key needed. Lower concurrency, no in-loop repo tools."
+            "no API key needed. Same model + prompts + MCP-backed repo tools "
+            "as the SDK path; slower (subprocess startup + subscription rate "
+            "limits) and may silently demote to the fallback model on a "
+            "rate-limited hunk call."
         ),
     ),
     "gemini-api": BackendDef(
