@@ -16,10 +16,11 @@ dist/
 .env.*
 !.env.example
 
-# TypeScript build artifacts. The viewer is bundled by esbuild (boot.ts
-# → viewer.js); tsc only type-checks. annotations.js is the retired
-# pre-migration emit name; ignoring it defensively so a stray rebuild
-# of an older checkout doesn't get committed.
+# TypeScript build artifacts. The viewer is bundled by esbuild
+# (boot.ts → viewer.js as a single IIFE); tsc only type-checks (no
+# emit). annotations.js was the retired pre-migration emit and is
+# ignored defensively so a stray rebuild of an older checkout can't
+# smuggle a stale copy back into the tree.
 node_modules/
 semantic_code_review/viewer/assets/viewer.js
 semantic_code_review/viewer/assets/annotations.js

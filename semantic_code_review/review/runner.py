@@ -76,6 +76,10 @@ class ReviewOptions:
     # Optional preselected backend handle. None → augment_run_dir
     # defaults to a `Client` for the Anthropic SDK path.
     client: Client | None = None
+    # Optional file-loaded text for the extra-review pass. When set,
+    # each hunk gets a second LLM call with this as the system prompt;
+    # the returned line-anchored notes merge into hunk.line_notes.
+    extra_review_prompt: str | None = None
     show_progress: bool = True
 
 
@@ -106,6 +110,7 @@ def run_review(opts: ReviewOptions) -> int:
                 concurrency=opts.concurrency,
                 cache=cache,
                 client=opts.client,
+                extra_review_prompt=opts.extra_review_prompt,
                 # The page now carries the progress display, so silence
                 # the terminal meter — its redraw line would just fight
                 # the listening-URL / per-hunk warning log lines.

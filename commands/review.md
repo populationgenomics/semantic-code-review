@@ -54,6 +54,16 @@ scr review <the args you inferred>
 
 **Do not `cd` anywhere before running it.** `scr review` resolves the git repo from `Path.cwd()`, so the cwd must be the repo the user wants reviewed (typically the session's working directory). Do not `cd` into the scr plugin directory or any other repo.
 
+### How `scr` ends up on PATH
+
+`scr` may be installed three different ways; the slash command works with all of them as long as it's on PATH:
+
+- **Claude Code plugin** (`/plugin install scr` from `folded/semantic-code-review`) — ships a `bin/scr` bootstrap wrapper; the plugin runner prepends it to PATH when `/scr:review` runs.
+- **CPG install.sh** (`curl …/install.sh | bash` from `populationgenomics/semantic-code-review`) — drops a `~/.local/bin/scr` wrapper that runs the wheel published to CPG's Artifact Registry.
+- **Direct uv** (`uv tool install semantic-code-review`) — installs the wheel from PyPI/wherever; `scr` lands on PATH wherever uv keeps tool bins.
+
+Don't try to discover or call `scr` via an absolute path — `scr` on PATH is the contract. If `scr review` fails with command-not-found (and only then), surface the install options to the user verbatim; don't guess between them.
+
 The command:
 - builds the local diff into `.scr/runs/<slug>/`
 - runs the LLM augmentation pass (unless `--no-augment` was passed)
@@ -61,7 +71,7 @@ The command:
 
 **Do not add `--no-augment` yourself.** Augmentation IS the point — without it the viewer shows a plain diff with no LLM annotations, smells, fold descriptions, or context. Pass it through only if the user explicitly asked for it.
 
-**Do not add `--backend=api` either.** `scr` picks a backend automatically: if `ANTHROPIC_API_KEY` is set it uses the Anthropic SDK directly; otherwise it falls back to the `claude` CLI subprocess (assuming the user is logged into Claude Code). The absence of an API key is not a reason to disable augmentation.
+**Do not add `--backend=…` either.** `scr` picks a backend automatically: if `ANTHROPIC_API_KEY` is set it uses the Anthropic SDK directly; otherwise it falls back to the `claude` CLI subprocess (assuming the user is logged into Claude Code). The CLI path has the same model + repo tools + prompts as the SDK path — slower (subprocess startup + Claude Code subscription rate limits), not lower-quality. The absence of an API key is not a reason to disable augmentation.
 
 When the user is reviewing in the browser, do not start other work or speculate — they are occupied. Just wait for the bash call to return.
 
@@ -85,5 +95,6 @@ If the comments list is empty ("The reviewer had no concerns"), thank the user a
 
 - **`scr review` blocks** for up to an hour by default while the browser is open. Wait for it to return naturally — don't try to cancel it or run things in parallel.
 - If the user closes the browser without clicking Done, the command exits code 2 and stdout is still a valid markdown list (possibly empty). Treat it the same way.
-- `/review` is user-triggered. Don't call `scr review` pre-emptively from other slash commands or conversations.
-- If the tool hasn't been installed yet, running `scr review` will print a clear bootstrap message; pass it through to the user verbatim.
+- `/scr:review` is user-triggered. Don't call `scr review` pre-emptively from other slash commands or conversations.
+- If `scr` is not on PATH, Bash will return a "command not found" error. Show the install options from Step 2 verbatim and stop — don't try to discover an alternate binary location.
+- If `scr` is on PATH but the first run hits a bootstrap step (the plugin's `bin/scr` wrapper sets up a venv on first invocation), pass through whatever the wrapper prints to the user verbatim.

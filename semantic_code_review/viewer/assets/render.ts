@@ -115,7 +115,7 @@ function repaintHunkHeader(hunkId: string): void {
   const h = f && f.hunks && f.hunks[hi];
   if (!h) return;
   const folded = _isFolded(h.id, _defaultHunkFolded());
-  const fresh = _renderHunkHeader(h, folded);
+  const fresh = _renderHunkHeader(h, folded, f);
   oldHdr.replaceWith(fresh);
 }
 
@@ -177,11 +177,60 @@ function _chev(folded: boolean, extraClass?: string): SVGElement {
   return svg;
 }
 
-function _smellPill(smell: Smell): HTMLElement {
+interface SmellPromotion {
+  /** Stable id of the source smell — "<container_id>:smell:<tag>". */
+  smellId: string;
+  file: string;
+  side: "old" | "new";
+  line: number;
+}
+
+/** Bucket the LLM's 0-100 confidence into a subtle three-star
+ *  indicator that sits at the top-right of a hunk header. Returns
+ *  null when no confidence was emitted (so the slot is invisible
+ *  rather than rendering an empty rating). */
+function _confidenceStars(confidence: number | null | undefined): HTMLElement | null {
+  if (confidence == null) return null;
+  // Buckets chosen so a model that hedges (<50) gets one star and a
+  // confident answer (≥80) gets three. The middle band (50-79) is the
+  // most common "I think so, not 100%" outcome.
+  const filled = confidence >= 80 ? 3 : confidence >= 50 ? 2 : 1;
+  const wrap = _el("span", "hunk-confidence");
+  wrap.dataset.level = String(filled);
+  wrap.title = `Model confidence ${confidence}/100`
+    + (filled === 1 ? " — low, review carefully" : "");
+  for (let i = 0; i < 3; i++) {
+    const star = _el("span", "conf-star" + (i < filled ? " on" : ""));
+    star.textContent = i < filled ? "★" : "☆";
+    wrap.appendChild(star);
+  }
+  return wrap;
+}
+
+function _smellPill(smell: Smell, promotion?: SmellPromotion): HTMLElement {
   const def = _smells[smell.tag];
   const sev = def ? def.severity : "minor";
   const p = _el("span", `smell sev-${sev}`, smell.tag);
   p.title = smell.note || (def ? def.label : smell.tag);
+  if (promotion) {
+    // Skip rendering at all if the user has already promoted this smell
+    // — the renderer treats a non-attached element as a no-op.
+    if (Comments.isPromoted(promotion.smellId)) {
+      p.style.display = "none";
+    }
+    p.dataset.smellId = promotion.smellId;
+    p.classList.add("smell-promotable");
+    p.title = `${smell.tag}${smell.note ? ` — ${smell.note}` : ""} (click to add as comment)`;
+    p.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const body = smell.note
+        ? `${smell.tag}: ${smell.note}`
+        : smell.tag;
+      Comments.promoteSmell({
+        ...promotion, body, smellId: promotion.smellId,
+      });
+    });
+  }
   return p;
 }
 
@@ -400,7 +449,7 @@ function _renderHunk(h: HunkBlock, f: FileBlock): HTMLElement {
   const folded = _isFolded(h.id, _defaultHunkFolded());
   div.classList.toggle("folded", folded);
   div.style.borderLeftColor = _maxSeverityColor(h);
-  div.appendChild(_renderHunkHeader(h, folded));
+  div.appendChild(_renderHunkHeader(h, folded, f));
   if (!folded) {
     if (
       h.segments && h.segments.length > 0
@@ -408,7 +457,7 @@ function _renderHunk(h: HunkBlock, f: FileBlock): HTMLElement {
       && !_anySegmentOverridden(h, false)
     ) {
       const list = _el("div", "seg-list");
-      for (const s of h.segments) list.appendChild(_renderSegmentFolded(s));
+      for (const s of h.segments) list.appendChild(_renderSegmentFolded(s, f));
       div.appendChild(list);
     } else {
       div.appendChild(_renderHunkDiff(h, f));
@@ -459,7 +508,7 @@ function _anySegmentOverridden(h: HunkBlock, toValue: boolean): boolean {
   });
 }
 
-function _renderHunkHeader(h: HunkBlock, folded: boolean): HTMLElement {
+function _renderHunkHeader(h: HunkBlock, folded: boolean, f: FileBlock): HTMLElement {
   const hdr = _el("div", "hunk-header");
   hdr.appendChild(_chev(folded));
   hdr.appendChild(_el("span", "hunk-pos", h.header));
@@ -481,23 +530,17 @@ function _renderHunkHeader(h: HunkBlock, folded: boolean): HTMLElement {
   }
   hdr.appendChild(intent);
   const meta = _el("span", "hunk-meta");
-  for (const sm of h.smells || []) meta.appendChild(_smellPill(sm));
-  if (h.confidence != null) {
-    const conf = _el(
-      "span",
-      "confidence" + (h.confidence < 30 ? " low" : ""),
-      `c=${h.confidence}`,
-    );
-    conf.title = h.confidence < 30
-      ? "Low confidence — review carefully"
-      : "Model confidence";
-    meta.appendChild(conf);
-  }
+  for (const sm of h.smells || []) meta.appendChild(_smellPill(sm, {
+    smellId: `${h.id}:smell:${sm.tag}`,
+    file: f.path, side: "new", line: h.new_start,
+  }));
   if (h.context) {
     const icon = _el("span", "context-icon", "ⓘ");
     icon.title = h.context;
     meta.appendChild(icon);
   }
+  const stars = _confidenceStars(h.confidence);
+  if (stars) meta.appendChild(stars);
   hdr.appendChild(meta);
   hdr.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -506,13 +549,16 @@ function _renderHunkHeader(h: HunkBlock, folded: boolean): HTMLElement {
   return hdr;
 }
 
-function _renderSegmentFolded(s: SegmentBlock): HTMLElement {
+function _renderSegmentFolded(s: SegmentBlock, f: FileBlock): HTMLElement {
   const div = _el("div", "segment");
   div.dataset.id = s.id;
   div.appendChild(_chev(true));
   div.appendChild(_el("span", "segment-range", `+${s.new_start}..+${s.new_start + s.new_count - 1}`));
   div.appendChild(_el("span", s.intent ? "segment-intent" : "segment-intent empty", s.intent || "(no intent)"));
-  for (const sm of s.smells || []) div.appendChild(_smellPill(sm));
+  for (const sm of s.smells || []) div.appendChild(_smellPill(sm, {
+    smellId: `${s.id}:smell:${sm.tag}`,
+    file: f.path, side: "new", line: s.new_start,
+  }));
   div.addEventListener("click", (e) => {
     e.stopPropagation();
     _toggleFold(s.id, _defaultSegmentFolded());
@@ -540,7 +586,7 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock): HTMLElement {
     rowElsOld.push(pair.old);
     rowElsNew.push(pair.new);
   }
-  _attachLineNotes(rowElsOld, rowElsNew, h.rows || [], h.line_notes || []);
+  _attachLineNotes(rowElsOld, rowElsNew, h.rows || [], h.line_notes || [], h.id, file.path);
   // Record this hunk's rows so folds.ts can build a unified row stream
   // across the hunk and adjacent expanded context.
   FileRows.record(container, {
@@ -553,6 +599,7 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock): HTMLElement {
 function _attachLineNotes(
   rowElsOld: HTMLElement[], rowElsNew: HTMLElement[],
   rows: RowBlock[], notes: LineNote[],
+  hunkId: string, filePath: string,
 ): void {
   if (!notes.length || !rows.length) return;
   const byNewLine = new Map<number, number>();
@@ -563,13 +610,53 @@ function _attachLineNotes(
   for (const note of notes) {
     const idx = byNewLine.get(note.line);
     if (idx === undefined) continue;
+    const noteId = `${hunkId}:line_note:${note.line}`;
+    // If this line_note has already been promoted to a local comment,
+    // skip rendering it — the comment now stands in its place. Keeps
+    // a re-augment from resurrecting an observation the reviewer has
+    // already turned into a comment.
+    if (Comments.isPromoted(noteId)) continue;
     Annotations.attach({
       anchor: rowElsNew[idx],
       shadowAnchor: rowElsOld[idx],
       variant: "note",
-      content: note.body || "",
+      content: _buildLineNoteContent(note, noteId, filePath, rowElsNew[idx]),
+      onInsert: (el) => { el.dataset.lineNoteId = noteId; },
     });
   }
+}
+
+/** Compose a line_note's annotation body: the LLM's text plus a small
+ *  "Add as comment" affordance that hands the body to the comment
+ *  editor pre-filled and anchored at the same row. */
+function _buildLineNoteContent(
+  note: LineNote, noteId: string, filePath: string, rowEl: HTMLElement,
+): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "line-note-body";
+  const text = document.createElement("div");
+  text.className = "line-note-text";
+  text.textContent = note.body || "";
+  wrap.appendChild(text);
+
+  const actions = document.createElement("div");
+  actions.className = "line-note-actions";
+  const promote = document.createElement("button");
+  promote.className = "comment-btn comment-btn-promote";
+  promote.type = "button";
+  promote.textContent = "Add as comment";
+  promote.title = "Open the comment editor pre-filled with this observation";
+  promote.addEventListener("click", (e) => {
+    e.stopPropagation();
+    Comments.openPromotionEditor({
+      rowEl, side: "new", line: note.line,
+      file: filePath, body: note.body || "",
+      derivedFrom: noteId,
+    });
+  });
+  actions.appendChild(promote);
+  wrap.appendChild(actions);
+  return wrap;
 }
 
 function _renderRow(row: RowBlock, file: FileBlock): { old: HTMLElement; new: HTMLElement } {

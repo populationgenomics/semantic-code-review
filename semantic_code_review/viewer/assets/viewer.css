@@ -308,11 +308,20 @@ body {
 .scr-progress-grid .sq[data-state="failed"] { background: var(--err); border-color: var(--err); }
 .scr-progress-grid .sq:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .hunk-meta { grid-area: meta; display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
-.confidence {
-  font-size: 11px; color: var(--fg-muted); padding: 1px 6px; border-radius: 10px;
-  background: var(--bg-alt); border: 1px solid var(--border);
+/* Subtle 3-star confidence indicator at the top-right of the hunk
+ * header. One filled star = low (the LLM hedged); three = high. The
+ * old `c=NN` chip was loud and numeric; stars read at a glance and
+ * stay out of the way. */
+.hunk-confidence {
+  display: inline-flex;
+  gap: 1px;
+  font-size: 10px;
+  color: var(--fg-muted);
+  letter-spacing: 0.5px;
 }
-.confidence.low { color: var(--err); border-color: var(--err); }
+.hunk-confidence .conf-star.on { color: var(--fg-muted); }
+.hunk-confidence[data-level="1"] .conf-star.on { color: var(--err); }
+.hunk-confidence[data-level="1"] { opacity: 1; }
 
 .context-icon {
   font-size: 13px; color: var(--accent); cursor: help;
@@ -682,6 +691,33 @@ body {
   border-top: 1px solid var(--border);
 }
 .comment-btn-reply { padding: 2px 10px; }
+
+/* LLM line-note annotation — the LLM observation plus a small
+ * "Add as comment" affordance. Clicking the button opens the comment
+ * editor pre-filled with the line-note text and the source annotation
+ * row is removed once a comment is saved. */
+.line-note-body { display: flex; flex-direction: column; gap: 4px; }
+.line-note-text { white-space: pre-wrap; }
+.line-note-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+.comment-btn-promote {
+  padding: 1px 8px;
+  font-size: 10px;
+  opacity: 0.7;
+}
+.comment-btn-promote:hover { opacity: 1; }
+
+/* Smell pills that are click-to-promote get a subtle hover cue —
+ * pointer cursor + a hint underline. Non-promotable smells (the
+ * file-overview aggregator) stay static. */
+.smell.smell-promotable { cursor: pointer; }
+.smell.smell-promotable:hover {
+  outline: 1px solid currentColor;
+  outline-offset: -1px;
+}
 
 /* Resolved thread: collapsed header bar at the top of the thread block.
  * The annot-box still surrounds the whole thread; the header is just

@@ -62,8 +62,11 @@ def _warn_once() -> None:
     _FALLBACK_WARNED = True
     sys.stderr.write(
         "scr: no ANTHROPIC_API_KEY; falling back to `claude -p` subprocess. "
-        "Note: no prompt caching, reduced concurrency, no in-loop repo tools "
-        "(annotation quality will be lower).\n"
+        "Annotation quality is the same as the SDK path (same model, prompts, "
+        "and repo tools via MCP), but expect slower runs: subprocess startup "
+        "per hunk plus Claude Code subscription rate limits. If the hunk pass "
+        "hits a rate limit on the primary model, --fallback-model silently "
+        "demotes that call (opus → sonnet by default).\n"
     )
     sys.stderr.flush()
 

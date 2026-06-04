@@ -24,7 +24,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent
+from pydantic_ai import Agent, CachePoint
+from pydantic_ai.messages import UserContent
 from pydantic_ai.models import Model
 from pydantic_ai.output import ToolOutput
 
@@ -125,6 +126,15 @@ def _slice_lines(path: Path, start: int, end: int) -> list[str]:
     return lines[max(0, start - 1) : end]
 
 
+# Anthropic prompt-caching settings applied to every fold-summary call.
+# The cacheable prefix is the system prompt + the overview JSON + the
+# file summary; folds within the same file (and across files within the
+# PR) reuse it. Settings are no-ops on non-Anthropic backends.
+_FOLD_CACHE_SETTINGS: dict[str, Any] = {
+    "anthropic_cache_instructions": True,
+}
+
+
 def _format_fold_prompt(
     *,
     overview_json: str,
@@ -134,7 +144,7 @@ def _format_fold_prompt(
     body: str,
     right_range: tuple[int, int] | None,
     left_range: tuple[int, int] | None,
-) -> list[dict[str, Any]]:
+) -> list[UserContent]:
     if context == "right":
         rs, re_ = right_range or (0, 0)
         region_label = f"post-image lines head/{file_path}:{rs}..{re_}"
@@ -153,12 +163,16 @@ def _format_fold_prompt(
         f"{body}\n\n"
         "Summarise the folded region."
     )
+    # CachePoint markers between sections so Anthropic caches the
+    # overview prefix (cross-file) and the overview+file_summary
+    # prefix (within-file) across fold-summary calls. Other providers
+    # silently filter the markers out.
     return [
-        {"type": "text", "text": f"# PR overview\n{overview_json}",
-         "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": f"# File summary\n{file_summary}",
-         "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": region_text},
+        f"# PR overview\n{overview_json}",
+        CachePoint(),
+        f"# File summary\n{file_summary}",
+        CachePoint(),
+        region_text,
     ]
 
 
@@ -224,9 +238,11 @@ async def summarise_fold(
                 )
             return str(entry["response"].get("summary", "")).strip()
 
-    user_text = "\n\n".join(b["text"] for b in user_content)
     agent = make_fold_summary_agent(client.model)
-    async with agent.iter(user_text) as agent_run:
+    async with agent.iter(
+        user_content,
+        model_settings=_FOLD_CACHE_SETTINGS,
+    ) as agent_run:
         try:
             async for _ in agent_run:
                 pass

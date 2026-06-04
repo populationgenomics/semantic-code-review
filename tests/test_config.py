@@ -90,6 +90,67 @@ def test_field_doc_extracts_annotated_metadata() -> None:
     assert field_doc("nonexistent") == ""
 
 
+def test_augment_extra_prompt_loaded_inline(tmp_path: Path) -> None:
+    """`[augment].extra_prompt = "..."` lands on the resolved config as
+    a stripped string. Source attribution points at the file that set it."""
+    user = _write(tmp_path / "user.toml", '''
+[augment]
+extra_prompt = """
+You are doing an extra code review pass.
+Look for bugs, perf, security.
+"""
+''')
+    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    assert cfg.extra_review_prompt is not None
+    assert cfg.extra_review_prompt.startswith("You are doing an extra")
+    assert cfg.extra_review_prompt.endswith("perf, security.")
+    assert cfg.sources["augment.extra_prompt"] == str(user)
+
+
+def test_augment_extra_prompt_empty_string_is_ignored(tmp_path: Path) -> None:
+    """An all-whitespace value is treated as 'unset' rather than
+    spinning up an extra pass with an empty system prompt."""
+    user = _write(tmp_path / "user.toml", '''
+[augment]
+extra_prompt = "   \\n   "
+''')
+    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    assert cfg.extra_review_prompt is None
+    assert "augment.extra_prompt" not in cfg.sources
+
+
+def test_augment_extra_prompt_repo_overrides_user(tmp_path: Path) -> None:
+    """Standard config layering: per-repo `[augment].extra_prompt`
+    wins over the user-global value, but inherits when the per-repo
+    config doesn't set it."""
+    user = _write(tmp_path / "user.toml", '''
+[augment]
+extra_prompt = "team-wide review checklist"
+''')
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    repo = _write(repo_dir / "repo.toml", '''
+[augment]
+extra_prompt = "this repo wants a different lens"
+''')
+    cfg = ScrConfig.load(user_path=user, repo_path=repo)
+    assert cfg.extra_review_prompt == "this repo wants a different lens"
+    assert cfg.sources["augment.extra_prompt"] == str(repo)
+
+    # Without a per-repo override, the user-global setting flows through.
+    cfg_global_only = ScrConfig.load(user_path=user, repo_path=None)
+    assert cfg_global_only.extra_review_prompt == "team-wide review checklist"
+
+
+def test_augment_extra_prompt_rejects_non_string(tmp_path: Path) -> None:
+    user = _write(tmp_path / "user.toml", '''
+[augment]
+extra_prompt = 42
+''')
+    with pytest.raises(ConfigError, match="must be a string"):
+        ScrConfig.load(user_path=user, repo_path=None)
+
+
 def test_load_user_only(tmp_path: Path) -> None:
     user = _write(tmp_path / "user.toml", '''
 backend = "gemini-api"

@@ -92,6 +92,7 @@ async def augment_run_dir(
     max_hunks: int | None = None,
     skip_overview: bool = False,
     skip_context: bool = False,
+    extra_review_prompt: str | None = None,
     show_progress: bool = True,
     on_event: OnEvent | None = None,
 ) -> Path:
@@ -214,6 +215,7 @@ async def augment_run_dir(
                         ord_idx, meter, sem, client, diff, fi, hi,
                         overview_json, repo_tools, model, cache,
                         trace_dir, stats, results, on_event,
+                        extra_review_prompt,
                     )
                 )
                 for fi, hi, ord_idx in queued
@@ -279,6 +281,7 @@ async def _augment_one_hunk(
     stats: _HunkStats,
     results: dict[tuple[int, int], HunkAnnotations],
     on_event: OnEvent | None,
+    extra_review_prompt: str | None,
 ) -> None:
     fp = diff.files[fi]
     hunk = fp.hunks[hi]
@@ -303,12 +306,29 @@ async def _augment_one_hunk(
                 trace_dir=trace_dir,
             )
             ann = build_hunk_annotations(hunk.parsed, submit)
+            # Optional extra-review pass: a user-supplied prompt adds
+            # more line-anchored notes. Best-effort — failures here
+            # don't poison the main-pass output.
+            if extra_review_prompt:
+                from .extra_review import run_extra_review_pass
+                extra_notes = await run_extra_review_pass(
+                    client, fp=fp,
+                    hunk=AnnotatedHunk(parsed=hunk.parsed, ann=ann),
+                    overview_json=overview_json, file_summary=file_summary,
+                    prompt_text=extra_review_prompt,
+                    model=model, cache=cache, trace_dir=trace_dir,
+                )
+                if extra_notes:
+                    ann = ann.model_copy(
+                        update={"line_notes": list(ann.line_notes) + extra_notes},
+                    )
             results[(fi, hi)] = ann
             stats.ok += 1
             meter.finish_hunk(ord_idx, ok=True)
-            log.info("hunk %s @ %s: intent=%r smells=%d segs=%d",
+            log.info("hunk %s @ %s: intent=%r smells=%d segs=%d notes=%d",
                      fp.path, hunk.parsed.header,
-                     (ann.intent or "")[:80], len(ann.smells), len(ann.segments))
+                     (ann.intent or "")[:80], len(ann.smells), len(ann.segments),
+                     len(ann.line_notes))
             block = build_hunk_viewer_block(
                 AnnotatedHunk(parsed=hunk.parsed, ann=ann), fi, hi,
             )

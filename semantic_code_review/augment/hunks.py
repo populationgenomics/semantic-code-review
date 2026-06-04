@@ -14,6 +14,9 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+from pydantic_ai import CachePoint
+from pydantic_ai.messages import UserContent
+
 from ..augment.schemas import (
     AnnotatedDiff, AnnotatedFile, AnnotatedHunk, FoldDescription,
     HunkAnnotations, LineNote, Overview, ParsedHunk, Ref, Segment, Smell,
@@ -28,18 +31,40 @@ from .trace_adapter import (
 )
 
 
+# Anthropic prompt-caching settings applied to every per-hunk call.
+#
+# The cacheable prefix on this pass is `[system prompt] + [tool defs] +
+# [overview] + [file summary]`. The first two stay byte-identical for
+# every hunk in the run, so caching them buys cross-hunk reuse on a
+# multi-hunk PR. The CachePoint markers in `format_hunk_prompt` then
+# split the user prompt so within-file (overview + summary cached) and
+# within-PR (overview cached) prefixes are reused too.
+#
+# AnthropicModelSettings keys are silently ignored by non-Anthropic
+# backends (TypedDict total=False), so this is safe to apply
+# unconditionally — Google + the CLI drivers see them as no-ops.
+_HUNK_CACHE_SETTINGS: dict[str, Any] = {
+    "anthropic_cache_instructions": True,       # system prompt block
+    "anthropic_cache_tool_definitions": True,   # tools/<RepoTools>
+}
+
+
 def format_hunk_prompt(
     fp: AnnotatedFile,
     hunk: AnnotatedHunk,
     overview_json: str,
     file_summary: str,
-) -> list[dict[str, Any]]:
-    """Assemble the user content blocks for one hunk call.
+) -> list[UserContent]:
+    """Assemble the user-prompt blocks for one hunk call.
 
-    Three blocks: overview (cached), file summary (cached), hunk-specific
-    (not cached). Fold-region summaries are no longer produced here —
-    the review server fires a focused call on first fold-close; see
-    `augment.fold_summary`.
+    Returns a `UserContent` list with `CachePoint` markers between the
+    cacheable prefix sections (overview, file summary) and the
+    per-hunk text. pydantic-ai's Anthropic adapter translates each
+    `CachePoint` into a `cache_control: ephemeral` annotation on the
+    preceding text block; non-supporting providers filter the markers
+    out and concatenate the text blocks. Fold-region summaries are not
+    produced here — the review server fires a focused call on first
+    fold-close; see :mod:`semantic_code_review.augment.fold_summary`.
     """
     hunk_text = (
         f"# File\npath: {fp.path}\n"
@@ -47,11 +72,11 @@ def format_hunk_prompt(
         f"# Hunk\n{hunk.parsed.header}\n{hunk.parsed.body}"
     )
     return [
-        {"type": "text", "text": f"# PR overview\n{overview_json}",
-         "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": f"# File summary\n{file_summary}",
-         "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": hunk_text},
+        f"# PR overview\n{overview_json}",
+        CachePoint(),
+        f"# File summary\n{file_summary}",
+        CachePoint(),
+        hunk_text,
     ]
 
 
@@ -99,18 +124,17 @@ async def run_hunk_pass(
                 )
             return entry["response"]
 
-    # Concatenate the three cache-segmented blocks into a single user
-    # prompt — pydantic-ai's message format doesn't surface Anthropic
-    # prompt-caching breakpoints. Provider-side caching is a v0.13
-    # follow-up; correctness comes first.
-    user_text = "\n\n".join(b["text"] for b in user_content)
     agent = make_hunk_agent(client.model)
     # Drive the run via agent.iter() so the partial message history is
     # accessible on `AgentRun` even if the inner loop raises (most
     # commonly UsageLimitExceeded once a hunk's tool-use loop blows the
     # default request cap). Without this, failed hunks leave no trace
     # — the most diagnostic case is the one with no diagnostics.
-    async with agent.iter(user_text, deps=repo_tools) as agent_run:
+    async with agent.iter(
+        user_content,
+        deps=repo_tools,
+        model_settings=_HUNK_CACHE_SETTINGS,
+    ) as agent_run:
         try:
             async for _ in agent_run:
                 pass
