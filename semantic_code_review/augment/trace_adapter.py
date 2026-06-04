@@ -41,6 +41,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from pydantic_ai import CachePoint
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -58,6 +59,27 @@ from pydantic_ai.messages import (
 _FALLBACK_REPR_CAP = 5000
 
 
+def _trace_safe_user_content(content: Any) -> Any:
+    """Render a UserPromptPart.content value into a JSON-safe shape.
+
+    A list-form user prompt can contain `CachePoint` markers (used for
+    Anthropic prompt caching) that aren't JSON-serialisable. We render
+    them as a sentinel dict so a human reading the trace can still see
+    where the cache breakpoints fell, without breaking `json.dumps`.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        out: list[Any] = []
+        for item in content:
+            if isinstance(item, CachePoint):
+                out.append({"type": "cache-point", "ttl": item.ttl})
+            else:
+                out.append(item)
+        return out
+    return content
+
+
 def _request_to_sent(req: ModelRequest) -> list[dict[str, Any]]:
     """Translate a ModelRequest's parts into the legacy `messages_sent` shape.
 
@@ -71,7 +93,7 @@ def _request_to_sent(req: ModelRequest) -> list[dict[str, Any]]:
         if isinstance(part, SystemPromptPart):
             continue
         if isinstance(part, UserPromptPart):
-            out.append({"role": "user", "content": part.content})
+            out.append({"role": "user", "content": _trace_safe_user_content(part.content)})
         elif isinstance(part, ToolReturnPart):
             out.append(
                 {
