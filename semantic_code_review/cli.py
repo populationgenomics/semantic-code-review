@@ -129,6 +129,28 @@ def _select_client(backend: str, *, model: str):
     return _backends.get(backend, config=_CONFIG).resolve(model=model)
 
 
+def _resolve_extra_review_prompt(cli_path: Path | None) -> str | None:
+    """CLI --extra-prompt path wins, otherwise the inline config value.
+
+    The CLI flag loads the prompt off the given file (a missing /
+    unreadable / empty file is a hard error — the user asked for an
+    extra-review pass and we shouldn't silently degrade). When no CLI
+    flag is set, we fall through to the inline ``[augment].extra_prompt``
+    string from the config.
+    """
+    if cli_path is not None:
+        try:
+            text = cli_path.read_text(encoding="utf-8").strip()
+        except OSError as e:
+            typer.echo(f"scr: extra-review prompt {cli_path}: {e}", err=True)
+            raise typer.Exit(code=2)
+        if not text:
+            typer.echo(f"scr: extra-review prompt {cli_path} is empty", err=True)
+            raise typer.Exit(code=2)
+        return text
+    return _CONFIG.extra_review_prompt
+
+
 @app.command()
 def fetch(
     pr_url: str = typer.Argument(..., help="https://github.com/owner/repo/pull/N"),
@@ -165,6 +187,15 @@ def augment(
     backend: str = typer.Option(
         None, help="LLM backend (default from config or 'auto'); see `scr config show` for registered names."
     ),
+    extra_prompt: Path = typer.Option(
+        None, "--extra-prompt",
+        help=(
+            "Path to a markdown/text file with an extra review prompt. "
+            "Runs as a second per-hunk LLM call alongside the main "
+            "comprehension pass; output line-notes merge into the "
+            "augmented diff. Overrides [augment].extra_prompt."
+        ),
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Augment a fetched run directory with LLM annotations."""
@@ -177,6 +208,7 @@ def augment(
     model = _CONFIG.resolve_model(backend=backend, cli_value=model)
     cache = None if no_cache else CacheStore(root=cache_dir, prompt_version=PROMPT_VERSION)
     client = _select_client(backend, model=model)
+    extra_review_prompt = _resolve_extra_review_prompt(extra_prompt)
 
     path = asyncio.run(
         augment_run_dir(
@@ -189,6 +221,7 @@ def augment(
             skip_context=skip_context,
             cache=cache,
             client=client,
+            extra_review_prompt=extra_review_prompt,
             show_progress=not verbose,
         )
     )
@@ -260,6 +293,16 @@ def review(
     backend: str = typer.Option(
         None, help="LLM backend (default from config or 'auto'); see `scr config show` for registered names."
     ),
+    extra_prompt: Path = typer.Option(
+        None, "--extra-prompt",
+        help=(
+            "Path to a markdown/text file with an extra review prompt. "
+            "Runs as a second per-hunk LLM call alongside the main "
+            "comprehension pass; produces line-anchored notes that "
+            "the reviewer can promote to comments. Overrides "
+            "[augment].extra_prompt in the config."
+        ),
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Review a local git diff; round-trip reviewer comments to stdout."""
@@ -270,6 +313,7 @@ def review(
     backend = _CONFIG.resolve_backend(backend)
     model = _CONFIG.resolve_model(backend=backend, cli_value=model)
     runs_root = runs_root or _default_runs_root()
+    extra_review_prompt = _resolve_extra_review_prompt(extra_prompt) if augment else None
     # Resolve the backend up-front so a misconfiguration fails fast, before
     # we spend time building the diff / worktrees.
     client = _select_client(backend, model=model) if augment else None
@@ -290,6 +334,7 @@ def review(
         port=port,
         timeout=timeout,
         client=client,
+        extra_review_prompt=extra_review_prompt,
         show_progress=not verbose,
     )
     try:
@@ -565,6 +610,18 @@ def config_show() -> None:
         for k, v in _CONFIG.env.items():
             applied = "applied" if os.environ.get(k) == v else "overridden by shell/.env"
             typer.echo(f"  {k} = {v!r} (from {_CONFIG.sources.get(f'env.{k}', '?')}, {applied})")
+    if _CONFIG.extra_review_prompt is not None:
+        # Show line count + a leading snippet rather than the whole
+        # body — extra-review prompts are typically multi-paragraph
+        # and would crowd the resolved-config display.
+        prompt = _CONFIG.extra_review_prompt
+        lines = prompt.count("\n") + 1
+        first_line = prompt.split("\n", 1)[0][:80]
+        typer.echo("[augment]")
+        typer.echo(
+            f'  extra_prompt = <{lines}-line prompt: {first_line!r}…> '
+            f'(from {_CONFIG.sources.get("augment.extra_prompt", "?")})'
+        )
 
 
 @config_app.command("edit")

@@ -228,6 +228,13 @@ class ScrConfig:
     backends: dict[str, BackendDef] = field(default_factory=dict)
     model_default: str | None = None
     env: dict[str, str] = field(default_factory=dict)
+    # Inline text for an *additional* per-hunk review prompt, run
+    # alongside the main comprehension pass. Output: extra line_notes
+    # the reviewer can promote to comments. Set under
+    # [augment].extra_prompt = """...""" in the config file. None
+    # disables. The CLI --extra-prompt flag loads from a file path
+    # and overrides this for the current run.
+    extra_review_prompt: str | None = None
     # Where each setting came from, for `scr config show`.
     sources: dict[str, str] = field(default_factory=dict)
 
@@ -299,6 +306,20 @@ class ScrConfig:
                     )
                 self.env[k] = v
                 self.sources[f"env.{k}"] = source
+
+        augment = raw.get("augment")
+        if isinstance(augment, dict):
+            extra = augment.get("extra_prompt")
+            if extra is not None:
+                if not isinstance(extra, str):
+                    raise ConfigError(
+                        f"{source}: augment.extra_prompt must be a string, "
+                        f"got {type(extra).__name__}"
+                    )
+                text = extra.strip()
+                if text:
+                    self.extra_review_prompt = text
+                    self.sources["augment.extra_prompt"] = source
 
     def _merge_backend(self, name: str, body: dict[str, Any], *, source: str) -> None:
         existing = self.backends.get(name)

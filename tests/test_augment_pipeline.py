@@ -30,17 +30,28 @@ class _CannedModel(Model):
     """Pydantic-ai Model that returns pre-baked tool calls per pass.
 
     The discriminator is the output tool name pydantic-ai puts in
-    `model_request_parameters.output_tools[0].name` — `submit_overview`
-    or `submit_annotations`. Hunk payloads are popped off in order so
-    tests can assert call ordering, mirroring the v0.10 CannedClient.
+    `model_request_parameters.output_tools[0].name`:
+
+    - `submit_overview`        — the PR-level overview pass
+    - `submit_annotations`     — the per-hunk comprehension pass
+    - `submit_extra_notes`     — the optional extra-review pass
+
+    Hunk/extra payloads are popped off in order so tests can assert
+    call ordering. Mirrors the v0.10 CannedClient.
     """
 
     _provider = None  # type: ignore[assignment]
 
-    def __init__(self, overview_args: dict, hunk_args_list: list[dict]) -> None:
+    def __init__(
+        self,
+        overview_args: dict,
+        hunk_args_list: list[dict],
+        extra_args_list: list[dict] | None = None,
+    ) -> None:
         super().__init__()
         self._overview = overview_args
         self._hunks = list(hunk_args_list)
+        self._extras = list(extra_args_list or [])
         self.calls = 0
 
     @property
@@ -69,6 +80,10 @@ class _CannedModel(Model):
             if not self._hunks:
                 raise AssertionError("_CannedModel ran out of hunk payloads")
             args = self._hunks.pop(0)
+        elif tool_name == "submit_extra_notes":
+            if not self._extras:
+                raise AssertionError("_CannedModel ran out of extra-note payloads")
+            args = self._extras.pop(0)
         else:
             raise AssertionError(f"unexpected output tool: {tool_name!r}")
         return ModelResponse(
@@ -79,8 +94,12 @@ class _CannedModel(Model):
         )
 
 
-def _make_canned_backend(overview_args: dict, hunk_args_list: list[dict]) -> tuple[Client, _CannedModel]:
-    model = _CannedModel(overview_args, hunk_args_list)
+def _make_canned_backend(
+    overview_args: dict,
+    hunk_args_list: list[dict],
+    extra_args_list: list[dict] | None = None,
+) -> tuple[Client, _CannedModel]:
+    model = _CannedModel(overview_args, hunk_args_list, extra_args_list)
     return Client(model=model), model
 
 
@@ -309,3 +328,87 @@ async def test_per_hunk_trace_written_on_agent_failure(tmp_path: Path) -> None:
     # what the model was working from when it ran out of budget).
     sent = sample["iterations"][0]["messages_sent"]
     assert sent and sent[0]["role"] == "user"
+
+
+async def test_augment_extra_review_appends_line_notes(tmp_path: Path) -> None:
+    """`extra_review_prompt` triggers a per-hunk extra pass whose
+    returned notes merge into ann.line_notes, on top of whatever the
+    main pass produced."""
+    run = _make_run_dir(tmp_path)
+    backend, canned = _make_canned_backend(
+        overview_args={
+            "summary": "Bumps two constants.",
+            "files": [{"path": "f.py", "summary": "x and y bumped"}],
+        },
+        hunk_args_list=[
+            {"intent": "Bump x", "line_notes": [{"line": 1, "body": "main note"}]},
+            {"intent": "Bump y", "line_notes": []},
+        ],
+        extra_args_list=[
+            {"notes": [{"line": 1, "body": "extra: be careful"}]},
+            {"notes": [{"line": 10, "body": "extra: same here"}]},
+        ],
+    )
+    await augment_run_dir(
+        run, model="t", concurrency=1, client=backend, cache=None,
+        extra_review_prompt="Reviewer prompt body",
+    )
+    reparsed = parse_augmented_diff((run / "augmented.diff").read_text())
+    h0_notes = [(n.line, n.body) for n in reparsed.files[0].hunks[0].ann.line_notes]
+    h1_notes = [(n.line, n.body) for n in reparsed.files[0].hunks[1].ann.line_notes]
+    # Hunk 0: main pass produced one note, extra pass added one — both land.
+    assert h0_notes == [(1, "main note"), (1, "extra: be careful")]
+    # Hunk 1: main produced none, extra produced one.
+    assert h1_notes == [(10, "extra: same here")]
+    # Calls: 1 overview + 2 main hunks + 2 extra = 5.
+    assert canned.calls == 5
+
+
+async def test_augment_extra_review_out_of_range_notes_dropped(tmp_path: Path) -> None:
+    """Extra-pass notes whose `line` falls outside the hunk's
+    post-image range get filtered (mirroring the main pass's segment
+    clamp). The model isn't trusted to stay in bounds."""
+    run = _make_run_dir(tmp_path)
+    backend, _ = _make_canned_backend(
+        overview_args={"summary": "", "files": [{"path": "f.py", "summary": ""}]},
+        hunk_args_list=[
+            {"intent": "Bump x", "line_notes": []},
+            {"intent": "Bump y", "line_notes": []},
+        ],
+        # Hunk 0 covers new line 1; line 99 is out of range. Hunk 1
+        # covers new line 10; an empty body should also drop.
+        extra_args_list=[
+            {"notes": [
+                {"line": 1, "body": "kept"},
+                {"line": 99, "body": "dropped — out of range"},
+            ]},
+            {"notes": [
+                {"line": 10, "body": "  "},  # empty after strip → dropped
+            ]},
+        ],
+    )
+    await augment_run_dir(
+        run, model="t", concurrency=1, client=backend, cache=None,
+        extra_review_prompt="Reviewer prompt body",
+    )
+    reparsed = parse_augmented_diff((run / "augmented.diff").read_text())
+    h0_notes = [(n.line, n.body) for n in reparsed.files[0].hunks[0].ann.line_notes]
+    h1_notes = [(n.line, n.body) for n in reparsed.files[0].hunks[1].ann.line_notes]
+    assert h0_notes == [(1, "kept")]
+    assert h1_notes == []
+
+
+async def test_augment_no_extra_review_when_prompt_unset(tmp_path: Path) -> None:
+    """Without `extra_review_prompt`, the extra pass is skipped
+    entirely — no submit_extra_notes calls fire."""
+    run = _make_run_dir(tmp_path)
+    backend, canned = _make_canned_backend(
+        overview_args={"summary": "", "files": [{"path": "f.py", "summary": ""}]},
+        hunk_args_list=[{"intent": "x"}, {"intent": "y"}],
+        extra_args_list=[],  # no payloads — assertion fires if asked
+    )
+    await augment_run_dir(
+        run, model="t", concurrency=1, client=backend, cache=None,
+        # no extra_review_prompt
+    )
+    assert canned.calls == 3  # 1 overview + 2 main hunks; no extras.
