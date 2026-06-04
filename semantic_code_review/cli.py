@@ -376,6 +376,15 @@ def pr(
     backend: str = typer.Option(
         None, help="LLM backend (default from config or 'auto'); see `scr config show` for registered names."
     ),
+    extra_prompt: Path = typer.Option(
+        None, "--extra-prompt",
+        help=(
+            "Path to a markdown/text file with an extra review prompt. "
+            "Runs as a single PR-level LLM call alongside the main "
+            "comprehension pass; line-anchored notes merge into the "
+            "matching hunk's line_notes. Overrides [augment].extra_prompt."
+        ),
+    ),
     yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt before posting comments to GitHub."),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
@@ -430,6 +439,7 @@ def pr(
 
     pr_url = f"https://github.com/{repo}/pull/{number}"
 
+    extra_review_prompt = _resolve_extra_review_prompt(extra_prompt) if augment else None
     client = _select_client(backend, model=model) if augment else None
 
     runs_root = runs_root or _default_runs_root()
@@ -454,6 +464,7 @@ def pr(
                 concurrency=concurrency,
                 cache=cache,
                 client=client,
+                extra_review_prompt=extra_review_prompt,
                 # Page carries the progress display now; suppress the
                 # terminal meter to avoid duplicate noise and to keep
                 # the listening-URL / warning lines unobstructed.
