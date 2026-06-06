@@ -903,3 +903,93 @@ body { padding-bottom: 30px; }
   border: 1px solid var(--border); border-radius: 4px; font-family: var(--mono);
   font-size: 11px; margin: 0 2px;
 }
+
+/* --- Post-confirm modal (scr pr only) ------------------------------------ */
+/* Shown when the reviewer clicks Done in posting mode. Each row is a
+ * comment that would be posted; per-row checkbox + delete give the
+ * reviewer one last pass before the post fires. Reuses the help
+ * overlay's backdrop pattern (fixed full-screen, centred card). */
+.post-modal {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 110;
+  display: flex; align-items: center; justify-content: center;
+}
+.post-modal.hidden { display: none; }
+.post-modal-card {
+  background: var(--bg-alt); border: 1px solid var(--border); border-radius: 8px;
+  padding: 20px 24px; width: min(720px, 90vw); max-height: 80vh;
+  display: flex; flex-direction: column; color: var(--fg);
+}
+.post-modal-header { margin: 0 0 6px; font-size: 16px; }
+.post-modal-meta {
+  margin: 0 0 14px; font-size: 12px; color: var(--fg-muted);
+  font-family: var(--mono);
+}
+.post-modal-list {
+  list-style: none; padding: 0; margin: 0; overflow-y: auto;
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  max-height: 50vh;
+}
+.post-modal-empty {
+  padding: 20px; text-align: center; color: var(--fg-muted); font-style: italic;
+}
+.post-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 10px 0; border-bottom: 1px solid var(--border);
+}
+.post-row:last-child { border-bottom: 0; }
+.post-row-label {
+  flex: 1; display: grid;
+  grid-template-columns: auto 1fr auto; gap: 4px 10px;
+  align-items: baseline; cursor: pointer;
+}
+.post-row-check { grid-row: 1 / span 2; margin-top: 2px; }
+.post-row-loc {
+  font-family: var(--mono); font-size: 12px; color: var(--fg-muted);
+  grid-column: 2; grid-row: 1;
+}
+.post-row-kind {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--accent); grid-column: 3; grid-row: 1;
+}
+.post-row-body {
+  font-size: 13px; white-space: pre-wrap; word-break: break-word;
+  grid-column: 2 / span 2; grid-row: 2;
+}
+.post-row-delete {
+  background: transparent; border: 1px solid var(--border); border-radius: 4px;
+  width: 22px; height: 22px; padding: 0; line-height: 1;
+  color: var(--fg-muted); cursor: pointer; font-size: 16px;
+}
+.post-row-delete:hover:not(:disabled) {
+  color: var(--warn); border-color: var(--warn);
+}
+.post-row-delete:disabled { opacity: 0.5; cursor: default; }
+.post-modal-status {
+  margin: 10px 0 0; font-size: 12px; color: var(--warn); min-height: 1.2em;
+}
+.post-modal-footer {
+  display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px;
+}
+.post-modal-footer button {
+  background: var(--bg-panel); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 14px; font-size: 13px; cursor: pointer;
+}
+.post-modal-footer .post-confirm {
+  background: var(--accent); border-color: var(--accent); color: #000; font-weight: 600;
+}
+.post-modal-footer .post-confirm:hover:not(:disabled) { filter: brightness(1.1); }
+.post-modal-footer button:disabled { opacity: 0.6; cursor: default; }
+.post-modal-success {
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 16px 0; margin-bottom: 4px;
+}
+.post-modal-tick {
+  font-size: 24px; color: var(--ok, #2ea043); line-height: 1;
+}
+.post-modal-success-text { font-size: 14px; }
+.post-modal-link {
+  display: inline-block; margin-top: 4px;
+  color: var(--accent); text-decoration: none;
+}
+.post-modal-link:hover { text-decoration: underline; }
