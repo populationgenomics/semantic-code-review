@@ -78,19 +78,44 @@ def _load_dotenv(path: Path = Path(".env")) -> None:
 _load_dotenv()
 
 
-# Load the user / per-repo config and apply its `[env]` block. Order:
-# shell env > .env > config[env]. Each layer uses `setdefault` so the
-# closer one wins. `_CONFIG` itself drives backend/model resolution
-# (per-flag, see `_select_client` and command bodies).
-# `_select_client` is a thin shim over `backends.get(...).resolve(...)` —
-# the dispatch lives in `semantic_code_review.backends`.
-try:
-    _CONFIG = ScrConfig.load()
-except ConfigError as e:
-    sys.stderr.write(f"scr: {e}\n")
-    sys.stderr.flush()
-    raise SystemExit(1)
-_CONFIG.apply_env()
+# Lazily-loaded user/per-repo config. Loading is deferred to the first
+# `get_config()` call so a malformed config doesn't brick commands that
+# never touch it — most importantly `scr config edit`, which is the
+# user's escape hatch for fixing the very config that's broken. Also
+# means `scr --help` and `scr --version` work in any state.
+_CONFIG_CACHE: ScrConfig | None = None
+
+
+def get_config() -> ScrConfig:
+    """Return the resolved config, loading + applying `[env]` on first use.
+
+    Subsequent calls return the cached instance. A `ConfigError` from
+    `ScrConfig.load()` is converted to a clean exit at the CLI boundary
+    so the user sees a short message rather than a Python traceback.
+    Order of env-var precedence: shell env > .env > config[env]; each
+    layer uses `setdefault` so the closer one wins.
+    """
+    global _CONFIG_CACHE
+    if _CONFIG_CACHE is None:
+        try:
+            cfg = ScrConfig.load()
+        except ConfigError as e:
+            sys.stderr.write(f"scr: {e}\n")
+            sys.stderr.flush()
+            raise SystemExit(1)
+        cfg.apply_env()
+        _CONFIG_CACHE = cfg
+    return _CONFIG_CACHE
+
+
+def _reset_config_cache() -> None:
+    """Drop the cached config so the next `get_config()` re-reads from disk.
+
+    Tests use this when they monkey-patch `XDG_CONFIG_HOME` or
+    `SCR_REPO_ROOT` and want the change reflected in the next command.
+    """
+    global _CONFIG_CACHE
+    _CONFIG_CACHE = None
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -119,15 +144,16 @@ def _configure_logging(verbose: bool) -> None:
 def _select_client(backend: str, *, model: str):
     """Resolve a backend name to a `Client` for the augment pipeline.
 
-    `backend` is "auto" or any name in `_CONFIG.backends` (builtins +
+    `backend` is "auto" or any name in `get_config().backends` (builtins +
     user-defined `[backends.<name>]` entries). All dispatch lives in
     `semantic_code_review.backends`; this is the CLI's only entry point.
     """
     from . import backends as _backends
 
+    cfg = get_config()
     if backend == "auto":
-        backend = _backends.resolve_auto(config=_CONFIG)
-    return _backends.get(backend, config=_CONFIG).resolve(model=model)
+        backend = _backends.resolve_auto(config=cfg)
+    return _backends.get(backend, config=cfg).resolve(model=model)
 
 
 def _resolve_extra_review_prompt(cli_path: Path | None) -> str | None:
@@ -149,7 +175,7 @@ def _resolve_extra_review_prompt(cli_path: Path | None) -> str | None:
             typer.echo(f"scr: extra-review prompt {cli_path} is empty", err=True)
             raise typer.Exit(code=2)
         return text
-    return _CONFIG.extra_review_prompt
+    return get_config().extra_review_prompt
 
 
 @app.command()
@@ -205,8 +231,9 @@ def augment(
     from .augment.pipeline import augment_run_dir
     from .augment.prompts import PROMPT_VERSION
 
-    backend = _CONFIG.resolve_backend(backend)
-    model = _CONFIG.resolve_model(backend=backend, cli_value=model)
+    cfg = get_config()
+    backend = cfg.resolve_backend(backend)
+    model = cfg.resolve_model(backend=backend, cli_value=model)
     cache = None if no_cache else CacheStore(root=cache_dir, prompt_version=PROMPT_VERSION)
     client = _select_client(backend, model=model)
     extra_review_prompt = _resolve_extra_review_prompt(extra_prompt)
@@ -311,8 +338,9 @@ def review(
     from .fetch import EmptyDiff, LocalDiffError
     from .review.runner import ReviewOptions, run_review
 
-    backend = _CONFIG.resolve_backend(backend)
-    model = _CONFIG.resolve_model(backend=backend, cli_value=model)
+    cfg = get_config()
+    backend = cfg.resolve_backend(backend)
+    model = cfg.resolve_model(backend=backend, cli_value=model)
     runs_root = runs_root or _default_runs_root()
     extra_review_prompt = _resolve_extra_review_prompt(extra_prompt) if augment else None
     # Resolve the backend up-front so a misconfiguration fails fast, before
@@ -400,8 +428,9 @@ def pr(
     from .review.runner import serve_review
     from .fetch import GhFetchError, preflight_gh
 
-    backend = _CONFIG.resolve_backend(backend)
-    model = _CONFIG.resolve_model(backend=backend, cli_value=model)
+    cfg = get_config()
+    backend = cfg.resolve_backend(backend)
+    model = cfg.resolve_model(backend=backend, cli_value=model)
 
     # Preflight `gh` once — both PR resolution and the post step need
     # it, and a missing-tool / too-old error here is more informative
@@ -589,6 +618,7 @@ def config_show() -> None:
     """Print the resolved config (user + per-repo merged) and where each setting came from."""
     from .paths import default_config_path, find_repo_config_path
 
+    cfg = get_config()
     user = default_config_path()
     repo = find_repo_config_path()
     typer.echo(f"# user config: {user} ({'present' if user.is_file() else 'absent'})")
@@ -597,17 +627,17 @@ def config_show() -> None:
         f"{' (present)' if repo and repo.is_file() else ''}"
     )
     typer.echo("")
-    typer.echo(f"backend = {_CONFIG.backend!r} (from {_CONFIG.sources.get('backend', 'default')})")
-    if _CONFIG.model_default is not None:
+    typer.echo(f"backend = {cfg.backend!r} (from {cfg.sources.get('backend', 'default')})")
+    if cfg.model_default is not None:
         typer.echo("[model]")
         typer.echo(
-            f'  default = {_CONFIG.model_default!r} '
-            f'(from {_CONFIG.sources.get("model.default", "?")})'
+            f'  default = {cfg.model_default!r} '
+            f'(from {cfg.sources.get("model.default", "?")})'
         )
     typer.echo("[backends]")
-    for name in sorted(_CONFIG.backends):
-        bdef = _CONFIG.backends[name]
-        src = _CONFIG.sources.get(f"backends.{name}", "builtin")
+    for name in sorted(cfg.backends):
+        bdef = cfg.backends[name]
+        src = cfg.sources.get(f"backends.{name}", "builtin")
         typer.echo(f"  {name}  type={bdef.type.value}  (from {src})")
         if bdef.default_model is not None:
             typer.echo(f"    model       = {bdef.default_model!r}")
@@ -617,22 +647,22 @@ def config_show() -> None:
             typer.echo(f"    api_key_env = {bdef.api_key_env!r}")
         if bdef.api_key_command is not None:
             typer.echo(f"    api_key_command = {list(bdef.api_key_command)!r}")
-    if _CONFIG.env:
+    if cfg.env:
         typer.echo("[env]")
-        for k, v in _CONFIG.env.items():
+        for k, v in cfg.env.items():
             applied = "applied" if os.environ.get(k) == v else "overridden by shell/.env"
-            typer.echo(f"  {k} = {v!r} (from {_CONFIG.sources.get(f'env.{k}', '?')}, {applied})")
-    if _CONFIG.extra_review_prompt is not None:
+            typer.echo(f"  {k} = {v!r} (from {cfg.sources.get(f'env.{k}', '?')}, {applied})")
+    if cfg.extra_review_prompt is not None:
         # Show line count + a leading snippet rather than the whole
         # body — extra-review prompts are typically multi-paragraph
         # and would crowd the resolved-config display.
-        prompt = _CONFIG.extra_review_prompt
+        prompt = cfg.extra_review_prompt
         lines = prompt.count("\n") + 1
         first_line = prompt.split("\n", 1)[0][:80]
         typer.echo("[augment]")
         typer.echo(
             f'  extra_prompt = <{lines}-line prompt: {first_line!r}…> '
-            f'(from {_CONFIG.sources.get("augment.extra_prompt", "?")})'
+            f'(from {cfg.sources.get("augment.extra_prompt", "?")})'
         )
 
 
