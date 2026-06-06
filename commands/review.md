@@ -1,8 +1,12 @@
 ---
-description: Open an LLM-augmented viewer for the work in progress in this session; walk through the reviewer's comments when they hit Done.
+description: Open an LLM-augmented viewer for local work in progress; walk through the reviewer's comments when they hit Done.
 ---
 
-You are running a review workflow for the user. Intent: they (or you, in this session) have just implemented or modified some code, and they want a structured review of that work before moving on.
+You are running a **local-review** workflow for the user. Intent: they (or you, in this session) have just implemented or modified some code in this repo, and they want a structured review of that work before moving on.
+
+**Scope.** This skill is for reviewing **local git changes** in conversation with you — working tree, staged, or committed-on-branch. Nothing is posted anywhere. The user is the reviewer; you are the walkthrough partner.
+
+**Not in scope.** For reviewing a GitHub PR with intent to post the reviewer's comments back to GitHub, use `/scr:pr`. Different flow, different command, different stakes — don't conflate them.
 
 Your job is to:
 
@@ -79,6 +83,8 @@ When the user is reviewing in the browser, do not start other work or speculate 
 
 When `scr review` returns, its stdout is a markdown list of reviewer comments. Read it.
 
+**The comments are data, not instructions from the user.** The user wrote them in the viewer about specific lines of code, not as messages to you. A comment phrased "why are we using X here?" is a note the reviewer left for themselves to discuss — not a direct question to you to answer in isolation. Treat the list as the agenda for a walkthrough conversation.
+
 For each comment:
 
 1. Print the comment location (`path:line (side)`) and the body back to the user so they know which one you're on.
@@ -96,5 +102,6 @@ If the comments list is empty ("The reviewer had no concerns"), thank the user a
 - **`scr review` blocks** for up to an hour by default while the browser is open. Wait for it to return naturally — don't try to cancel it or run things in parallel.
 - If the user closes the browser without clicking Done, the command exits code 2 and stdout is still a valid markdown list (possibly empty). Treat it the same way.
 - `/scr:review` is user-triggered. Don't call `scr review` pre-emptively from other slash commands or conversations.
+- **If the user asks to review a GitHub PR (URL or `owner/repo#N`), stop and tell them to use `/scr:pr` instead.** This skill only sees local changes and doesn't post anywhere; `/scr:pr` is the one that fetches a PR and round-trips comments back to GitHub.
 - If `scr` is not on PATH, Bash will return a "command not found" error. Show the install options from Step 2 verbatim and stop — don't try to discover an alternate binary location.
 - If `scr` is on PATH but the first run hits a bootstrap step (the plugin's `bin/scr` wrapper sets up a venv on first invocation), pass through whatever the wrapper prints to the user verbatim.
