@@ -61,12 +61,17 @@ class PostedComment:
     *reply* — ``in_reply_to_node_id`` set, anchor fields None — to an
     existing upstream comment (becomes addPullRequestReviewComment with
     inReplyTo set). The GraphQL post pipeline dispatches per shape.
+
+    ``source_id`` carries the source :class:`Comment.id` so the preview
+    modal in the viewer can map a selected row back to the underlying
+    comment. The graphql post path ignores it.
     """
     body: str
     path: str | None = None
     line: int | None = None
     side: str | None = None  # "LEFT" or "RIGHT" for anchored comments.
     in_reply_to_node_id: str | None = None
+    source_id: str | None = None
 
     @property
     def is_reply(self) -> bool:
@@ -234,6 +239,7 @@ def comments_to_github(comments: Iterable[Any]) -> list[PostedComment]:
             out.append(PostedComment(
                 body=body_str,
                 in_reply_to_node_id=str(parent_node),
+                source_id=str(_comment_get(c, "id") or "") or None,
             ))
             continue
         path = _comment_get(c, "file")
@@ -246,6 +252,7 @@ def comments_to_github(comments: Iterable[Any]) -> list[PostedComment]:
             path=str(path),
             line=int(line),
             side=map_side(str(side)),
+            source_id=str(_comment_get(c, "id") or "") or None,
         ))
     return out
 
