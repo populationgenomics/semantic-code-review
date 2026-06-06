@@ -108,12 +108,26 @@ function buildModal(): ModalRefs {
 }
 
 async function openModal(endpoint: string, cfg: PostConfig, modal: ModalRefs): Promise<void> {
+  // Reset every piece of state the prior open might have mutated —
+  // the success block, the swapped Close-on-empty handler, the
+  // hidden Cancel button. Otherwise reopening after a cancel
+  // shows stale UI.
+  const card = modal.root.firstElementChild as HTMLElement;
+  const oldSuccess = card.querySelector(".post-modal-success");
+  if (oldSuccess) oldSuccess.remove();
+  if (!card.querySelector(".post-modal-header")) {
+    const h = el("h3", "post-modal-header");
+    h.textContent = "Post review";
+    card.insertBefore(h, modal.meta);
+  }
+  modal.cancel.style.display = "";
+  modal.cancel.disabled = false;
+  modal.confirm.disabled = true;
+  modal.confirm.textContent = "Post";
+  modal.confirm.onclick = null;
   modal.meta.textContent = "Loading…";
   modal.list.replaceChildren();
   modal.status.textContent = "";
-  modal.confirm.disabled = true;
-  modal.confirm.textContent = "Post";
-  modal.cancel.disabled = false;
   show(modal.root);
 
   let rows: PostPreviewRow[];
@@ -134,11 +148,26 @@ async function openModal(endpoint: string, cfg: PostConfig, modal: ModalRefs): P
   modal.meta.textContent = bits.join(" · ");
 
   if (rows.length === 0) {
+    // Nothing to post — there's no useful "Confirm" action here.
+    // Collapse the footer to a single Close button that fires /exit
+    // so the reviewer doesn't have to figure out that "Cancel" plus
+    // closing the tab is the way out.
     const empty = el("li", "post-modal-empty");
     empty.textContent = "No comments to post.";
     modal.list.appendChild(empty);
-    modal.confirm.disabled = true;
-    modal.confirm.textContent = "Post 0 comments";
+    modal.cancel.style.display = "none";
+    modal.confirm.disabled = false;
+    modal.confirm.textContent = "Close";
+    modal.confirm.onclick = () => {
+      modal.confirm.disabled = true;
+      modal.confirm.textContent = "Closing…";
+      fetch(`${endpoint}/exit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }).catch(() => { /* server may exit before responding */ })
+        .finally(() => { modal.confirm.textContent = "Closed"; });
+    };
     return;
   }
 

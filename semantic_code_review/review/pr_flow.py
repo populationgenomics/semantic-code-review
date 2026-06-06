@@ -2,13 +2,20 @@
 
 Drives `scr pr`: preflights ``gh``, resolves the PR number (picker or
 explicit), materialises a run directory, optionally runs the augment
-pipeline, serves the viewer until the reviewer hits Done, then posts
-the accumulated comments back to GitHub as a single review.
+pipeline, serves the viewer until the reviewer is done. Posting is
+confirmed in the **viewer's modal**, not on the terminal — the
+reviewer reviews comments inline, clicks Done, ticks/unticks the
+final list, and confirms. The server fires the post callback on
+their behalf and reports the result back via ``ServeResult.posted``.
 
-The flow uses plain ``sys.stderr`` / ``sys.stdin`` / ``sys.stdout`` for
-I/O so it's testable without a Typer dependency. ``cli/pr.py`` is the
-CLI wrapper that builds a :class:`PrFlowOptions` from command-line
-args and calls :func:`run_pr_flow`.
+The legacy terminal y/N flow lives behind ``--yes`` only as a way to
+skip the modal entirely: the server stays out of posting mode and
+the CLI posts after the viewer exits.
+
+The flow uses plain ``sys.stderr`` / ``sys.stdout`` for I/O so it's
+testable without a Typer dependency. ``cli/pr.py`` is the CLI wrapper
+that builds a :class:`PrFlowOptions` from command-line args and calls
+:func:`run_pr_flow`.
 """
 
 from __future__ import annotations
@@ -21,12 +28,14 @@ from typing import Any, Callable
 
 from ..augment.agents import Client
 from ..fetch import GhFetchError, materialize_github_pr_run, preflight_gh
-from .comments import format_markdown
+from .comments import CommentStore, format_markdown
 from .github import (
-    GhError, comments_to_github, list_review_requested_prs, pick_pr_interactive,
+    GhError, PostResult, comments_to_github, list_review_requested_prs,
+    pick_pr_interactive,
 )
 from .github_graphql import post_review_via_graphql
 from .runner import _build_fold_summary_task, serve_review
+from .server import PostCallable
 
 
 @dataclass(frozen=True)
@@ -35,8 +44,9 @@ class PrFlowOptions:
 
     ``model`` and ``client`` are caller-resolved (typically via the CLI's
     config + backend selection); ``extra_review_prompt`` is the
-    already-resolved prompt text (None means none). ``yes`` skips the
-    confirmation prompt before posting.
+    already-resolved prompt text (None means none). ``yes`` bypasses the
+    in-browser confirmation modal — the viewer's Done button stays a
+    plain exit and the CLI posts everything after it returns.
     """
 
     repo: str
@@ -60,7 +70,7 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
 
     Exit codes:
       0 — review completed cleanly (no unresolved local comments).
-      1 — graceful user-abort (no PR picked, post cancelled, etc.).
+      1 — graceful user-abort (no PR picked, posting cancelled, etc.).
       2 — error condition: missing ``gh``, fetch failed, post failed,
           or review completed with unresolved local comments.
     """
@@ -84,6 +94,12 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
         _err(f"scr pr: {e}")
         return 2
 
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    head_sha = meta.get("headRefOid", "")
+    if not head_sha:
+        _err("scr pr: meta.json is missing headRefOid; can't anchor review")
+        return 2
+
     augment_task, fold_summary_task = _build_tasks(opts, run_dir)
     if not opts.augment:
         # Mirror cli/review.py's behaviour: copy raw → augmented so render
@@ -93,57 +109,70 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
             encoding="utf-8",
         )
 
+    # `--yes` skips the modal entirely — server stays out of posting
+    # mode (Done = plain /exit) and the CLI does the post itself after
+    # serve_review returns. Default mode wires the callback + meta so
+    # the viewer's Done opens the confirm modal.
+    post_callback: PostCallable | None = None
+    post_meta: dict[str, Any] | None = None
+    if not opts.yes:
+        post_callback = _build_post_callback(opts.repo, number, run_dir)
+        post_meta = {
+            "repo": opts.repo,
+            "number": number,
+            "head_sha": head_sha,
+        }
+
     result = serve_review(
         run_dir,
         augment=augment_task,
         fold_summary=fold_summary_task,
+        post=post_callback,
+        post_meta=post_meta,
         port=opts.port,
         timeout=opts.timeout,
         open_browser=opts.open_browser,
     )
 
-    # Markdown to stdout for parity with `scr review` (the slash-command
-    # downstream expects to read it). Only the *new* (session-local)
-    # comments belong in the markdown — re-printing every ingested
-    # upstream comment would drown the reviewer's actual notes.
+    posted: PostResult | None = result.posted
+
+    # CLI-side fallback for --yes: the server didn't post (we didn't
+    # wire it for that), so post everything ourselves now.
+    if posted is None and opts.yes:
+        mapped = comments_to_github(result.comments)
+        if not mapped:
+            _err(
+                "scr pr: no new local comments to post; "
+                f"comments are in {run_dir / 'comments.json'}."
+            )
+            return 0 if result.clean else 2
+        try:
+            posted = post_review_via_graphql(opts.repo, number, mapped)
+        except GhError as e:
+            _err(f"scr pr: posting failed: {e}")
+            _err(
+                f"comments are still in {run_dir / 'comments.json'} — "
+                "re-run with --no-augment to retry."
+            )
+            return 2
+
+    if posted is not None:
+        # Comments are on GitHub; the URL is the artefact. Keep stdout
+        # minimal so a slash command (or any downstream LLM) doesn't
+        # ingest the comment bodies and treat them as instructions.
+        sys.stdout.write(f"# Posted to {posted.review_url}\n")
+        word = "comment" if posted.posted == 1 else "comments"
+        sys.stdout.write(f"_{posted.posted} {word} posted._\n")
+        sys.stdout.flush()
+        _err(f"scr pr: posted {posted.posted} comment(s) — {posted.review_url}")
+        return 0 if result.clean else 2
+
+    # No post happened — modal cancelled, tab closed, --no-augment with
+    # no comments, etc. Dump the markdown so the user / a calling script
+    # has a record of what was being reviewed.
     local_comments = [c for c in result.comments if c.source == "local"]
     sys.stdout.write(format_markdown(local_comments, run_slug=run_dir.name))
     sys.stdout.flush()
-
-    # Need the head SHA from meta.json so GitHub anchors the review at
-    # the commit the reviewer actually saw.
-    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
-    head_sha = meta.get("headRefOid", "")
-    if not head_sha:
-        _err("scr pr: meta.json is missing headRefOid; can't anchor review")
-        return 2
-
-    # Map + filter once: ingested comments drop out, local replies to
-    # ingested threads become reply entries. The prompt + the post both
-    # work off this filtered list so the count we promise matches what
-    # we actually send.
-    mapped = comments_to_github(result.comments)
-    if not mapped:
-        _err(
-            "scr pr: no new local comments to post; "
-            f"comments are in {run_dir / 'comments.json'}."
-        )
-        return 0 if result.clean else 2
-
-    if not opts.yes and not _confirm_post(opts.repo, number, mapped, head_sha, run_dir):
-        return 1
-
-    try:
-        post = post_review_via_graphql(opts.repo, number, mapped)
-    except GhError as e:
-        _err(f"scr pr: posting failed: {e}")
-        _err(
-            f"comments are still in {run_dir / 'comments.json'} — "
-            "re-run with --no-augment to retry."
-        )
-        return 2
-
-    _err(f"scr pr: posted {post.posted} comment(s) — {post.review_url}")
     return 0 if result.clean else 2
 
 
@@ -213,34 +242,30 @@ def _build_tasks(
     return augment_task, fold_summary_task
 
 
-def _confirm_post(
-    repo: str, number: int, mapped: list, head_sha: str, run_dir: Path,
-) -> bool:
-    """Interactive y/N prompt. Returns ``True`` iff the user confirmed."""
-    n_threads = sum(1 for c in mapped if not c.is_reply)
-    n_replies = len(mapped) - n_threads
-    descr_parts: list[str] = []
-    if n_threads:
-        descr_parts.append(f"{n_threads} new thread{'s' if n_threads != 1 else ''}")
-    if n_replies:
-        descr_parts.append(f"{n_replies} repl{'ies' if n_replies != 1 else 'y'}")
-    descr = " + ".join(descr_parts)
+def _build_post_callback(
+    repo: str, number: int, run_dir: Path,
+) -> PostCallable:
+    """Closure the server fires on /post-review.
 
-    sys.stderr.write(
-        f"\nAbout to post {descr} as a COMMENT review on "
-        f"{repo}#{number} (commit {head_sha[:8]}…).\n"
-        f"Continue? [y/N] "
-    )
-    sys.stderr.flush()
-    answer = (sys.stdin.readline() or "").strip().lower()
-    if answer != "y":
-        sys.stderr.write(
-            "scr pr: aborted; comments are still in "
-            f"{run_dir / 'comments.json'} — re-run with --no-augment "
-            "to retry.\n"
-        )
-        return False
-    return True
+    Reads the latest comments off ``comments.json`` (the store mutates
+    throughout the session), keeps every local comment whose id is in
+    ``selected_ids`` plus every non-local comment (needed for reply-
+    parent ``node_id`` lookups in :func:`comments_to_github`), maps,
+    and posts via GraphQL. Errors propagate; the server returns 500
+    to the modal so the reviewer sees the failure and can retry.
+    """
+    def post(selected_ids: list[str]) -> PostResult:
+        store = CommentStore(run_dir / "comments.json")
+        all_comments = store.all()
+        selected = set(selected_ids)
+        filtered = [
+            c for c in all_comments
+            if c.source != "local" or c.id in selected
+        ]
+        mapped = comments_to_github(filtered)
+        return post_review_via_graphql(repo, number, mapped)
+
+    return post
 
 
 def _err(msg: str) -> None:

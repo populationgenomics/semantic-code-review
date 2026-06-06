@@ -52,7 +52,15 @@ def pr(
             "matching hunk's line_notes. Overrides [augment].extra_prompt."
         ),
     ),
-    yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt before posting comments to GitHub."),
+    yes: bool = typer.Option(
+        False, "--yes",
+        help=(
+            "Skip the in-browser confirmation modal — post every local "
+            "comment as soon as the reviewer clicks Done. By default Done "
+            "opens a modal listing the comments-to-post with per-row "
+            "deselect/delete so the reviewer can prune before sending."
+        ),
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Review a GitHub PR; round-trip reviewer comments back as a single review."""
