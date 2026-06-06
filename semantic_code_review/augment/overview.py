@@ -7,7 +7,6 @@ text and optional `lang` override that populate `FileAnnotations` fields.
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -18,13 +17,14 @@ from ..augment.schemas import (
 )
 from ..cache.store import CacheStore
 from .agents import Client, make_overview_agent
-from .prompts import OVERVIEW_SYSTEM, PROMPT_VERSION
-from .trace_adapter import (
-    submit_args_from_result, write_partial_trace, write_pydantic_ai_trace,
-)
+from .pass_ import PassMeta, run_pass
+from .prompts import OVERVIEW_SYSTEM
 
 
 log = logging.getLogger(__name__)
+
+
+_OVERVIEW = PassMeta(name="overview", submit_tool="submit_overview")
 
 
 def format_overview_prompt(diff: AnnotatedDiff, meta: dict[str, Any]) -> str:
@@ -68,69 +68,21 @@ async def run_overview_pass(
 ) -> dict[str, Any]:
     """Run the overview call. Returns the raw submit_args from the model."""
     user_text = format_overview_prompt(diff, meta)
-
-    if cache is not None:
-        key = cache.key("overview", model, OVERVIEW_SYSTEM, user_text)
-        entry = cache.get(key)
-        if entry is not None:
-            if trace_dir is not None:
-                _write_cache_hit_marker(trace_dir / "overview.json", "overview", entry)
-            return entry["response"]
-
-    trace_path = (trace_dir / "overview.json") if trace_dir is not None else None
-
-    agent = make_overview_agent(client.model)
-    # See `hunks.run_hunk_pass` for the rationale on driving the run
-    # via `iter()` rather than `run()` — partial trace on failure.
-    async with agent.iter(user_text) as agent_run:
-        try:
-            async for _ in agent_run:
-                pass
-        except BaseException as exc:
-            if trace_path is not None:
-                write_partial_trace(
-                    list(agent_run.all_messages()),
-                    trace_path=trace_path,
-                    model=str(client.model),
-                    system=OVERVIEW_SYSTEM,
-                    tool_names=[],
-                    submit_tool="submit_overview",
-                    error=exc,
-                )
-            raise
-        run_result = agent_run.result
-    submit_args = submit_args_from_result(run_result)
-    if trace_path is not None:
-        write_pydantic_ai_trace(
-            run_result,
-            trace_path=trace_path,
-            model=str(client.model),
-            system=OVERVIEW_SYSTEM,
-            tool_names=[],
-            submit_tool="submit_overview",
-        )
-    usage = run_result.usage()
-    tokens_in = usage.input_tokens or 0
-    tokens_out = usage.output_tokens or 0
-
-    if cache is not None:
-        cache.put(
-            key, request={"system": OVERVIEW_SYSTEM, "user": user_text},
-            response=submit_args,
-            tokens_in=tokens_in, tokens_out=tokens_out,
-        )
-    return submit_args
-
-
-def _write_cache_hit_marker(path: Path, pass_name: str, entry: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {"cache_hit": True, "pass": pass_name, "response": entry.get("response")},
-            indent=2, ensure_ascii=False,
-        ),
-        encoding="utf-8",
+    payload = await run_pass(
+        _OVERVIEW,
+        client=client,
+        agent=make_overview_agent(client.model),
+        user_content=user_text,
+        system=OVERVIEW_SYSTEM,
+        model=model,
+        cache_inputs=(user_text,),
+        cache=cache,
+        trace_path=(trace_dir / "overview.json") if trace_dir is not None else None,
+        cache_request={"system": OVERVIEW_SYSTEM, "user": user_text},
     )
+    # `_OVERVIEW.swallow_errors` is false, so `payload` is never None here.
+    assert payload is not None
+    return payload
 
 
 def apply_overview_to_diff(diff: AnnotatedDiff, submit_args: dict[str, Any]) -> AnnotatedDiff:

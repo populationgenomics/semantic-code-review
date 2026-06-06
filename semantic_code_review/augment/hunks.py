@@ -24,10 +24,15 @@ from ..augment.schemas import (
 )
 from ..cache.store import CacheStore
 from .agents import Client, make_hunk_agent
+from .pass_ import PassMeta, run_pass
 from .prompts import HUNK_SYSTEM, PROMPT_VERSION
 from .tools import TOOL_FUNCTIONS, RepoTools
-from .trace_adapter import (
-    submit_args_from_result, write_partial_trace, write_pydantic_ai_trace,
+
+
+_HUNK = PassMeta(
+    name="hunk",
+    submit_tool="submit_annotations",
+    tool_names=tuple(fn.__name__ for fn in TOOL_FUNCTIONS),
 )
 
 
@@ -80,6 +85,20 @@ def format_hunk_prompt(
     ]
 
 
+def _hunk_trace_path(
+    trace_dir: Path | None, fp: AnnotatedFile, hunk: AnnotatedHunk,
+) -> Path | None:
+    if trace_dir is None:
+        return None
+    safe_file = fp.path.replace("/", "_")
+    safe_hunk = (
+        hunk.parsed.header
+        .replace(" ", "_").replace("@", "").replace(",", "_")
+        .replace("+", "p").replace("-", "m")
+    )
+    return trace_dir / f"hunk-{safe_file}-{safe_hunk[:40]}.json"
+
+
 async def run_hunk_pass(
     client: Client,
     *,
@@ -92,87 +111,28 @@ async def run_hunk_pass(
     cache: CacheStore | None = None,
     trace_dir: Path | None = None,
 ) -> dict[str, Any]:
-    user_content = format_hunk_prompt(fp, hunk, overview_json, file_summary)
-
-    trace_path = None
-    if trace_dir is not None:
-        safe_file = fp.path.replace("/", "_")
-        safe_hunk = hunk.parsed.header.replace(" ", "_").replace("@", "").replace(",", "_").replace("+", "p").replace("-", "m")
-        trace_path = trace_dir / f"hunk-{safe_file}-{safe_hunk[:40]}.json"
-
-    if cache is not None:
-        key = cache.key(
-            "hunk",
-            model,
-            HUNK_SYSTEM,
-            overview_json,
-            file_summary,
-            fp.path,
-            hunk.parsed.header,
-            hunk.parsed.body,
-        )
-        entry = cache.get(key)
-        if entry is not None:
-            if trace_path is not None:
-                trace_path.parent.mkdir(parents=True, exist_ok=True)
-                trace_path.write_text(
-                    json.dumps(
-                        {"cache_hit": True, "pass": "hunk", "response": entry.get("response")},
-                        indent=2, ensure_ascii=False,
-                    ),
-                    encoding="utf-8",
-                )
-            return entry["response"]
-
-    agent = make_hunk_agent(client.model)
-    # Drive the run via agent.iter() so the partial message history is
-    # accessible on `AgentRun` even if the inner loop raises (most
-    # commonly UsageLimitExceeded once a hunk's tool-use loop blows the
-    # default request cap). Without this, failed hunks leave no trace
-    # — the most diagnostic case is the one with no diagnostics.
-    async with agent.iter(
-        user_content,
+    payload = await run_pass(
+        _HUNK,
+        client=client,
+        agent=make_hunk_agent(client.model),
+        user_content=format_hunk_prompt(fp, hunk, overview_json, file_summary),
+        system=HUNK_SYSTEM,
+        model=model,
+        cache_inputs=(
+            overview_json, file_summary,
+            fp.path, hunk.parsed.header, hunk.parsed.body,
+        ),
         deps=repo_tools,
         model_settings=_HUNK_CACHE_SETTINGS,
-    ) as agent_run:
-        try:
-            async for _ in agent_run:
-                pass
-        except BaseException as exc:
-            if trace_path is not None:
-                write_partial_trace(
-                    list(agent_run.all_messages()),
-                    trace_path=trace_path,
-                    model=str(client.model),
-                    system=HUNK_SYSTEM,
-                    tool_names=[fn.__name__ for fn in TOOL_FUNCTIONS],
-                    submit_tool="submit_annotations",
-                    error=exc,
-                )
-            raise
-        run_result = agent_run.result
-    submit_args = submit_args_from_result(run_result)
-    if trace_path is not None:
-        write_pydantic_ai_trace(
-            run_result,
-            trace_path=trace_path,
-            model=str(client.model),
-            system=HUNK_SYSTEM,
-            tool_names=[fn.__name__ for fn in TOOL_FUNCTIONS],
-            submit_tool="submit_annotations",
-        )
-    usage = run_result.usage()
-    tokens_in = usage.input_tokens or 0
-    tokens_out = usage.output_tokens or 0
-
-    if cache is not None:
-        cache.put(
-            key,
-            request={"file": fp.path, "header": hunk.parsed.header, "body_len": len(hunk.parsed.body)},
-            response=submit_args,
-            tokens_in=tokens_in, tokens_out=tokens_out,
-        )
-    return submit_args
+        cache=cache,
+        trace_path=_hunk_trace_path(trace_dir, fp, hunk),
+        cache_request={
+            "file": fp.path, "header": hunk.parsed.header,
+            "body_len": len(hunk.parsed.body),
+        },
+    )
+    assert payload is not None  # `_HUNK.swallow_errors` is false
+    return payload
 
 
 def build_hunk_annotations(parsed: ParsedHunk, submit_args: dict[str, Any]) -> HunkAnnotations:

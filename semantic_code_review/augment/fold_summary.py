@@ -18,7 +18,6 @@ the summariser stays narrow and focused on the LLM call + caching.
 from __future__ import annotations
 
 import difflib
-import json
 import logging
 from pathlib import Path
 from typing import Any, Literal
@@ -31,13 +30,14 @@ from pydantic_ai.output import ToolOutput
 
 from ..cache.store import CacheStore
 from .agents import Client
+from .pass_ import PassMeta, run_pass
 from .schemas import AnnotatedDiff, FoldDescription
-from .trace_adapter import (
-    submit_args_from_result, write_partial_trace, write_pydantic_ai_trace,
-)
 
 
 log = logging.getLogger(__name__)
+
+
+_FOLD = PassMeta(name="fold-summary-v2", submit_tool="submit_fold_summary")
 
 
 FoldContext = Literal["right", "left", "both"]
@@ -200,89 +200,36 @@ async def summarise_fold(
     body = extract_fold_body(
         run_dir, file_path, context, right_range, left_range,
     )
-    user_content = _format_fold_prompt(
-        overview_json=overview_json, file_path=file_path,
-        file_summary=file_summary, context=context, body=body,
-        right_range=right_range, left_range=left_range,
-    )
-    trace_path = _trace_path(
-        trace_dir, file_path, context, right_range, left_range,
-    )
-
-    if cache is not None:
-        key = cache.key(
-            "fold-summary-v2",
-            model,
-            FOLD_SYSTEM,
-            overview_json,
-            file_summary,
-            file_path,
-            context,
-            str(right_range or ""),
-            str(left_range or ""),
+    payload = await run_pass(
+        _FOLD,
+        client=client,
+        agent=make_fold_summary_agent(client.model),
+        user_content=_format_fold_prompt(
+            overview_json=overview_json, file_path=file_path,
+            file_summary=file_summary, context=context, body=body,
+            right_range=right_range, left_range=left_range,
+        ),
+        system=FOLD_SYSTEM,
+        model=model,
+        cache_inputs=(
+            overview_json, file_summary, file_path, context,
+            str(right_range or ""), str(left_range or ""),
             # Include the body so a re-run after the file content changed
             # is invalidated even when ranges happen to line up.
             body,
-        )
-        entry = cache.get(key)
-        if entry is not None:
-            if trace_path is not None:
-                trace_path.parent.mkdir(parents=True, exist_ok=True)
-                trace_path.write_text(
-                    json.dumps(
-                        {"cache_hit": True, "pass": "fold-summary",
-                         "response": entry.get("response")},
-                        indent=2, ensure_ascii=False,
-                    ),
-                    encoding="utf-8",
-                )
-            return str(entry["response"].get("summary", "")).strip()
-
-    agent = make_fold_summary_agent(client.model)
-    async with agent.iter(
-        user_content,
+        ),
         model_settings=_FOLD_CACHE_SETTINGS,
-    ) as agent_run:
-        try:
-            async for _ in agent_run:
-                pass
-        except BaseException as exc:
-            if trace_path is not None:
-                write_partial_trace(
-                    list(agent_run.all_messages()),
-                    trace_path=trace_path,
-                    model=str(client.model),
-                    system=FOLD_SYSTEM,
-                    tool_names=[],
-                    submit_tool="submit_fold_summary",
-                    error=exc,
-                )
-            raise
-        run_result = agent_run.result
-    submit_args = submit_args_from_result(run_result)
-    if trace_path is not None:
-        write_pydantic_ai_trace(
-            run_result,
-            trace_path=trace_path,
-            model=str(client.model),
-            system=FOLD_SYSTEM,
-            tool_names=[],
-            submit_tool="submit_fold_summary",
-        )
-    usage = run_result.usage()
-    tokens_in = usage.input_tokens or 0
-    tokens_out = usage.output_tokens or 0
-    if cache is not None:
-        cache.put(
-            key,
-            request={
-                "file": file_path, "context": context,
-                "right_range": right_range, "left_range": left_range,
-            },
-            response=submit_args,
-            tokens_in=tokens_in, tokens_out=tokens_out,
-        )
-    return str(submit_args.get("summary", "")).strip()
+        cache=cache,
+        trace_path=_trace_path(
+            trace_dir, file_path, context, right_range, left_range,
+        ),
+        cache_request={
+            "file": file_path, "context": context,
+            "right_range": right_range, "left_range": left_range,
+        },
+    )
+    assert payload is not None  # `_FOLD.swallow_errors` is false
+    return str(payload.get("summary", "")).strip()
 
 
 class FoldSummaryNotReady(RuntimeError):
