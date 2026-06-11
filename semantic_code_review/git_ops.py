@@ -176,6 +176,16 @@ def worktree_add(repo_git: Path, path: Path, sha: str) -> None:
     git(repo_git, "worktree", "add", "--detach", str(path), sha)
 
 
+def diff_name_only(repo_git: Path, base: str, head: str) -> list[str]:
+    """Paths changed between two commits, current names, blanks dropped.
+
+    ``git diff --name-only <base> <head>`` — added, modified and renamed
+    files report their head name; deleted files their (gone) base name.
+    """
+    out = git(repo_git, "diff", "--name-only", base, head)
+    return [line for line in out.splitlines() if line]
+
+
 # ---------------------------------------------------------------------------
 # gh preflight
 # ---------------------------------------------------------------------------

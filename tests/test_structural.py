@@ -1,4 +1,4 @@
-"""Tests for the tree-sitter structural layer (ADR 0001, Slice 1)."""
+"""Tests for the tree-sitter structural layer (ADR 0001, Slices 1-2)."""
 
 from __future__ import annotations
 
@@ -6,8 +6,12 @@ import json
 
 from semantic_code_review.structural import (
     Symbol,
+    diff_file,
+    enclosing_symbol,
     language_for_path,
+    merge,
     outline_symbols,
+    symbol_to_json,
     symbols_to_json,
 )
 
@@ -123,3 +127,108 @@ def test_symbols_to_json_round_trips() -> None:
 
 def test_empty_forest_serializes_to_empty_array() -> None:
     assert symbols_to_json([]) == "[]"
+
+
+# --- enclosing_symbol ------------------------------------------------------
+
+
+def test_enclosing_symbol_descends_to_innermost() -> None:
+    syms = outline_symbols(SAMPLE, "python")
+    # Line 15 is `pass`, the body of `inner`, nested under Bar.method.
+    sym = enclosing_symbol(syms, 15)
+    assert sym is not None and sym.qualified_name == "Bar.method.inner"
+
+
+def test_enclosing_symbol_stops_at_class_body() -> None:
+    syms = outline_symbols(SAMPLE, "python")
+    # Line 11 is `attr = 5` — inside Bar but not in any method.
+    sym = enclosing_symbol(syms, 11)
+    assert sym is not None and sym.qualified_name == "Bar"
+
+
+def test_enclosing_symbol_none_outside_any_definition() -> None:
+    syms = outline_symbols(SAMPLE, "python")
+    assert enclosing_symbol(syms, 1) is None  # the import line
+
+
+# --- symbol_to_json --------------------------------------------------------
+
+
+def test_symbol_to_json_none_is_null() -> None:
+    assert symbol_to_json(None) == "null"
+
+
+def test_symbol_to_json_serializes_one_symbol() -> None:
+    foo = next(s for s in outline_symbols(SAMPLE, "python") if s.name == "foo")
+    assert json.loads(symbol_to_json(foo))["qualified_name"] == "foo"
+
+
+# --- diff_file / merge -----------------------------------------------------
+
+_BASE = '''X = 1
+
+def keep():
+    return 1
+
+def gone():
+    return 2
+
+class C:
+    def m(self):
+        return 1
+'''
+
+_HEAD = '''X = 1
+
+def keep():
+    return 1
+
+def added():
+    return 3
+
+class C:
+    def m(self):
+        # one more line shifts the range
+        return 1
+'''
+
+
+def test_diff_added_removed_by_qualified_name() -> None:
+    delta = diff_file("m.py", outline_symbols(_BASE, "python"), outline_symbols(_HEAD, "python"))
+    assert [c.qualified_name for c in delta.added] == ["added"]
+    assert [c.qualified_name for c in delta.removed] == ["gone"]
+
+
+def test_diff_modified_is_differing_range() -> None:
+    delta = diff_file("m.py", outline_symbols(_BASE, "python"), outline_symbols(_HEAD, "python"))
+    # C.m gained a comment line → its range differs → modified. C's range
+    # also shifts. `keep` and `X` are byte-identical on both sides.
+    qns = {c.qualified_name for c in delta.modified}
+    assert "C.m" in qns
+    assert "keep" not in qns and "X" not in qns
+
+
+def test_diff_carries_path_and_live_side_range() -> None:
+    delta = diff_file("m.py", outline_symbols(_BASE, "python"), outline_symbols(_HEAD, "python"))
+    added = delta.added[0]
+    assert added.path == "m.py"
+    assert added.kind == "function" and added.signature == "def added()"
+
+
+def test_diff_added_file_is_all_added() -> None:
+    delta = diff_file("new.py", [], outline_symbols(_HEAD, "python"))
+    assert not delta.removed and not delta.modified
+    assert {c.qualified_name for c in delta.added} >= {"X", "keep", "added", "C", "C.m"}
+
+
+def test_diff_deleted_file_is_all_removed() -> None:
+    delta = diff_file("old.py", outline_symbols(_BASE, "python"), [])
+    assert not delta.added and not delta.modified
+    assert "gone" in {c.qualified_name for c in delta.removed}
+
+
+def test_merge_concatenates_per_file_deltas() -> None:
+    d1 = diff_file("a.py", [], outline_symbols("def a():\n    pass\n", "python"))
+    d2 = diff_file("b.py", [], outline_symbols("def b():\n    pass\n", "python"))
+    merged = merge([d1, d2])
+    assert {(c.path, c.qualified_name) for c in merged.added} == {("a.py", "a"), ("b.py", "b")}

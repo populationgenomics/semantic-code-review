@@ -142,6 +142,20 @@ def _nest(defs: list[_RawDef], source: bytes, lang_name: str) -> list[Symbol]:
     return roots
 
 
+def enclosing_symbol(symbols: list[Symbol], line: int) -> Symbol | None:
+    """Innermost symbol whose 1-indexed line range encloses `line`.
+
+    Descends into `children` for the most specific match (the method,
+    not its enclosing class); `None` if no symbol covers the line.
+    Siblings don't overlap, so the first cover at each level is the only
+    one.
+    """
+    for s in symbols:
+        if s.range.start_line <= line <= s.range.end_line:
+            return enclosing_symbol(s.children, line) or s
+    return None
+
+
 def _contains(outer: Node, inner: Node) -> bool:
     return (
         outer.start_byte <= inner.start_byte
@@ -220,3 +234,8 @@ def symbols_to_json(symbols: list[Symbol]) -> str:
 
         _SYMBOL_LIST_ADAPTER = TypeAdapter(list[Symbol])
     return _SYMBOL_LIST_ADAPTER.dump_json(symbols).decode("utf-8")
+
+
+def symbol_to_json(symbol: Symbol | None) -> str:
+    """Serialize one optional `Symbol` to JSON; `"null"` for `None`."""
+    return "null" if symbol is None else symbol.model_dump_json()

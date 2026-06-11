@@ -15,13 +15,26 @@ result — never a raise.
 
 from __future__ import annotations
 
-from .parse import language_for_path, outline_symbols, symbols_to_json
+from .diff import ChangedSymbol, SymbolDelta, diff_file, merge
+from .parse import (
+    enclosing_symbol,
+    language_for_path,
+    outline_symbols,
+    symbol_to_json,
+    symbols_to_json,
+)
 from .symbols import Symbol, SymbolRange
 
 __all__ = [
+    "ChangedSymbol",
     "Symbol",
+    "SymbolDelta",
     "SymbolRange",
+    "diff_file",
+    "enclosing_symbol",
     "language_for_path",
+    "merge",
     "outline_symbols",
+    "symbol_to_json",
     "symbols_to_json",
 ]

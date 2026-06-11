@@ -177,9 +177,23 @@ point, returning `[]` for an unsupported language or a parse failure
 rather than raising.
 
 This is the single internal currency the structural consumers read:
-the `RepoTools.outline` tool, and (later slices) the overview-prompt
-seed and the sidebar Symbols axis. It is deliberately *not* reconciled
-with the LLM-derived `Overview.symbols_*` / `FileSymbols` — those
-answer "why did this change" (semantic, fallible); `Symbol` answers
-"where is the code and what does it literally declare" (structural,
-exact). The two coexist as separate layers by design (ADR 0001).
+the `RepoTools.outline` / `symbol_at` tools, the diff-wide delta, and
+(later slices) the overview-prompt seed and the sidebar Symbols axis.
+It is deliberately *not* reconciled with the LLM-derived
+`Overview.symbols_*` / `FileSymbols` — those answer "why did this
+change" (semantic, fallible); `Symbol` answers "where is the code and
+what does it literally declare" (structural, exact). The two coexist as
+separate layers by design (ADR 0001).
+
+**SymbolDelta**
+The deterministic base→head structural delta — `{added, removed,
+modified}` lists of flat `ChangedSymbol`s, defined in
+`structural/diff.py`. Computed by a `qualified_name` set-diff over the
+flattened base and head `Symbol` forests (`diff_file` per file, `merge`
+diff-wide): added = head-only name, removed = base-only, **modified =
+same name on both sides with a differing range** (a same-span body edit
+is not flagged — the range is the signal; finer "what changed" meaning
+stays the LLM's). Each `ChangedSymbol` carries its `path` and the span
+on its live side (head for added/modified, base for removed). Surfaced
+by `RepoTools.changed_symbols()`, which reads base via `git show` and
+head from the worktree for every changed file in a supported language.

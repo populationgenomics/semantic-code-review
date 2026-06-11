@@ -135,6 +135,61 @@ class RepoTools:
         rc, stdout, _stderr = git_ops.git_capture(self.repo_git, "show", f"{sha}:{path}")
         return stdout if rc == 0 else None
 
+    @_tool
+    def symbol_at(self, path: str, line: int, sha: str | None = None) -> str:
+        """Innermost symbol enclosing a line, as a JSON object (or `null`).
+
+        Deterministic tree-sitter parse — no LLM. Returns the most
+        specific definition (the method, not its class) whose 1-indexed
+        line `range` covers `line`, with its `name`, `qualified_name`,
+        `signature`, and nested `children`. `null` if no symbol covers
+        the line, or the language is unsupported / file unreadable.
+
+        Args:
+            path: Path relative to repo root.
+            line: 1-indexed line number.
+            sha: Commit SHA to read the file at (defaults to head worktree).
+        """
+        lang = structural.language_for_path(path)
+        if lang is None:
+            return "null"
+        source = self._read_source(path, sha)
+        if source is None:
+            return "null"
+        symbols = structural.outline_symbols(source, lang)
+        return structural.symbol_to_json(structural.enclosing_symbol(symbols, line))
+
+    @_tool
+    def changed_symbols(self) -> str:
+        """Deterministic structural delta of the whole diff, as JSON.
+
+        Compares the base commit against the head worktree for every
+        changed file in a supported language, returning
+        `{added, removed, modified}` lists of symbols by `qualified_name`
+        set-diff — no LLM, no hallucination. `modified` means the same
+        qualified name on both sides with a differing line range; a
+        same-span body edit is not flagged. Each entry carries its
+        `path`, `kind`, `name`, `qualified_name`, declared `signature`,
+        and the line `range` on its live side (head for added/modified,
+        base for removed). Changed files in unsupported languages are
+        silently absent.
+        """
+        try:
+            paths = git_ops.diff_name_only(self.repo_git, self.base_sha, self.head_sha)
+        except git_ops.GitError as e:
+            return f"error: {e}"
+        deltas = []
+        for path in paths:
+            lang = structural.language_for_path(path)
+            if lang is None:
+                continue
+            base_src = self._read_source(path, self.base_sha)
+            head_src = self._read_source(path, None)
+            base_syms = structural.outline_symbols(base_src, lang) if base_src is not None else []
+            head_syms = structural.outline_symbols(head_src, lang) if head_src is not None else []
+            deltas.append(structural.diff_file(path, base_syms, head_syms))
+        return _cap(structural.merge(deltas).model_dump_json())
+
     # --- search -----------------------------------------------------------
 
     @_tool
