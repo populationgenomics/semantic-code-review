@@ -1,5 +1,40 @@
 import { describe, test, expect } from "vitest";
-import { charDiff, wrapRanges, type CharRange } from "../../semantic_code_review/viewer/assets/text_highlight";
+import { charDiff, matchRanges, wrapRanges, type CharRange } from "../../semantic_code_review/viewer/assets/text_highlight";
+
+describe("matchRanges", () => {
+  test("matches whole-identifier occurrences only", () => {
+    const text = "get(getName(widget), get);";
+    const ranges = matchRanges(text, "get");
+    // "get(" at 0 and " get)" at 21 — but NOT getName / widget substrings.
+    expect(ranges).toEqual([[0, 3], [21, 24]]);
+    for (const [s, e] of ranges) expect(text.slice(s, e)).toBe("get");
+  });
+
+  test("respects _ and $ as identifier characters", () => {
+    expect(matchRanges("a_b ab a", "a")).toEqual([[7, 8]]);
+    expect(matchRanges("$x x $xy", "x")).toEqual([[3, 4]]);
+  });
+
+  test("empty term yields no ranges", () => {
+    expect(matchRanges("anything", "")).toEqual([]);
+  });
+
+  test("no occurrence yields no ranges", () => {
+    expect(matchRanges("foo bar", "baz")).toEqual([]);
+  });
+
+  test("regex metacharacters in the term are matched literally", () => {
+    expect(matchRanges("a.b a+b", "a.b")).toEqual([[0, 3]]);
+  });
+
+  test("feeds wrapRanges to highlight matches", () => {
+    const el = document.createElement("code");
+    el.textContent = "compute(x); compute(y)";
+    wrapRanges(el, matchRanges(el.textContent, "compute"), "symbol-hit");
+    expect([...el.querySelectorAll("span.symbol-hit")].map((m) => m.textContent))
+      .toEqual(["compute", "compute"]);
+  });
+});
 
 describe("charDiff", () => {
   test("small insertion: only the new side is marked", () => {

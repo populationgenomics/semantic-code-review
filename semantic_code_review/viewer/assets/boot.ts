@@ -50,7 +50,11 @@ function boot(): void {
     onChange: () => Sidebar.refreshFileCommentCounts(),
   });
   installDoneButton();
-  Sidebar.init(DATA);
+  Sidebar.init(DATA, {
+    // Focusing a Symbols-axis pill search-highlights that symbol's name
+    // across every diff line; any other pill (or none) clears it.
+    onActivePillChange: (symbolName) => Render.setSymbolSearch(symbolName),
+  });
   Render.init(DATA);       // wires hash + keyboard + initial paint
   Progress.init(DATA);
   installPrHeader(DATA);

@@ -450,6 +450,48 @@ describe("streaming events", () => {
     expect(sidebar.querySelector('[data-axis="files"]')).not.toBeNull();
   });
 
+  test("focusing a symbol pill search-highlights its name across the diff", async () => {
+    window.location.hash = "#fold=off"; // expand hunks so diff bodies render
+    await bootViewer(makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 0, dels: 0, summary: "", head_lines: null,
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock("H0_0", "", {
+          rows: [
+            // "compute" appears as a whole word twice on this ctx row
+            // (old + new cell); "recompute" must NOT match (substring).
+            { kind: "ctx", old_line: 1, new_line: 1, old_text: "x = compute(1)", new_text: "x = compute(1)" },
+            { kind: "ins", old_line: null, new_line: 2, old_text: "", new_text: "y = recompute(2)" },
+          ],
+        })],
+      }],
+      symbols: [
+        { id: "SY0", title: "compute", rationale: "modified function in a.py", hunk_ids: ["H0_0"] },
+      ],
+    }));
+
+    const sidebar = document.getElementById("group-sidebar")!;
+    const pill = sidebar.querySelector('[data-axis="symbols"] .group-btn') as HTMLElement;
+    expect(pill.textContent).toContain("compute");
+
+    // Nothing highlighted until a symbol is focused.
+    expect(document.querySelectorAll("span.symbol-hit")).toHaveLength(0);
+
+    pill.click();
+    const hits = [...document.querySelectorAll("span.symbol-hit")];
+    expect(hits.map((h) => h.textContent)).toEqual(["compute", "compute"]);
+
+    // Clearing the filter ("Show all") removes the highlight.
+    (document.querySelector(".group-btn-all") as HTMLElement).click();
+    expect(document.querySelectorAll("span.symbol-hit")).toHaveLength(0);
+    // ...and leaves the underlying line text intact.
+    const firstCell = document.querySelector('.hunk[data-id="H0_0"] .cell-content code')!;
+    expect(firstCell.textContent).toBe("x = compute(1)");
+    window.location.hash = "";
+  });
+
   test("symbols axis nests methods under their class and filters by subtree", async () => {
     await bootViewer(makeData({
       pending: false,

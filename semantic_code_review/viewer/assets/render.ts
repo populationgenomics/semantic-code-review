@@ -21,7 +21,7 @@ import { FileRows } from "./file_rows";
 import { Folds } from "./folds";
 import { Progress } from "./progress";
 import { Sidebar } from "./sidebar";
-import { charDiff, wrapRanges, type CharRange } from "./text_highlight";
+import { charDiff, matchRanges, wrapRanges, type CharRange } from "./text_highlight";
 
 // --- Module state --------------------------------------------------------
 
@@ -35,6 +35,11 @@ interface RenderState {
 
 let _data: ViewerData = { version: "1", pr: {} as PRBlock, smells_catalogue: {}, files: [], groups: [], symbols: [] };
 let _smells: Record<string, SmellCatalogueEntry> = {};
+// The focused symbol's name, highlighted search-style across every diff
+// line, or null when no symbol pill is active. Newly rendered cells pick
+// it up in _renderContent; setSymbolSearch repaints cells already in the
+// DOM. See setSymbolSearch / sidebar's active-pill callback.
+let _symbolSearch: string | null = null;
 const _state: RenderState = {
   fold: "hunks",
   overrides: Object.create(null),
@@ -720,8 +725,42 @@ function _renderContent(
   // Paint the intra-line change marks over the (possibly highlighted)
   // text. Offsets are over the raw line, which highlight.js preserves.
   if (markRanges && markRanges.length) wrapRanges(code, markRanges, "char-chg");
+  // Search-highlight the focused symbol on this fresh cell.
+  if (_symbolSearch) _applySymbolHits(code);
   c.appendChild(code);
   return c;
+}
+
+// --- Symbol-focus search highlight ---------------------------------------
+
+/** Set (or clear, with null) the symbol name highlighted across the diff,
+ *  then repaint every cell already in the DOM. Driven by the sidebar when
+ *  a Symbols-axis pill is focused. */
+function setSymbolSearch(term: string | null): void {
+  const next = term && term.trim() ? term : null;
+  if (next === _symbolSearch) return;
+  _symbolSearch = next;
+  for (const code of document.querySelectorAll<HTMLElement>("#app .cell-content code")) {
+    _clearSymbolHits(code);
+    if (_symbolSearch) _applySymbolHits(code);
+  }
+}
+
+function _applySymbolHits(code: HTMLElement): void {
+  if (!_symbolSearch) return;
+  const ranges = matchRanges(code.textContent || "", _symbolSearch);
+  if (ranges.length) wrapRanges(code, ranges, "symbol-hit");
+}
+
+/** Unwrap this cell's `symbol-hit` spans back to plain text, leaving any
+ *  highlight.js / char-chg markup untouched. */
+function _clearSymbolHits(code: HTMLElement): void {
+  const hits = code.querySelectorAll("span.symbol-hit");
+  if (hits.length === 0) return;
+  for (const hit of Array.from(hits)) {
+    hit.replaceWith(document.createTextNode(hit.textContent || ""));
+  }
+  code.normalize(); // merge the text nodes the unwrap left adjacent
 }
 
 // --- Severity color ----------------------------------------------------
@@ -859,4 +898,5 @@ export const Render = {
   renderHunkReplace,
   repaintHunkHeader,
   clearRenderedDiffCache,
+  setSymbolSearch,
 };

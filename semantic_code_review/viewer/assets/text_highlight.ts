@@ -43,6 +43,24 @@ export function charDiff(a: string, b: string): {
   };
 }
 
+/** Whole-identifier occurrences of `term` in `text`, as character ranges.
+ *
+ *  Bounded by `[^\w$]` on each side so focusing the symbol `get` matches
+ *  the call `get(x)` but not the substring inside `getName` or `widget`.
+ *  Returns `[]` for an empty term. Used by the symbol-focus search
+ *  highlight; the ranges feed `wrapRanges`. */
+export function matchRanges(text: string, term: string): CharRange[] {
+  if (!term) return [];
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`(?<![\\w$])${escaped}(?![\\w$])`, "g");
+  const out: CharRange[] = [];
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+    out.push([m.index, m.index + m[0].length]);
+    if (re.lastIndex === m.index) re.lastIndex++; // defensive: never loop
+  }
+  return out;
+}
+
 /** Wrap each character range of `root`'s text content in a
  *  `<span class={className}>`, splitting text nodes (and crossing inline
  *  element boundaries such as highlight.js token spans) as needed.

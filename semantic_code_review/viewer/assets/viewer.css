@@ -497,6 +497,15 @@ body {
 .diff .row-pair .cell-content-old .char-chg { background: rgba(248, 81, 73, 0.4); border-radius: 2px; }
 .diff .row-pair .cell-content-new .char-chg { background: rgba(63, 185, 80, 0.4); border-radius: 2px; }
 
+/* Symbol-focus search highlight: every occurrence of the focused symbol's
+ * name, painted search-style. Amber reads on both themes and over the
+ * green/red row + char-chg tints; the ring keeps it legible regardless. */
+.diff .cell-content code .symbol-hit {
+  background: rgba(255, 196, 0, 0.4);
+  box-shadow: 0 0 0 1px rgba(255, 196, 0, 0.7);
+  border-radius: 2px;
+}
+
 /* Dim the empty placeholder on the opposite side of an ins/del */
 .diff .row-ins .cell-content-old.empty,
 .diff .row-del .cell-content-new.empty {

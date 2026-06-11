@@ -50,6 +50,11 @@ const AXES: SidebarAxis[] = [THEMES_AXIS, FILES_AXIS, SYMBOLS_AXIS];
 let _data: ViewerData | null = null;
 let _activePill: ActivePill | null = null;
 let _lsKey = "scr-active-group:local";
+// Notified with the focused symbol's name (or null) whenever the active
+// pill changes — boot points this at Render.setSymbolSearch. Kept as an
+// injected callback rather than a direct import so the sidebar doesn't
+// take a cyclic dependency on render.
+let _onActivePillChange: ((symbolName: string | null) => void) | null = null;
 // Collapsed symbol-tree nodes, by pill id. In-memory only (the tree is
 // expanded by default; collapse is a transient view preference that
 // survives re-renders within a session but not a reload).
@@ -58,8 +63,12 @@ const _collapsedSymbols = new Set<string>();
 /** Populate axes from the initial viewer data + restore any active
  *  pill from localStorage. Idempotent (call again after DATA mutates
  *  in a way the in-place refreshers don't cover). */
-function init(data: ViewerData): void {
+function init(
+  data: ViewerData,
+  opts?: { onActivePillChange?: (symbolName: string | null) => void },
+): void {
   _data = data;
+  if (opts && opts.onActivePillChange) _onActivePillChange = opts.onActivePillChange;
   _lsKey =
     "scr-active-group:"
     + (data.pr && data.pr.head_sha ? data.pr.head_sha : "local");
@@ -86,6 +95,9 @@ function init(data: ViewerData): void {
       if (axis && axis.byId[pillId]) _activePill = { axis: axisId, id: pillId };
     }
   } catch (_) { /* localStorage may be unavailable */ }
+  // Seed the symbol search before the first paint so a restored Symbols
+  // pill highlights immediately (Render.init paints right after this).
+  _emitActivePill();
 }
 
 /** Rebuild the themes axis from a fresh list of groups. Mutates the
@@ -284,7 +296,21 @@ function setActivePill(pill: ActivePill | null): void {
     if (btn) btn.classList.add("active");
   }
   applyFilter();
+  _emitActivePill();
   Annotations.reflowAll();
+}
+
+/** Name to search-highlight across the diff for the active pill: the
+ *  focused symbol's bare name, or null for any non-Symbols pill / no
+ *  pill. Wired to Render.setSymbolSearch by boot. */
+function _activeSymbolName(): string | null {
+  if (_activePill === null || _activePill.axis !== "symbols") return null;
+  const g = SYMBOLS_AXIS.byId[_activePill.id];
+  return g ? g.title : null;
+}
+
+function _emitActivePill(): void {
+  _onActivePillChange?.(_activeSymbolName());
 }
 
 function _activePillHunkIds(): Set<string> | null {
