@@ -218,11 +218,17 @@ The third sidebar grouping axis (after Themes and Files), built
 deterministically from the `SymbolDelta`. `build_json._symbol_blocks`
 parses each changed file's base/head worktree, takes the per-file
 `diff_file` set-diff, and maps every changed symbol to the hunk ids its
-*live*-side range overlaps (head for added/modified, base for removed) —
-emitting one flat `GroupBlock` (id `SY<i>`) per symbol that touches at
-least one hunk. The viewer's `Sidebar.rebuildSymbolsAxis` loads these
-from `DATA.symbols` at boot and reuses the existing pill machinery
-(`applyFilter`, localStorage `<axis>:<id>`, count badges). Like the
-Files axis it's structural — present from boot, never refreshed by an
-SSE pass. Flat for now; the nested class ▸ method tree render is a later
-slice (ADR 0001 Slice 5).
+*live*-side range overlaps (head for added/modified, base for removed).
+The changed symbols are then nested by `qualified_name` into a forest of
+`GroupBlock` nodes (id `SY<i>`, class ▸ method): a changed method hangs
+off its enclosing class, and an unchanged ancestor is synthesized as a
+context node from the live forest. A parent's `hunk_ids` is its subtree
+union (clicking it filters to every changed descendant) and the count is
+the distinct hunks beneath it; a leaf carries only its own. Any node
+whose whole subtree touches no hunk yields no block. The viewer's
+`Sidebar.rebuildSymbolsAxis` loads the forest from `DATA.symbols` at boot
+(flattening every node into `byId` for active-pill lookup) and
+`Sidebar` renders it as an expand/collapse tree (`_symbolNode`) reusing
+the existing pill machinery (`applyFilter`, localStorage `<axis>:<id>`,
+count badges). Like the Files axis it's structural — present from boot,
+never refreshed by an SSE pass (ADR 0001 Slice 5).

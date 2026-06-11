@@ -15,7 +15,7 @@ result — never a raise.
 
 from __future__ import annotations
 
-from .diff import ChangedSymbol, SymbolDelta, diff_file, merge
+from .diff import ChangedSymbol, SymbolDelta, diff_file, flatten, merge
 from .parse import (
     enclosing_symbol,
     language_for_path,
@@ -32,6 +32,7 @@ __all__ = [
     "SymbolRange",
     "diff_file",
     "enclosing_symbol",
+    "flatten",
     "language_for_path",
     "merge",
     "outline_symbols",

@@ -161,6 +161,63 @@ def test_symbol_blocks_map_changed_symbols_to_hunks(tmp_path: Path) -> None:
     assert block["hunk_ids"] == ["H0_0"]
 
 
+_NESTED_DIFF = """diff --git a/a.py b/a.py
+index 0123456..89abcde 100644
+--- a/a.py
++++ b/a.py
+@@ -1,3 +1,6 @@
+ class Foo:
+     def bar(self):
+         return 1
++
++    def baz(self):
++        return 2
+"""
+
+
+def test_symbol_blocks_nest_methods_under_their_class(tmp_path: Path) -> None:
+    """Slice 5: a changed method renders under its (possibly unchanged)
+    class. Adding `Foo.baz` grows `Foo`'s span (so the class is itself a
+    changed node); `baz` hangs off it as a child, and the parent's
+    hunk_ids is the subtree union."""
+    (tmp_path / "raw.diff").write_text(_NESTED_DIFF, encoding="utf-8")
+    (tmp_path / "meta.json").write_text(json.dumps({
+        "title": "Add Foo.baz", "author": {"login": "t"}, "url": "",
+        "baseRefOid": "aaa", "headRefOid": "bbb",
+    }), encoding="utf-8")
+    base = tmp_path / "base"
+    head = tmp_path / "head"
+    base.mkdir()
+    head.mkdir()
+    (base / "a.py").write_text(
+        "class Foo:\n    def bar(self):\n        return 1\n", encoding="utf-8",
+    )
+    (head / "a.py").write_text(
+        "class Foo:\n    def bar(self):\n        return 1\n\n"
+        "    def baz(self):\n        return 2\n", encoding="utf-8",
+    )
+
+    data = build_pending_viewer_json(tmp_path)
+
+    syms = data["symbols"]
+    # One root: the class. bar is untouched (identical span) → no pill.
+    assert len(syms) == 1
+    foo = syms[0]
+    assert foo["id"] == "SY0"
+    assert foo["title"] == "Foo"
+    assert "modified" in foo["rationale"]
+    assert foo["hunk_ids"] == ["H0_0"]      # subtree union
+    # baz nests under Foo as the only child.
+    children = foo["children"]
+    assert len(children) == 1
+    baz = children[0]
+    assert baz["id"] == "SY1"
+    assert baz["title"] == "baz"
+    assert "added" in baz["rationale"]
+    assert baz["hunk_ids"] == ["H0_0"]
+    assert "children" not in baz           # leaf carries no children key
+
+
 def test_symbol_blocks_absent_without_worktrees(tmp_path: Path) -> None:
     """No base/head worktree available ⇒ empty Symbols axis, no raise."""
     (tmp_path / "raw.diff").write_text(_SYMBOL_DIFF, encoding="utf-8")

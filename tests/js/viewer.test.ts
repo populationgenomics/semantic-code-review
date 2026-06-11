@@ -450,6 +450,69 @@ describe("streaming events", () => {
     expect(sidebar.querySelector('[data-axis="files"]')).not.toBeNull();
   });
 
+  test("symbols axis nests methods under their class and filters by subtree", async () => {
+    await bootViewer(makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 0, dels: 0, summary: "", head_lines: null,
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [
+          makeHunkBlock("H0_0", "alpha"),
+          makeHunkBlock("H0_1", "beta"),
+          makeHunkBlock("H0_2", "gamma"),
+        ],
+      }],
+      // Foo (class) wraps two changed methods. Its hunk_ids is the
+      // subtree union; each method carries just its own.
+      symbols: [{
+        id: "SY0", title: "Foo", rationale: "modified class in a.py",
+        hunk_ids: ["H0_0", "H0_1"],
+        children: [
+          { id: "SY1", title: "bar", rationale: "modified function in a.py", hunk_ids: ["H0_0"] },
+          { id: "SY2", title: "baz", rationale: "added function in a.py", hunk_ids: ["H0_1"] },
+        ],
+      }],
+    }));
+    const section = document.querySelector('[data-axis="symbols"]')!;
+    expect(section).not.toBeNull();
+
+    // Class pill + a toggle; both methods render nested and expanded.
+    const classPill = section.querySelector<HTMLElement>('.group-btn[data-pill-id="SY0"]')!;
+    expect(classPill).not.toBeNull();
+    expect(classPill.textContent).toContain("Foo");
+    expect(classPill.querySelector(".group-btn-count")!.textContent).toBe("2");
+    const methodPills = section.querySelectorAll(".group-tree-children .group-btn");
+    expect(Array.from(methodPills).map((p) => p.querySelector(".group-btn-label")!.textContent))
+      .toEqual(["bar", "baz"]);
+
+    const h0 = document.querySelector('.hunk[data-id="H0_0"]') as HTMLElement;
+    const h1 = document.querySelector('.hunk[data-id="H0_1"]') as HTMLElement;
+    const h2 = document.querySelector('.hunk[data-id="H0_2"]') as HTMLElement;
+
+    // Click the class → both its methods' hunks stay visible, the
+    // unrelated H0_2 is hidden.
+    classPill.click();
+    expect(h0.style.display).not.toBe("none");
+    expect(h1.style.display).not.toBe("none");
+    expect(h2.style.display).toBe("none");
+
+    // Click the method → only its own hunk remains.
+    section.querySelector<HTMLElement>('.group-btn[data-pill-id="SY1"]')!.click();
+    expect(h0.style.display).not.toBe("none");
+    expect(h1.style.display).toBe("none");
+    expect(h2.style.display).toBe("none");
+
+    // The collapse toggle hides the children without filtering.
+    const toggle = section.querySelector<HTMLElement>(".group-tree-toggle")!;
+    expect(toggle.classList.contains("group-tree-toggle-leaf")).toBe(false);
+    toggle.click();
+    const childWrap = section.querySelector(".group-tree-children") as HTMLElement;
+    expect(childWrap.style.display).toBe("none");
+    // Filter unaffected by collapse — still on SY1.
+    expect(h1.style.display).toBe("none");
+  });
+
   test("done event hides the progress strip and clears pending", async () => {
     await bootViewer(makeData());
     const es = lastEventSource();

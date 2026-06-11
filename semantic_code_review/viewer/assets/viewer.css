@@ -170,6 +170,29 @@ body {
   font-style: italic;
 }
 
+/* Symbols axis: nested class ▸ method tree. The toggle sits in a fixed
+ * column to the left of each pill so leaves (toggle hidden) stay aligned
+ * with their parents; children indent under the row. */
+.group-tree-node { margin-bottom: 0; }
+.group-tree-row { display: flex; align-items: center; gap: 2px; }
+.group-tree-row .group-btn { margin-bottom: 4px; }
+.group-tree-toggle {
+  flex: 0 0 auto;
+  width: 14px;
+  align-self: stretch;
+  margin-bottom: 4px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+}
+.group-tree-toggle:hover { color: var(--fg); }
+.group-tree-toggle-leaf { cursor: default; visibility: hidden; }
+.group-tree-children { padding-left: 12px; }
+
 /* Subtle tell for hunks that no semantic group claimed, visible in
  * the unfiltered view only. Left border gets a dotted treatment so
  * the eye can pick them out at a glance without them feeling alarming. */
