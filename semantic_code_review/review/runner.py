@@ -304,4 +304,9 @@ def _load_viewer_json(run_dir: Path) -> dict:
         return {"version": "1", "pr": {}, "files": []}
     diff = parse_augmented_diff(augmented.read_text(encoding="utf-8"))
     head_dir = run_dir / "head"
-    return build_viewer_json(diff, meta, head_dir=head_dir if head_dir.exists() else None)
+    base_dir = run_dir / "base"
+    return build_viewer_json(
+        diff, meta,
+        head_dir=head_dir if head_dir.exists() else None,
+        base_dir=base_dir if base_dir.exists() else None,
+    )

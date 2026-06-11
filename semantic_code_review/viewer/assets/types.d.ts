@@ -24,6 +24,10 @@ interface ViewerData {
   smells_catalogue: Record<string, SmellCatalogueEntry>;
   files: FileBlock[];
   groups: GroupBlock[];
+  /** Deterministic tree-sitter symbol delta, one block per changed
+   *  symbol, mapped to overlapping hunk ids (ADR 0001 Symbols axis).
+   *  Present (possibly empty) whenever a worktree was available. */
+  symbols: GroupBlock[];
 }
 
 interface SmellCatalogueEntry {

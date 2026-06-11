@@ -32,7 +32,7 @@ interface RenderState {
   renderedDiffs: Record<string, HTMLElement>;
 }
 
-let _data: ViewerData = { version: "1", pr: {} as PRBlock, smells_catalogue: {}, files: [], groups: [] };
+let _data: ViewerData = { version: "1", pr: {} as PRBlock, smells_catalogue: {}, files: [], groups: [], symbols: [] };
 let _smells: Record<string, SmellCatalogueEntry> = {};
 const _state: RenderState = {
   fold: "hunks",

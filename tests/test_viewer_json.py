@@ -115,3 +115,60 @@ def test_build_pending_viewer_json_emits_skeleton_with_pending_flag(tmp_path: Pa
     # No overview yet → no themes / groups.
     assert data["pr"]["themes"] == []
     assert data["groups"] == []
+
+
+_SYMBOL_DIFF = """diff --git a/a.py b/a.py
+index 0123456..89abcde 100644
+--- a/a.py
++++ b/a.py
+@@ -1,2 +1,6 @@
+ def foo():
+     return 1
++
++
++def bar():
++    return 2
+"""
+
+
+def test_symbol_blocks_map_changed_symbols_to_hunks(tmp_path: Path) -> None:
+    """The deterministic Symbols axis: each changed symbol becomes a
+    flat block carrying the hunk ids its live-side range overlaps."""
+    (tmp_path / "raw.diff").write_text(_SYMBOL_DIFF, encoding="utf-8")
+    (tmp_path / "meta.json").write_text(json.dumps({
+        "title": "Add bar", "author": {"login": "t"}, "url": "",
+        "baseRefOid": "aaa", "headRefOid": "bbb",
+    }), encoding="utf-8")
+    base = tmp_path / "base"
+    head = tmp_path / "head"
+    base.mkdir()
+    head.mkdir()
+    (base / "a.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
+    (head / "a.py").write_text(
+        "def foo():\n    return 1\n\n\ndef bar():\n    return 2\n", encoding="utf-8",
+    )
+
+    data = build_pending_viewer_json(tmp_path)
+
+    syms = data["symbols"]
+    # foo is unchanged (same range both sides) → only bar, the added fn.
+    assert len(syms) == 1
+    block = syms[0]
+    assert block["id"] == "SY0"
+    assert block["title"] == "bar"
+    assert "added" in block["rationale"] and "a.py" in block["rationale"]
+    # bar (head lines 5-6) overlaps the single hunk H0_0 (new lines 1-6).
+    assert block["hunk_ids"] == ["H0_0"]
+
+
+def test_symbol_blocks_absent_without_worktrees(tmp_path: Path) -> None:
+    """No base/head worktree available ⇒ empty Symbols axis, no raise."""
+    (tmp_path / "raw.diff").write_text(_SYMBOL_DIFF, encoding="utf-8")
+    (tmp_path / "meta.json").write_text(json.dumps({
+        "title": "Add bar", "author": {"login": "t"}, "url": "",
+        "baseRefOid": "aaa", "headRefOid": "bbb",
+    }), encoding="utf-8")
+
+    data = build_pending_viewer_json(tmp_path)
+
+    assert data["symbols"] == []

@@ -210,6 +210,7 @@ function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
       hunks: [makeHunkBlock("H0_0")],
     }],
     groups: [],
+    symbols: [],
     ...overrides,
   };
 }
@@ -413,6 +414,40 @@ describe("streaming events", () => {
     (pills[0] as HTMLElement).click();
     expect(h1.style.display).not.toBe("none");
     expect(document.querySelector(".group-btn-all")!.classList.contains("active")).toBe(true);
+  });
+
+  test("symbols axis renders flat pills from boot and filters on click", async () => {
+    await bootViewer(makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 0, dels: 0, summary: "", head_lines: null,
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock("H0_0", "alpha"), makeHunkBlock("H0_1", "beta")],
+      }],
+      symbols: [
+        { id: "SY0", title: "Foo.bar", rationale: "modified function in a.py", hunk_ids: ["H0_0"] },
+        { id: "SY1", title: "baz", rationale: "added function in a.py", hunk_ids: ["H0_1"] },
+      ],
+    }));
+    const sidebar = document.getElementById("group-sidebar")!;
+    const symbolsSection = sidebar.querySelector('[data-axis="symbols"]')!;
+    expect(symbolsSection).not.toBeNull();
+    const pills = symbolsSection.querySelectorAll(".group-btn");
+    expect(pills).toHaveLength(2);
+    expect(pills[0].textContent).toContain("Foo.bar");
+    expect(pills[0].querySelector(".group-btn-count")!.textContent).toBe("1");
+
+    // Click the Foo.bar pill — only H0_0 stays visible.
+    (pills[0] as HTMLElement).click();
+    const h0 = document.querySelector('.hunk[data-id="H0_0"]') as HTMLElement;
+    const h1 = document.querySelector('.hunk[data-id="H0_1"]') as HTMLElement;
+    expect(h0.style.display).not.toBe("none");
+    expect(h1.style.display).toBe("none");
+    expect((pills[0] as HTMLElement).classList.contains("active")).toBe(true);
+
+    // The symbols axis coexists with Themes/Files (Files renders from boot).
+    expect(sidebar.querySelector('[data-axis="files"]')).not.toBeNull();
   });
 
   test("done event hides the progress strip and clears pending", async () => {

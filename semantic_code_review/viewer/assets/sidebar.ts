@@ -15,8 +15,10 @@
 import { Annotations } from "./annotations";
 import { Comments } from "./comments";
 
+type AxisId = "themes" | "files" | "symbols";
+
 interface SidebarAxis {
-  id: "themes" | "files";
+  id: AxisId;
   label: string;
   groups: GroupBlock[];
   byId: Record<string, GroupBlock>;
@@ -24,7 +26,7 @@ interface SidebarAxis {
 }
 
 interface ActivePill {
-  axis: "themes" | "files";
+  axis: AxisId;
   id: string;
 }
 
@@ -36,7 +38,14 @@ const FILES_AXIS: SidebarAxis = {
   id: "files", label: "Files",
   groups: [], byId: Object.create(null), hunkCount: Object.create(null),
 };
-const AXES: SidebarAxis[] = [THEMES_AXIS, FILES_AXIS];
+// Deterministic tree-sitter symbol delta (ADR 0001). Like the Files
+// axis it's structural — populated from DATA at boot, never refreshed
+// by an SSE pass. Flat pills for now; the nested tree lands in slice 5.
+const SYMBOLS_AXIS: SidebarAxis = {
+  id: "symbols", label: "Symbols",
+  groups: [], byId: Object.create(null), hunkCount: Object.create(null),
+};
+const AXES: SidebarAxis[] = [THEMES_AXIS, FILES_AXIS, SYMBOLS_AXIS];
 
 let _data: ViewerData | null = null;
 let _activePill: ActivePill | null = null;
@@ -55,6 +64,7 @@ function init(data: ViewerData): void {
   // the viewer holds to THEMES_AXIS.* arrays stay live.
   refreshThemes(data.groups || []);
   rebuildFilesAxis();
+  rebuildSymbolsAxis();
 
   // Restore the active pill across axes. Legacy entries are bare
   // ids (themes axis); new entries are `<axis>:<id>`.
@@ -113,6 +123,24 @@ function rebuildFilesAxis(): void {
     FILES_AXIS.byId[g.id] = g;
     for (const hid of hunk_ids) {
       FILES_AXIS.hunkCount[hid] = (FILES_AXIS.hunkCount[hid] || 0) + 1;
+    }
+  }
+}
+
+/** Load the symbols axis from DATA.symbols — pre-built server-side as
+ *  GroupBlock-shaped blocks (one changed symbol → its overlapping hunk
+ *  ids; pill ids `SY<i>`, a distinct ID space from themes/files). The
+ *  delta is deterministic, so unlike themes there's no in-place refresh:
+ *  what boot ships is final. */
+function rebuildSymbolsAxis(): void {
+  SYMBOLS_AXIS.groups.length = 0;
+  for (const k of Object.keys(SYMBOLS_AXIS.byId)) delete SYMBOLS_AXIS.byId[k];
+  for (const k of Object.keys(SYMBOLS_AXIS.hunkCount)) delete SYMBOLS_AXIS.hunkCount[k];
+  for (const g of (_data && _data.symbols) || []) {
+    SYMBOLS_AXIS.groups.push(g);
+    SYMBOLS_AXIS.byId[g.id] = g;
+    for (const hid of g.hunk_ids || []) {
+      SYMBOLS_AXIS.hunkCount[hid] = (SYMBOLS_AXIS.hunkCount[hid] || 0) + 1;
     }
   }
 }
@@ -304,6 +332,7 @@ export const Sidebar = {
   render,
   refreshThemes,
   rebuildFilesAxis,
+  rebuildSymbolsAxis,
   refreshFileCommentCounts,
   setActivePill,
   applyFilter,

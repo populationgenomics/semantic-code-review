@@ -178,7 +178,7 @@ rather than raising.
 
 This is the single internal currency the structural consumers read:
 the `RepoTools.outline` / `symbol_at` tools, the diff-wide delta, the
-overview-prompt seed, and (a later slice) the sidebar Symbols axis.
+overview-prompt seed, and the sidebar Symbols axis.
 It is deliberately *not* reconciled with the LLM-derived
 `Overview.symbols_*` / `FileSymbols` — those answer "why did this
 change" (semantic, fallible); `Symbol` answers "where is the code and
@@ -212,3 +212,17 @@ parse, not LLM tool access) and best-effort (a failure leaves the
 overview unseeded). When the delta is empty — every changed file is in
 an unsupported language — no section is appended and the prompt is
 byte-identical to the pre-seed form.
+
+**Symbols axis**
+The third sidebar grouping axis (after Themes and Files), built
+deterministically from the `SymbolDelta`. `build_json._symbol_blocks`
+parses each changed file's base/head worktree, takes the per-file
+`diff_file` set-diff, and maps every changed symbol to the hunk ids its
+*live*-side range overlaps (head for added/modified, base for removed) —
+emitting one flat `GroupBlock` (id `SY<i>`) per symbol that touches at
+least one hunk. The viewer's `Sidebar.rebuildSymbolsAxis` loads these
+from `DATA.symbols` at boot and reuses the existing pill machinery
+(`applyFilter`, localStorage `<axis>:<id>`, count badges). Like the
+Files axis it's structural — present from boot, never refreshed by an
+SSE pass. Flat for now; the nested class ▸ method tree render is a later
+slice (ADR 0001 Slice 5).

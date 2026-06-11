@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .. import structural
 from ..augment.schemas import (
     SMELL_CATALOGUE, AnnotatedDiff, AnnotatedFile, FileAnnotations, Overview,
     PRInfo, lift_file,
@@ -29,6 +30,7 @@ def build_viewer_json(
     diff: AnnotatedDiff,
     meta: dict[str, Any],
     head_dir: Path | None = None,
+    base_dir: Path | None = None,
 ) -> dict[str, Any]:
     return {
         "version": "1",
@@ -43,6 +45,7 @@ def build_viewer_json(
         },
         "files": [_file_block(f, i, head_dir) for i, f in enumerate(diff.files)],
         "groups": _group_blocks(diff),
+        "symbols": _symbol_blocks(diff, base_dir, head_dir),
     }
 
 
@@ -68,7 +71,12 @@ def build_pending_viewer_json(run_dir: Path) -> dict[str, Any]:
         files=[lift_file(pf, ann=FileAnnotations()) for pf in parsed.files],
     )
     head_dir = run_dir / "head"
-    data = build_viewer_json(diff, meta, head_dir=head_dir if head_dir.exists() else None)
+    base_dir = run_dir / "base"
+    data = build_viewer_json(
+        diff, meta,
+        head_dir=head_dir if head_dir.exists() else None,
+        base_dir=base_dir if base_dir.exists() else None,
+    )
     data["pending"] = True
     return data
 
@@ -102,6 +110,94 @@ def _group_blocks(diff: AnnotatedDiff) -> list[dict[str, Any]]:
             "hunk_ids": hunk_ids,
         })
     return out
+
+
+def _symbol_blocks(
+    diff: AnnotatedDiff,
+    base_dir: Path | None,
+    head_dir: Path | None,
+) -> list[dict[str, Any]]:
+    """Deterministic Symbols axis: one block per changed symbol (ADR 0001).
+
+    The tree-sitter base→head set-diff (`structural.diff_file`) gives the
+    added / modified / removed symbols per file; each is mapped to the
+    viewer hunk ids whose line span its *live*-side range overlaps (head
+    for added/modified, base for removed). A changed symbol no hunk
+    touches — e.g. one that only shifted because lines moved above it —
+    yields no block, so every pill filters to at least one hunk.
+
+    Flat for this slice (the nested class ▸ method render lands in slice
+    5); `qualified_name` is carried as the title so the later tree walk
+    can group on it. Absent entirely when neither worktree is available
+    or the language is unsupported — today's behaviour for those files.
+    """
+    if base_dir is None and head_dir is None:
+        return []
+    out: list[dict[str, Any]] = []
+    si = 0
+    for fi, f in enumerate(diff.files):
+        lang = structural.language_for_path(f.path)
+        if lang is None:
+            continue
+        base_src = _read_tree_source(base_dir, f.old_path or f.path)
+        head_src = _read_tree_source(head_dir, f.path)
+        base_syms = structural.outline_symbols(base_src, lang) if base_src is not None else []
+        head_syms = structural.outline_symbols(head_src, lang) if head_src is not None else []
+        delta = structural.diff_file(f.path, base_syms, head_syms)
+        head_spans = [
+            (h.parsed.new_start, h.parsed.new_start + h.parsed.new_count - 1, f"H{fi}_{hi}")
+            for hi, h in enumerate(f.hunks)
+        ]
+        base_spans = [
+            (h.parsed.old_start, h.parsed.old_start + h.parsed.old_count - 1, f"H{fi}_{hi}")
+            for hi, h in enumerate(f.hunks)
+        ]
+        # Source order within a file: added, modified, removed. Live side
+        # is head for added/modified, base for removed.
+        for status, spans, syms in (
+            ("added", head_spans, delta.added),
+            ("modified", head_spans, delta.modified),
+            ("removed", base_spans, delta.removed),
+        ):
+            for cs in syms:
+                hunk_ids = _overlapping_hunks(spans, cs.range)
+                if not hunk_ids:
+                    continue
+                out.append({
+                    "id": f"SY{si}",
+                    "title": cs.qualified_name,
+                    "rationale": f"{status} {cs.kind} in {f.path}",
+                    "hunk_ids": hunk_ids,
+                })
+                si += 1
+    return out
+
+
+def _overlapping_hunks(
+    spans: list[tuple[int, int, str]], rng: structural.SymbolRange,
+) -> list[str]:
+    """Hunk ids whose [start, end] line span overlaps `rng`.
+
+    Empty hunk spans (count 0 — e.g. a pure deletion on the head side)
+    have end < start and so never overlap.
+    """
+    return [
+        hid for start, end, hid in spans
+        if start <= end and rng.start_line <= end and start <= rng.end_line
+    ]
+
+
+def _read_tree_source(tree_dir: Path | None, rel_path: str) -> str | None:
+    """Read `rel_path` from a worktree dir, or None if unavailable."""
+    if tree_dir is None:
+        return None
+    path = tree_dir / rel_path
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
 
 
 def _pr_block(diff: AnnotatedDiff, meta: dict[str, Any]) -> dict[str, Any]:
