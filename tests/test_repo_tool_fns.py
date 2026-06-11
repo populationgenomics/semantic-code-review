@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import subprocess
 from pathlib import Path
 
@@ -133,3 +134,30 @@ def test_dispatch_grep(repo: RepoTools) -> None:
 def test_dispatch_list_dir_default(repo: RepoTools) -> None:
     out = mcp_dispatch(repo, "list_dir", {})
     assert "a.py" in out
+
+
+def test_dispatch_outline_head(repo: RepoTools) -> None:
+    out = json.loads(mcp_dispatch(repo, "outline", {"path": "a.py"}))
+    assert [s["name"] for s in out] == ["foo"]
+    assert out[0]["kind"] == "function"
+    assert out[0]["signature"] == "def foo()"
+
+
+def test_dispatch_outline_at_sha(repo: RepoTools) -> None:
+    out = json.loads(mcp_dispatch(repo, "outline", {"path": "a.py", "sha": repo.head_sha}))
+    assert [s["name"] for s in out] == ["foo"]
+
+
+def test_dispatch_outline_unsupported_language_is_empty(repo: RepoTools) -> None:
+    (repo.head_worktree / "notes.txt").write_text("hello\n")
+    assert mcp_dispatch(repo, "outline", {"path": "notes.txt"}) == "[]"
+
+
+def test_dispatch_outline_missing_file_is_empty(repo: RepoTools) -> None:
+    assert mcp_dispatch(repo, "outline", {"path": "nope.py"}) == "[]"
+
+
+def test_outline_schema_marks_sha_optional() -> None:
+    schemas = {s["name"]: s for s in mcp_tool_schemas()}
+    assert "path" in schemas["outline"]["inputSchema"]["required"]
+    assert "sha" not in schemas["outline"]["inputSchema"]["required"]

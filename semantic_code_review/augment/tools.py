@@ -29,7 +29,7 @@ from typing import Any, Callable
 from pydantic_ai import RunContext
 from pydantic_ai.tools import Tool
 
-from .. import git_ops
+from .. import git_ops, structural
 
 
 TOOL_RESULT_CAP_BYTES = 20 * 1024
@@ -95,6 +95,45 @@ class RepoTools:
         if rc != 0:
             return f"error: git show {sha}:{path} failed: {stderr.strip()}"
         return _slice_and_cap(stdout, start_line, end_line)
+
+    # --- structure --------------------------------------------------------
+
+    @_tool
+    def outline(self, path: str, sha: str | None = None) -> str:
+        """Structural symbol outline of a file, as a JSON array.
+
+        Deterministic tree-sitter parse — no LLM, no hallucination. Each
+        entry is a definition (class / function / constant) with its
+        `name`, `qualified_name`, 1-indexed line `range`, declared
+        `signature` (or null), and nested `children` (class ▸ method).
+        Unsupported language or parse failure ⇒ `[]`.
+
+        Args:
+            path: Path relative to repo root.
+            sha: Commit SHA to read the file at (defaults to head worktree).
+        """
+        lang = structural.language_for_path(path)
+        if lang is None:
+            return "[]"
+        source = self._read_source(path, sha)
+        if source is None:
+            return "[]"
+        symbols = structural.outline_symbols(source, lang)
+        return _cap(structural.symbols_to_json(symbols))
+
+    def _read_source(self, path: str, sha: str | None) -> str | None:
+        """Raw file text from the head worktree (``sha is None``) or at a
+        revision via ``git show``. ``None`` if it can't be read."""
+        if sha is None:
+            full = (self.head_worktree / path).resolve()
+            if not _is_inside(full, self.head_worktree) or not full.is_file():
+                return None
+            try:
+                return full.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return None
+        rc, stdout, _stderr = git_ops.git_capture(self.repo_git, "show", f"{sha}:{path}")
+        return stdout if rc == 0 else None
 
     # --- search -----------------------------------------------------------
 

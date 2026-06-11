@@ -163,3 +163,23 @@ Distinct from the `Model` subclasses pydantic-ai ships
 author. pydantic-ai itself has no word for this distinction —
 "`Model`" covers both — but our tree splits along it: drivers are
 ours, other `Model`s come from pydantic-ai.
+
+**Symbol**
+The normalized unit of the *structural layer* — `Symbol{kind, name,
+qualified_name, range, signature?, children[]}`, defined in
+`structural/symbols.py`. Produced deterministically by tree-sitter
+(no LLM, no hallucination): one definition (class / function /
+constant) with its declared signature and exact 1-indexed line range,
+nested by source containment (class ▸ method). `structural.parse`
+runs a grammar's `tags.scm` tag query and folds the `@definition.*`
+captures into this tree; `outline_symbols(source, lang)` is the entry
+point, returning `[]` for an unsupported language or a parse failure
+rather than raising.
+
+This is the single internal currency the structural consumers read:
+the `RepoTools.outline` tool, and (later slices) the overview-prompt
+seed and the sidebar Symbols axis. It is deliberately *not* reconciled
+with the LLM-derived `Overview.symbols_*` / `FileSymbols` — those
+answer "why did this change" (semantic, fallible); `Symbol` answers
+"where is the code and what does it literally declare" (structural,
+exact). The two coexist as separate layers by design (ADR 0001).
