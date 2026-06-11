@@ -260,17 +260,14 @@ def _python_signature(node: Node, source: bytes) -> str | None:
     return None
 
 
-def _ts_signature(node: Node, source: bytes) -> str | None:
-    """Declared signature for a TS/TSX definition: header text up to the body.
+def _ts_header_range(node: Node) -> tuple[int, int]:
+    """Byte span of a TS/TSX definition's header — declaration up to its body.
 
-    `class Widget extends Base`, `function f(a: number): void`,
-    `render(x: number): string`, `interface Foo`, `enum Color`; the full
-    declaration for a type alias (`type Bar = string | number`). For an
-    arrow / function-expression const the parent `const`/`let`/`var`
-    keyword is kept (`const arrow = (n: number): number`).
+    `start` reaches back to the parent `const`/`let`/`var` keyword for an
+    arrow / function-expression const (whose definition node is the bare
+    `variable_declarator`); `end` is the body's start, or the node end for a
+    bodyless declaration (an ambient signature, interface member, …).
     """
-    if node.type == "type_alias_declaration":
-        return _collapse_ws(_text(source, node).rstrip().rstrip(";"))
     start = node.start_byte
     if node.type == "variable_declarator":
         parent = node.parent
@@ -286,6 +283,21 @@ def _ts_signature(node: Node, source: bytes) -> str | None:
         if value is not None:
             body = value.child_by_field_name("body")
     end = body.start_byte if body is not None else node.end_byte
+    return start, end
+
+
+def _ts_signature(node: Node, source: bytes) -> str | None:
+    """Declared signature for a TS/TSX definition: header text up to the body.
+
+    `class Widget extends Base`, `function f(a: number): void`,
+    `render(x: number): string`, `interface Foo`, `enum Color`; the full
+    declaration for a type alias (`type Bar = string | number`). For an
+    arrow / function-expression const the parent `const`/`let`/`var`
+    keyword is kept (`const arrow = (n: number): number`).
+    """
+    if node.type == "type_alias_declaration":
+        return _collapse_ws(_text(source, node).rstrip().rstrip(";"))
+    start, end = _ts_header_range(node)
     header = source[start:end].decode("utf-8", errors="replace").rstrip()
     for suffix in ("=>", "=", "{", ":", ";"):
         if header.endswith(suffix):
