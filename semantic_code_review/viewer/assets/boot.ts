@@ -10,6 +10,7 @@ import { Annotations } from "./annotations";
 import { Comments } from "./comments";
 import { DataStore, type FoldRegionAddress } from "./data_store";
 import { Folds } from "./folds";
+import { PostModal } from "./post_modal";
 import { Progress } from "./progress";
 import { Render } from "./render";
 import { Sidebar } from "./sidebar";
@@ -113,22 +114,42 @@ function installDoneButton(): void {
   if (SESSION_ENDPOINT === null) return;
   const bar = document.querySelector(".pr-bar");
   if (!bar) return;
+  const endpoint = SESSION_ENDPOINT;
   const btn = document.createElement("button");
   btn.className = "done-btn";
   btn.textContent = "Done";
   btn.title = "Finish review and return comments to the caller";
-  btn.addEventListener("click", () => {
+
+  // Default behaviour: POST /exit and let the server tear down. In
+  // `scr pr` mode, PostModal.install swaps this for an opener that
+  // pops the confirm-and-post modal first; the modal then triggers
+  // /exit itself once the reviewer either posts or closes it.
+  let onClick = (): void => {
     btn.disabled = true;
     btn.textContent = "Sending…";
-    fetch(`${SESSION_ENDPOINT}/exit`, {
+    fetch(`${endpoint}/exit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "{}",
     })
       .catch(() => { /* server may exit before responding */ })
       .finally(() => { btn.textContent = "Done ✓"; });
-  });
+  };
+
+  btn.addEventListener("click", () => onClick());
   bar.appendChild(btn);
+
+  // Fire-and-forget: the modal infra is best-effort. If /post-config
+  // fails or the server isn't in posting mode, the default exit
+  // handler stays in place.
+  PostModal.install(endpoint).then((result) => {
+    if (result.onDoneClick) {
+      onClick = result.onDoneClick;
+      btn.title = "Review what will be posted before sending to GitHub";
+    }
+  }).catch((e) => {
+    console.warn("post modal: install failed, keeping default Done", e);
+  });
 }
 
 // --- SSE wiring ----------------------------------------------------------

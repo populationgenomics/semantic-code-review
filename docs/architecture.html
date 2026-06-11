@@ -1,0 +1,646 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Architecture — semantic-code-review</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose",
+        flowchart: { curve: "basis", padding: 16 } });
+    </script>
+    <style>
+      body { font-feature-settings: "ss01", "cv11"; }
+      .seam { stroke-dasharray: 4 4; stroke: #64748b; }
+      .deep { background: linear-gradient(135deg, #0f172a, #1e293b); color: #f8fafc; }
+      .schematic { font-family: ui-monospace, monospace; font-size: 10.5px;
+                   letter-spacing: 0.08em; text-transform: uppercase; color: #475569; }
+      .module-card { background: white; border: 1px solid #e2e8f0;
+                     border-radius: 0.5rem; padding: 0.75rem 1rem; }
+      .module-card.faded { opacity: 0.55; }
+      .deep-box { background: #0f172a; color: #f8fafc; border-radius: 0.5rem;
+                  padding: 1rem; border: 2px solid #0f172a; }
+      .deep-box .schematic { color: #94a3b8; }
+      h2.serif, h3.serif { font-family: ui-serif, Georgia, "Times New Roman", serif; }
+      .mermaid { background: white; }
+      .legend-key { display: inline-flex; align-items: center; gap: 0.375rem;
+                    font-size: 0.75rem; color: #475569; }
+      .runfile {
+        font-family: ui-monospace, monospace; font-size: 11.5px;
+        background: #f8fafc; border: 1px solid #e2e8f0;
+        padding: 0.25rem 0.5rem; border-radius: 0.25rem;
+      }
+      .arrow-down::after {
+        content: "▼"; color: #94a3b8; display: block; text-align: center;
+        font-size: 14px; margin: 0.25rem 0;
+      }
+    </style>
+  </head>
+  <body class="bg-stone-50 text-slate-900 font-sans antialiased">
+    <main class="max-w-5xl mx-auto px-6 py-12 space-y-14">
+
+      <header class="space-y-3 border-b border-slate-200 pb-6">
+        <p class="schematic">Architecture overview · 2026-06-06</p>
+        <h1 class="text-3xl font-serif font-semibold tracking-tight">
+          semantic-code-review — structure
+        </h1>
+        <p class="text-sm text-slate-600 max-w-2xl pt-1">
+          What's in the box and how the pieces compose. Vocabulary —
+          module, interface, seam, adapter, deep, shallow — follows the
+          glossary. Domain vocabulary (run directory, augmented diff,
+          backend, hunk, viewer data) follows <code>CONTEXT.md</code>.
+        </p>
+        <div class="flex flex-wrap gap-x-6 gap-y-2 text-xs text-slate-600 pt-2">
+          <span class="legend-key">
+            <span class="inline-block w-3 h-3 border border-slate-700 bg-white"></span>
+            module
+          </span>
+          <span class="legend-key">
+            <span class="inline-block w-6 h-px border-t border-dashed border-slate-500"></span>
+            seam
+          </span>
+          <span class="legend-key">
+            <span class="inline-block w-3 h-3 bg-slate-900"></span>
+            deep module
+          </span>
+          <span class="legend-key">
+            <span class="inline-block w-3 h-3 bg-indigo-200 border border-indigo-400"></span>
+            on-disk artefact
+          </span>
+        </div>
+      </header>
+
+      <!-- ====================================================== -->
+      <!-- 1. Lifecycle                                            -->
+      <!-- ====================================================== -->
+      <section class="space-y-5">
+        <h2 class="serif text-2xl font-semibold">1 · Lifecycle of one review</h2>
+        <p class="text-sm text-slate-600 max-w-2xl">
+          A PR (or local diff) becomes a <em>run directory</em>, gets
+          annotated by the augment pipeline, is served to a browser by
+          an ephemeral HTTP server, and — for <code>scr pr</code> —
+          posts the reviewer's comments back to GitHub as one review.
+        </p>
+
+        <div class="rounded-lg border border-slate-200 bg-white p-4">
+          <pre class="mermaid">
+flowchart LR
+  user[(user / CLI)]
+  fetch["fetch&#46;{github|local}\n— resolve + worktree"]
+  rundir[("run directory\n/raw.diff /meta.json\n/base/ /head/")]
+  aug["augment pipeline\noverview · hunk · extra"]
+  augdir[("augmented.diff\naugmented.scr.json\ntrace/*.json")]
+  server["review server\nHTTP + SSE"]
+  viewer((viewer\nbrowser tab))
+  gh[(GitHub\nGraphQL)]
+
+  user --> fetch
+  fetch --> rundir
+  rundir --> aug
+  aug --> augdir
+  augdir --> server
+  server <--> viewer
+  viewer -->|/comment| server
+  server -->|scr pr| gh
+
+  classDef artefact fill:#e0e7ff,stroke:#6366f1,color:#1e1b4b;
+  class rundir,augdir artefact;
+  classDef external fill:#f1f5f9,stroke:#94a3b8,stroke-dasharray:4 4;
+  class user,viewer,gh external;
+          </pre>
+        </div>
+
+        <div class="text-xs text-slate-500">
+          Entry commands all go through this spine:
+          <code>scr fetch</code>, <code>scr augment</code>,
+          <code>scr review</code>, <code>scr pr</code> — they
+          differ in which segments they own end-to-end.
+        </div>
+      </section>
+
+      <!-- ====================================================== -->
+      <!-- 2. Subsystem map                                        -->
+      <!-- ====================================================== -->
+      <section class="space-y-5 border-t border-slate-200 pt-12">
+        <h2 class="serif text-2xl font-semibold">2 · Subsystem map</h2>
+        <p class="text-sm text-slate-600 max-w-2xl">
+          Each subsystem under <code>semantic_code_review/</code> owns
+          one concern. The implicit contract everywhere downstream of
+          fetch: <em>"everything I need lives under a single
+          <code>run_dir: Path</code>."</em>
+        </p>
+
+        <div class="rounded-lg border border-slate-200 bg-white p-4">
+          <pre class="mermaid">
+flowchart TB
+  subgraph entry["entry"]
+    cli["cli&#46;py"]
+    cfg["config&#46;py"]
+  end
+
+  subgraph io["io to the outside"]
+    fetch["fetch/"]
+    bk["backends/"]
+    rev["review/"]
+  end
+
+  subgraph core["core"]
+    aug["augment/"]
+    fmt["format/"]
+    cache["cache/"]
+    paths["paths&#46;py · git_ops&#46;py"]
+  end
+
+  subgraph render["render"]
+    viewer["viewer/"]
+  end
+
+  cli --> cfg
+  cli --> fetch
+  cli --> rev
+  cli --> aug
+  cli --> bk
+
+  rev --> aug
+  rev --> viewer
+
+  aug --> bk
+  aug --> fmt
+  aug --> cache
+  aug --> viewer
+
+  fetch --> paths
+  fetch --> fmt
+
+  fmt -.-> aug
+  viewer --> fmt
+
+  classDef entryC fill:#fef3c7,stroke:#d97706,color:#451a03;
+  class cli,cfg entryC;
+  classDef ioC fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
+  class fetch,bk,rev ioC;
+  classDef coreC fill:#f5f3ff,stroke:#7c3aed,color:#2e1065;
+  class aug,fmt,cache,paths coreC;
+  classDef renderC fill:#dcfce7,stroke:#16a34a,color:#14532d;
+  class viewer renderC;
+          </pre>
+        </div>
+
+        <div class="grid grid-cols-2 gap-x-6 gap-y-3 text-xs text-slate-700 pt-2">
+          <div><span class="schematic">entry</span> · CLI dispatch and config resolution.</div>
+          <div><span class="schematic">io</span> · everything that touches the network or the local filesystem outside a run dir.</div>
+          <div><span class="schematic">core</span> · pure logic over schemas and on-disk artefacts.</div>
+          <div><span class="schematic">render</span> · viewer assets + Python builder for <code>ViewerData</code>.</div>
+        </div>
+      </section>
+
+      <!-- ====================================================== -->
+      <!-- 3. Run directory                                        -->
+      <!-- ====================================================== -->
+      <section class="space-y-5 border-t border-slate-200 pt-12">
+        <h2 class="serif text-2xl font-semibold">3 · The run directory</h2>
+        <p class="text-sm text-slate-600 max-w-2xl">
+          The interface every subsystem shares. Default location is
+          <code>~/.cache/scr/runs/&lt;repo-fingerprint&gt;/&lt;slug&gt;/</code>.
+          One directory per <code>(repo, slug)</code>.
+        </p>
+
+        <div class="grid grid-cols-5 gap-4">
+          <!-- file tree -->
+          <div class="col-span-2 rounded-lg border border-slate-200 bg-white p-4 space-y-2">
+            <p class="schematic">layout</p>
+            <div class="space-y-1 text-xs">
+              <div class="font-mono text-slate-700">&lt;run_dir&gt;/</div>
+              <div class="pl-4 space-y-1">
+                <div><span class="runfile">raw.diff</span></div>
+                <div><span class="runfile">files.txt</span></div>
+                <div><span class="runfile">meta.json</span></div>
+                <div><span class="runfile">spec.md</span> <span class="text-slate-400">(opt.)</span></div>
+                <div><span class="runfile">augmented.diff</span></div>
+                <div><span class="runfile">augmented.scr.json</span></div>
+                <div><span class="runfile">comments.json</span> <span class="text-slate-400">(opt.)</span></div>
+                <div class="font-mono text-slate-700 pt-1">base/</div>
+                <div class="font-mono text-slate-700">head/</div>
+                <div class="font-mono text-slate-700">trace/</div>
+                <div class="pl-4">
+                  <span class="runfile">overview.json</span>,
+                  <span class="runfile">hunk-*.json</span>,
+                  <span class="runfile">fold-*.json</span>,
+                  <span class="runfile">extra-review.json</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- who reads / writes what -->
+          <div class="col-span-3 rounded-lg border border-slate-200 bg-white p-4 space-y-3">
+            <p class="schematic">readers / writers</p>
+            <table class="w-full text-xs">
+              <thead>
+                <tr class="text-slate-500 border-b border-slate-200">
+                  <th class="text-left py-1 font-medium">artefact</th>
+                  <th class="text-left py-1 font-medium">written by</th>
+                  <th class="text-left py-1 font-medium">read by</th>
+                </tr>
+              </thead>
+              <tbody class="text-slate-700 align-top">
+                <tr class="border-b border-slate-100"><td class="py-1.5"><code>raw.diff · meta.json</code></td><td><code>fetch/*</code></td><td><code>augment/pipeline</code></td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5"><code>base/ · head/</code></td><td><code>fetch/{github,local}</code></td><td><code>augment/tools</code> (RepoTools), <code>fold_summary</code></td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5"><code>augmented.diff</code></td><td><code>format/emit</code></td><td><code>viewer/build_json</code>, viewer browser</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5"><code>augmented.scr.json</code></td><td><code>format/sidecar</code></td><td><code>fold_summary</code>, <code>viewer/build_json</code></td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5"><code>trace/*.json</code></td><td><code>augment/pass_</code></td><td>humans, support</td></tr>
+                <tr><td class="py-1.5"><code>comments.json</code></td><td><code>review/comments</code></td><td><code>review/server</code>, <code>scr pr</code> poster</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="text-xs text-slate-500 pt-1">
+          Cache lives <em>outside</em> the run directory
+          (<code>~/.cache/scr/cache/</code>) so it survives runs and
+          can be shared across them.
+        </div>
+      </section>
+
+      <!-- ====================================================== -->
+      <!-- 4. Augment pipeline (post-deepening)                    -->
+      <!-- ====================================================== -->
+      <section class="space-y-5 border-t border-slate-200 pt-12">
+        <h2 class="serif text-2xl font-semibold">4 · Augment pipeline</h2>
+        <p class="text-sm text-slate-600 max-w-2xl">
+          Three passes run in sequence:
+          <span class="font-semibold">overview</span> (one call per PR),
+          <span class="font-semibold">hunk</span> (one call per hunk, concurrent),
+          <span class="font-semibold">extra-review</span> (one optional call per PR).
+          A fourth pass — <span class="font-semibold">fold-summary</span> — fires on
+          demand from the review server when a reviewer collapses a region.
+          All four go through one deep <em>Pass</em> module that owns
+          the LLM-call recipe.
+        </p>
+
+        <div class="grid grid-cols-5 gap-4 items-stretch">
+          <!-- left: orchestration -->
+          <div class="col-span-3 rounded-lg border border-slate-200 bg-white p-4 space-y-3">
+            <p class="schematic">orchestration · augment/pipeline.py</p>
+            <pre class="mermaid">
+flowchart TB
+  raw["raw.diff + meta.json"]
+  parse["format/parse → AnnotatedDiff"]
+  ov["overview pass"]
+  hk["hunk pass × N (concurrent)"]
+  xr["extra-review pass (opt.)"]
+  emit["format/emit → augmented.diff\nformat/sidecar → augmented.scr.json"]
+
+  raw --> parse --> ov --> hk --> xr --> emit
+  hk -. tools .-> repo[("base/ + head/\nvia RepoTools")]
+
+  classDef artefact fill:#e0e7ff,stroke:#6366f1,color:#1e1b4b;
+  class raw,emit,repo artefact;
+            </pre>
+          </div>
+
+          <!-- right: pass_.py deep module -->
+          <div class="col-span-2 space-y-3">
+            <div class="rounded-lg border border-slate-300 bg-white p-4 space-y-3">
+              <p class="schematic">recipe · augment/pass_.py</p>
+              <div class="deep-box space-y-2">
+                <div class="text-xs uppercase tracking-wider font-semibold text-slate-200">
+                  run_pass(meta, …)
+                </div>
+                <ul class="text-[11px] text-slate-300 space-y-0.5 list-decimal list-inside pt-1">
+                  <li>cache key + lookup</li>
+                  <li>agent.iter() driver</li>
+                  <li>partial trace on error</li>
+                  <li>full trace on success</li>
+                  <li>usage + cache put</li>
+                </ul>
+                <div class="text-[10px] text-slate-400 pt-1 border-t border-slate-700">
+                  returns dict payload or None
+                </div>
+              </div>
+              <div class="grid grid-cols-2 gap-2 pt-1">
+                <div class="module-card faded text-[11px]">
+                  <div class="font-semibold">overview</div>
+                  <div class="schematic">prompt · apply</div>
+                </div>
+                <div class="module-card faded text-[11px]">
+                  <div class="font-semibold">hunk</div>
+                  <div class="schematic">prompt · apply</div>
+                </div>
+                <div class="module-card faded text-[11px]">
+                  <div class="font-semibold">fold-summary</div>
+                  <div class="schematic">prompt · apply</div>
+                </div>
+                <div class="module-card faded text-[11px]">
+                  <div class="font-semibold">extra-review</div>
+                  <div class="schematic">prompt · distribute</div>
+                </div>
+              </div>
+              <p class="text-[10.5px] text-slate-500 pt-1">
+                Each pass file: <code>format_*_prompt</code> +
+                <code>make_*_agent</code> + <code>apply_*_to_diff</code>.
+                Recipe is owned once.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="text-xs text-slate-500">
+          The hunk pass is the only one that takes <em>deps</em> — a
+          <code>RepoTools</code> handle exposing
+          <code>read_file</code> / <code>grep</code> /
+          <code>list_dir</code> / <code>git_log</code> over the run's
+          worktrees. SDK backends get it via pydantic-ai's deps; CLI
+          drivers expose the same tools over MCP.
+        </div>
+      </section>
+
+      <!-- ====================================================== -->
+      <!-- 5. Backend trio                                         -->
+      <!-- ====================================================== -->
+      <section class="space-y-5 border-t border-slate-200 pt-12">
+        <h2 class="serif text-2xl font-semibold">5 · Backend / Client / Driver</h2>
+        <p class="text-sm text-slate-600 max-w-2xl">
+          The CLI resolves a backend <em>name</em> to a
+          <code>Backend</code> adapter; the adapter resolves credentials
+          and produces a <code>Client</code> that the augment pipeline
+          drives. Two implementation families sit behind one
+          <code>Backend</code> interface: SDK backends wrap a
+          pydantic-ai <code>Model</code>; CLI drivers spawn a third-party
+          CLI subprocess on every <code>request()</code>.
+        </p>
+
+        <div class="grid grid-cols-2 gap-4">
+          <!-- mermaid: the dispatch chain -->
+          <div class="rounded-lg border border-slate-200 bg-white p-4 space-y-3">
+            <p class="schematic">dispatch</p>
+            <pre class="mermaid">
+flowchart TB
+  cli["cli.py"]
+  reg["backends registry"]
+  bk["Backend adapter"]
+  client["Client"]
+  pipe["augment pipeline"]
+
+  cli -->|name| reg
+  reg -->|class| bk
+  bk -->|resolve| client
+  client --> pipe
+
+  classDef seam fill:#fef3c7,stroke:#d97706
+  class bk seam
+            </pre>
+          </div>
+
+          <!-- editorial: the two families -->
+          <div class="rounded-lg border border-slate-200 bg-white p-4 space-y-3">
+            <p class="schematic">two families behind Backend</p>
+            <div class="space-y-3 text-xs">
+              <div class="border border-slate-300 rounded p-3 space-y-2">
+                <div class="font-semibold text-slate-700">SDK family</div>
+                <div class="schematic">anthropic-sdk · gemini-api · openai-compat</div>
+                <p class="text-slate-600 text-[11px]">
+                  Wraps a pydantic-ai <code>Model</code>
+                  (AnthropicModel, GoogleModel, …). Credentials via
+                  env var or <code>api_key_command</code>. Tool-use loop
+                  runs in-process.
+                </p>
+              </div>
+              <div class="border border-slate-300 rounded p-3 space-y-2">
+                <div class="font-semibold text-slate-700">CLI driver family</div>
+                <div class="schematic">claude-cli · gemini-cli</div>
+                <p class="text-slate-600 text-[11px]">
+                  Each driver is a custom
+                  <code>pydantic_ai.Model</code> subclass — extends
+                  <code>SubprocessModel</code> base. Spawns
+                  <code>claude -p</code> / <code>gemini -p</code> per
+                  request. Tool-use loop runs <em>inside</em> the
+                  subprocess via MCP, not in pydantic-ai.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="text-xs text-slate-500 pt-1">
+          The <code>Backend</code> seam is real — five adapters live
+          there today. <code>register_handler()</code> is the
+          test-time substitution hook; production code never calls it.
+        </div>
+      </section>
+
+      <!-- ====================================================== -->
+      <!-- 6. Format + schema centre                               -->
+      <!-- ====================================================== -->
+      <section class="space-y-5 border-t border-slate-200 pt-12">
+        <h2 class="serif text-2xl font-semibold">6 · Format &amp; schema</h2>
+        <p class="text-sm text-slate-600 max-w-2xl">
+          <code>AnnotatedDiff</code> is the central schema. Three
+          siblings in <code>format/</code> serialise it: <em>parse</em>
+          reads a unified diff (with or without annotations),
+          <em>emit</em> writes the canonical text form, <em>sidecar</em>
+          round-trips it as JSON. The contract is
+          <code>parse&#40;emit&#40;x&#41;&#41; == x</code>.
+        </p>
+
+        <div class="rounded-lg border border-slate-200 bg-white p-4">
+          <pre class="mermaid">
+flowchart LR
+  raw[("unified diff\nraw.diff")]
+  parse["format/parse"]
+  schema(["AnnotatedDiff\n· AnnotatedFile\n· AnnotatedHunk\n· HunkAnnotations · Segment · LineNote · FoldDescription"])
+  emit["format/emit"]
+  side["format/sidecar"]
+  augdiff[("augmented.diff")]
+  augjson[("augmented.scr.json")]
+  lint["format/lint"]
+  viewer["viewer/build_json"]
+  vdata[("ViewerData\n→ /data.json")]
+
+  raw --> parse --> schema --> emit --> augdiff
+  schema --> side --> augjson
+  schema --> viewer --> vdata
+  augdiff -.-> lint
+
+  classDef artefact fill:#e0e7ff,stroke:#6366f1,color:#1e1b4b;
+  class raw,augdiff,augjson,vdata artefact;
+  classDef deepC fill:#0f172a,stroke:#0f172a,color:#f8fafc;
+  class schema deepC;
+          </pre>
+        </div>
+
+        <div class="text-xs text-slate-500 pt-1">
+          The TS viewer consumes <code>ViewerData</code> as
+          <code>/data.json</code>. The persisted shapes
+          (<code>augmented.diff</code> + sidecar) are the wire format
+          and the structural shape respectively — kept in sync by any
+          code that mutates one (e.g. the on-demand fold-summary pass).
+        </div>
+      </section>
+
+      <!-- ====================================================== -->
+      <!-- 7. Review server                                        -->
+      <!-- ====================================================== -->
+      <section class="space-y-5 border-t border-slate-200 pt-12">
+        <h2 class="serif text-2xl font-semibold">7 · Review server</h2>
+        <p class="text-sm text-slate-600 max-w-2xl">
+          Ephemeral localhost <code>ThreadingHTTPServer</code> spawned
+          by <code>scr review</code> / <code>scr pr</code>. Dies on
+          <code>POST /exit</code> from the viewer or after an idle
+          timeout. No external HTTP deps.
+        </p>
+
+        <div class="grid grid-cols-5 gap-4 items-start">
+          <div class="col-span-3 rounded-lg border border-slate-200 bg-white p-4">
+            <p class="schematic mb-2">routes</p>
+            <table class="w-full text-xs">
+              <thead>
+                <tr class="text-slate-500 border-b border-slate-200">
+                  <th class="text-left py-1 font-medium w-28">method</th>
+                  <th class="text-left py-1 font-medium">path</th>
+                  <th class="text-left py-1 font-medium">does what</th>
+                </tr>
+              </thead>
+              <tbody class="text-slate-700 align-top">
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">GET</td><td class="font-mono">/</td><td>viewer html</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">GET</td><td class="font-mono">/data.json</td><td>ViewerData snapshot</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">GET</td><td class="font-mono">/static/*</td><td>viewer assets (asset whitelist)</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">GET</td><td class="font-mono">/events</td><td>SSE stream — buffered + Last-Event-ID replay</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">POST</td><td class="font-mono">/fold-summary</td><td>fires the fold-summary pass; patches viewer json</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">POST</td><td class="font-mono">/comment</td><td>add reviewer comment → comments.json</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">DELETE</td><td class="font-mono">/comment</td><td>remove reviewer comment</td></tr>
+                <tr><td class="py-1.5 font-mono">POST</td><td class="font-mono">/exit</td><td>graceful shutdown</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="col-span-2 rounded-lg border border-slate-200 bg-white p-4 space-y-3">
+            <p class="schematic">events fan-out</p>
+            <pre class="mermaid">
+flowchart TB
+  pipe["augment pipeline\n_safe_emit&#40;on_event,…&#41;"]
+  pub["server.publish&#40;type,payload&#41;"]
+  buf["ring buffer\n+ subscriber queues"]
+  sse1((viewer A))
+  sse2((viewer B))
+  pipe --> pub --> buf --> sse1
+  buf --> sse2
+            </pre>
+            <p class="text-[11px] text-slate-600">
+              Each connected viewer gets a blocking queue. Publish
+              never blocks the augment pipeline.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ====================================================== -->
+      <!-- 8. Where the seams are                                  -->
+      <!-- ====================================================== -->
+      <section class="space-y-5 border-t border-slate-200 pt-12">
+        <h2 class="serif text-2xl font-semibold">8 · Seams worth naming</h2>
+        <p class="text-sm text-slate-600 max-w-2xl">
+          Five places where behaviour swaps without editing in place.
+          Each one earns its keep — two or more adapters in production
+          + tests.
+        </p>
+
+        <div class="grid grid-cols-2 gap-4">
+          <div class="rounded-lg border border-slate-300 bg-white p-4 space-y-2">
+            <div class="schematic">Backend seam</div>
+            <div class="text-sm font-semibold">5 adapters</div>
+            <p class="text-xs text-slate-600">
+              SDK + CLI families. Tests substitute via
+              <code>register_handler()</code>.
+            </p>
+          </div>
+          <div class="rounded-lg border border-slate-300 bg-white p-4 space-y-2">
+            <div class="schematic">RunSpec seam</div>
+            <div class="text-sm font-semibold">2 sources</div>
+            <p class="text-xs text-slate-600">
+              <code>fetch/github</code> and <code>fetch/local</code>
+              both produce a <code>RunSpec</code>; shared
+              <code>materialize_run_metadata</code> writes the dir.
+            </p>
+          </div>
+          <div class="rounded-lg border border-slate-300 bg-white p-4 space-y-2">
+            <div class="schematic">Pass recipe seam</div>
+            <div class="text-sm font-semibold">4 passes</div>
+            <p class="text-xs text-slate-600">
+              <code>augment/pass_.py</code> · overview · hunk ·
+              fold-summary · extra-review.
+            </p>
+          </div>
+          <div class="rounded-lg border border-slate-300 bg-white p-4 space-y-2">
+            <div class="schematic">AnnotatedDiff seam</div>
+            <div class="text-sm font-semibold">3 serialisers</div>
+            <p class="text-xs text-slate-600">
+              <code>format/parse</code>, <code>format/emit</code>,
+              <code>format/sidecar</code> all bridge to one schema.
+            </p>
+          </div>
+          <div class="rounded-lg border border-slate-300 bg-white p-4 space-y-2 col-span-2">
+            <div class="schematic">RepoTools seam</div>
+            <div class="text-sm font-semibold">2 transports</div>
+            <p class="text-xs text-slate-600">
+              <code>augment/tools.py</code> defines the read-only repo
+              surface (read_file, grep, list_dir, git_log) once. SDK
+              backends receive it via pydantic-ai's deps; CLI drivers
+              expose the same tools over MCP. One source of truth, two
+              wire formats.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ====================================================== -->
+      <!-- 9. What's small and clean                               -->
+      <!-- ====================================================== -->
+      <section class="space-y-5 border-t border-slate-200 pt-12">
+        <h2 class="serif text-2xl font-semibold">9 · The small clean pieces</h2>
+        <p class="text-sm text-slate-600 max-w-2xl">
+          Modules that don't need anything: small surface, narrow
+          purpose, do their job and get out of the way.
+        </p>
+        <div class="grid grid-cols-3 gap-3 text-xs">
+          <div class="module-card">
+            <div class="font-semibold">paths.py</div>
+            <div class="schematic">4 funcs · 67 L</div>
+            <p class="pt-1 text-slate-600">Resolves config + runs paths; git-aware fingerprint.</p>
+          </div>
+          <div class="module-card">
+            <div class="font-semibold">cache/store.py</div>
+            <div class="schematic">~90 L</div>
+            <p class="pt-1 text-slate-600">SHA-keyed disk cache. Prompt-version namespaced.</p>
+          </div>
+          <div class="module-card">
+            <div class="font-semibold">format/sidecar.py</div>
+            <div class="schematic">~20 L</div>
+            <p class="pt-1 text-slate-600"><code>model_dump_json</code> / <code>model_validate_json</code>.</p>
+          </div>
+          <div class="module-card">
+            <div class="font-semibold">augment/progress.py</div>
+            <div class="schematic">TTY meter</div>
+            <p class="pt-1 text-slate-600">Truecolor square-grid; gates on TTY.</p>
+          </div>
+          <div class="module-card">
+            <div class="font-semibold">augment/trace_adapter.py</div>
+            <div class="schematic">trace shape</div>
+            <p class="pt-1 text-slate-600">Pydantic-AI <code>AgentRunResult</code> → legacy trace JSON.</p>
+          </div>
+          <div class="module-card">
+            <div class="font-semibold">git_ops.py</div>
+            <div class="schematic">~225 L</div>
+            <p class="pt-1 text-slate-600">git plumbing wrappers; worktree adds, ref lookups.</p>
+          </div>
+        </div>
+      </section>
+
+      <footer class="border-t border-slate-200 pt-8 pb-4 text-xs text-slate-500">
+        Built for grokking the codebase. For deepening candidates, see
+        the architecture <em>review</em> report.
+      </footer>
+
+    </main>
+  </body>
+</html>

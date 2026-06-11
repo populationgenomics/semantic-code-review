@@ -26,7 +26,8 @@ from ..format.parse import parse_augmented_diff
 from ..paths import default_runs_root as _default_runs_root
 from ..viewer.build_json import build_pending_viewer_json, build_viewer_json
 from .comments import CommentStore, format_markdown
-from .server import ReviewServer
+from .github import PostResult
+from .server import PostCallable, ReviewServer
 
 
 log = logging.getLogger(__name__)
@@ -151,9 +152,17 @@ class ServeResult:
     """Outcome of `serve_review`. Returned in addition to the side
     effect of `comments.json` on disk so callers don't have to re-load
     it (and so each caller can decide what to do with the comments —
-    `scr review` prints markdown, `scr pr` posts to GitHub)."""
+    `scr review` prints markdown, `scr pr` posts to GitHub).
+
+    ``posted`` is set when the viewer's confirmation modal fired a
+    successful /post-review (only possible when the caller supplied a
+    ``post`` callback to ``serve_review``). None means "no post
+    happened" — cancelled, no postable comments, or the caller wasn't
+    in posting mode at all.
+    """
     comments: list  # list[Comment] — kept loose to avoid an import cycle
     clean: bool     # True iff the viewer signalled Done within the timeout
+    posted: PostResult | None = None
 
 
 def serve_review(
@@ -161,6 +170,8 @@ def serve_review(
     *,
     augment: AugmentCallable | None = None,
     fold_summary: FoldSummaryCallable | None = None,
+    post: PostCallable | None = None,
+    post_meta: dict | None = None,
     port: int = 0,
     timeout: int = 3600,
     open_browser: bool = True,
@@ -193,6 +204,8 @@ def serve_review(
         run_dir=run_dir,
         viewer_json=viewer_json,
         port=port,
+        post_callback=post,
+        post_meta=post_meta,
     )
     srv.start()
     try:
@@ -241,7 +254,11 @@ def serve_review(
         srv.stop()
 
     store = CommentStore(run_dir / "comments.json")
-    return ServeResult(comments=store.all(), clean=clean)
+    return ServeResult(
+        comments=store.all(),
+        clean=clean,
+        posted=srv.ctx.posted_result,
+    )
 
 
 def _build_fold_summary_task(

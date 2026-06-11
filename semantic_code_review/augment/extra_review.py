@@ -22,7 +22,6 @@ reviewer can promote any of them to a PR comment via the existing
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -35,6 +34,7 @@ from pydantic_ai.output import ToolOutput
 
 from ..cache.store import CacheStore
 from .agents import Client
+from .pass_ import PassMeta, run_pass
 from .schemas import AnnotatedDiff, LineNote
 
 log = logging.getLogger(__name__)
@@ -46,6 +46,17 @@ log = logging.getLogger(__name__)
 _EXTRA_CACHE_SETTINGS: dict[str, Any] = {
     "anthropic_cache_instructions": True,
 }
+
+
+# Best-effort pass: a failure here returns the original diff unchanged
+# rather than poisoning the main-pass output. `swallow_errors=True`
+# makes `run_pass` log + return None on exception; the caller then
+# short-circuits to the unmodified diff.
+_EXTRA_REVIEW = PassMeta(
+    name="extra-review-pr",
+    submit_tool="submit_extra_notes",
+    swallow_errors=True,
+)
 
 
 class ExtraReviewNote(BaseModel):
@@ -182,55 +193,31 @@ async def run_pr_level_extra_review(
     extra pass is an add-on; the main-pass output is load-bearing
     and must not be poisoned by an extras hiccup.
     """
-    if cache is not None:
-        key = cache.key(
-            "extra-review-pr",
-            model,
-            prompt_text,
-            overview_json,
-            diff_text,
-        )
-        entry = cache.get(key)
-        if entry is not None:
-            notes = [
-                ExtraReviewNote.model_validate(n)
-                for n in entry["response"]["notes"]
-            ]
-            return _distribute_notes_to_hunks(diff, notes)
-
-    user_content = _format_pr_level_prompt(
-        overview_json=overview_json, diff_text=diff_text,
+    payload = await run_pass(
+        _EXTRA_REVIEW,
+        client=client,
+        agent=make_extra_review_agent(client.model, system_prompt=prompt_text),
+        user_content=_format_pr_level_prompt(
+            overview_json=overview_json, diff_text=diff_text,
+        ),
+        # `prompt_text` is the user-supplied system prompt — it varies
+        # per call, so it lives on the run_pass arg surface rather than
+        # on PassMeta. It also participates in the cache key (via the
+        # `system` parameter) so re-runs with a different prompt miss.
+        system=prompt_text,
+        model=model,
+        cache_inputs=(overview_json, diff_text),
+        model_settings=_EXTRA_CACHE_SETTINGS,
+        cache=cache,
+        trace_path=(trace_dir / "extra-review.json") if trace_dir is not None else None,
+        cache_request={"diff_len": len(diff_text)},
     )
-    agent = make_extra_review_agent(client.model, system_prompt=prompt_text)
-    async with agent.iter(
-        user_content, model_settings=_EXTRA_CACHE_SETTINGS,
-    ) as agent_run:
-        try:
-            async for _ in agent_run:
-                pass
-        except BaseException as exc:  # noqa: BLE001
-            log.warning(
-                "PR-level extra-review pass failed: %s: %s",
-                type(exc).__name__, exc,
-            )
-            return diff
-        result = agent_run.result
-
-    if result is None or result.output is None:
+    if payload is None:
         return diff
-    submission: ExtraReviewSubmission = result.output
-    notes = list(submission.notes)
 
-    if cache is not None:
-        usage = result.usage()
-        cache.put(
-            key,
-            request={"diff_len": len(diff_text)},
-            response={"notes": [n.model_dump() for n in notes]},
-            tokens_in=usage.input_tokens or 0,
-            tokens_out=usage.output_tokens or 0,
-        )
-
+    notes = [
+        ExtraReviewNote.model_validate(n) for n in payload.get("notes") or []
+    ]
     log.info("extra-review: %d notes emitted across %d files",
              len(notes), len({n.file for n in notes}))
     return _distribute_notes_to_hunks(diff, notes)

@@ -182,6 +182,15 @@ class _BufferedEvent:
 FoldSummariser = Callable[..., Awaitable[str]]
 
 
+#: Signature of the post callback accepted by ``serve_review`` when the
+#: caller wants the viewer to handle confirm-and-post in-browser.
+#: Takes the comment IDs the reviewer selected in the confirmation
+#: modal; returns the result of posting them (today: GitHub's
+#: :class:`PostResult`). Loose annotation here so server.py stays
+#: independent of the github post types.
+PostCallable = Callable[[list[str]], Any]
+
+
 @dataclass
 class ServerContext:
     run_dir: Path
@@ -193,6 +202,20 @@ class ServerContext:
     # The /fold-summary route returns 409 until this is set (the augment
     # pass has to finish first so the sidecar exists).
     fold_summariser: FoldSummariser | None = None
+    # Optional, wired by serve_review when the caller wants posting to
+    # happen via the in-browser confirmation modal (``scr pr``). When
+    # both are None the modal stays absent and Done exits the way it
+    # always has. ``post_meta`` is a static dict shown to the viewer
+    # on /post-config (repo, number, head_sha) so the modal can label
+    # itself; the callback fires on /post-review with the IDs the
+    # reviewer selected.
+    post_callback: PostCallable | None = None
+    post_meta: dict[str, Any] | None = None
+    # Result of the most recent successful /post-review, persisted on
+    # the context so ``serve_review`` can hand it back to the CLI after
+    # ``wait_until_done`` returns. None means "no post happened" (user
+    # cancelled / closed the tab / no postable comments).
+    posted_result: Any = None
     # SSE fan-out + replay buffer. Subscribers and `buffer` are mutated
     # by both publishing threads and request-handling threads; the
     # single ``state_lock`` covers both so a reconnecting client sees a
@@ -259,6 +282,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/comments":
             self._json(200, {"comments": [c.model_dump() for c in self.ctx.store.all()]})
+            return
+        if path == "/post-config":
+            self._handle_post_config()
+            return
+        if path == "/post-preview":
+            self._handle_post_preview()
             return
         if path == "/events":
             self._stream_events()
@@ -391,6 +420,14 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             self._handle_fold_summary(payload)
             return
+        if path == "/post-review":
+            try:
+                payload = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": f"invalid json: {e}"})
+                return
+            self._handle_post_review(payload)
+            return
         self._json(404, {"error": "not found"})
 
     def _handle_fold_summary(self, payload: dict[str, Any]) -> None:
@@ -459,6 +496,98 @@ class _Handler(BaseHTTPRequestHandler):
         # tab doesn't need to wait for its own SSE event to round-trip.
         self._json(200, result)
 
+    # --- post (confirm-and-post modal) ---------------------------------
+
+    def _handle_post_config(self) -> None:
+        """Tell the viewer whether this server is configured for posting.
+
+        The viewer fetches this once on boot. When ``posting`` is true,
+        the Done button opens the confirmation modal instead of exiting
+        directly. The other fields are display-only metadata (modal
+        header: "Posting N comments to <repo>#<number> at <head_sha>").
+        """
+        if self.ctx.post_meta is None:
+            self._json(200, {"posting": False})
+            return
+        out: dict[str, Any] = {"posting": True}
+        out.update(self.ctx.post_meta)
+        self._json(200, out)
+
+    def _handle_post_preview(self) -> None:
+        """Return the current list of comments-that-would-be-posted.
+
+        Computed on demand because the comment store mutates throughout
+        the session — a preview taken at startup would be stale by Done.
+        Returns rows the viewer needs to render the modal: id (for
+        selection round-trip), file/side/line (for context), body, and
+        ``is_reply`` to label the row.
+        """
+        if self.ctx.post_callback is None:
+            self._json(409, {"error": "this server isn't configured for posting"})
+            return
+        # Local import keeps the GitHub mapping types out of the server
+        # module's import-time graph — the route is only used when the
+        # caller wired post_callback, which only ``scr pr`` does.
+        from .github import comments_to_github
+
+        all_comments = self.ctx.store.all()
+        by_id = {c.id: c for c in all_comments}
+        rows: list[dict[str, Any]] = []
+        for p in comments_to_github(all_comments):
+            src = by_id.get(p.source_id or "")
+            if src is None:
+                continue
+            rows.append({
+                "id": src.id,
+                "file": src.file,
+                "side": src.side,
+                "line": src.line,
+                "body": p.body,
+                "is_reply": p.is_reply,
+            })
+        self._json(200, {"comments": rows})
+
+    def _handle_post_review(self, payload: dict[str, Any]) -> None:
+        """Fire the post callback with the selected IDs; persist + broadcast.
+
+        Wire format: ``{ "comment_ids": ["id1", "id2", ...] }``. The
+        callback is responsible for filtering the store down to those
+        IDs, mapping to the wire shape, and posting. On success the
+        result is persisted on ``ctx.posted_result`` so
+        :func:`serve_review` can hand it back to the CLI; it's also
+        fanned out as an SSE ``posted`` event for other open tabs.
+
+        Does NOT auto-exit. The modal stays open showing the result so
+        the reviewer can click through to the GitHub URL; the user
+        ends the session explicitly via the modal's Close button
+        (which POSTs /exit).
+        """
+        if self.ctx.post_callback is None:
+            self._json(409, {"error": "this server isn't configured for posting"})
+            return
+        ids = payload.get("comment_ids")
+        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+            self._json(400, {"error": "comment_ids must be a list of strings"})
+            return
+
+        try:
+            result = self.ctx.post_callback(ids)
+        except Exception as e:  # noqa: BLE001 — surface every failure to the modal
+            log.exception("post callback raised")
+            self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            return
+
+        # Marshal the PostResult-ish object into a JSON-safe dict
+        # without binding the server to its concrete type.
+        response = {
+            "posted": int(getattr(result, "posted", 0)),
+            "review_url": str(getattr(result, "review_url", "") or ""),
+            "review_id": int(getattr(result, "review_id", 0) or 0),
+        }
+        self.ctx.posted_result = result
+        _ctx_publish(self.ctx, "posted", response)
+        self._json(200, response)
+
     def do_DELETE(self) -> None:  # noqa: N802
         self._touch()
         path = self.path.split("?", 1)[0]
@@ -497,6 +626,8 @@ class ReviewServer:
         viewer_json: dict[str, Any],
         host: str = "127.0.0.1",
         port: int = 0,
+        post_callback: PostCallable | None = None,
+        post_meta: dict[str, Any] | None = None,
     ) -> None:
         self.run_dir = run_dir
         self.store = CommentStore(run_dir / "comments.json")
@@ -507,6 +638,8 @@ class ReviewServer:
             viewer_json=viewer_json,
             done_event=self.done_event,
             last_activity=time.time(),
+            post_callback=post_callback,
+            post_meta=post_meta,
         )
         self._host = host
         self._port = port
