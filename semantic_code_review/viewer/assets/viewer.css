@@ -416,7 +416,14 @@ body {
 }
 .diff .half {
   display: grid;
-  grid-template-columns: 3.5em minmax(0, 1fr);
+  /* `max-content` as the track *min* sizes the content column to the widest
+   * line, so every row's grid area — and thus its background tint — is as
+   * wide as the longest line and stays painted when a long sibling scrolls
+   * into view. `1fr` as the max lets the track grow to fill the column when
+   * the content is narrower than the viewport. A plain `minmax(0, 1fr)`
+   * floors the track at 0, so the widest line overflows its own area while
+   * shorter rows' tint stops at the viewport edge. */
+  grid-template-columns: 3.5em minmax(max-content, 1fr);
   overflow-x: auto;
   min-width: 0;
   /* overflow-y is implicitly clipped (non-visible) when x is auto.
@@ -464,14 +471,9 @@ body {
 }
 .diff .cell-lineno.empty { background: transparent; border-right-color: transparent; }
 .diff .cell-content {
-  /* Grow the content cell's box to the full width of its text so the
-   * row-kind background tint (green/red/context) covers everything the
-   * user can scroll to horizontally. Without this, `white-space: pre`
-   * lets the text overflow the grid track while the cell's border box
-   * — and thus its background — stays at track width. The grid track
-   * expands to match (via minmax(0, 1fr)), and `.half`'s overflow-x
-   * scrolls it into view. */
-  min-width: max-content;
+  /* Width (and thus the row-kind background tint) comes from the content
+   * column track — `minmax(max-content, 1fr)` on `.half` above — so every
+   * cell stretches to the widest line. No per-cell `min-width` needed. */
   /* Reserve a left gutter for the fold chevron so it can float outside
    * the text flow without displacing the code. Every line — chevron or
    * not — pays the same gutter so indentation reads consistently.
