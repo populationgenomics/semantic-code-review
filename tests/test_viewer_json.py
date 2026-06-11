@@ -229,3 +229,49 @@ def test_symbol_blocks_absent_without_worktrees(tmp_path: Path) -> None:
     data = build_pending_viewer_json(tmp_path)
 
     assert data["symbols"] == []
+
+
+# --- syntax-highlighting language map --------------------------------------
+
+# Canonical languages registered in the vendored highlight.js build
+# (semantic_code_review/viewer/assets/vendor/highlight.min.js). Derived by
+# enumerating the build's `grmr_<name>` grammar registrations; re-run that
+# enumeration after vendor/refresh.sh and update this set if it changes.
+_HLJS_BUILD_LANGUAGES = frozenset({
+    "bash", "c", "cpp", "csharp", "css", "diff", "go", "graphql", "ini",
+    "java", "javascript", "json", "kotlin", "less", "lua", "makefile",
+    "markdown", "objectivec", "perl", "php", "plaintext", "python", "r",
+    "ruby", "rust", "scss", "shell", "sql", "swift", "typescript", "vbnet",
+    "wasm", "xml", "yaml",
+})
+
+
+def test_lang_map_values_are_in_the_vendored_hljs_build() -> None:
+    """Every mapped language must exist in the bundled highlight.js, else
+    `hljs.highlight` throws at runtime and the cell silently falls back to
+    plain text. Guards against typos / unbundled grammars."""
+    from semantic_code_review.viewer.build_json import _LANG_BY_EXT
+
+    unknown = {
+        ext: lang
+        for ext, lang in _LANG_BY_EXT.items()
+        if lang not in _HLJS_BUILD_LANGUAGES
+    }
+    assert not unknown, f"languages not in the vendored hljs build: {unknown}"
+
+
+def test_lang_from_path_covers_common_extensions() -> None:
+    from semantic_code_review.viewer.build_json import _lang_from_path
+
+    cases = {
+        "a.py": "python", "a.ts": "typescript", "a.mts": "typescript",
+        "a.jsx": "javascript", "a.cjs": "javascript",
+        "styles.css": "css", "theme.scss": "scss", "App.swift": "swift",
+        "index.php": "php", "schema.graphql": "graphql", "Config.TOML": "ini",
+        "patch.diff": "diff",
+    }
+    for path, lang in cases.items():
+        assert _lang_from_path(path) == lang, path
+    # Unknown / extensionless ⇒ empty (viewer renders plain text).
+    assert _lang_from_path("LICENSE") == ""
+    assert _lang_from_path("data.parquet") == ""

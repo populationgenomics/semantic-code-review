@@ -378,13 +378,32 @@ def _load_head_lines(f: AnnotatedFile, head_dir: Path | None) -> list[str] | Non
     return lines
 
 
+# Maps a file extension to a highlight.js language *registered in the
+# vendored build* (see vendor/highlight.min.js; the set is asserted in
+# tests/test_viewer_json.py). An unmapped extension yields "", which the
+# viewer renders as plain text. Values must be canonical hljs names, not
+# aliases, so the test guard stays simple.
 _LANG_BY_EXT = {
-    ".py": "python", ".js": "javascript", ".ts": "typescript", ".tsx": "typescript",
-    ".jsx": "javascript", ".go": "go", ".rs": "rust", ".rb": "ruby",
-    ".java": "java", ".kt": "kotlin", ".c": "c", ".h": "c", ".cc": "cpp",
-    ".cpp": "cpp", ".hpp": "cpp", ".cs": "csharp", ".sh": "bash", ".yaml": "yaml",
-    ".yml": "yaml", ".json": "json", ".toml": "toml", ".md": "markdown",
-    ".html": "xml", ".xml": "xml", ".sql": "sql",
+    # Python / JS / TS (incl. the module variants the structural layer parses)
+    ".py": "python",
+    ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript", ".cjs": "javascript",
+    ".ts": "typescript", ".tsx": "typescript", ".mts": "typescript", ".cts": "typescript",
+    # Systems / compiled
+    ".go": "go", ".rs": "rust", ".c": "c", ".h": "c",
+    ".cc": "cpp", ".cpp": "cpp", ".cxx": "cpp", ".hpp": "cpp", ".hh": "cpp",
+    ".cs": "csharp", ".java": "java", ".kt": "kotlin", ".kts": "kotlin",
+    ".swift": "swift", ".vb": "vbnet",
+    # Scripting
+    ".rb": "ruby", ".php": "php", ".lua": "lua", ".pl": "perl", ".pm": "perl",
+    ".r": "r", ".sh": "bash", ".bash": "bash", ".zsh": "bash",
+    # Web / styling
+    ".css": "css", ".scss": "scss", ".sass": "scss", ".less": "less",
+    ".html": "xml", ".xml": "xml", ".svg": "xml",
+    # Data / config / docs
+    ".yaml": "yaml", ".yml": "yaml", ".json": "json", ".toml": "ini", ".ini": "ini",
+    ".cfg": "ini", ".sql": "sql", ".graphql": "graphql", ".gql": "graphql",
+    ".md": "markdown", ".markdown": "markdown",
+    ".diff": "diff", ".patch": "diff",
 }
 
 
