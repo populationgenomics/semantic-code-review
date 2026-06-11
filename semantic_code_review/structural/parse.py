@@ -45,8 +45,54 @@ def _python_support() -> tuple[Language, str]:
     return Language(tsp.language()), tsp.TAGS_QUERY
 
 
+# The upstream tree-sitter-typescript `tags.scm` is *additive* over the
+# JavaScript one — it captures only the TS-specific constructs (interfaces,
+# ambient signatures, abstract classes, namespaces) and inherits classes,
+# functions, methods and arrow consts from the shared JS grammar. So the TS
+# query is `js + ts`. Type aliases and enums are tagged by neither wheel;
+# vendor those two captures here (ADR 0001: "vendor where absent").
+_TS_EXTRA_TAGS = """
+(type_alias_declaration name: (type_identifier) @name) @definition.type
+(enum_declaration name: (identifier) @name) @definition.enum
+"""
+
+
+def _javascript_support() -> tuple[Language, str]:
+    import tree_sitter_javascript as tsj
+
+    return Language(tsj.language()), tsj.TAGS_QUERY
+
+
+def _typescript_tags() -> str:
+    import tree_sitter_javascript as tsj
+    import tree_sitter_typescript as tst
+
+    return "\n".join([tsj.TAGS_QUERY, tst.TAGS_QUERY, _TS_EXTRA_TAGS])
+
+
+def _typescript_support() -> tuple[Language, str]:
+    import tree_sitter_typescript as tst
+
+    return Language(tst.language_typescript()), _typescript_tags()
+
+
+def _tsx_support() -> tuple[Language, str]:
+    import tree_sitter_typescript as tst
+
+    return Language(tst.language_tsx()), _typescript_tags()
+
+
 _REGISTRY: dict[str, _LangSupport] = {
     "python": _LangSupport(extensions=(".py",), loader=_python_support),
+    "javascript": _LangSupport(
+        extensions=(".js", ".jsx", ".mjs", ".cjs"), loader=_javascript_support
+    ),
+    # `.ts` and `.tsx` need distinct grammars: the `<T>` cast / JSX ambiguity
+    # means the tsx grammar mis-parses plain TS and vice versa.
+    "typescript": _LangSupport(
+        extensions=(".ts", ".mts", ".cts"), loader=_typescript_support
+    ),
+    "tsx": _LangSupport(extensions=(".tsx",), loader=_tsx_support),
 }
 
 _EXT_TO_LANG: dict[str, str] = {
@@ -214,8 +260,46 @@ def _python_signature(node: Node, source: bytes) -> str | None:
     return None
 
 
+def _ts_signature(node: Node, source: bytes) -> str | None:
+    """Declared signature for a TS/TSX definition: header text up to the body.
+
+    `class Widget extends Base`, `function f(a: number): void`,
+    `render(x: number): string`, `interface Foo`, `enum Color`; the full
+    declaration for a type alias (`type Bar = string | number`). For an
+    arrow / function-expression const the parent `const`/`let`/`var`
+    keyword is kept (`const arrow = (n: number): number`).
+    """
+    if node.type == "type_alias_declaration":
+        return _collapse_ws(_text(source, node).rstrip().rstrip(";"))
+    start = node.start_byte
+    if node.type == "variable_declarator":
+        parent = node.parent
+        if parent is not None and parent.type in (
+            "lexical_declaration",
+            "variable_declaration",
+        ):
+            start = parent.start_byte
+    body = node.child_by_field_name("body")
+    if body is None:
+        # arrow / function-expression const: the body lives under `value`.
+        value = node.child_by_field_name("value")
+        if value is not None:
+            body = value.child_by_field_name("body")
+    end = body.start_byte if body is not None else node.end_byte
+    header = source[start:end].decode("utf-8", errors="replace").rstrip()
+    for suffix in ("=>", "=", "{", ":", ";"):
+        if header.endswith(suffix):
+            header = header[: -len(suffix)].rstrip()
+            break
+    return _collapse_ws(header) or None
+
+
+# JavaScript is deliberately omitted: untyped JS carries no declared
+# signature (ADR 0001 Slice 6), so `_signature` returns `None` for it.
 _SIGNATURE_EXTRACTORS: dict[str, Callable[[Node, bytes], str | None]] = {
     "python": _python_signature,
+    "typescript": _ts_signature,
+    "tsx": _ts_signature,
 }
 
 

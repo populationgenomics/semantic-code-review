@@ -232,3 +232,116 @@ def test_merge_concatenates_per_file_deltas() -> None:
     d2 = diff_file("b.py", [], outline_symbols("def b():\n    pass\n", "python"))
     merged = merge([d1, d2])
     assert {(c.path, c.qualified_name) for c in merged.added} == {("a.py", "a"), ("b.py", "b")}
+
+
+# --- TypeScript / TSX / JavaScript (Slice 6) -------------------------------
+
+_TS_SAMPLE = '''interface Foo {
+  a: number;
+}
+
+type Bar = string | number;
+
+enum Color { Red, Green }
+
+abstract class Base {
+  abstract render(): string;
+}
+
+class Widget extends Base {
+  render(x: number): string {
+    return "x";
+  }
+}
+
+function freestanding(a: number): void {}
+
+const arrow = (n: number): number => n + 1;
+'''
+
+
+def test_ts_extension_detection() -> None:
+    assert language_for_path("src/app.ts") == "typescript"
+    assert language_for_path("src/app.mts") == "typescript"
+    assert language_for_path("ui/comp.tsx") == "tsx"
+    assert language_for_path("lib/util.js") == "javascript"
+    assert language_for_path("lib/util.jsx") == "javascript"
+    assert language_for_path("lib/util.mjs") == "javascript"
+
+
+def test_ts_top_level_kinds() -> None:
+    top = _by_name(outline_symbols(_TS_SAMPLE, "typescript"))
+    assert top["Foo"].kind == "interface"
+    assert top["Bar"].kind == "type"
+    assert top["Color"].kind == "enum"
+    assert top["Base"].kind == "class"
+    assert top["Widget"].kind == "class"
+    assert top["freestanding"].kind == "function"
+    assert top["arrow"].kind == "function"
+
+
+def test_ts_signatures() -> None:
+    top = _by_name(outline_symbols(_TS_SAMPLE, "typescript"))
+    assert top["Foo"].signature == "interface Foo"
+    assert top["Bar"].signature == "type Bar = string | number"
+    assert top["Widget"].signature == "class Widget extends Base"
+    assert top["freestanding"].signature == "function freestanding(a: number): void"
+    # The arrow const keeps its declaration keyword; the `=>` body is dropped.
+    assert top["arrow"].signature == "const arrow = (n: number): number"
+
+
+def test_ts_method_nests_under_class() -> None:
+    top = _by_name(outline_symbols(_TS_SAMPLE, "typescript"))
+    method = _by_name(top["Widget"].children)["render"]
+    assert method.kind == "method"
+    assert method.qualified_name == "Widget.render"
+    assert method.signature == "render(x: number): string"
+
+
+def test_tsx_parses_jsx_returning_component() -> None:
+    src = (
+        "export function Button(props: {label: string}): JSX.Element {\n"
+        "  return <button>{props.label}</button>;\n"
+        "}\n"
+    )
+    top = _by_name(outline_symbols(src, "tsx"))
+    assert top["Button"].kind == "function"
+    assert top["Button"].signature == "function Button(props: {label: string}): JSX.Element"
+
+
+def test_js_outline_has_no_signature() -> None:
+    """Untyped JS carries no declared signature (Slice 6)."""
+    src = (
+        "function greet(name) {\n"
+        "  return name;\n"
+        "}\n"
+        "\n"
+        "class Box {\n"
+        "  open() { return 1; }\n"
+        "}\n"
+    )
+    top = _by_name(outline_symbols(src, "javascript"))
+    assert set(top) >= {"greet", "Box"}
+    assert top["greet"].kind == "function" and top["greet"].signature is None
+    box_method = _by_name(top["Box"].children)["open"]
+    assert box_method.qualified_name == "Box.open" and box_method.signature is None
+
+
+def test_ts_changed_symbols_diff() -> None:
+    base = outline_symbols(
+        "function keep(): void {}\nfunction gone(): void {}\n", "typescript"
+    )
+    head = outline_symbols(
+        "function keep(): void {}\nfunction added(): void {}\n", "typescript"
+    )
+    delta = diff_file("m.ts", base, head)
+    assert [c.qualified_name for c in delta.added] == ["added"]
+    assert [c.qualified_name for c in delta.removed] == ["gone"]
+
+
+def test_ts_enclosing_symbol() -> None:
+    syms = outline_symbols(_TS_SAMPLE, "typescript")
+    # `return "x";` sits inside Widget.render.
+    line = _TS_SAMPLE.splitlines().index('    return "x";') + 1
+    sym = enclosing_symbol(syms, line)
+    assert sym is not None and sym.qualified_name == "Widget.render"
