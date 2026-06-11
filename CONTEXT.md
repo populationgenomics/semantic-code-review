@@ -177,8 +177,8 @@ point, returning `[]` for an unsupported language or a parse failure
 rather than raising.
 
 This is the single internal currency the structural consumers read:
-the `RepoTools.outline` / `symbol_at` tools, the diff-wide delta, and
-(later slices) the overview-prompt seed and the sidebar Symbols axis.
+the `RepoTools.outline` / `symbol_at` tools, the diff-wide delta, the
+overview-prompt seed, and (a later slice) the sidebar Symbols axis.
 It is deliberately *not* reconciled with the LLM-derived
 `Overview.symbols_*` / `FileSymbols` — those answer "why did this
 change" (semantic, fallible); `Symbol` answers "where is the code and
@@ -194,6 +194,21 @@ diff-wide): added = head-only name, removed = base-only, **modified =
 same name on both sides with a differing range** (a same-span body edit
 is not flagged — the range is the signal; finer "what changed" meaning
 stays the LLM's). Each `ChangedSymbol` carries its `path` and the span
-on its live side (head for added/modified, base for removed). Surfaced
-by `RepoTools.changed_symbols()`, which reads base via `git show` and
-head from the worktree for every changed file in a supported language.
+on its live side (head for added/modified, base for removed). Computed
+by `RepoTools.compute_symbol_delta()`, which reads base via `git show`
+and head from the worktree for every changed file in a supported
+language; `changed_symbols()` is its JSON wrapper for the LLM tool
+surface.
+
+**Overview seed**
+Before the overview pass, the pipeline computes the `SymbolDelta` and
+passes it to `format_overview_prompt`, which appends a `# Symbols
+changed (deterministic …)` section listing each changed symbol by kind
+and `qualified_name`. The overview system prompt instructs the model to
+populate `Overview.symbols_*` from that section verbatim — turning the
+symbol fields from inference into a deterministic seed (ADR 0001 Slice
+3). The seed is independent of `--no-context` (it's our own tree-sitter
+parse, not LLM tool access) and best-effort (a failure leaves the
+overview unseeded). When the delta is empty — every changed file is in
+an unsupported language — no section is appended and the prompt is
+byte-identical to the pre-seed form.

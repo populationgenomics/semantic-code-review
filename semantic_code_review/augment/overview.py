@@ -16,6 +16,7 @@ from ..augment.schemas import (
     OverviewEdge, OverviewGroup, OverviewGroupMember, OverviewSymbol,
 )
 from ..cache.store import CacheStore
+from ..structural import SymbolDelta
 from .agents import Client, make_overview_agent
 from .pass_ import PassMeta, run_pass
 from .prompts import OVERVIEW_SYSTEM
@@ -27,8 +28,19 @@ log = logging.getLogger(__name__)
 _OVERVIEW = PassMeta(name="overview", submit_tool="submit_overview")
 
 
-def format_overview_prompt(diff: AnnotatedDiff, meta: dict[str, Any]) -> str:
-    """Produce the user-message text for the overview call."""
+def format_overview_prompt(
+    diff: AnnotatedDiff,
+    meta: dict[str, Any],
+    delta: SymbolDelta | None = None,
+) -> str:
+    """Produce the user-message text for the overview call.
+
+    `delta`, when present and non-empty, seeds the prompt with the
+    deterministic tree-sitter symbol delta (ADR 0001) so the model
+    reports `symbols_*` from ground truth rather than guessing from hunk
+    headers. An absent or empty delta (no supported-language change)
+    appends nothing — the prompt is byte-identical to the pre-seed form.
+    """
     parts: list[str] = []
     title = meta.get("title", "")
     body = (meta.get("body") or "").strip()
@@ -54,7 +66,41 @@ def format_overview_prompt(diff: AnnotatedDiff, meta: dict[str, Any]) -> str:
         for i, h in enumerate(f.hunks):
             parts.append(f"  [{i}] {h.parsed.header}")
 
+    seed = _format_symbol_seed(delta)
+    if seed:
+        parts.append(seed)
+
     return "\n".join(parts) + "\n"
+
+
+def _format_symbol_seed(delta: SymbolDelta | None) -> str:
+    """Render the deterministic symbol delta as a prompt section, or `""`.
+
+    Returns the empty string when there's nothing to seed (no delta, or
+    every bucket empty) so callers can keep the prompt byte-identical to
+    the unseeded form for all-unsupported-language diffs.
+    """
+    if delta is None:
+        return ""
+    buckets = (("added", delta.added), ("modified", delta.modified), ("removed", delta.removed))
+    if not any(items for _, items in buckets):
+        return ""
+    lines = [
+        "\n# Symbols changed (deterministic — tree-sitter, not your inference)",
+        "These are the exact definitions that changed between base and head, by "
+        "name and kind. Populate `symbols_added` / `symbols_modified` / "
+        "`symbols_removed` from THIS list verbatim — one entry per line below, "
+        "using its `qualified_name` as the symbol `name`. Do not add, drop, or "
+        "rename entries; languages absent here are simply not yet parseable.",
+    ]
+    for label, items in buckets:
+        lines.append(f"{label}:")
+        if not items:
+            lines.append("  (none)")
+            continue
+        for c in items:
+            lines.append(f"  {c.kind} {c.qualified_name}  ({c.path})")
+    return "\n".join(lines)
 
 
 async def run_overview_pass(
@@ -63,11 +109,17 @@ async def run_overview_pass(
     diff: AnnotatedDiff,
     meta: dict[str, Any],
     model: str,
+    delta: SymbolDelta | None = None,
     cache: CacheStore | None = None,
     trace_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Run the overview call. Returns the raw submit_args from the model."""
-    user_text = format_overview_prompt(diff, meta)
+    """Run the overview call. Returns the raw submit_args from the model.
+
+    `delta`, when present, seeds the prompt with the deterministic
+    structural symbol delta (ADR 0001 Slice 3). It feeds the prompt text,
+    so the cache key (which hashes `user_text`) tracks it automatically.
+    """
+    user_text = format_overview_prompt(diff, meta, delta)
     payload = await run_pass(
         _OVERVIEW,
         client=client,

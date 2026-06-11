@@ -14,7 +14,7 @@ from __future__ import annotations
 from .schemas import SMELL_TAGS_TEXT
 
 
-PROMPT_VERSION = "p10"
+PROMPT_VERSION = "p11"
 
 
 OVERVIEW_SYSTEM = (
@@ -26,6 +26,11 @@ OVERVIEW_SYSTEM = (
     "Guidelines:\n"
     "- Lead with WHY, not WHAT.\n"
     "- Symbol kinds are: function, method, class, constant.\n"
+    "- If the user prompt has a `# Symbols changed` section, it is a deterministic "
+    "  parse of what actually changed. Populate `symbols_added`/`symbols_modified`/"
+    "  `symbols_removed` from it verbatim — that list is ground truth; do not invent, "
+    "  drop, or rename entries. With no such section, infer symbols from the hunk "
+    "  headers as before.\n"
     "- `callgraph_edges` are introduced or modified calls (best-effort — omit if unsure).\n"
     "- `themes` are short keyword tags (e.g. 'pagination', 'api-surface').\n"
     "- Per-file `summary` is one sentence; `lang` only when the extension is ambiguous.\n"

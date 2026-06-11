@@ -159,6 +159,31 @@ class RepoTools:
         symbols = structural.outline_symbols(source, lang)
         return structural.symbol_to_json(structural.enclosing_symbol(symbols, line))
 
+    def compute_symbol_delta(self) -> structural.SymbolDelta:
+        """Deterministic base→head structural delta over the whole diff.
+
+        Compares the base commit against the head worktree for every
+        changed file in a supported language and merges the per-file
+        `qualified_name` set-diffs into one diff-wide `SymbolDelta`.
+        Changed files in unsupported languages are silently absent.
+
+        Underlies both the `changed_symbols` tool (JSON for the LLM) and
+        the overview seed (the `SymbolDelta` object, consumed in-process).
+        Raises `git_ops.GitError` if the diff can't be enumerated.
+        """
+        paths = git_ops.diff_name_only(self.repo_git, self.base_sha, self.head_sha)
+        deltas = []
+        for path in paths:
+            lang = structural.language_for_path(path)
+            if lang is None:
+                continue
+            base_src = self._read_source(path, self.base_sha)
+            head_src = self._read_source(path, None)
+            base_syms = structural.outline_symbols(base_src, lang) if base_src is not None else []
+            head_syms = structural.outline_symbols(head_src, lang) if head_src is not None else []
+            deltas.append(structural.diff_file(path, base_syms, head_syms))
+        return structural.merge(deltas)
+
     @_tool
     def changed_symbols(self) -> str:
         """Deterministic structural delta of the whole diff, as JSON.
@@ -175,20 +200,10 @@ class RepoTools:
         silently absent.
         """
         try:
-            paths = git_ops.diff_name_only(self.repo_git, self.base_sha, self.head_sha)
+            delta = self.compute_symbol_delta()
         except git_ops.GitError as e:
             return f"error: {e}"
-        deltas = []
-        for path in paths:
-            lang = structural.language_for_path(path)
-            if lang is None:
-                continue
-            base_src = self._read_source(path, self.base_sha)
-            head_src = self._read_source(path, None)
-            base_syms = structural.outline_symbols(base_src, lang) if base_src is not None else []
-            head_syms = structural.outline_symbols(head_src, lang) if head_src is not None else []
-            deltas.append(structural.diff_file(path, base_syms, head_syms))
-        return _cap(structural.merge(deltas).model_dump_json())
+        return _cap(delta.model_dump_json())
 
     # --- search -----------------------------------------------------------
 

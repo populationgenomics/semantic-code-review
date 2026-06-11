@@ -242,3 +242,16 @@ def test_changed_symbols_empty_when_base_equals_head(repo: RepoTools) -> None:
 def test_changed_symbols_takes_no_args() -> None:
     schemas = {s["name"]: s for s in mcp_tool_schemas()}
     assert schemas["changed_symbols"]["inputSchema"].get("required", []) == []
+
+
+def test_compute_symbol_delta_returns_typed_object(diff_repo: RepoTools) -> None:
+    """The in-process seed path returns a `SymbolDelta`, not JSON text."""
+    delta = diff_repo.compute_symbol_delta()
+    assert {c.qualified_name for c in delta.added} == {"bar"}
+    assert {c.qualified_name for c in delta.removed} == {"gone"}
+    assert {c.qualified_name for c in delta.modified} == {"foo"}
+
+
+def test_compute_symbol_delta_is_not_a_tool() -> None:
+    """It underlies `changed_symbols` but is not part of the LLM surface."""
+    assert "compute_symbol_delta" not in {s["name"] for s in mcp_tool_schemas()}
