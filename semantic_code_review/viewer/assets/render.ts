@@ -21,6 +21,7 @@ import { FileRows } from "./file_rows";
 import { Folds } from "./folds";
 import { Progress } from "./progress";
 import { Sidebar } from "./sidebar";
+import { charDiff, wrapRanges, type CharRange } from "./text_highlight";
 
 // --- Module state --------------------------------------------------------
 
@@ -662,12 +663,21 @@ function _buildLineNoteContent(
 function _renderRow(row: RowBlock, file: FileBlock): { old: HTMLElement; new: HTMLElement } {
   const hasOld = row.old_line !== null && row.old_line !== undefined;
   const hasNew = row.new_line !== null && row.new_line !== undefined;
+  // On a paired delete+insert, mark the changed characters on each side
+  // so a small edit in an otherwise unchanged line stands out.
+  let oldMarks: CharRange[] | undefined;
+  let newMarks: CharRange[] | undefined;
+  if (row.kind === "pair") {
+    const d = charDiff(row.old_text, row.new_text);
+    oldMarks = d.oldRanges;
+    newMarks = d.newRanges;
+  }
   const oldRow = _el("div", `row row-${row.kind}`);
   oldRow.appendChild(_renderLineno(row.old_line, "old", hasOld));
-  oldRow.appendChild(_renderContent(row.old_text, "old", hasOld, file));
+  oldRow.appendChild(_renderContent(row.old_text, "old", hasOld, file, oldMarks));
   const newRow = _el("div", `row row-${row.kind}`);
   newRow.appendChild(_renderLineno(row.new_line, "new", hasNew));
-  newRow.appendChild(_renderContent(row.new_text, "new", hasNew, file));
+  newRow.appendChild(_renderContent(row.new_text, "new", hasNew, file, newMarks));
   return { old: oldRow, new: newRow };
 }
 
@@ -681,7 +691,13 @@ function _renderLineno(line: number | null, side: "old" | "new", present: boolea
   return c;
 }
 
-function _renderContent(text: string, side: "old" | "new", present: boolean, file: FileBlock): HTMLElement {
+function _renderContent(
+  text: string,
+  side: "old" | "new",
+  present: boolean,
+  file: FileBlock,
+  markRanges?: CharRange[],
+): HTMLElement {
   const c = _el("span", `cell cell-content cell-content-${side}`);
   if (!present) {
     c.classList.add("empty");
@@ -701,6 +717,9 @@ function _renderContent(text: string, side: "old" | "new", present: boolean, fil
   } else {
     code.textContent = text;
   }
+  // Paint the intra-line change marks over the (possibly highlighted)
+  // text. Offsets are over the raw line, which highlight.js preserves.
+  if (markRanges && markRanges.length) wrapRanges(code, markRanges, "char-chg");
   c.appendChild(code);
   return c;
 }

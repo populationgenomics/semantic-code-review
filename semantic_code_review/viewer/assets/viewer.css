@@ -492,6 +492,11 @@ body {
 .diff .row-pair .cell-content-old { background: rgba(248, 81, 73, 0.16); }
 .diff .row-pair .cell-content-new { background: rgba(63, 185, 80, 0.16); }
 
+/* Intra-line sub-diff: a deeper tint on the exact characters that changed
+ * between a paired delete/insert, over the light whole-line row tint. */
+.diff .row-pair .cell-content-old .char-chg { background: rgba(248, 81, 73, 0.4); border-radius: 2px; }
+.diff .row-pair .cell-content-new .char-chg { background: rgba(63, 185, 80, 0.4); border-radius: 2px; }
+
 /* Dim the empty placeholder on the opposite side of an ins/del */
 .diff .row-ins .cell-content-old.empty,
 .diff .row-del .cell-content-new.empty {
