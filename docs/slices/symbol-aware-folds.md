@@ -63,7 +63,7 @@ The data path, with no behaviour change.
 definition spans on both sides, an unsupported-language file carries
 empty lists, and nothing yet reads the field.
 
-## Slice 2 — Symbol-aware folding, both detectors
+## Slice 2 — Symbol-aware folding, both detectors ✅ done
 
 The behavioural change; server and client move together.
 
