@@ -95,8 +95,9 @@ function init(
       if (axis && axis.byId[pillId]) _activePill = { axis: axisId, id: pillId };
     }
   } catch (_) { /* localStorage may be unavailable */ }
-  // Seed the symbol search before the first paint so a restored Symbols
-  // pill highlights immediately (Render.init paints right after this).
+  // Seed the symbol search now (init runs before Render.init in boot):
+  // the emit's repaint finds no cells yet, but it sets `_symbolSearch` in
+  // render so Render.init's first paint highlights a restored Symbols pill.
   _emitActivePill();
 }
 
