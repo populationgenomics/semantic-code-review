@@ -11,20 +11,88 @@
  *  `textContent`. */
 export type CharRange = [number, number];
 
+/** Changed character ranges on each side of a paired delete/insert. */
+export interface SideRanges {
+  oldRanges: CharRange[];
+  newRanges: CharRange[];
+}
+
+// A line with more tokens than this skips the O(n*m) word LCS and falls
+// back to the linear prefix/suffix diff (guards against minified blobs).
+const _MAX_WORD_DIFF_TOKENS = 200;
+
+// Tokens for word-level diffing: identifier runs, whitespace runs, and
+// single "other" characters — each tagged with its offset in the line.
+const _TOKEN_RE = /[A-Za-z0-9_$]+|\s+|[^A-Za-z0-9_$\s]/g;
+
+interface _Token { text: string; start: number; }
+
+function _tokenize(s: string): _Token[] {
+  const out: _Token[] = [];
+  for (let m = _TOKEN_RE.exec(s); m !== null; m = _TOKEN_RE.exec(s)) {
+    out.push({ text: m[0], start: m.index });
+  }
+  _TOKEN_RE.lastIndex = 0;
+  return out;
+}
+
+const _span = (t: _Token): CharRange => [t.start, t.start + t.text.length];
+
+/** Token-level diff between a deleted line `a` and an inserted line `b`:
+ *  the changed-token ranges on each side, leaving unchanged tokens between
+ *  edits unmarked (GitHub/GitLab-style word diff). Adjacent changed tokens
+ *  coalesce once `wrapRanges` normalises the ranges.
+ *
+ *  Computed as a longest-common-subsequence over tokens; falls back to the
+ *  linear `charDiff` for pathologically long lines. A single contiguous
+ *  edit yields the same result as `charDiff`. */
+export function wordDiff(a: string, b: string): SideRanges {
+  const A = _tokenize(a);
+  const B = _tokenize(b);
+  if (A.length > _MAX_WORD_DIFF_TOKENS || B.length > _MAX_WORD_DIFF_TOKENS) {
+    return charDiff(a, b);
+  }
+  const n = A.length;
+  const m = B.length;
+  // dp[i][j] = LCS length of A[i:] and B[j:].
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = A[i].text === B[j].text
+        ? dp[i + 1][j + 1] + 1
+        : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  // Backtrack: matched tokens advance both sides; an unmatched token on
+  // whichever side keeps the longer LCS becomes a changed range.
+  const oldRanges: CharRange[] = [];
+  const newRanges: CharRange[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (A[i].text === B[j].text) {
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      oldRanges.push(_span(A[i++]));
+    } else {
+      newRanges.push(_span(B[j++]));
+    }
+  }
+  while (i < n) oldRanges.push(_span(A[i++]));
+  while (j < m) newRanges.push(_span(B[j++]));
+  return { oldRanges, newRanges };
+}
+
 /** Changed character ranges between a deleted line `a` and an inserted
  *  line `b`, computed as the gap left after stripping the common prefix
- *  and common suffix. This isolates a single contiguous edit — the common
- *  case the viewer cares about ("a small insertion in an otherwise
- *  unchanged line"); a scattered multi-edit line collapses to the one
- *  span bounding every change, which still reads correctly.
+ *  and common suffix — one contiguous span per side. Used directly as the
+ *  long-line fallback for `wordDiff`; on a single-edit line the two agree.
  *
  *  Returns one range per side (or none, when that side is wholly within
  *  the shared prefix/suffix — e.g. a pure insertion leaves `oldRanges`
  *  empty). */
-export function charDiff(a: string, b: string): {
-  oldRanges: CharRange[];
-  newRanges: CharRange[];
-} {
+export function charDiff(a: string, b: string): SideRanges {
   const shorter = Math.min(a.length, b.length);
   let prefix = 0;
   while (prefix < shorter && a[prefix] === b[prefix]) prefix++;

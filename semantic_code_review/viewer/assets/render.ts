@@ -21,7 +21,7 @@ import { FileRows } from "./file_rows";
 import { Folds } from "./folds";
 import { Progress } from "./progress";
 import { Sidebar } from "./sidebar";
-import { charDiff, matchRanges, wrapRanges, type CharRange } from "./text_highlight";
+import { matchRanges, wordDiff, wrapRanges, type CharRange } from "./text_highlight";
 
 // --- Module state --------------------------------------------------------
 
@@ -673,7 +673,7 @@ function _renderRow(row: RowBlock, file: FileBlock): { old: HTMLElement; new: HT
   let oldMarks: CharRange[] | undefined;
   let newMarks: CharRange[] | undefined;
   if (row.kind === "pair") {
-    const d = charDiff(row.old_text, row.new_text);
+    const d = wordDiff(row.old_text, row.new_text);
     oldMarks = d.oldRanges;
     newMarks = d.newRanges;
   }

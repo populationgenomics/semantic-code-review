@@ -1,5 +1,60 @@
 import { describe, test, expect } from "vitest";
-import { charDiff, matchRanges, wrapRanges, type CharRange } from "../../semantic_code_review/viewer/assets/text_highlight";
+import { charDiff, matchRanges, wordDiff, wrapRanges, type CharRange } from "../../semantic_code_review/viewer/assets/text_highlight";
+
+describe("wordDiff", () => {
+  const marked = (text: string, ranges: CharRange[]) =>
+    ranges.map(([s, e]) => text.slice(s, e));
+
+  test("marks changed tokens separately, leaving unchanged ones between clean", () => {
+    const a = "connect(host, 80, ssl)";
+    const b = "connect(host, 443, tls)";
+    const d = wordDiff(a, b);
+    // Only the two changed tokens per side — the ", " between stays clean.
+    expect(marked(a, d.oldRanges)).toEqual(["80", "ssl"]);
+    expect(marked(b, d.newRanges)).toEqual(["443", "tls"]);
+  });
+
+  test("pure insertion marks only the new side", () => {
+    const a = "import { charDiff, wrapRanges }";
+    const b = "import { charDiff, matchRanges, wrapRanges }";
+    const d = wordDiff(a, b);
+    expect(d.oldRanges).toEqual([]);
+    // The inserted identifier plus its following ", " (both new-only tokens).
+    expect(marked(b, d.newRanges).join("")).toBe("matchRanges, ");
+  });
+
+  test("single contiguous edit covers the same characters as charDiff", () => {
+    // wordDiff emits per-token ranges (which wrapRanges later merges),
+    // charDiff one span; on a single contiguous edit they cover identically.
+    const a = "Sidebar.init(DATA);";
+    const b = "Sidebar.init(DATA, {";
+    const w = wordDiff(a, b);
+    const c = charDiff(a, b);
+    expect(marked(a, w.oldRanges).join("")).toBe(marked(a, c.oldRanges).join(""));
+    expect(marked(b, w.newRanges).join("")).toBe(marked(b, c.newRanges).join(""));
+  });
+
+  test("identical lines produce no ranges", () => {
+    expect(wordDiff("same()", "same()")).toEqual({ oldRanges: [], newRanges: [] });
+  });
+
+  test("falls back to charDiff for pathologically long (many-token) lines", () => {
+    // >200 tokens: a long run of distinct single-char tokens.
+    const a = Array.from({ length: 300 }, (_, i) => `${i % 10};`).join("");
+    const b = a + "x = 1;";
+    expect(wordDiff(a, b)).toEqual(charDiff(a, b));
+  });
+
+  test("ranges feed wrapRanges to mark each changed token", () => {
+    const a = "f(a, b)";
+    const b = "f(c, b)";
+    const el = document.createElement("code");
+    el.textContent = b;
+    wrapRanges(el, wordDiff(a, b).newRanges, "char-chg");
+    // Only "c" is marked; "b" (unchanged) and punctuation stay plain.
+    expect([...el.querySelectorAll("span.char-chg")].map((m) => m.textContent)).toEqual(["c"]);
+  });
+});
 
 describe("matchRanges", () => {
   test("matches whole-identifier occurrences only", () => {
