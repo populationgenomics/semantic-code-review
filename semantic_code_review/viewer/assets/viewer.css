@@ -493,9 +493,11 @@ body {
 .diff .row-pair .cell-content-new { background: rgba(63, 185, 80, 0.16); }
 
 /* Intra-line sub-diff: a deeper tint on the exact characters that changed
- * between a paired delete/insert, over the light whole-line row tint. */
-.diff .row-pair .cell-content-old .char-chg { background: rgba(248, 81, 73, 0.4); border-radius: 2px; }
-.diff .row-pair .cell-content-new .char-chg { background: rgba(63, 185, 80, 0.4); border-radius: 2px; }
+ * within a replacement, over the light whole-line row tint. Applies to any
+ * changed row (pair, or a del/ins line inside a multi-line replacement
+ * block), so the side determines the colour. */
+.diff .cell-content-old .char-chg { background: rgba(248, 81, 73, 0.4); border-radius: 2px; }
+.diff .cell-content-new .char-chg { background: rgba(63, 185, 80, 0.4); border-radius: 2px; }
 
 /* Symbol-focus search highlight: every occurrence of the focused symbol's
  * name, painted search-style. Amber reads on both themes and over the

@@ -1,59 +1,70 @@
-// Intra-line ("character") sub-diff + a DOM range-wrapping primitive.
+// Intra-line ("token") sub-diff + a DOM range-wrapping primitive.
 //
-// `charDiff` finds the changed span between a deleted and inserted line
-// of a `pair` row; `wrapRanges` paints character-offset ranges onto an
-// already-rendered code cell (which may already hold highlight.js spans)
-// by splitting its text nodes. The two are independent: `wrapRanges` is
-// also what the symbol-focus search highlight uses, over whole-line
-// match ranges rather than diff ranges.
+// `blockDiff` token-diffs a *block* of deleted lines against a block of
+// inserted lines — across line boundaries, not line-by-line — and returns
+// the changed-character ranges for each line. `wrapRanges` paints those
+// ranges onto an already-rendered code cell (which may already hold
+// highlight.js spans) by splitting its text nodes. The two are
+// independent: `wrapRanges` is also what the symbol-focus search highlight
+// uses, over whole-line match ranges rather than diff ranges.
 
 /** A half-open character range `[start, end)` over a string / a node's
  *  `textContent`. */
 export type CharRange = [number, number];
 
-/** Changed character ranges on each side of a paired delete/insert. */
-export interface SideRanges {
-  oldRanges: CharRange[];
-  newRanges: CharRange[];
+/** Changed-character ranges for a block, parallel to the input line
+ *  arrays: `old[i]` is the ranges within deleted line `i`, `new[j]` within
+ *  inserted line `j`. */
+export interface BlockRanges {
+  old: CharRange[][];
+  new: CharRange[][];
 }
 
-// A line with more tokens than this skips the O(n*m) word LCS and falls
-// back to the linear prefix/suffix diff (guards against minified blobs).
-const _MAX_WORD_DIFF_TOKENS = 200;
+// Guard the O(n*m) LCS: a block whose token counts multiply past this
+// (e.g. a minified blob) skips the sub-diff and renders with the whole-row
+// tint only. Generous enough that real multi-line blocks always run.
+const _MAX_DIFF_TOKEN_PRODUCT = 250_000;
 
-// Tokens for word-level diffing: identifier runs, whitespace runs, and
-// single "other" characters — each tagged with its offset in the line.
+// Tokens for the diff: identifier runs, whitespace runs, and single
+// "other" characters. A token carries its line index within the block and
+// its offset within that line; cross-line `\n` sentinels (line -1) keep
+// the two token streams aligned at line boundaries without ever being
+// rendered as a range.
 const _TOKEN_RE = /[A-Za-z0-9_$]+|\s+|[^A-Za-z0-9_$\s]/g;
 
-interface _Token { text: string; start: number; }
+interface _Token { text: string; line: number; start: number; end: number; }
 
-function _tokenize(s: string): _Token[] {
+function _tokenizeBlock(lines: string[]): _Token[] {
   const out: _Token[] = [];
-  for (let m = _TOKEN_RE.exec(s); m !== null; m = _TOKEN_RE.exec(s)) {
-    out.push({ text: m[0], start: m.index });
-  }
-  _TOKEN_RE.lastIndex = 0;
+  lines.forEach((line, li) => {
+    if (li > 0) out.push({ text: "\n", line: -1, start: 0, end: 0 });
+    for (let m = _TOKEN_RE.exec(line); m !== null; m = _TOKEN_RE.exec(line)) {
+      out.push({ text: m[0], line: li, start: m.index, end: m.index + m[0].length });
+    }
+    _TOKEN_RE.lastIndex = 0;
+  });
   return out;
 }
 
-const _span = (t: _Token): CharRange => [t.start, t.start + t.text.length];
-
-/** Token-level diff between a deleted line `a` and an inserted line `b`:
- *  the changed-token ranges on each side, leaving unchanged tokens between
- *  edits unmarked (GitHub/GitLab-style word diff). Adjacent changed tokens
- *  coalesce once `wrapRanges` normalises the ranges.
+/** Token-level diff of a deleted-line block against an inserted-line block.
+ *  Each changed token becomes a range on its line; unchanged tokens between
+ *  edits stay unmarked (GitHub/GitLab-style word diff), and because the
+ *  diff runs over the whole block, a change that spans several old lines
+ *  (e.g. an inline object type collapsed to a named type) is marked as one
+ *  deletion + one insertion rather than per line.
  *
- *  Computed as a longest-common-subsequence over tokens; falls back to the
- *  linear `charDiff` for pathologically long lines. A single contiguous
- *  edit yields the same result as `charDiff`. */
-export function wordDiff(a: string, b: string): SideRanges {
-  const A = _tokenize(a);
-  const B = _tokenize(b);
-  if (A.length > _MAX_WORD_DIFF_TOKENS || B.length > _MAX_WORD_DIFF_TOKENS) {
-    return charDiff(a, b);
-  }
+ *  Adjacent changed tokens coalesce once `wrapRanges` normalises the
+ *  ranges. Computed as a longest-common-subsequence over tokens; a block
+ *  past the token-product guard returns empty ranges (row tint only). */
+export function blockDiff(oldLines: string[], newLines: string[]): BlockRanges {
+  const old: CharRange[][] = oldLines.map(() => []);
+  const neu: CharRange[][] = newLines.map(() => []);
+  const A = _tokenizeBlock(oldLines);
+  const B = _tokenizeBlock(newLines);
   const n = A.length;
   const m = B.length;
+  if (n * m > _MAX_DIFF_TOKEN_PRODUCT) return { old, new: neu };
+
   // dp[i][j] = LCS length of A[i:] and B[j:].
   const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--) {
@@ -64,51 +75,21 @@ export function wordDiff(a: string, b: string): SideRanges {
     }
   }
   // Backtrack: matched tokens advance both sides; an unmatched token on
-  // whichever side keeps the longer LCS becomes a changed range.
-  const oldRanges: CharRange[] = [];
-  const newRanges: CharRange[] = [];
+  // whichever side keeps the longer LCS becomes a changed range on its
+  // line. Sentinels (line -1) are dropped — they only steer alignment.
+  const mark = (t: _Token, into: CharRange[][]): void => {
+    if (t.line >= 0) into[t.line].push([t.start, t.end]);
+  };
   let i = 0;
   let j = 0;
   while (i < n && j < m) {
-    if (A[i].text === B[j].text) {
-      i++;
-      j++;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      oldRanges.push(_span(A[i++]));
-    } else {
-      newRanges.push(_span(B[j++]));
-    }
+    if (A[i].text === B[j].text) { i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) mark(A[i++], old);
+    else mark(B[j++], neu);
   }
-  while (i < n) oldRanges.push(_span(A[i++]));
-  while (j < m) newRanges.push(_span(B[j++]));
-  return { oldRanges, newRanges };
-}
-
-/** Changed character ranges between a deleted line `a` and an inserted
- *  line `b`, computed as the gap left after stripping the common prefix
- *  and common suffix — one contiguous span per side. Used directly as the
- *  long-line fallback for `wordDiff`; on a single-edit line the two agree.
- *
- *  Returns one range per side (or none, when that side is wholly within
- *  the shared prefix/suffix — e.g. a pure insertion leaves `oldRanges`
- *  empty). */
-export function charDiff(a: string, b: string): SideRanges {
-  const shorter = Math.min(a.length, b.length);
-  let prefix = 0;
-  while (prefix < shorter && a[prefix] === b[prefix]) prefix++;
-  let suffix = 0;
-  while (
-    suffix < shorter - prefix &&
-    a[a.length - 1 - suffix] === b[b.length - 1 - suffix]
-  ) {
-    suffix++;
-  }
-  const aEnd = a.length - suffix;
-  const bEnd = b.length - suffix;
-  return {
-    oldRanges: prefix < aEnd ? [[prefix, aEnd]] : [],
-    newRanges: prefix < bEnd ? [[prefix, bEnd]] : [],
-  };
+  while (i < n) mark(A[i++], old);
+  while (j < m) mark(B[j++], neu);
+  return { old, new: neu };
 }
 
 /** Whole-identifier occurrences of `term` in `text`, as character ranges.

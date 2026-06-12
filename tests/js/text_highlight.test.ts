@@ -1,48 +1,59 @@
 import { describe, test, expect } from "vitest";
-import { charDiff, matchRanges, wordDiff, wrapRanges, type CharRange } from "../../semantic_code_review/viewer/assets/text_highlight";
+import { blockDiff, matchRanges, wrapRanges, type CharRange } from "../../semantic_code_review/viewer/assets/text_highlight";
 
-describe("wordDiff", () => {
-  const marked = (text: string, ranges: CharRange[]) =>
-    ranges.map(([s, e]) => text.slice(s, e));
+describe("blockDiff", () => {
+  // Join each line's marked substrings — what wrapRanges would highlight.
+  const markedLine = (line: string, ranges: CharRange[]) =>
+    ranges.map(([s, e]) => line.slice(s, e)).join("");
 
-  test("marks changed tokens separately, leaving unchanged ones between clean", () => {
+  test("single line: marks changed tokens separately, unchanged ones stay clean", () => {
     const a = "connect(host, 80, ssl)";
     const b = "connect(host, 443, tls)";
-    const d = wordDiff(a, b);
-    // Only the two changed tokens per side — the ", " between stays clean.
-    expect(marked(a, d.oldRanges)).toEqual(["80", "ssl"]);
-    expect(marked(b, d.newRanges)).toEqual(["443", "tls"]);
+    const d = blockDiff([a], [b]);
+    // Two changed tokens per side; the ", " between them is untouched.
+    expect(d.old[0].map(([s, e]) => a.slice(s, e))).toEqual(["80", "ssl"]);
+    expect(d.new[0].map(([s, e]) => b.slice(s, e))).toEqual(["443", "tls"]);
   });
 
-  test("pure insertion marks only the new side", () => {
+  test("single line: pure insertion marks only the new side", () => {
     const a = "import { charDiff, wrapRanges }";
     const b = "import { charDiff, matchRanges, wrapRanges }";
-    const d = wordDiff(a, b);
-    expect(d.oldRanges).toEqual([]);
-    // The inserted identifier plus its following ", " (both new-only tokens).
-    expect(marked(b, d.newRanges).join("")).toBe("matchRanges, ");
+    const d = blockDiff([a], [b]);
+    expect(d.old[0]).toEqual([]);
+    expect(markedLine(b, d.new[0])).toBe("matchRanges, ");
   });
 
-  test("single contiguous edit covers the same characters as charDiff", () => {
-    // wordDiff emits per-token ranges (which wrapRanges later merges),
-    // charDiff one span; on a single contiguous edit they cover identically.
-    const a = "Sidebar.init(DATA);";
-    const b = "Sidebar.init(DATA, {";
-    const w = wordDiff(a, b);
-    const c = charDiff(a, b);
-    expect(marked(a, w.oldRanges).join("")).toBe(marked(a, c.oldRanges).join(""));
-    expect(marked(b, w.newRanges).join("")).toBe(marked(b, c.newRanges).join(""));
+  test("multi-line block: an inline type collapsed to a named type", () => {
+    // The motivating case: 4 old lines -> 1 new line. The diff runs across
+    // line boundaries, so the deleted object-type literal is marked as a
+    // unit and SideRanges as the lone insertion — not decomposed per line.
+    const oldLines = [
+      "export function charDiff(a: string, b: string): {",
+      "  oldRanges: CharRange[];",
+      "  newRanges: CharRange[];",
+      "} {",
+    ];
+    const newLines = ["export function charDiff(a: string, b: string): SideRanges {"];
+    const d = blockDiff(oldLines, newLines);
+    // Old side: just the opening brace on line 0, both body lines whole,
+    // and the closing brace on the last line (the trailing " {" is kept).
+    expect(markedLine(oldLines[0], d.old[0])).toBe("{");
+    expect(markedLine(oldLines[1], d.old[1])).toBe(oldLines[1]);
+    expect(markedLine(oldLines[2], d.old[2])).toBe(oldLines[2]);
+    expect(markedLine(oldLines[3], d.old[3])).toBe("}");
+    // New side: only the inserted type name.
+    expect(markedLine(newLines[0], d.new[0])).toBe("SideRanges");
   });
 
   test("identical lines produce no ranges", () => {
-    expect(wordDiff("same()", "same()")).toEqual({ oldRanges: [], newRanges: [] });
+    expect(blockDiff(["same()"], ["same()"])).toEqual({ old: [[]], new: [[]] });
   });
 
-  test("falls back to charDiff for pathologically long (many-token) lines", () => {
-    // >200 tokens: a long run of distinct single-char tokens.
-    const a = Array.from({ length: 300 }, (_, i) => `${i % 10};`).join("");
-    const b = a + "x = 1;";
-    expect(wordDiff(a, b)).toEqual(charDiff(a, b));
+  test("returns row-tint-only (empty) ranges past the token-product guard", () => {
+    // A pair of long, totally-distinct lines exceeds the product cap.
+    const a = Array.from({ length: 600 }, (_, i) => `a${i};`).join("");
+    const b = Array.from({ length: 600 }, (_, i) => `b${i};`).join("");
+    expect(blockDiff([a], [b])).toEqual({ old: [[]], new: [[]] });
   });
 
   test("ranges feed wrapRanges to mark each changed token", () => {
@@ -50,7 +61,7 @@ describe("wordDiff", () => {
     const b = "f(c, b)";
     const el = document.createElement("code");
     el.textContent = b;
-    wrapRanges(el, wordDiff(a, b).newRanges, "char-chg");
+    wrapRanges(el, blockDiff([a], [b]).new[0], "char-chg");
     // Only "c" is marked; "b" (unchanged) and punctuation stay plain.
     expect([...el.querySelectorAll("span.char-chg")].map((m) => m.textContent)).toEqual(["c"]);
   });
@@ -91,45 +102,6 @@ describe("matchRanges", () => {
   });
 });
 
-describe("charDiff", () => {
-  test("small insertion: only the new side is marked", () => {
-    const d = charDiff("x = 1", "x = 12");
-    expect(d.oldRanges).toEqual([]);
-    expect(d.newRanges).toEqual([[5, 6]]);
-    expect("x = 12".slice(5, 6)).toBe("2");
-  });
-
-  test("small deletion: only the old side is marked", () => {
-    const d = charDiff("value = 100", "value = 1");
-    expect(d.newRanges).toEqual([]);
-    expect(d.oldRanges).toEqual([[9, 11]]);
-    expect("value = 100".slice(9, 11)).toBe("00");
-  });
-
-  test("mid-line replacement marks the differing span on each side", () => {
-    const d = charDiff("foo(a, b)", "foo(a, c, b)");
-    const [os, oe] = d.oldRanges[0] ?? [0, 0];
-    const [ns, ne] = d.newRanges[0] ?? [0, 0];
-    // Common prefix "foo(a, " and common suffix "b)" are stripped.
-    expect("foo(a, b)".slice(os, oe)).toBe("");
-    expect("foo(a, c, b)".slice(ns, ne)).toBe("c, ");
-  });
-
-  test("identical strings produce no ranges", () => {
-    expect(charDiff("same", "same")).toEqual({ oldRanges: [], newRanges: [] });
-  });
-
-  test("complete replacement marks the whole of both sides", () => {
-    expect(charDiff("foo", "bar")).toEqual({ oldRanges: [[0, 3]], newRanges: [[0, 3]] });
-  });
-
-  test("prefix and suffix never overlap (repeated chars)", () => {
-    // "aaa" -> "aa": prefix consumes 2, suffix must not double-count.
-    const d = charDiff("aaa", "aa");
-    expect(d.oldRanges).toEqual([[2, 3]]);
-    expect(d.newRanges).toEqual([]);
-  });
-});
 
 describe("wrapRanges", () => {
   function frag(html: string): HTMLElement {

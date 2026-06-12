@@ -21,7 +21,7 @@ import { FileRows } from "./file_rows";
 import { Folds } from "./folds";
 import { Progress } from "./progress";
 import { Sidebar } from "./sidebar";
-import { matchRanges, wordDiff, wrapRanges, type CharRange } from "./text_highlight";
+import { blockDiff, matchRanges, wrapRanges, type CharRange } from "./text_highlight";
 
 // --- Module state --------------------------------------------------------
 
@@ -583,8 +583,10 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock): HTMLElement {
 
   const rowElsOld: HTMLElement[] = [];
   const rowElsNew: HTMLElement[] = [];
-  for (const row of h.rows || []) {
-    const pair = _renderRow(row, file);
+  const rows = h.rows || [];
+  const marks = _blockMarks(rows);
+  for (let idx = 0; idx < rows.length; idx++) {
+    const pair = _renderRow(rows[idx], file, marks[idx]?.old, marks[idx]?.new);
     (pair.old as { _scrPair?: HTMLElement })._scrPair = pair.new;
     (pair.new as { _scrPair?: HTMLElement })._scrPair = pair.old;
     halfOld.appendChild(pair.old);
@@ -665,18 +667,14 @@ function _buildLineNoteContent(
   return wrap;
 }
 
-function _renderRow(row: RowBlock, file: FileBlock): { old: HTMLElement; new: HTMLElement } {
+function _renderRow(
+  row: RowBlock,
+  file: FileBlock,
+  oldMarks?: CharRange[],
+  newMarks?: CharRange[],
+): { old: HTMLElement; new: HTMLElement } {
   const hasOld = row.old_line !== null && row.old_line !== undefined;
   const hasNew = row.new_line !== null && row.new_line !== undefined;
-  // On a paired delete+insert, mark the changed characters on each side
-  // so a small edit in an otherwise unchanged line stands out.
-  let oldMarks: CharRange[] | undefined;
-  let newMarks: CharRange[] | undefined;
-  if (row.kind === "pair") {
-    const d = wordDiff(row.old_text, row.new_text);
-    oldMarks = d.oldRanges;
-    newMarks = d.newRanges;
-  }
   const oldRow = _el("div", `row row-${row.kind}`);
   oldRow.appendChild(_renderLineno(row.old_line, "old", hasOld));
   oldRow.appendChild(_renderContent(row.old_text, "old", hasOld, file, oldMarks));
@@ -684,6 +682,39 @@ function _renderRow(row: RowBlock, file: FileBlock): { old: HTMLElement; new: HT
   newRow.appendChild(_renderLineno(row.new_line, "new", hasNew));
   newRow.appendChild(_renderContent(row.new_text, "new", hasNew, file, newMarks));
   return { old: oldRow, new: newRow };
+}
+
+interface _RowMarks { old?: CharRange[]; new?: CharRange[]; }
+
+/** Per-row intra-line change marks for a hunk's rows. Consecutive changed
+ *  rows form a block; a block that has *both* deleted and inserted lines (a
+ *  replacement) is token-diffed across line boundaries so a change spanning
+ *  several old lines is marked as one deletion + insertion. Pure
+ *  deletions / insertions and context get no marks (the row tint suffices).
+ */
+function _blockMarks(rows: RowBlock[]): (_RowMarks | undefined)[] {
+  const out: (_RowMarks | undefined)[] = new Array(rows.length).fill(undefined);
+  let i = 0;
+  while (i < rows.length) {
+    if (rows[i].kind === "ctx") { i++; continue; }
+    const oldRows: number[] = [];
+    const newRows: number[] = [];
+    const oldLines: string[] = [];
+    const newLines: string[] = [];
+    let j = i;
+    for (; j < rows.length && rows[j].kind !== "ctx"; j++) {
+      const r = rows[j];
+      if (r.old_line !== null && r.old_line !== undefined) { oldRows.push(j); oldLines.push(r.old_text); }
+      if (r.new_line !== null && r.new_line !== undefined) { newRows.push(j); newLines.push(r.new_text); }
+    }
+    if (oldLines.length > 0 && newLines.length > 0) {
+      const d = blockDiff(oldLines, newLines);
+      oldRows.forEach((ri, k) => { (out[ri] ??= {}).old = d.old[k]; });
+      newRows.forEach((ri, k) => { (out[ri] ??= {}).new = d.new[k]; });
+    }
+    i = j;
+  }
+  return out;
 }
 
 function _renderLineno(line: number | null, side: "old" | "new", present: boolean): HTMLElement {
