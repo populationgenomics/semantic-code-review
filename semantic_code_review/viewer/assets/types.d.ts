@@ -90,6 +90,10 @@ interface FileBlock {
   dels: number;
   summary: string;
   symbols: FileSymbols;
+  /** Flattened tree-sitter definition spans per side, for symbol-aware
+   *  folding. Empty lists for an unsupported language / unavailable
+   *  worktree. Inert in slice 1 — no consumer yet. */
+  fold_symbols: FoldSymbols;
   /** Full post-image content split into lines, or null when not
    *  shipped (large file, deleted/binary/generated, etc.). */
   head_lines: string[] | null;
@@ -100,6 +104,24 @@ interface FileSymbols {
   added: string[];
   modified: string[];
   removed: string[];
+}
+
+interface FoldSymbols {
+  /** Spans against head/<path> (new_line). */
+  head: FoldSymbolSpan[];
+  /** Spans against base/<path> (old_line). */
+  base: FoldSymbolSpan[];
+}
+
+/** One definition's line span, from the flattened `Symbol` forest.
+ *  Depth-first source order; `depth` is the nesting level (0 = top). */
+interface FoldSymbolSpan {
+  /** 1-indexed inclusive line numbers. */
+  start_line: number;
+  end_line: number;
+  kind: string;
+  qualified_name: string;
+  depth: number;
 }
 
 // --- Hunks ------------------------------------------------------------------

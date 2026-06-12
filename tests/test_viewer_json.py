@@ -231,6 +231,69 @@ def test_symbol_blocks_absent_without_worktrees(tmp_path: Path) -> None:
     assert data["symbols"] == []
 
 
+# --- fold_symbols: per-side definition spans (slice 1) ---------------------
+
+
+def test_fold_symbols_ship_per_side_definition_spans(tmp_path: Path) -> None:
+    """Each supported-language file carries its head/base definition spans
+    as `{start_line, end_line, kind, qualified_name, depth}`, depth-first,
+    with nested defs deeper than their enclosing one."""
+    (tmp_path / "raw.diff").write_text(_NESTED_DIFF, encoding="utf-8")
+    (tmp_path / "meta.json").write_text(json.dumps({
+        "title": "Add Foo.baz", "author": {"login": "t"}, "url": "",
+        "baseRefOid": "aaa", "headRefOid": "bbb",
+    }), encoding="utf-8")
+    base = tmp_path / "base"
+    head = tmp_path / "head"
+    base.mkdir()
+    head.mkdir()
+    (base / "a.py").write_text(
+        "class Foo:\n    def bar(self):\n        return 1\n", encoding="utf-8",
+    )
+    (head / "a.py").write_text(
+        "class Foo:\n    def bar(self):\n        return 1\n\n"
+        "    def baz(self):\n        return 2\n", encoding="utf-8",
+    )
+
+    data = build_pending_viewer_json(tmp_path)
+
+    fs = data["files"][0]["fold_symbols"]
+    # Head: Foo (depth 0) then its two methods (depth 1), in source order.
+    head_qns = [(s["qualified_name"], s["depth"]) for s in fs["head"]]
+    assert head_qns == [("Foo", 0), ("Foo.bar", 1), ("Foo.baz", 1)]
+    foo = fs["head"][0]
+    assert foo["kind"] == "class" and foo["start_line"] == 1 and foo["end_line"] == 6
+    # Base lacks baz.
+    base_qns = [(s["qualified_name"], s["depth"]) for s in fs["base"]]
+    assert base_qns == [("Foo", 0), ("Foo.bar", 1)]
+
+
+def test_fold_symbols_empty_for_unsupported_language(tmp_path: Path) -> None:
+    """An unsupported-language / unparsed file carries empty span lists,
+    not a missing key — the inert degradation path."""
+    raw = (
+        "diff --git a/notes.txt b/notes.txt\n"
+        "index 0123456..89abcde 100644\n"
+        "--- a/notes.txt\n+++ b/notes.txt\n"
+        "@@ -1 +1 @@\n-old\n+new\n"
+    )
+    (tmp_path / "raw.diff").write_text(raw, encoding="utf-8")
+    (tmp_path / "meta.json").write_text(json.dumps({
+        "title": "Edit notes", "author": {"login": "t"}, "url": "",
+        "baseRefOid": "aaa", "headRefOid": "bbb",
+    }), encoding="utf-8")
+    base = tmp_path / "base"
+    head = tmp_path / "head"
+    base.mkdir()
+    head.mkdir()
+    (base / "notes.txt").write_text("old\n", encoding="utf-8")
+    (head / "notes.txt").write_text("new\n", encoding="utf-8")
+
+    data = build_pending_viewer_json(tmp_path)
+
+    assert data["files"][0]["fold_symbols"] == {"head": [], "base": []}
+
+
 # --- syntax-highlighting language map --------------------------------------
 
 # Canonical languages registered in the vendored highlight.js build

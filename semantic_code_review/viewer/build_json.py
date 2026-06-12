@@ -33,6 +33,10 @@ def build_viewer_json(
     head_dir: Path | None = None,
     base_dir: Path | None = None,
 ) -> dict[str, Any]:
+    # Parse the head/base Symbol trees once per file and share them: the
+    # Symbols axis reads the base→head delta, each FileBlock ships the
+    # flattened per-side fold spans.
+    file_syms = [_file_symbols(f, base_dir, head_dir) for f in diff.files]
     return {
         "version": "1",
         "pr": _pr_block(diff, meta),
@@ -44,9 +48,11 @@ def build_viewer_json(
             }
             for tag, d in SMELL_CATALOGUE.items()
         },
-        "files": [_file_block(f, i, head_dir) for i, f in enumerate(diff.files)],
+        "files": [
+            _file_block(f, i, head_dir, file_syms[i]) for i, f in enumerate(diff.files)
+        ],
         "groups": _group_blocks(diff),
-        "symbols": _symbol_blocks(diff, base_dir, head_dir),
+        "symbols": _symbol_blocks(diff, file_syms),
     }
 
 
@@ -134,10 +140,58 @@ class _SymNode:
     hunk_ids: list[str] = field(default_factory=list)
 
 
+@dataclass
+class _FileSymbols:
+    """The parsed base/head `Symbol` forests for one file.
+
+    Both lists are empty for an unsupported language or an unavailable
+    worktree — the same graceful-degradation guard the changed-symbol
+    delta uses, so a file with no parse simply carries no spans.
+    """
+
+    base: list[structural.Symbol] = field(default_factory=list)
+    head: list[structural.Symbol] = field(default_factory=list)
+
+
+def _file_symbols(
+    f: AnnotatedFile, base_dir: Path | None, head_dir: Path | None,
+) -> _FileSymbols:
+    """Parse one file's base/head `Symbol` forests, or empty on degrade."""
+    lang = structural.language_for_path(f.path)
+    if lang is None:
+        return _FileSymbols()
+    base_src = _read_tree_source(base_dir, f.old_path or f.path)
+    head_src = _read_tree_source(head_dir, f.path)
+    return _FileSymbols(
+        base=structural.outline_symbols(base_src, lang) if base_src is not None else [],
+        head=structural.outline_symbols(head_src, lang) if head_src is not None else [],
+    )
+
+
+def _fold_spans(symbols: list[structural.Symbol], depth: int = 0) -> list[dict[str, Any]]:
+    """Flatten a `Symbol` forest to per-definition line spans, depth-first.
+
+    Each entry is `{start_line, end_line, kind, qualified_name, depth}` —
+    the minimal currency the fold detectors need to snap regions to
+    definition boundaries (symbol-aware-folds slice 1). Source order is
+    preserved; `depth` is the nesting level (0 for top-level defs).
+    """
+    out: list[dict[str, Any]] = []
+    for s in symbols:
+        out.append({
+            "start_line": s.range.start_line,
+            "end_line": s.range.end_line,
+            "kind": s.kind,
+            "qualified_name": s.qualified_name,
+            "depth": depth,
+        })
+        out.extend(_fold_spans(s.children, depth + 1))
+    return out
+
+
 def _symbol_blocks(
     diff: AnnotatedDiff,
-    base_dir: Path | None,
-    head_dir: Path | None,
+    file_syms: list[_FileSymbols],
 ) -> list[dict[str, Any]]:
     """Deterministic Symbols axis: a nested changed-symbol tree (ADR 0001).
 
@@ -155,20 +209,14 @@ def _symbol_blocks(
     shifted because lines moved above it, with no changed children —
     yields no block, so every pill filters to at least one hunk. Absent
     entirely when neither worktree is available or the language is
-    unsupported — today's behaviour for those files.
+    unsupported — those files carry empty `file_syms` and are skipped.
     """
-    if base_dir is None and head_dir is None:
-        return []
     out: list[dict[str, Any]] = []
     counter = [0]
-    for fi, f in enumerate(diff.files):
-        lang = structural.language_for_path(f.path)
-        if lang is None:
+    for fi, (f, syms) in enumerate(zip(diff.files, file_syms)):
+        base_syms, head_syms = syms.base, syms.head
+        if not base_syms and not head_syms:
             continue
-        base_src = _read_tree_source(base_dir, f.old_path or f.path)
-        head_src = _read_tree_source(head_dir, f.path)
-        base_syms = structural.outline_symbols(base_src, lang) if base_src is not None else []
-        head_syms = structural.outline_symbols(head_src, lang) if head_src is not None else []
         delta = structural.diff_file(f.path, base_syms, head_syms)
         head_spans = [
             (h.parsed.new_start, h.parsed.new_start + h.parsed.new_count - 1, f"H{fi}_{hi}")
@@ -333,7 +381,9 @@ def _pr_block(diff: AnnotatedDiff, meta: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _file_block(f: AnnotatedFile, idx: int, head_dir: Path | None = None) -> dict[str, Any]:
+def _file_block(
+    f: AnnotatedFile, idx: int, head_dir: Path | None, syms: _FileSymbols,
+) -> dict[str, Any]:
     hunks = [build_hunk_viewer_block(h, idx, hi) for hi, h in enumerate(f.hunks)]
     adds = sum(h["adds"] for h in hunks)
     dels = sum(h["dels"] for h in hunks)
@@ -349,6 +399,7 @@ def _file_block(f: AnnotatedFile, idx: int, head_dir: Path | None = None) -> dic
         "dels": dels,
         "summary": ann.summary,
         "symbols": ann.symbols.model_dump() if ann.symbols else {"added": [], "modified": [], "removed": []},
+        "fold_symbols": {"head": _fold_spans(syms.head), "base": _fold_spans(syms.base)},
         "head_lines": head_lines,
         "hunks": hunks,
     }
