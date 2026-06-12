@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import subprocess
 from pathlib import Path
 
@@ -133,3 +134,124 @@ def test_dispatch_grep(repo: RepoTools) -> None:
 def test_dispatch_list_dir_default(repo: RepoTools) -> None:
     out = mcp_dispatch(repo, "list_dir", {})
     assert "a.py" in out
+
+
+def test_dispatch_outline_head(repo: RepoTools) -> None:
+    out = json.loads(mcp_dispatch(repo, "outline", {"path": "a.py"}))
+    assert [s["name"] for s in out] == ["foo"]
+    assert out[0]["kind"] == "function"
+    assert out[0]["signature"] == "def foo()"
+
+
+def test_dispatch_outline_at_sha(repo: RepoTools) -> None:
+    out = json.loads(mcp_dispatch(repo, "outline", {"path": "a.py", "sha": repo.head_sha}))
+    assert [s["name"] for s in out] == ["foo"]
+
+
+def test_dispatch_outline_unsupported_language_is_empty(repo: RepoTools) -> None:
+    (repo.head_worktree / "notes.txt").write_text("hello\n")
+    assert mcp_dispatch(repo, "outline", {"path": "notes.txt"}) == "[]"
+
+
+def test_dispatch_outline_missing_file_is_empty(repo: RepoTools) -> None:
+    assert mcp_dispatch(repo, "outline", {"path": "nope.py"}) == "[]"
+
+
+def test_outline_schema_marks_sha_optional() -> None:
+    schemas = {s["name"]: s for s in mcp_tool_schemas()}
+    assert "path" in schemas["outline"]["inputSchema"]["required"]
+    assert "sha" not in schemas["outline"]["inputSchema"]["required"]
+
+
+# ---------------------------------------------------------------------------
+# symbol_at
+# ---------------------------------------------------------------------------
+
+def test_dispatch_symbol_at_resolves_line(repo: RepoTools) -> None:
+    out = json.loads(mcp_dispatch(repo, "symbol_at", {"path": "a.py", "line": 2}))
+    assert out["qualified_name"] == "foo"
+    assert out["kind"] == "function"
+
+
+def test_dispatch_symbol_at_outside_any_symbol_is_null(repo: RepoTools) -> None:
+    (repo.head_worktree / "blank.py").write_text("\n\nx = 1\n")
+    assert mcp_dispatch(repo, "symbol_at", {"path": "blank.py", "line": 1}) == "null"
+
+
+def test_dispatch_symbol_at_unsupported_language_is_null(repo: RepoTools) -> None:
+    (repo.head_worktree / "notes.txt").write_text("hello\n")
+    assert mcp_dispatch(repo, "symbol_at", {"path": "notes.txt", "line": 1}) == "null"
+
+
+def test_symbol_at_schema_marks_line_required_sha_optional() -> None:
+    schemas = {s["name"]: s for s in mcp_tool_schemas()}
+    req = schemas["symbol_at"]["inputSchema"]["required"]
+    assert {"path", "line"} <= set(req)
+    assert "sha" not in req
+
+
+# ---------------------------------------------------------------------------
+# changed_symbols
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def diff_repo(tmp_path: Path) -> RepoTools:
+    """A two-commit repo: base→head adds, removes, and modifies symbols."""
+    root = tmp_path / "wt"
+    root.mkdir()
+    (root / "a.py").write_text("def foo():\n    return 1\n\ndef gone():\n    return 2\n")
+    (root / "b.py").write_text("def keep():\n    return 0\n")
+    _sh(root, "git", "init", "-q", "-b", "main")
+    _sh(root, "git", "-c", "user.email=t@t", "-c", "user.name=t", "add", ".")
+    _sh(root, "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "base")
+    base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+
+    # head: foo grows a line (modified), gone deleted, bar added; b.py untouched.
+    (root / "a.py").write_text("def foo():\n    x = 1\n    return x\n\ndef bar():\n    return 3\n")
+    _sh(root, "git", "-c", "user.email=t@t", "-c", "user.name=t", "add", ".")
+    _sh(root, "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "head")
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    return RepoTools(head_worktree=root, repo_git=root, base_sha=base, head_sha=head)
+
+
+def test_changed_symbols_sets(diff_repo: RepoTools) -> None:
+    delta = json.loads(mcp_dispatch(diff_repo, "changed_symbols", {}))
+    assert {c["qualified_name"] for c in delta["added"]} == {"bar"}
+    assert {c["qualified_name"] for c in delta["removed"]} == {"gone"}
+    assert {c["qualified_name"] for c in delta["modified"]} == {"foo"}
+
+
+def test_changed_symbols_entries_carry_path_and_kind(diff_repo: RepoTools) -> None:
+    delta = json.loads(mcp_dispatch(diff_repo, "changed_symbols", {}))
+    bar = delta["added"][0]
+    assert bar["path"] == "a.py"
+    assert bar["kind"] == "function" and bar["signature"] == "def bar()"
+
+
+def test_changed_symbols_skips_untouched_file(diff_repo: RepoTools) -> None:
+    delta = json.loads(mcp_dispatch(diff_repo, "changed_symbols", {}))
+    all_qns = {c["qualified_name"] for grp in delta.values() for c in grp}
+    assert "keep" not in all_qns  # b.py never changed
+
+
+def test_changed_symbols_empty_when_base_equals_head(repo: RepoTools) -> None:
+    delta = json.loads(mcp_dispatch(repo, "changed_symbols", {}))
+    assert delta == {"added": [], "removed": [], "modified": []}
+
+
+def test_changed_symbols_takes_no_args() -> None:
+    schemas = {s["name"]: s for s in mcp_tool_schemas()}
+    assert schemas["changed_symbols"]["inputSchema"].get("required", []) == []
+
+
+def test_compute_symbol_delta_returns_typed_object(diff_repo: RepoTools) -> None:
+    """The in-process seed path returns a `SymbolDelta`, not JSON text."""
+    delta = diff_repo.compute_symbol_delta()
+    assert {c.qualified_name for c in delta.added} == {"bar"}
+    assert {c.qualified_name for c in delta.removed} == {"gone"}
+    assert {c.qualified_name for c in delta.modified} == {"foo"}
+
+
+def test_compute_symbol_delta_is_not_a_tool() -> None:
+    """It underlies `changed_symbols` but is not part of the LLM surface."""
+    assert "compute_symbol_delta" not in {s["name"] for s in mcp_tool_schemas()}

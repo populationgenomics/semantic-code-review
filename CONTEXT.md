@@ -163,3 +163,72 @@ Distinct from the `Model` subclasses pydantic-ai ships
 author. pydantic-ai itself has no word for this distinction —
 "`Model`" covers both — but our tree splits along it: drivers are
 ours, other `Model`s come from pydantic-ai.
+
+**Symbol**
+The normalized unit of the *structural layer* — `Symbol{kind, name,
+qualified_name, range, signature?, children[]}`, defined in
+`structural/symbols.py`. Produced deterministically by tree-sitter
+(no LLM, no hallucination): one definition (class / function /
+constant) with its declared signature and exact 1-indexed line range,
+nested by source containment (class ▸ method). `structural.parse`
+runs a grammar's `tags.scm` tag query and folds the `@definition.*`
+captures into this tree; `outline_symbols(source, lang)` is the entry
+point, returning `[]` for an unsupported language or a parse failure
+rather than raising.
+
+This is the single internal currency the structural consumers read:
+the `RepoTools.outline` / `symbol_at` tools, the diff-wide delta, the
+overview-prompt seed, and the sidebar Symbols axis.
+It is deliberately *not* reconciled with the LLM-derived
+`Overview.symbols_*` / `FileSymbols` — those answer "why did this
+change" (semantic, fallible); `Symbol` answers "where is the code and
+what does it literally declare" (structural, exact). The two coexist as
+separate layers by design (ADR 0001).
+
+**SymbolDelta**
+The deterministic base→head structural delta — `{added, removed,
+modified}` lists of flat `ChangedSymbol`s, defined in
+`structural/diff.py`. Computed by a `qualified_name` set-diff over the
+flattened base and head `Symbol` forests (`diff_file` per file, `merge`
+diff-wide): added = head-only name, removed = base-only, **modified =
+same name on both sides with a differing range** (a same-span body edit
+is not flagged — the range is the signal; finer "what changed" meaning
+stays the LLM's). Each `ChangedSymbol` carries its `path` and the span
+on its live side (head for added/modified, base for removed). Computed
+by `RepoTools.compute_symbol_delta()`, which reads base via `git show`
+and head from the worktree for every changed file in a supported
+language; `changed_symbols()` is its JSON wrapper for the LLM tool
+surface.
+
+**Overview seed**
+Before the overview pass, the pipeline computes the `SymbolDelta` and
+passes it to `format_overview_prompt`, which appends a `# Symbols
+changed (deterministic …)` section listing each changed symbol by kind
+and `qualified_name`. The overview system prompt instructs the model to
+populate `Overview.symbols_*` from that section verbatim — turning the
+symbol fields from inference into a deterministic seed (ADR 0001 Slice
+3). The seed is independent of `--no-context` (it's our own tree-sitter
+parse, not LLM tool access) and best-effort (a failure leaves the
+overview unseeded). When the delta is empty — every changed file is in
+an unsupported language — no section is appended and the prompt is
+byte-identical to the pre-seed form.
+
+**Symbols axis**
+The third sidebar grouping axis (after Themes and Files), built
+deterministically from the `SymbolDelta`. `build_json._symbol_blocks`
+parses each changed file's base/head worktree, takes the per-file
+`diff_file` set-diff, and maps every changed symbol to the hunk ids its
+*live*-side range overlaps (head for added/modified, base for removed).
+The changed symbols are then nested by `qualified_name` into a forest of
+`GroupBlock` nodes (id `SY<i>`, class ▸ method): a changed method hangs
+off its enclosing class, and an unchanged ancestor is synthesized as a
+context node from the live forest. A parent's `hunk_ids` is its subtree
+union (clicking it filters to every changed descendant) and the count is
+the distinct hunks beneath it; a leaf carries only its own. Any node
+whose whole subtree touches no hunk yields no block. The viewer's
+`Sidebar.rebuildSymbolsAxis` loads the forest from `DATA.symbols` at boot
+(flattening every node into `byId` for active-pill lookup) and
+`Sidebar` renders it as an expand/collapse tree (`_symbolNode`) reusing
+the existing pill machinery (`applyFilter`, localStorage `<axis>:<id>`,
+count badges). Like the Files axis it's structural — present from boot,
+never refreshed by an SSE pass (ADR 0001 Slice 5).

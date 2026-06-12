@@ -57,7 +57,7 @@ def test_hunk_agent_registers_repo_tools() -> None:
     agent = make_hunk_agent("anthropic:claude-opus-4-7")
     names = {t.name for t in agent._function_toolset.tools.values()}
     assert names == {fn.__name__ for fn in TOOL_FUNCTIONS}
-    assert names == {"read_file", "read_file_at", "grep", "list_dir", "git_log"}
+    assert names == {"read_file", "read_file_at", "outline", "symbol_at", "changed_symbols", "grep", "list_dir", "git_log"}
 
 
 def test_overview_agent_runs_with_test_model() -> None:

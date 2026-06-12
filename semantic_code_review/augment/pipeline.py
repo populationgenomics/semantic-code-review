@@ -167,6 +167,22 @@ async def augment_run_dir(
         enabled=None if show_progress else False,
     )
 
+    # Deterministic structural symbol delta (ADR 0001 Slice 3). Computed
+    # from our own tree-sitter parse of base vs head — independent of
+    # `skip_context`, which only gates the LLM's per-hunk tool access, not
+    # this in-process seed. Best-effort: a failure leaves the overview
+    # unseeded (today's behaviour) rather than aborting the run.
+    symbol_delta = None
+    try:
+        symbol_delta = RepoTools(
+            head_worktree=run_dir / "head",
+            repo_git=run_dir / "repo.git",
+            base_sha=diff.pr.base_sha,
+            head_sha=diff.pr.head_sha,
+        ).compute_symbol_delta()
+    except Exception:  # noqa: BLE001 — seed is best-effort
+        log.warning("structural symbol seed failed; overview runs unseeded", exc_info=True)
+
     async with meter:
         # --- Overview pass -------------------------------------------------
         if not skip_overview:
@@ -176,7 +192,7 @@ async def augment_run_dir(
             try:
                 ov = await run_overview_pass(
                     client, diff=diff, meta=meta, model=model,
-                    cache=cache, trace_dir=trace_dir,
+                    delta=symbol_delta, cache=cache, trace_dir=trace_dir,
                 )
                 diff = apply_overview_to_diff(diff, ov)
                 meter.finish_overview(ok=True)

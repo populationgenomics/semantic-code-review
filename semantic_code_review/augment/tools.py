@@ -29,7 +29,7 @@ from typing import Any, Callable
 from pydantic_ai import RunContext
 from pydantic_ai.tools import Tool
 
-from .. import git_ops
+from .. import git_ops, structural
 
 
 TOOL_RESULT_CAP_BYTES = 20 * 1024
@@ -95,6 +95,115 @@ class RepoTools:
         if rc != 0:
             return f"error: git show {sha}:{path} failed: {stderr.strip()}"
         return _slice_and_cap(stdout, start_line, end_line)
+
+    # --- structure --------------------------------------------------------
+
+    @_tool
+    def outline(self, path: str, sha: str | None = None) -> str:
+        """Structural symbol outline of a file, as a JSON array.
+
+        Deterministic tree-sitter parse — no LLM, no hallucination. Each
+        entry is a definition (class / function / constant) with its
+        `name`, `qualified_name`, 1-indexed line `range`, declared
+        `signature` (or null), and nested `children` (class ▸ method).
+        Unsupported language or parse failure ⇒ `[]`.
+
+        Args:
+            path: Path relative to repo root.
+            sha: Commit SHA to read the file at (defaults to head worktree).
+        """
+        lang = structural.language_for_path(path)
+        if lang is None:
+            return "[]"
+        source = self._read_source(path, sha)
+        if source is None:
+            return "[]"
+        symbols = structural.outline_symbols(source, lang)
+        return _cap(structural.symbols_to_json(symbols))
+
+    def _read_source(self, path: str, sha: str | None) -> str | None:
+        """Raw file text from the head worktree (``sha is None``) or at a
+        revision via ``git show``. ``None`` if it can't be read."""
+        if sha is None:
+            full = (self.head_worktree / path).resolve()
+            if not _is_inside(full, self.head_worktree) or not full.is_file():
+                return None
+            try:
+                return full.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return None
+        rc, stdout, _stderr = git_ops.git_capture(self.repo_git, "show", f"{sha}:{path}")
+        return stdout if rc == 0 else None
+
+    @_tool
+    def symbol_at(self, path: str, line: int, sha: str | None = None) -> str:
+        """Innermost symbol enclosing a line, as a JSON object (or `null`).
+
+        Deterministic tree-sitter parse — no LLM. Returns the most
+        specific definition (the method, not its class) whose 1-indexed
+        line `range` covers `line`, with its `name`, `qualified_name`,
+        `signature`, and nested `children`. `null` if no symbol covers
+        the line, or the language is unsupported / file unreadable.
+
+        Args:
+            path: Path relative to repo root.
+            line: 1-indexed line number.
+            sha: Commit SHA to read the file at (defaults to head worktree).
+        """
+        lang = structural.language_for_path(path)
+        if lang is None:
+            return "null"
+        source = self._read_source(path, sha)
+        if source is None:
+            return "null"
+        symbols = structural.outline_symbols(source, lang)
+        return structural.symbol_to_json(structural.enclosing_symbol(symbols, line))
+
+    def compute_symbol_delta(self) -> structural.SymbolDelta:
+        """Deterministic base→head structural delta over the whole diff.
+
+        Compares the base commit against the head worktree for every
+        changed file in a supported language and merges the per-file
+        `qualified_name` set-diffs into one diff-wide `SymbolDelta`.
+        Changed files in unsupported languages are silently absent.
+
+        Underlies both the `changed_symbols` tool (JSON for the LLM) and
+        the overview seed (the `SymbolDelta` object, consumed in-process).
+        Raises `git_ops.GitError` if the diff can't be enumerated.
+        """
+        paths = git_ops.diff_name_only(self.repo_git, self.base_sha, self.head_sha)
+        deltas = []
+        for path in paths:
+            lang = structural.language_for_path(path)
+            if lang is None:
+                continue
+            base_src = self._read_source(path, self.base_sha)
+            head_src = self._read_source(path, None)
+            base_syms = structural.outline_symbols(base_src, lang) if base_src is not None else []
+            head_syms = structural.outline_symbols(head_src, lang) if head_src is not None else []
+            deltas.append(structural.diff_file(path, base_syms, head_syms))
+        return structural.merge(deltas)
+
+    @_tool
+    def changed_symbols(self) -> str:
+        """Deterministic structural delta of the whole diff, as JSON.
+
+        Compares the base commit against the head worktree for every
+        changed file in a supported language, returning
+        `{added, removed, modified}` lists of symbols by `qualified_name`
+        set-diff — no LLM, no hallucination. `modified` means the same
+        qualified name on both sides with a differing line range; a
+        same-span body edit is not flagged. Each entry carries its
+        `path`, `kind`, `name`, `qualified_name`, declared `signature`,
+        and the line `range` on its live side (head for added/modified,
+        base for removed). Changed files in unsupported languages are
+        silently absent.
+        """
+        try:
+            delta = self.compute_symbol_delta()
+        except git_ops.GitError as e:
+            return f"error: {e}"
+        return _cap(delta.model_dump_json())
 
     # --- search -----------------------------------------------------------
 

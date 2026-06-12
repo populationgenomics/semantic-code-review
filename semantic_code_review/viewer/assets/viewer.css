@@ -170,6 +170,29 @@ body {
   font-style: italic;
 }
 
+/* Symbols axis: nested class ▸ method tree. The toggle sits in a fixed
+ * column to the left of each pill so leaves (toggle hidden) stay aligned
+ * with their parents; children indent under the row. */
+.group-tree-node { margin-bottom: 0; }
+.group-tree-row { display: flex; align-items: center; gap: 2px; }
+.group-tree-row .group-btn { margin-bottom: 4px; }
+.group-tree-toggle {
+  flex: 0 0 auto;
+  width: 14px;
+  align-self: stretch;
+  margin-bottom: 4px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+}
+.group-tree-toggle:hover { color: var(--fg); }
+.group-tree-toggle-leaf { cursor: default; visibility: hidden; }
+.group-tree-children { padding-left: 12px; }
+
 /* Subtle tell for hunks that no semantic group claimed, visible in
  * the unfiltered view only. Left border gets a dotted treatment so
  * the eye can pick them out at a glance without them feeling alarming. */
@@ -393,7 +416,14 @@ body {
 }
 .diff .half {
   display: grid;
-  grid-template-columns: 3.5em minmax(0, 1fr);
+  /* `max-content` as the track *min* sizes the content column to the widest
+   * line, so every row's grid area — and thus its background tint — is as
+   * wide as the longest line and stays painted when a long sibling scrolls
+   * into view. `1fr` as the max lets the track grow to fill the column when
+   * the content is narrower than the viewport. A plain `minmax(0, 1fr)`
+   * floors the track at 0, so the widest line overflows its own area while
+   * shorter rows' tint stops at the viewport edge. */
+  grid-template-columns: 3.5em minmax(max-content, 1fr);
   overflow-x: auto;
   min-width: 0;
   /* overflow-y is implicitly clipped (non-visible) when x is auto.
@@ -441,14 +471,9 @@ body {
 }
 .diff .cell-lineno.empty { background: transparent; border-right-color: transparent; }
 .diff .cell-content {
-  /* Grow the content cell's box to the full width of its text so the
-   * row-kind background tint (green/red/context) covers everything the
-   * user can scroll to horizontally. Without this, `white-space: pre`
-   * lets the text overflow the grid track while the cell's border box
-   * — and thus its background — stays at track width. The grid track
-   * expands to match (via minmax(0, 1fr)), and `.half`'s overflow-x
-   * scrolls it into view. */
-  min-width: max-content;
+  /* Width (and thus the row-kind background tint) comes from the content
+   * column track — `minmax(max-content, 1fr)` on `.half` above — so every
+   * cell stretches to the widest line. No per-cell `min-width` needed. */
   /* Reserve a left gutter for the fold chevron so it can float outside
    * the text flow without displacing the code. Every line — chevron or
    * not — pays the same gutter so indentation reads consistently.
@@ -466,6 +491,32 @@ body {
 .diff .row-del .cell-content-old { background: rgba(248, 81, 73, 0.16); }
 .diff .row-pair .cell-content-old { background: rgba(248, 81, 73, 0.16); }
 .diff .row-pair .cell-content-new { background: rgba(63, 185, 80, 0.16); }
+
+/* Intra-line sub-diff: the changed block within a replacement, over the
+ * light whole-line row tint. A subtle fill plus a coloured underline marks
+ * it. Underline (not a full ring) because a block that crosses highlight.js
+ * token spans is rendered as several adjacent `.char-chg` spans — a ring
+ * would draw a vertical edge at every join, breaking up joined text; an
+ * underline stays continuous across them. Applies to any changed row
+ * (pair, or a del/ins line inside a multi-line replacement block), so the
+ * side determines the colour. */
+.diff .cell-content-old .char-chg {
+  background: rgba(248, 81, 73, 0.13);
+  border-bottom: 2px solid rgba(248, 81, 73, 0.7);
+}
+.diff .cell-content-new .char-chg {
+  background: rgba(63, 185, 80, 0.13);
+  border-bottom: 2px solid rgba(63, 185, 80, 0.7);
+}
+
+/* Symbol-focus search highlight: every occurrence of the focused symbol's
+ * name, painted search-style. Amber reads on both themes and over the
+ * green/red row + char-chg tints; the ring keeps it legible regardless. */
+.diff .cell-content code .symbol-hit {
+  background: rgba(255, 196, 0, 0.4);
+  box-shadow: 0 0 0 1px rgba(255, 196, 0, 0.7);
+  border-radius: 2px;
+}
 
 /* Dim the empty placeholder on the opposite side of an ins/del */
 .diff .row-ins .cell-content-old.empty,

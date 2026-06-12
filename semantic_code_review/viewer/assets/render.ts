@@ -21,6 +21,7 @@ import { FileRows } from "./file_rows";
 import { Folds } from "./folds";
 import { Progress } from "./progress";
 import { Sidebar } from "./sidebar";
+import { blockDiff, matchRanges, wrapRanges, type CharRange } from "./text_highlight";
 
 // --- Module state --------------------------------------------------------
 
@@ -32,8 +33,13 @@ interface RenderState {
   renderedDiffs: Record<string, HTMLElement>;
 }
 
-let _data: ViewerData = { version: "1", pr: {} as PRBlock, smells_catalogue: {}, files: [], groups: [] };
+let _data: ViewerData = { version: "1", pr: {} as PRBlock, smells_catalogue: {}, files: [], groups: [], symbols: [] };
 let _smells: Record<string, SmellCatalogueEntry> = {};
+// The focused symbol's name, highlighted search-style across every diff
+// line, or null when no symbol pill is active. Newly rendered cells pick
+// it up in _renderContent; setSymbolSearch repaints cells already in the
+// DOM. See setSymbolSearch / sidebar's active-pill callback.
+let _symbolSearch: string | null = null;
 const _state: RenderState = {
   fold: "hunks",
   overrides: Object.create(null),
@@ -577,8 +583,10 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock): HTMLElement {
 
   const rowElsOld: HTMLElement[] = [];
   const rowElsNew: HTMLElement[] = [];
-  for (const row of h.rows || []) {
-    const pair = _renderRow(row, file);
+  const rows = h.rows || [];
+  const marks = _blockMarks(rows);
+  for (let idx = 0; idx < rows.length; idx++) {
+    const pair = _renderRow(rows[idx], file, marks[idx]?.old, marks[idx]?.new);
     (pair.old as { _scrPair?: HTMLElement })._scrPair = pair.new;
     (pair.new as { _scrPair?: HTMLElement })._scrPair = pair.old;
     halfOld.appendChild(pair.old);
@@ -659,16 +667,54 @@ function _buildLineNoteContent(
   return wrap;
 }
 
-function _renderRow(row: RowBlock, file: FileBlock): { old: HTMLElement; new: HTMLElement } {
+function _renderRow(
+  row: RowBlock,
+  file: FileBlock,
+  oldMarks?: CharRange[],
+  newMarks?: CharRange[],
+): { old: HTMLElement; new: HTMLElement } {
   const hasOld = row.old_line !== null && row.old_line !== undefined;
   const hasNew = row.new_line !== null && row.new_line !== undefined;
   const oldRow = _el("div", `row row-${row.kind}`);
   oldRow.appendChild(_renderLineno(row.old_line, "old", hasOld));
-  oldRow.appendChild(_renderContent(row.old_text, "old", hasOld, file));
+  oldRow.appendChild(_renderContent(row.old_text, "old", hasOld, file, oldMarks));
   const newRow = _el("div", `row row-${row.kind}`);
   newRow.appendChild(_renderLineno(row.new_line, "new", hasNew));
-  newRow.appendChild(_renderContent(row.new_text, "new", hasNew, file));
+  newRow.appendChild(_renderContent(row.new_text, "new", hasNew, file, newMarks));
   return { old: oldRow, new: newRow };
+}
+
+interface _RowMarks { old?: CharRange[]; new?: CharRange[]; }
+
+/** Per-row intra-line change marks for a hunk's rows. Consecutive changed
+ *  rows form a block; a block that has *both* deleted and inserted lines (a
+ *  replacement) is token-diffed across line boundaries so a change spanning
+ *  several old lines is marked as one deletion + insertion. Pure
+ *  deletions / insertions and context get no marks (the row tint suffices).
+ */
+function _blockMarks(rows: RowBlock[]): (_RowMarks | undefined)[] {
+  const out: (_RowMarks | undefined)[] = new Array(rows.length).fill(undefined);
+  let i = 0;
+  while (i < rows.length) {
+    if (rows[i].kind === "ctx") { i++; continue; }
+    const oldRows: number[] = [];
+    const newRows: number[] = [];
+    const oldLines: string[] = [];
+    const newLines: string[] = [];
+    let j = i;
+    for (; j < rows.length && rows[j].kind !== "ctx"; j++) {
+      const r = rows[j];
+      if (r.old_line !== null && r.old_line !== undefined) { oldRows.push(j); oldLines.push(r.old_text); }
+      if (r.new_line !== null && r.new_line !== undefined) { newRows.push(j); newLines.push(r.new_text); }
+    }
+    if (oldLines.length > 0 && newLines.length > 0) {
+      const d = blockDiff(oldLines, newLines);
+      oldRows.forEach((ri, k) => { (out[ri] ??= {}).old = d.old[k]; });
+      newRows.forEach((ri, k) => { (out[ri] ??= {}).new = d.new[k]; });
+    }
+    i = j;
+  }
+  return out;
 }
 
 function _renderLineno(line: number | null, side: "old" | "new", present: boolean): HTMLElement {
@@ -681,7 +727,13 @@ function _renderLineno(line: number | null, side: "old" | "new", present: boolea
   return c;
 }
 
-function _renderContent(text: string, side: "old" | "new", present: boolean, file: FileBlock): HTMLElement {
+function _renderContent(
+  text: string,
+  side: "old" | "new",
+  present: boolean,
+  file: FileBlock,
+  markRanges?: CharRange[],
+): HTMLElement {
   const c = _el("span", `cell cell-content cell-content-${side}`);
   if (!present) {
     c.classList.add("empty");
@@ -701,8 +753,45 @@ function _renderContent(text: string, side: "old" | "new", present: boolean, fil
   } else {
     code.textContent = text;
   }
+  // Paint the intra-line change marks over the (possibly highlighted)
+  // text. Offsets are over the raw line, which highlight.js preserves.
+  if (markRanges && markRanges.length) wrapRanges(code, markRanges, "char-chg");
+  // Search-highlight the focused symbol on this fresh cell.
+  if (_symbolSearch) _applySymbolHits(code);
   c.appendChild(code);
   return c;
+}
+
+// --- Symbol-focus search highlight ---------------------------------------
+
+/** Set (or clear, with null) the symbol name highlighted across the diff,
+ *  then repaint every cell already in the DOM. Driven by the sidebar when
+ *  a Symbols-axis pill is focused. */
+function setSymbolSearch(term: string | null): void {
+  const next = term && term.trim() ? term : null;
+  if (next === _symbolSearch) return;
+  _symbolSearch = next;
+  for (const code of document.querySelectorAll<HTMLElement>("#app .cell-content code")) {
+    _clearSymbolHits(code);
+    if (_symbolSearch) _applySymbolHits(code);
+  }
+}
+
+function _applySymbolHits(code: HTMLElement): void {
+  if (!_symbolSearch) return;
+  const ranges = matchRanges(code.textContent || "", _symbolSearch);
+  if (ranges.length) wrapRanges(code, ranges, "symbol-hit");
+}
+
+/** Unwrap this cell's `symbol-hit` spans back to plain text, leaving any
+ *  highlight.js / char-chg markup untouched. */
+function _clearSymbolHits(code: HTMLElement): void {
+  const hits = code.querySelectorAll("span.symbol-hit");
+  if (hits.length === 0) return;
+  for (const hit of Array.from(hits)) {
+    hit.replaceWith(document.createTextNode(hit.textContent || ""));
+  }
+  code.normalize(); // merge the text nodes the unwrap left adjacent
 }
 
 // --- Severity color ----------------------------------------------------
@@ -840,4 +929,5 @@ export const Render = {
   renderHunkReplace,
   repaintHunkHeader,
   clearRenderedDiffCache,
+  setSymbolSearch,
 };

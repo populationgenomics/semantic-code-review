@@ -10,9 +10,11 @@ browser.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .. import structural
 from ..augment.schemas import (
     SMELL_CATALOGUE, AnnotatedDiff, AnnotatedFile, FileAnnotations, Overview,
     PRInfo, lift_file,
@@ -29,6 +31,7 @@ def build_viewer_json(
     diff: AnnotatedDiff,
     meta: dict[str, Any],
     head_dir: Path | None = None,
+    base_dir: Path | None = None,
 ) -> dict[str, Any]:
     return {
         "version": "1",
@@ -43,6 +46,7 @@ def build_viewer_json(
         },
         "files": [_file_block(f, i, head_dir) for i, f in enumerate(diff.files)],
         "groups": _group_blocks(diff),
+        "symbols": _symbol_blocks(diff, base_dir, head_dir),
     }
 
 
@@ -68,7 +72,12 @@ def build_pending_viewer_json(run_dir: Path) -> dict[str, Any]:
         files=[lift_file(pf, ann=FileAnnotations()) for pf in parsed.files],
     )
     head_dir = run_dir / "head"
-    data = build_viewer_json(diff, meta, head_dir=head_dir if head_dir.exists() else None)
+    base_dir = run_dir / "base"
+    data = build_viewer_json(
+        diff, meta,
+        head_dir=head_dir if head_dir.exists() else None,
+        base_dir=base_dir if base_dir.exists() else None,
+    )
     data["pending"] = True
     return data
 
@@ -102,6 +111,207 @@ def _group_blocks(diff: AnnotatedDiff) -> list[dict[str, Any]]:
             "hunk_ids": hunk_ids,
         })
     return out
+
+
+@dataclass
+class _SymNode:
+    """A node in the per-file changed-symbol tree (slice 5 nesting).
+
+    Directly-changed symbols carry a `status`; ancestors synthesized only
+    to give a changed descendant its context have `status=None`. `name`
+    is the short segment (the title shown in the tree); `hunk_ids` is the
+    distinct subtree union, filled bottom-up by `_rollup`.
+    """
+
+    qn: str
+    parent: str | None
+    name: str = ""
+    kind: str = ""
+    status: str | None = None
+    start_line: int = 0
+    own_hunks: list[str] = field(default_factory=list)
+    children: list[str] = field(default_factory=list)
+    hunk_ids: list[str] = field(default_factory=list)
+
+
+def _symbol_blocks(
+    diff: AnnotatedDiff,
+    base_dir: Path | None,
+    head_dir: Path | None,
+) -> list[dict[str, Any]]:
+    """Deterministic Symbols axis: a nested changed-symbol tree (ADR 0001).
+
+    The tree-sitter base→head set-diff (`structural.diff_file`) gives the
+    added / modified / removed symbols per file; each is mapped to the
+    viewer hunk ids whose line span its *live*-side range overlaps (head
+    for added/modified, base for removed). Changed symbols are then nested
+    by `qualified_name` (class ▸ method): a changed method renders under
+    its enclosing class even when the class itself is unchanged — those
+    ancestors are synthesized as context nodes from the live forest.
+
+    A parent's `hunk_ids` is the union of its subtree's hunks (clicking it
+    filters to every changed descendant); a leaf carries only its own.
+    Any node whose whole subtree touches no hunk — e.g. a symbol that only
+    shifted because lines moved above it, with no changed children —
+    yields no block, so every pill filters to at least one hunk. Absent
+    entirely when neither worktree is available or the language is
+    unsupported — today's behaviour for those files.
+    """
+    if base_dir is None and head_dir is None:
+        return []
+    out: list[dict[str, Any]] = []
+    counter = [0]
+    for fi, f in enumerate(diff.files):
+        lang = structural.language_for_path(f.path)
+        if lang is None:
+            continue
+        base_src = _read_tree_source(base_dir, f.old_path or f.path)
+        head_src = _read_tree_source(head_dir, f.path)
+        base_syms = structural.outline_symbols(base_src, lang) if base_src is not None else []
+        head_syms = structural.outline_symbols(head_src, lang) if head_src is not None else []
+        delta = structural.diff_file(f.path, base_syms, head_syms)
+        head_spans = [
+            (h.parsed.new_start, h.parsed.new_start + h.parsed.new_count - 1, f"H{fi}_{hi}")
+            for hi, h in enumerate(f.hunks)
+        ]
+        base_spans = [
+            (h.parsed.old_start, h.parsed.old_start + h.parsed.old_count - 1, f"H{fi}_{hi}")
+            for hi, h in enumerate(f.hunks)
+        ]
+        out.extend(
+            _symbol_tree_blocks(f.path, delta, head_spans, base_spans, head_syms, base_syms, counter)
+        )
+    return out
+
+
+def _symbol_tree_blocks(
+    path: str,
+    delta: structural.SymbolDelta,
+    head_spans: list[tuple[int, int, str]],
+    base_spans: list[tuple[int, int, str]],
+    head_syms: list[structural.Symbol],
+    base_syms: list[structural.Symbol],
+    counter: list[int],
+) -> list[dict[str, Any]]:
+    """Build one file's nested changed-symbol blocks (see `_symbol_blocks`)."""
+    # Live side is head for added/modified, base for removed.
+    changed: dict[str, tuple[str, structural.ChangedSymbol, list[str]]] = {}
+    for status, spans, syms in (
+        ("added", head_spans, delta.added),
+        ("modified", head_spans, delta.modified),
+        ("removed", base_spans, delta.removed),
+    ):
+        for cs in syms:
+            changed[cs.qualified_name] = (status, cs, _overlapping_hunks(spans, cs.range))
+    if not changed:
+        return []
+
+    nodes: dict[str, _SymNode] = {}
+
+    def ensure(qn: str) -> _SymNode:
+        node = nodes.get(qn)
+        if node is not None:
+            return node
+        parent_qn = qn.rsplit(".", 1)[0] if "." in qn else None
+        node = _SymNode(qn=qn, parent=parent_qn)
+        nodes[qn] = node
+        if parent_qn is not None:
+            parent = ensure(parent_qn)
+            if qn not in parent.children:
+                parent.children.append(qn)
+        return node
+
+    for qn, (status, cs, hids) in changed.items():
+        node = ensure(qn)
+        node.status, node.kind, node.name = status, cs.kind, cs.name
+        node.start_line, node.own_hunks = cs.range.start_line, hids
+
+    # Fill metadata for synthesized ancestors from the live forests so the
+    # context node shows the class's real name/kind, not just a name guess.
+    head_flat = structural.flatten(head_syms)
+    base_flat = structural.flatten(base_syms)
+    for qn, node in nodes.items():
+        if node.status is None:
+            sym = head_flat.get(qn) or base_flat.get(qn)
+            node.name = sym.name if sym else qn.rsplit(".", 1)[-1]
+            node.kind = sym.kind if sym else "container"
+            node.start_line = sym.range.start_line if sym else 0
+
+    def rollup(qn: str) -> list[str]:
+        node = nodes[qn]
+        node.children.sort(key=lambda c: (nodes[c].start_line, c))
+        ids = list(node.own_hunks)
+        for c in node.children:
+            for h in rollup(c):
+                if h not in ids:
+                    ids.append(h)
+        node.hunk_ids = sorted(ids, key=_hunk_sort_key)
+        return node.hunk_ids
+
+    roots = sorted(
+        (qn for qn, n in nodes.items() if n.parent not in nodes),
+        key=lambda q: (nodes[q].start_line, q),
+    )
+    for r in roots:
+        rollup(r)
+
+    def emit(qn: str) -> dict[str, Any] | None:
+        node = nodes[qn]
+        if not node.hunk_ids:  # nothing in this subtree touches a hunk
+            return None
+        rationale = (
+            f"{node.status} {node.kind} in {path}" if node.status is not None
+            else f"{node.kind} (unchanged) in {path}"
+        )
+        block: dict[str, Any] = {
+            "id": f"SY{counter[0]}",
+            "title": node.name,
+            "rationale": rationale,
+            "hunk_ids": node.hunk_ids,
+        }
+        counter[0] += 1
+        children = [b for c in node.children if (b := emit(c)) is not None]
+        if children:
+            block["children"] = children
+        return block
+
+    return [b for r in roots if (b := emit(r)) is not None]
+
+
+def _hunk_sort_key(hid: str) -> tuple[int, int]:
+    """Sort key for "H{file}_{hunk}" ids → (file_idx, hunk_idx)."""
+    try:
+        fi, hi = hid[1:].split("_", 1)
+        return int(fi), int(hi)
+    except (ValueError, IndexError):
+        return 0, 0
+
+
+def _overlapping_hunks(
+    spans: list[tuple[int, int, str]], rng: structural.SymbolRange,
+) -> list[str]:
+    """Hunk ids whose [start, end] line span overlaps `rng`.
+
+    Empty hunk spans (count 0 — e.g. a pure deletion on the head side)
+    have end < start and so never overlap.
+    """
+    return [
+        hid for start, end, hid in spans
+        if start <= end and rng.start_line <= end and start <= rng.end_line
+    ]
+
+
+def _read_tree_source(tree_dir: Path | None, rel_path: str) -> str | None:
+    """Read `rel_path` from a worktree dir, or None if unavailable."""
+    if tree_dir is None:
+        return None
+    path = tree_dir / rel_path
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
 
 
 def _pr_block(diff: AnnotatedDiff, meta: dict[str, Any]) -> dict[str, Any]:
@@ -168,13 +378,32 @@ def _load_head_lines(f: AnnotatedFile, head_dir: Path | None) -> list[str] | Non
     return lines
 
 
+# Maps a file extension to a highlight.js language *registered in the
+# vendored build* (see vendor/highlight.min.js; the set is asserted in
+# tests/test_viewer_json.py). An unmapped extension yields "", which the
+# viewer renders as plain text. Values must be canonical hljs names, not
+# aliases, so the test guard stays simple.
 _LANG_BY_EXT = {
-    ".py": "python", ".js": "javascript", ".ts": "typescript", ".tsx": "typescript",
-    ".jsx": "javascript", ".go": "go", ".rs": "rust", ".rb": "ruby",
-    ".java": "java", ".kt": "kotlin", ".c": "c", ".h": "c", ".cc": "cpp",
-    ".cpp": "cpp", ".hpp": "cpp", ".cs": "csharp", ".sh": "bash", ".yaml": "yaml",
-    ".yml": "yaml", ".json": "json", ".toml": "toml", ".md": "markdown",
-    ".html": "xml", ".xml": "xml", ".sql": "sql",
+    # Python / JS / TS (incl. the module variants the structural layer parses)
+    ".py": "python",
+    ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript", ".cjs": "javascript",
+    ".ts": "typescript", ".tsx": "typescript", ".mts": "typescript", ".cts": "typescript",
+    # Systems / compiled
+    ".go": "go", ".rs": "rust", ".c": "c", ".h": "c",
+    ".cc": "cpp", ".cpp": "cpp", ".cxx": "cpp", ".hpp": "cpp", ".hh": "cpp",
+    ".cs": "csharp", ".java": "java", ".kt": "kotlin", ".kts": "kotlin",
+    ".swift": "swift", ".vb": "vbnet",
+    # Scripting
+    ".rb": "ruby", ".php": "php", ".lua": "lua", ".pl": "perl", ".pm": "perl",
+    ".r": "r", ".sh": "bash", ".bash": "bash", ".zsh": "bash",
+    # Web / styling
+    ".css": "css", ".scss": "scss", ".sass": "scss", ".less": "less",
+    ".html": "xml", ".xml": "xml", ".svg": "xml",
+    # Data / config / docs
+    ".yaml": "yaml", ".yml": "yaml", ".json": "json", ".toml": "ini", ".ini": "ini",
+    ".cfg": "ini", ".sql": "sql", ".graphql": "graphql", ".gql": "graphql",
+    ".md": "markdown", ".markdown": "markdown",
+    ".diff": "diff", ".patch": "diff",
 }
 
 

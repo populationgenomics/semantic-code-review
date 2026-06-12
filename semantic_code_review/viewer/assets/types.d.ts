@@ -24,6 +24,10 @@ interface ViewerData {
   smells_catalogue: Record<string, SmellCatalogueEntry>;
   files: FileBlock[];
   groups: GroupBlock[];
+  /** Deterministic tree-sitter symbol delta, one block per changed
+   *  symbol, mapped to overlapping hunk ids (ADR 0001 Symbols axis).
+   *  Present (possibly empty) whenever a worktree was available. */
+  symbols: GroupBlock[];
 }
 
 interface SmellCatalogueEntry {
@@ -193,12 +197,18 @@ interface FoldRegion {
 // --- Sidebar groups ---------------------------------------------------------
 
 interface GroupBlock {
-  /** Stable id. Themes axis uses "G<i>"; files axis uses "BF<file_idx>". */
+  /** Stable id. Themes axis uses "G<i>"; files axis uses "BF<file_idx>";
+   *  symbols axis uses "SY<i>". */
   id: string;
   title: string;
   rationale: string;
-  /** Hunk ids — matching ids in DATA.files[*].hunks[*].id. */
+  /** Hunk ids — matching ids in DATA.files[*].hunks[*].id. For a nested
+   *  symbols-axis node this is the subtree union (own + every
+   *  descendant's), so the count is the distinct hunks under it. */
   hunk_ids: string[];
+  /** Nested children (symbols axis only — class ▸ method). Absent for
+   *  flat axes and for leaf symbol nodes. */
+  children?: GroupBlock[];
 }
 
 // --- SSE event payloads -----------------------------------------------------

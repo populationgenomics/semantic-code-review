@@ -59,7 +59,7 @@ def test_tools_list_exposes_repo_tools(tmp_path: Path) -> None:
     responses = _run(rt, _request("tools/list", id_=2))
     assert len(responses) == 1
     names = {t["name"] for t in responses[0]["result"]["tools"]}
-    assert names == {"read_file", "read_file_at", "grep", "list_dir", "git_log"}
+    assert names == {"read_file", "read_file_at", "outline", "symbol_at", "changed_symbols", "grep", "list_dir", "git_log"}
     for t in responses[0]["result"]["tools"]:
         assert "inputSchema" in t  # MCP uses camelCase
 

@@ -210,6 +210,7 @@ function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
       hunks: [makeHunkBlock("H0_0")],
     }],
     groups: [],
+    symbols: [],
     ...overrides,
   };
 }
@@ -413,6 +414,145 @@ describe("streaming events", () => {
     (pills[0] as HTMLElement).click();
     expect(h1.style.display).not.toBe("none");
     expect(document.querySelector(".group-btn-all")!.classList.contains("active")).toBe(true);
+  });
+
+  test("symbols axis renders flat pills from boot and filters on click", async () => {
+    await bootViewer(makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 0, dels: 0, summary: "", head_lines: null,
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock("H0_0", "alpha"), makeHunkBlock("H0_1", "beta")],
+      }],
+      symbols: [
+        { id: "SY0", title: "Foo.bar", rationale: "modified function in a.py", hunk_ids: ["H0_0"] },
+        { id: "SY1", title: "baz", rationale: "added function in a.py", hunk_ids: ["H0_1"] },
+      ],
+    }));
+    const sidebar = document.getElementById("group-sidebar")!;
+    const symbolsSection = sidebar.querySelector('[data-axis="symbols"]')!;
+    expect(symbolsSection).not.toBeNull();
+    const pills = symbolsSection.querySelectorAll(".group-btn");
+    expect(pills).toHaveLength(2);
+    expect(pills[0].textContent).toContain("Foo.bar");
+    expect(pills[0].querySelector(".group-btn-count")!.textContent).toBe("1");
+
+    // Click the Foo.bar pill — only H0_0 stays visible.
+    (pills[0] as HTMLElement).click();
+    const h0 = document.querySelector('.hunk[data-id="H0_0"]') as HTMLElement;
+    const h1 = document.querySelector('.hunk[data-id="H0_1"]') as HTMLElement;
+    expect(h0.style.display).not.toBe("none");
+    expect(h1.style.display).toBe("none");
+    expect((pills[0] as HTMLElement).classList.contains("active")).toBe(true);
+
+    // The symbols axis coexists with Themes/Files (Files renders from boot).
+    expect(sidebar.querySelector('[data-axis="files"]')).not.toBeNull();
+  });
+
+  test("focusing a symbol pill search-highlights its name across the diff", async () => {
+    window.location.hash = "#fold=off"; // expand hunks so diff bodies render
+    await bootViewer(makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 0, dels: 0, summary: "", head_lines: null,
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock("H0_0", "", {
+          rows: [
+            // "compute" appears as a whole word twice on this ctx row
+            // (old + new cell); "recompute" must NOT match (substring).
+            { kind: "ctx", old_line: 1, new_line: 1, old_text: "x = compute(1)", new_text: "x = compute(1)" },
+            { kind: "ins", old_line: null, new_line: 2, old_text: "", new_text: "y = recompute(2)" },
+          ],
+        })],
+      }],
+      symbols: [
+        { id: "SY0", title: "compute", rationale: "modified function in a.py", hunk_ids: ["H0_0"] },
+      ],
+    }));
+
+    const sidebar = document.getElementById("group-sidebar")!;
+    const pill = sidebar.querySelector('[data-axis="symbols"] .group-btn') as HTMLElement;
+    expect(pill.textContent).toContain("compute");
+
+    // Nothing highlighted until a symbol is focused.
+    expect(document.querySelectorAll("span.symbol-hit")).toHaveLength(0);
+
+    pill.click();
+    const hits = [...document.querySelectorAll("span.symbol-hit")];
+    expect(hits.map((h) => h.textContent)).toEqual(["compute", "compute"]);
+
+    // Clearing the filter ("Show all") removes the highlight.
+    (document.querySelector(".group-btn-all") as HTMLElement).click();
+    expect(document.querySelectorAll("span.symbol-hit")).toHaveLength(0);
+    // ...and leaves the underlying line text intact.
+    const firstCell = document.querySelector('.hunk[data-id="H0_0"] .cell-content code')!;
+    expect(firstCell.textContent).toBe("x = compute(1)");
+    window.location.hash = "";
+  });
+
+  test("symbols axis nests methods under their class and filters by subtree", async () => {
+    await bootViewer(makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 0, dels: 0, summary: "", head_lines: null,
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [
+          makeHunkBlock("H0_0", "alpha"),
+          makeHunkBlock("H0_1", "beta"),
+          makeHunkBlock("H0_2", "gamma"),
+        ],
+      }],
+      // Foo (class) wraps two changed methods. Its hunk_ids is the
+      // subtree union; each method carries just its own.
+      symbols: [{
+        id: "SY0", title: "Foo", rationale: "modified class in a.py",
+        hunk_ids: ["H0_0", "H0_1"],
+        children: [
+          { id: "SY1", title: "bar", rationale: "modified function in a.py", hunk_ids: ["H0_0"] },
+          { id: "SY2", title: "baz", rationale: "added function in a.py", hunk_ids: ["H0_1"] },
+        ],
+      }],
+    }));
+    const section = document.querySelector('[data-axis="symbols"]')!;
+    expect(section).not.toBeNull();
+
+    // Class pill + a toggle; both methods render nested and expanded.
+    const classPill = section.querySelector<HTMLElement>('.group-btn[data-pill-id="SY0"]')!;
+    expect(classPill).not.toBeNull();
+    expect(classPill.textContent).toContain("Foo");
+    expect(classPill.querySelector(".group-btn-count")!.textContent).toBe("2");
+    const methodPills = section.querySelectorAll(".group-tree-children .group-btn");
+    expect(Array.from(methodPills).map((p) => p.querySelector(".group-btn-label")!.textContent))
+      .toEqual(["bar", "baz"]);
+
+    const h0 = document.querySelector('.hunk[data-id="H0_0"]') as HTMLElement;
+    const h1 = document.querySelector('.hunk[data-id="H0_1"]') as HTMLElement;
+    const h2 = document.querySelector('.hunk[data-id="H0_2"]') as HTMLElement;
+
+    // Click the class → both its methods' hunks stay visible, the
+    // unrelated H0_2 is hidden.
+    classPill.click();
+    expect(h0.style.display).not.toBe("none");
+    expect(h1.style.display).not.toBe("none");
+    expect(h2.style.display).toBe("none");
+
+    // Click the method → only its own hunk remains.
+    section.querySelector<HTMLElement>('.group-btn[data-pill-id="SY1"]')!.click();
+    expect(h0.style.display).not.toBe("none");
+    expect(h1.style.display).toBe("none");
+    expect(h2.style.display).toBe("none");
+
+    // The collapse toggle hides the children without filtering.
+    const toggle = section.querySelector<HTMLElement>(".group-tree-toggle")!;
+    expect(toggle.classList.contains("group-tree-toggle-leaf")).toBe(false);
+    toggle.click();
+    const childWrap = section.querySelector(".group-tree-children") as HTMLElement;
+    expect(childWrap.style.display).toBe("none");
+    // Filter unaffected by collapse — still on SY1.
+    expect(h1.style.display).toBe("none");
   });
 
   test("done event hides the progress strip and clears pending", async () => {

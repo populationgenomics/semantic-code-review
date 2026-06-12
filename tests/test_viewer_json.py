@@ -115,3 +115,163 @@ def test_build_pending_viewer_json_emits_skeleton_with_pending_flag(tmp_path: Pa
     # No overview yet → no themes / groups.
     assert data["pr"]["themes"] == []
     assert data["groups"] == []
+
+
+_SYMBOL_DIFF = """diff --git a/a.py b/a.py
+index 0123456..89abcde 100644
+--- a/a.py
++++ b/a.py
+@@ -1,2 +1,6 @@
+ def foo():
+     return 1
++
++
++def bar():
++    return 2
+"""
+
+
+def test_symbol_blocks_map_changed_symbols_to_hunks(tmp_path: Path) -> None:
+    """The deterministic Symbols axis: each changed symbol becomes a
+    flat block carrying the hunk ids its live-side range overlaps."""
+    (tmp_path / "raw.diff").write_text(_SYMBOL_DIFF, encoding="utf-8")
+    (tmp_path / "meta.json").write_text(json.dumps({
+        "title": "Add bar", "author": {"login": "t"}, "url": "",
+        "baseRefOid": "aaa", "headRefOid": "bbb",
+    }), encoding="utf-8")
+    base = tmp_path / "base"
+    head = tmp_path / "head"
+    base.mkdir()
+    head.mkdir()
+    (base / "a.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
+    (head / "a.py").write_text(
+        "def foo():\n    return 1\n\n\ndef bar():\n    return 2\n", encoding="utf-8",
+    )
+
+    data = build_pending_viewer_json(tmp_path)
+
+    syms = data["symbols"]
+    # foo is unchanged (same range both sides) → only bar, the added fn.
+    assert len(syms) == 1
+    block = syms[0]
+    assert block["id"] == "SY0"
+    assert block["title"] == "bar"
+    assert "added" in block["rationale"] and "a.py" in block["rationale"]
+    # bar (head lines 5-6) overlaps the single hunk H0_0 (new lines 1-6).
+    assert block["hunk_ids"] == ["H0_0"]
+
+
+_NESTED_DIFF = """diff --git a/a.py b/a.py
+index 0123456..89abcde 100644
+--- a/a.py
++++ b/a.py
+@@ -1,3 +1,6 @@
+ class Foo:
+     def bar(self):
+         return 1
++
++    def baz(self):
++        return 2
+"""
+
+
+def test_symbol_blocks_nest_methods_under_their_class(tmp_path: Path) -> None:
+    """Slice 5: a changed method renders under its (possibly unchanged)
+    class. Adding `Foo.baz` grows `Foo`'s span (so the class is itself a
+    changed node); `baz` hangs off it as a child, and the parent's
+    hunk_ids is the subtree union."""
+    (tmp_path / "raw.diff").write_text(_NESTED_DIFF, encoding="utf-8")
+    (tmp_path / "meta.json").write_text(json.dumps({
+        "title": "Add Foo.baz", "author": {"login": "t"}, "url": "",
+        "baseRefOid": "aaa", "headRefOid": "bbb",
+    }), encoding="utf-8")
+    base = tmp_path / "base"
+    head = tmp_path / "head"
+    base.mkdir()
+    head.mkdir()
+    (base / "a.py").write_text(
+        "class Foo:\n    def bar(self):\n        return 1\n", encoding="utf-8",
+    )
+    (head / "a.py").write_text(
+        "class Foo:\n    def bar(self):\n        return 1\n\n"
+        "    def baz(self):\n        return 2\n", encoding="utf-8",
+    )
+
+    data = build_pending_viewer_json(tmp_path)
+
+    syms = data["symbols"]
+    # One root: the class. bar is untouched (identical span) → no pill.
+    assert len(syms) == 1
+    foo = syms[0]
+    assert foo["id"] == "SY0"
+    assert foo["title"] == "Foo"
+    assert "modified" in foo["rationale"]
+    assert foo["hunk_ids"] == ["H0_0"]      # subtree union
+    # baz nests under Foo as the only child.
+    children = foo["children"]
+    assert len(children) == 1
+    baz = children[0]
+    assert baz["id"] == "SY1"
+    assert baz["title"] == "baz"
+    assert "added" in baz["rationale"]
+    assert baz["hunk_ids"] == ["H0_0"]
+    assert "children" not in baz           # leaf carries no children key
+
+
+def test_symbol_blocks_absent_without_worktrees(tmp_path: Path) -> None:
+    """No base/head worktree available ⇒ empty Symbols axis, no raise."""
+    (tmp_path / "raw.diff").write_text(_SYMBOL_DIFF, encoding="utf-8")
+    (tmp_path / "meta.json").write_text(json.dumps({
+        "title": "Add bar", "author": {"login": "t"}, "url": "",
+        "baseRefOid": "aaa", "headRefOid": "bbb",
+    }), encoding="utf-8")
+
+    data = build_pending_viewer_json(tmp_path)
+
+    assert data["symbols"] == []
+
+
+# --- syntax-highlighting language map --------------------------------------
+
+# Canonical languages registered in the vendored highlight.js build
+# (semantic_code_review/viewer/assets/vendor/highlight.min.js). Derived by
+# enumerating the build's `grmr_<name>` grammar registrations; re-run that
+# enumeration after vendor/refresh.sh and update this set if it changes.
+_HLJS_BUILD_LANGUAGES = frozenset({
+    "bash", "c", "cpp", "csharp", "css", "diff", "go", "graphql", "ini",
+    "java", "javascript", "json", "kotlin", "less", "lua", "makefile",
+    "markdown", "objectivec", "perl", "php", "plaintext", "python", "r",
+    "ruby", "rust", "scss", "shell", "sql", "swift", "typescript", "vbnet",
+    "wasm", "xml", "yaml",
+})
+
+
+def test_lang_map_values_are_in_the_vendored_hljs_build() -> None:
+    """Every mapped language must exist in the bundled highlight.js, else
+    `hljs.highlight` throws at runtime and the cell silently falls back to
+    plain text. Guards against typos / unbundled grammars."""
+    from semantic_code_review.viewer.build_json import _LANG_BY_EXT
+
+    unknown = {
+        ext: lang
+        for ext, lang in _LANG_BY_EXT.items()
+        if lang not in _HLJS_BUILD_LANGUAGES
+    }
+    assert not unknown, f"languages not in the vendored hljs build: {unknown}"
+
+
+def test_lang_from_path_covers_common_extensions() -> None:
+    from semantic_code_review.viewer.build_json import _lang_from_path
+
+    cases = {
+        "a.py": "python", "a.ts": "typescript", "a.mts": "typescript",
+        "a.jsx": "javascript", "a.cjs": "javascript",
+        "styles.css": "css", "theme.scss": "scss", "App.swift": "swift",
+        "index.php": "php", "schema.graphql": "graphql", "Config.TOML": "ini",
+        "patch.diff": "diff",
+    }
+    for path, lang in cases.items():
+        assert _lang_from_path(path) == lang, path
+    # Unknown / extensionless ⇒ empty (viewer renders plain text).
+    assert _lang_from_path("LICENSE") == ""
+    assert _lang_from_path("data.parquet") == ""

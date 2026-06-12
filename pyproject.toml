@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "semantic-code-review"
-version = "0.21.0"
+version = "0.22.0"
 description = "LLM-augmented GitHub PR viewer with foldable semantic diffs."
 requires-python = ">=3.11"
 authors = [{name = "Toby Sargeant", email = "toby.sargeant@populationgenomics.org.au"}]
@@ -21,6 +21,10 @@ dependencies = [
   "openai==2.34.0",
   "pydantic==2.13.3",
   "pydantic-ai==1.90.0",
+  "tree-sitter==0.25.2",
+  "tree-sitter-python==0.25.0",
+  "tree-sitter-javascript==0.25.0",
+  "tree-sitter-typescript==0.23.2",
   "typer==0.24.2",
   "unidiff==0.7.5",
 ]
