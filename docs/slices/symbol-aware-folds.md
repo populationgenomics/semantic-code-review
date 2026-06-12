@@ -84,7 +84,7 @@ region under its (possibly unchanged) class, the collapsed body is the
 whole definition rather than an indentation guess, and an all-unsupported
 diff folds byte-identically to pre-slice output.
 
-## Slice 3 — `fold_summary` + chevron carry the symbol identity
+## Slice 3 — `fold_summary` + chevron carry the symbol identity ✅ done
 
 The "upgrades `fold_summary`" payoff.
 
