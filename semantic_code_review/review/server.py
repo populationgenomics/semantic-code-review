@@ -124,6 +124,37 @@ def _update_viewer_json_fold(
                 return
 
 
+def _fold_symbol_from_viewer_json(
+    viewer_json: dict[str, Any], file_idx: int, context: str,
+    right_range: tuple[int, int] | None, left_range: tuple[int, int] | None,
+) -> tuple[str | None, str | None]:
+    """Look up the symbol a fold region snapped to, from the viewer JSON.
+
+    The server-computed `fold_regions` carry the definition's
+    `qualified_name` / `kind` (or null for indentation-fallback regions);
+    the client requests by `(context, ranges)`, which match in lockstep.
+    Returns `(None, None)` when no region matches — a client-only region
+    over expanded context the server never computed — so the prompt is
+    simply left unseeded.
+    """
+    files = viewer_json.get("files") or []
+    if file_idx < 0 or file_idx >= len(files):
+        return (None, None)
+    rs, re_ = right_range or (0, 0)
+    ls, le = left_range or (0, 0)
+    for hunk in files[file_idx].get("hunks") or []:
+        for reg in hunk.get("fold_regions") or []:
+            if (
+                reg.get("context") == context
+                and (reg.get("right_start") or 0) == rs
+                and (reg.get("right_end") or 0) == re_
+                and (reg.get("left_start") or 0) == ls
+                and (reg.get("left_end") or 0) == le
+            ):
+                return (reg.get("qualified_name"), reg.get("kind"))
+    return (None, None)
+
+
 def _range_from_payload(payload: dict[str, Any], side: str) -> tuple[int, int] | None:
     """Pull (start, end) for a side out of the request payload, or None
     if the keys aren't both present + parsable."""
@@ -472,9 +503,16 @@ class _Handler(BaseHTTPRequestHandler):
             FoldSummaryFileIndexError, FoldSummaryNotReady,
         )
 
+        # Seed the prompt with the symbol the region snapped to (if any),
+        # resolved from the server-computed fold_regions in the viewer JSON.
+        qualified_name, kind = _fold_symbol_from_viewer_json(
+            self.ctx.viewer_json, file_idx, context, right_range, left_range,
+        )
+
         try:
             result = asyncio.run(self.ctx.fold_summariser(
                 file_idx, context, right_range, left_range,
+                qualified_name, kind,
             ))
         except FoldSummaryNotReady as e:
             self._json(409, {"error": str(e)})

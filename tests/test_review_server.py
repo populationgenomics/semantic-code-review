@@ -345,7 +345,9 @@ def test_fold_summary_broadcasts_and_patches_viewer_json(tmp_path: Path) -> None
                 "id": "H0_0",
                 "fold_regions": [{
                     "context": "right", "right_start": 1, "right_end": 3,
-                    "left_start": 0, "left_end": 0, "summary": "",
+                    "left_start": 0, "left_end": 0,
+                    "qualified_name": "Foo.bar", "kind": "function",
+                    "summary": "",
                 }],
             }],
         }],
@@ -356,11 +358,16 @@ def test_fold_summary_broadcasts_and_patches_viewer_json(tmp_path: Path) -> None
     try:
         captured = {}
 
-        async def fake_task(file_idx, context, right_range, left_range):
+        async def fake_task(
+            file_idx, context, right_range, left_range,
+            qualified_name=None, kind=None,
+        ):
             captured["file_idx"] = file_idx
             captured["context"] = context
             captured["right_range"] = right_range
             captured["left_range"] = left_range
+            captured["qualified_name"] = qualified_name
+            captured["kind"] = kind
             return {
                 "file_idx": file_idx, "context": context,
                 "right_start": (right_range or (0, 0))[0],
@@ -396,6 +403,10 @@ def test_fold_summary_broadcasts_and_patches_viewer_json(tmp_path: Path) -> None
         assert captured["context"] == "right"
         assert captured["right_range"] == (1, 3)
         assert captured["left_range"] is None
+        # The symbol the region snapped to is resolved from viewer_json
+        # and threaded through to the summariser.
+        assert captured["qualified_name"] == "Foo.bar"
+        assert captured["kind"] == "function"
 
         # `/data.json` reflects the patched viewer_json.
         code, data = _request(srv.url() + "/data.json")
@@ -427,7 +438,10 @@ def test_fold_summary_for_left_context_passes_ranges_through(tmp_path: Path) -> 
     try:
         seen = {}
 
-        async def fake_task(file_idx, context, right_range, left_range):
+        async def fake_task(
+            file_idx, context, right_range, left_range,
+            qualified_name=None, kind=None,
+        ):
             seen["context"] = context
             seen["right_range"] = right_range
             seen["left_range"] = left_range
@@ -479,7 +493,10 @@ def test_fold_summary_typed_errors_map_to_http_codes(tmp_path: Path) -> None:
             conn.close()
             return r.status, body
 
-        async def raises_not_ready(file_idx, context, right_range, left_range):
+        async def raises_not_ready(
+            file_idx, context, right_range, left_range,
+            qualified_name=None, kind=None,
+        ):
             raise FoldSummaryNotReady("sidecar gone walkabout")
 
         srv.set_fold_summariser(raises_not_ready)
@@ -489,7 +506,10 @@ def test_fold_summary_typed_errors_map_to_http_codes(tmp_path: Path) -> None:
         assert code == 409
         assert "walkabout" in body["error"]
 
-        async def raises_oob(file_idx, context, right_range, left_range):
+        async def raises_oob(
+            file_idx, context, right_range, left_range,
+            qualified_name=None, kind=None,
+        ):
             raise FoldSummaryFileIndexError("file_idx 999 not in diff")
 
         srv.set_fold_summariser(raises_oob)

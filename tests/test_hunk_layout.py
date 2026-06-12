@@ -19,6 +19,7 @@ _FOLD_CASES_PATH = Path(__file__).parent / "fixtures" / "fold_regions_cases.json
 _FOLD_REGION_KEYS = (
     "header_idx", "body_start_idx", "body_end_idx", "context",
     "right_start", "right_end", "left_start", "left_end",
+    "qualified_name", "kind",
 )
 
 

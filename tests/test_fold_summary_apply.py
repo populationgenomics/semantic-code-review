@@ -56,12 +56,12 @@ def stub_summarise(monkeypatch: pytest.MonkeyPatch) -> dict:
         client, *,
         run_dir, file_path, file_summary, overview_json,
         context, right_range, left_range,
-        model, cache=None, trace_dir=None,
+        model, qualified_name=None, kind=None, cache=None, trace_dir=None,
     ) -> str:
         seen.update(
             run_dir=run_dir, file_path=file_path, file_summary=file_summary,
             context=context, right_range=right_range, left_range=left_range,
-            model=model,
+            model=model, qualified_name=qualified_name, kind=kind,
         )
         return f"stub-summary-{context}"
 

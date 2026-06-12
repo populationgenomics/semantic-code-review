@@ -208,6 +208,11 @@ interface FoldRegion {
   left_start: number | null;
   left_end: number | null;
   has_changes: boolean;
+  /** Identity of the definition this region snapped to (e.g. "Foo.bar" /
+   *  "function"); null on an indentation-fallback region. The viewer
+   *  labels the collapsed placeholder with these when present. */
+  qualified_name: string | null;
+  kind: string | null;
   summary: string;
   /** Viewer-runtime only (not on the wire): set by folds.ts while a
    *  local POST /fold-summary is in flight, honoured by DataStore so

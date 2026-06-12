@@ -144,6 +144,8 @@ def _format_fold_prompt(
     body: str,
     right_range: tuple[int, int] | None,
     left_range: tuple[int, int] | None,
+    qualified_name: str | None = None,
+    kind: str | None = None,
 ) -> list[UserContent]:
     if context == "right":
         rs, re_ = right_range or (0, 0)
@@ -157,8 +159,16 @@ def _format_fold_prompt(
         region_label = (
             f"both sides — head/{file_path}:{rs}..{re_} vs base/{file_path}:{ls}..{le}"
         )
+    # When the region snapped to a definition, name it so the model
+    # describes that symbol's effect rather than re-deriving its identity
+    # from the body text. Indentation-fallback regions carry no symbol.
+    symbol_block = ""
+    if qualified_name:
+        kind_label = f"{kind} " if kind else ""
+        symbol_block = f"# Symbol\nThis fold is {kind_label}`{qualified_name}`.\n\n"
     region_text = (
         f"# File\npath: {file_path}\n\n"
+        f"{symbol_block}"
         f"# Folded region — context: {context}; {region_label}\n"
         f"{body}\n\n"
         "Summarise the folded region."
@@ -187,13 +197,15 @@ async def summarise_fold(
     right_range: tuple[int, int] | None,
     left_range: tuple[int, int] | None,
     model: str,
+    qualified_name: str | None = None,
+    kind: str | None = None,
     cache: CacheStore | None = None,
     trace_dir: Path | None = None,
 ) -> str:
     """Return a one-sentence summary for a fold region.
 
-    Cached by `(file path, ranges, context, body content hash)`. Trace
-    file (if `trace_dir` is given) lands at
+    Cached by `(file path, ranges, context, symbol, body content hash)`.
+    Trace file (if `trace_dir` is given) lands at
     `trace_dir/fold-<file>-<context><range>.json` so failures are
     diagnosable alongside the per-hunk traces.
     """
@@ -208,12 +220,15 @@ async def summarise_fold(
             overview_json=overview_json, file_path=file_path,
             file_summary=file_summary, context=context, body=body,
             right_range=right_range, left_range=left_range,
+            qualified_name=qualified_name, kind=kind,
         ),
         system=FOLD_SYSTEM,
         model=model,
         cache_inputs=(
             overview_json, file_summary, file_path, context,
             str(right_range or ""), str(left_range or ""),
+            # Symbol identity seeds the prompt, so vary the cache key by it.
+            qualified_name or "", kind or "",
             # Include the body so a re-run after the file content changed
             # is invalidated even when ranges happen to line up.
             body,
@@ -256,6 +271,8 @@ async def apply_fold_summary_to_run(
     right_range: tuple[int, int] | None,
     left_range: tuple[int, int] | None,
     model: str,
+    qualified_name: str | None = None,
+    kind: str | None = None,
     cache: CacheStore | None = None,
     trace_dir: Path | None = None,
 ) -> dict[str, Any]:
@@ -300,6 +317,8 @@ async def apply_fold_summary_to_run(
         right_range=right_range,
         left_range=left_range,
         model=model,
+        qualified_name=qualified_name,
+        kind=kind,
         cache=cache,
         trace_dir=trace_dir,
     )

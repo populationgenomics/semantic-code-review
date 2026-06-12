@@ -52,8 +52,11 @@ AugmentCallable = Callable[
 #: ``--no-augment`` reviews leave this at ``None`` and the route
 #: returns 409 unconditionally.
 FoldSummaryCallable = Callable[
-    # (file_idx, context, right_range, left_range)
-    [int, str, "tuple[int, int] | None", "tuple[int, int] | None"],
+    # (file_idx, context, right_range, left_range, qualified_name, kind)
+    [
+        int, str, "tuple[int, int] | None", "tuple[int, int] | None",
+        "str | None", "str | None",
+    ],
     Awaitable[dict],
 ]
 
@@ -279,6 +282,8 @@ def _build_fold_summary_task(
         context: str,
         right_range: "tuple[int, int] | None",
         left_range: "tuple[int, int] | None",
+        qualified_name: "str | None" = None,
+        kind: "str | None" = None,
     ) -> dict:
         # client is None only when augment is False; in that path
         # serve_review never wires this task up, so a None here would
@@ -291,6 +296,8 @@ def _build_fold_summary_task(
             context=context,  # type: ignore[arg-type]
             right_range=right_range,
             left_range=left_range,
+            qualified_name=qualified_name,
+            kind=kind,
             model=model, cache=cache,
         )
 
