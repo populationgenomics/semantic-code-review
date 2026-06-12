@@ -6,13 +6,24 @@ describe("blockDiff", () => {
   const markedLine = (line: string, ranges: CharRange[]) =>
     ranges.map(([s, e]) => line.slice(s, e)).join("");
 
-  test("single line: marks changed tokens separately, unchanged ones stay clean", () => {
+  test("single line: near-adjacent changes coalesce into one block", () => {
     const a = "connect(host, 80, ssl)";
     const b = "connect(host, 443, tls)";
     const d = blockDiff([a], [b]);
-    // Two changed tokens per side; the ", " between them is untouched.
-    expect(d.old[0].map(([s, e]) => a.slice(s, e))).toEqual(["80", "ssl"]);
-    expect(d.new[0].map(([s, e]) => b.slice(s, e))).toEqual(["443", "tls"]);
+    // 80 and ssl are separated only by ", " (<= the coalesce gap), so they
+    // merge into one changed block; "connect(host, " and ")" stay clean.
+    expect(markedLine(a, d.old[0])).toBe("80, ssl");
+    expect(markedLine(b, d.new[0])).toBe("443, tls");
+  });
+
+  test("changes separated by a long unchanged stretch stay distinct", () => {
+    const a = "alpha = 1; veryLongUnchangedMiddleSection; omega = 2";
+    const b = "ALPHA = 1; veryLongUnchangedMiddleSection; OMEGA = 2";
+    const d = blockDiff([a], [b]);
+    // The wide matched middle keeps the two edits as separate blocks.
+    expect(d.old[0].length).toBe(2);
+    expect(markedLine(a, [d.old[0][0]])).toBe("alpha");
+    expect(markedLine(a, [d.old[0][1]])).toBe("omega");
   });
 
   test("single line: pure insertion marks only the new side", () => {

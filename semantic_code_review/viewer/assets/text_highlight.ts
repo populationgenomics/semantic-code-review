@@ -25,6 +25,28 @@ export interface BlockRanges {
 // tint only. Generous enough that real multi-line blocks always run.
 const _MAX_DIFF_TOKEN_PRODUCT = 250_000;
 
+// After the token diff, merge two changed ranges separated by a matched
+// gap no longer than this many characters. Bridges the incidental short
+// matches (a space, a comma, a stray "a"/"the") that otherwise fragment a
+// reworked region into scattered word marks, so a run of nearby edits
+// reads as one changed block. Larger genuinely-unchanged stretches keep
+// the edits apart.
+const _COALESCE_GAP = 3;
+
+/** Merge ranges (sorted, non-overlapping) separated by a gap of at most
+ *  `maxGap` characters, swallowing the matched text between them. */
+function _coalesce(ranges: CharRange[], maxGap: number): CharRange[] {
+  if (ranges.length < 2) return ranges;
+  const out: CharRange[] = [[ranges[0][0], ranges[0][1]]];
+  for (let k = 1; k < ranges.length; k++) {
+    const last = out[out.length - 1];
+    const [s, e] = ranges[k];
+    if (s - last[1] <= maxGap) last[1] = Math.max(last[1], e);
+    else out.push([s, e]);
+  }
+  return out;
+}
+
 // Tokens for the diff: identifier runs, whitespace runs, and single
 // "other" characters. A token carries its line index within the block and
 // its offset within that line; cross-line `\n` sentinels (line -1) keep
@@ -53,9 +75,11 @@ function _tokenizeBlock(lines: string[]): _Token[] {
  *  (e.g. an inline object type collapsed to a named type) is marked as one
  *  deletion + one insertion rather than per line.
  *
- *  Adjacent changed tokens coalesce once `wrapRanges` normalises the
- *  ranges. Computed as a longest-common-subsequence over tokens; a block
- *  past the token-product guard returns empty ranges (row tint only). */
+ *  Near-adjacent changed tokens are coalesced into one block (see
+ *  `_COALESCE_GAP`) so a reworked region reads as a single changed span
+ *  rather than scattered word marks. Computed as a longest-common-
+ *  subsequence over tokens; a block past the token-product guard returns
+ *  empty ranges (row tint only). */
 export function blockDiff(oldLines: string[], newLines: string[]): BlockRanges {
   const old: CharRange[][] = oldLines.map(() => []);
   const neu: CharRange[][] = newLines.map(() => []);
@@ -89,7 +113,10 @@ export function blockDiff(oldLines: string[], newLines: string[]): BlockRanges {
   }
   while (i < n) mark(A[i++], old);
   while (j < m) mark(B[j++], neu);
-  return { old, new: neu };
+  return {
+    old: old.map((r) => _coalesce(r, _COALESCE_GAP)),
+    new: neu.map((r) => _coalesce(r, _COALESCE_GAP)),
+  };
 }
 
 /** Whole-identifier occurrences of `term` in `text`, as character ranges.

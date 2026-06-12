@@ -492,12 +492,21 @@ body {
 .diff .row-pair .cell-content-old { background: rgba(248, 81, 73, 0.16); }
 .diff .row-pair .cell-content-new { background: rgba(63, 185, 80, 0.16); }
 
-/* Intra-line sub-diff: a deeper tint on the exact characters that changed
- * within a replacement, over the light whole-line row tint. Applies to any
+/* Intra-line sub-diff: the changed block within a replacement, over the
+ * light whole-line row tint. A subtle fill plus a 1px ring defines the
+ * block without the heaviness of a strong background. Applies to any
  * changed row (pair, or a del/ins line inside a multi-line replacement
  * block), so the side determines the colour. */
-.diff .cell-content-old .char-chg { background: rgba(248, 81, 73, 0.4); border-radius: 2px; }
-.diff .cell-content-new .char-chg { background: rgba(63, 185, 80, 0.4); border-radius: 2px; }
+.diff .cell-content-old .char-chg {
+  background: rgba(248, 81, 73, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(248, 81, 73, 0.55);
+  border-radius: 3px;
+}
+.diff .cell-content-new .char-chg {
+  background: rgba(63, 185, 80, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(63, 185, 80, 0.55);
+  border-radius: 3px;
+}
 
 /* Symbol-focus search highlight: every occurrence of the focused symbol's
  * name, painted search-style. Amber reads on both themes and over the
