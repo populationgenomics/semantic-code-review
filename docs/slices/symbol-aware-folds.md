@@ -47,7 +47,7 @@ spans, every row falls back, and output is byte-identical to today.
 
 ---
 
-## Slice 1 — Ship per-file symbol spans (inert)
+## Slice 1 — Ship per-file symbol spans (inert) ✅ done
 
 The data path, with no behaviour change.
 
