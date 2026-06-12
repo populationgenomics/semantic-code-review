@@ -189,6 +189,19 @@ def _fold_spans(symbols: list[structural.Symbol], depth: int = 0) -> list[dict[s
     return out
 
 
+def file_fold_spans(
+    f: AnnotatedFile, base_dir: Path | None, head_dir: Path | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Flattened per-side definition spans for one file, as `(head, base)`.
+
+    The currency `build_hunk_viewer_block` needs to snap folds to symbol
+    boundaries. Empty lists degrade an unsupported language / unavailable
+    worktree, same as `fold_symbols`.
+    """
+    syms = _file_symbols(f, base_dir, head_dir)
+    return _fold_spans(syms.head), _fold_spans(syms.base)
+
+
 def _symbol_blocks(
     diff: AnnotatedDiff,
     file_syms: list[_FileSymbols],
@@ -384,7 +397,12 @@ def _pr_block(diff: AnnotatedDiff, meta: dict[str, Any]) -> dict[str, Any]:
 def _file_block(
     f: AnnotatedFile, idx: int, head_dir: Path | None, syms: _FileSymbols,
 ) -> dict[str, Any]:
-    hunks = [build_hunk_viewer_block(h, idx, hi) for hi, h in enumerate(f.hunks)]
+    head_spans = _fold_spans(syms.head)
+    base_spans = _fold_spans(syms.base)
+    hunks = [
+        build_hunk_viewer_block(h, idx, hi, head_spans, base_spans)
+        for hi, h in enumerate(f.hunks)
+    ]
     adds = sum(h["adds"] for h in hunks)
     dels = sum(h["dels"] for h in hunks)
     head_lines = _load_head_lines(f, head_dir)

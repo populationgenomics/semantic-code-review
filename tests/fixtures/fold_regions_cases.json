@@ -1,0 +1,271 @@
+[
+  {
+    "name": "changed method under unchanged class",
+    "rows": [
+      {
+        "kind": "ctx",
+        "old_line": 1,
+        "new_line": 1,
+        "old_text": "class Foo:",
+        "new_text": "class Foo:"
+      },
+      {
+        "kind": "ctx",
+        "old_line": 2,
+        "new_line": 2,
+        "old_text": "    def bar(self):",
+        "new_text": "    def bar(self):"
+      },
+      {
+        "kind": "ctx",
+        "old_line": 3,
+        "new_line": 3,
+        "old_text": "        if x:",
+        "new_text": "        if x:"
+      },
+      {
+        "kind": "pair",
+        "old_line": 4,
+        "new_line": 4,
+        "old_text": "            return 1",
+        "new_text": "            return 2"
+      },
+      {
+        "kind": "ctx",
+        "old_line": 5,
+        "new_line": 5,
+        "old_text": "        return 0",
+        "new_text": "        return 0"
+      }
+    ],
+    "head_spans": [
+      {
+        "start_line": 1,
+        "end_line": 5,
+        "kind": "class",
+        "qualified_name": "Foo",
+        "depth": 0
+      },
+      {
+        "start_line": 2,
+        "end_line": 5,
+        "kind": "function",
+        "qualified_name": "Foo.bar",
+        "depth": 1
+      }
+    ],
+    "base_spans": [
+      {
+        "start_line": 1,
+        "end_line": 5,
+        "kind": "class",
+        "qualified_name": "Foo",
+        "depth": 0
+      },
+      {
+        "start_line": 2,
+        "end_line": 5,
+        "kind": "function",
+        "qualified_name": "Foo.bar",
+        "depth": 1
+      }
+    ],
+    "expected": [
+      {
+        "header_idx": 0,
+        "body_start_idx": 1,
+        "body_end_idx": 4,
+        "context": "both",
+        "right_start": 1,
+        "right_end": 5,
+        "left_start": 1,
+        "left_end": 5
+      },
+      {
+        "header_idx": 1,
+        "body_start_idx": 2,
+        "body_end_idx": 4,
+        "context": "both",
+        "right_start": 2,
+        "right_end": 5,
+        "left_start": 2,
+        "left_end": 5
+      }
+    ]
+  },
+  {
+    "name": "pure deletion of a function",
+    "rows": [
+      {
+        "kind": "del",
+        "old_line": 10,
+        "new_line": null,
+        "old_text": "def gone():",
+        "new_text": ""
+      },
+      {
+        "kind": "del",
+        "old_line": 11,
+        "new_line": null,
+        "old_text": "    return 1",
+        "new_text": ""
+      },
+      {
+        "kind": "del",
+        "old_line": 12,
+        "new_line": null,
+        "old_text": "    return 2",
+        "new_text": ""
+      }
+    ],
+    "head_spans": [],
+    "base_spans": [
+      {
+        "start_line": 10,
+        "end_line": 12,
+        "kind": "function",
+        "qualified_name": "gone",
+        "depth": 0
+      }
+    ],
+    "expected": [
+      {
+        "header_idx": 0,
+        "body_start_idx": 1,
+        "body_end_idx": 2,
+        "context": "left",
+        "right_start": null,
+        "right_end": null,
+        "left_start": 10,
+        "left_end": 12
+      }
+    ]
+  },
+  {
+    "name": "module-level fallback plus a function",
+    "rows": [
+      {
+        "kind": "ctx",
+        "old_line": 1,
+        "new_line": 1,
+        "old_text": "import os",
+        "new_text": "import os"
+      },
+      {
+        "kind": "ctx",
+        "old_line": 2,
+        "new_line": 2,
+        "old_text": "x = (",
+        "new_text": "x = ("
+      },
+      {
+        "kind": "ins",
+        "old_line": null,
+        "new_line": 3,
+        "old_text": "",
+        "new_text": "    1,"
+      },
+      {
+        "kind": "ctx",
+        "old_line": 3,
+        "new_line": 4,
+        "old_text": ")",
+        "new_text": ")"
+      },
+      {
+        "kind": "ctx",
+        "old_line": 4,
+        "new_line": 5,
+        "old_text": "def f():",
+        "new_text": "def f():"
+      },
+      {
+        "kind": "pair",
+        "old_line": 5,
+        "new_line": 6,
+        "old_text": "    return x",
+        "new_text": "    return y"
+      }
+    ],
+    "head_spans": [
+      {
+        "start_line": 5,
+        "end_line": 6,
+        "kind": "function",
+        "qualified_name": "f",
+        "depth": 0
+      }
+    ],
+    "base_spans": [
+      {
+        "start_line": 4,
+        "end_line": 5,
+        "kind": "function",
+        "qualified_name": "f",
+        "depth": 0
+      }
+    ],
+    "expected": [
+      {
+        "header_idx": 1,
+        "body_start_idx": 2,
+        "body_end_idx": 2,
+        "context": "both",
+        "right_start": 2,
+        "right_end": 3,
+        "left_start": 2,
+        "left_end": 2
+      },
+      {
+        "header_idx": 4,
+        "body_start_idx": 5,
+        "body_end_idx": 5,
+        "context": "both",
+        "right_start": 5,
+        "right_end": 6,
+        "left_start": 4,
+        "left_end": 5
+      }
+    ]
+  },
+  {
+    "name": "no spans degrades to indentation",
+    "rows": [
+      {
+        "kind": "ctx",
+        "old_line": 1,
+        "new_line": 1,
+        "old_text": "def foo():",
+        "new_text": "def foo():"
+      },
+      {
+        "kind": "ctx",
+        "old_line": 2,
+        "new_line": 2,
+        "old_text": "    x = 1",
+        "new_text": "    x = 1"
+      },
+      {
+        "kind": "pair",
+        "old_line": 3,
+        "new_line": 3,
+        "old_text": "    y = 2",
+        "new_text": "    y = 3"
+      }
+    ],
+    "head_spans": [],
+    "base_spans": [],
+    "expected": [
+      {
+        "header_idx": 0,
+        "body_start_idx": 1,
+        "body_end_idx": 2,
+        "context": "both",
+        "right_start": 1,
+        "right_end": 3,
+        "left_start": 1,
+        "left_end": 3
+      }
+    ]
+  }
+]

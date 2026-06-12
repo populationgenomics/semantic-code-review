@@ -212,7 +212,7 @@ function _rowIndent(row: RowBlock): number {
   return ind;
 }
 
-function _computeFoldRegions(rows: RowWithEls[]): DetectedRegion[] {
+function _indentRawRegions(rows: RowWithEls[]): Array<[number, number]> {
   const indents = rows.map(_rowIndent);
   const nextNonBlank = (i: number): number | null => {
     for (let j = i + 1; j < indents.length; j++) {
@@ -236,7 +236,70 @@ function _computeFoldRegions(rows: RowWithEls[]): DetectedRegion[] {
     const top = stack.pop()!;
     raw.push([top[1], indents.length - 1]);
   }
-  raw.sort((a, b) => a[0] - b[0]);
+  return raw;
+}
+
+// Definition spans enclosing a row, outermost-first: the row maps by
+// line number into one side's tree — new_line into head spans (ctx /
+// pair / ins rows), else old_line into base spans (del-only rows).
+function _rowSymbols(
+  row: RowWithEls, headSpans: FoldSymbolSpan[], baseSpans: FoldSymbolSpan[],
+): FoldSymbolSpan[] {
+  let line: number | null;
+  let spans: FoldSymbolSpan[];
+  if (row.new_line != null) { line = row.new_line; spans = headSpans; }
+  else if (row.old_line != null) { line = row.old_line; spans = baseSpans; }
+  else return [];
+  return spans
+    .filter((s) => s.start_line <= line! && line! <= s.end_line)
+    .sort((a, b) => a.depth - b.depth);
+}
+
+// `(headerIdx, bodyEndIdx)` pairs snapped to definition spans, plus the
+// set of row indices inside any definition. Every definition with >=1
+// present row becomes a region from its first to its last present row;
+// nested defs nest because a row carries its whole enclosing chain.
+function _symbolRawRegions(
+  rows: RowWithEls[], headSpans: FoldSymbolSpan[], baseSpans: FoldSymbolSpan[],
+): { raw: Array<[number, number]>; covered: Set<number> } {
+  const runs = new Map<string, [number, number]>();
+  const order: string[] = [];
+  const covered = new Set<number>();
+  for (let i = 0; i < rows.length; i++) {
+    for (const s of _rowSymbols(rows[i], headSpans, baseSpans)) {
+      covered.add(i);
+      const run = runs.get(s.qualified_name);
+      if (run === undefined) {
+        runs.set(s.qualified_name, [i, i]);
+        order.push(s.qualified_name);
+      } else {
+        run[1] = i;
+      }
+    }
+  }
+  return { raw: order.map((qn) => runs.get(qn)!), covered };
+}
+
+function _computeFoldRegions(
+  rows: RowWithEls[],
+  headSpans: FoldSymbolSpan[] = [],
+  baseSpans: FoldSymbolSpan[] = [],
+): DetectedRegion[] {
+  let raw: Array<[number, number]>;
+  if (headSpans.length || baseSpans.length) {
+    const sym = _symbolRawRegions(rows, headSpans, baseSpans);
+    // Keep an indentation region only where no row it spans is already
+    // covered by a definition — the snapped region owns that stretch.
+    raw = sym.raw.concat(
+      _indentRawRegions(rows).filter(([h, e]) => {
+        for (let j = h; j <= e; j++) if (sym.covered.has(j)) return false;
+        return true;
+      }),
+    );
+  } else {
+    raw = _indentRawRegions(rows);
+  }
+  raw.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   const regions: DetectedRegion[] = [];
   for (const [header_idx, body_end] of raw) {
     const body_start = header_idx + 1;
@@ -437,7 +500,8 @@ function attachFileFolds(fileEl: HTMLElement, file: FileBlock): void {
   const fileIdx = Number(file.id.replace("F", ""));
   const rows = _collectFileRows(fileEl);
   if (rows.length === 0) return;
-  const detected = _computeFoldRegions(rows);
+  const syms = file.fold_symbols || { head: [], base: [] };
+  const detected = _computeFoldRegions(rows, syms.head, syms.base);
   const handles: AnnotationHandle[] = [];
   const chevrons: SVGElement[] = [];
   for (const det of detected) {
@@ -454,3 +518,8 @@ function attachFileFolds(fileEl: HTMLElement, file: FileBlock): void {
 // initial render, after every gap expand/collapse, and from
 // applyFoldSummary's cross-tab path.
 export const Folds = { attachFileFolds };
+
+// Exposed for the cross-language lockstep fixture (tests/js/folds.test.ts):
+// the same (rows, spans) input must yield the same regions as the Python
+// `compute_fold_regions`. Not used by the runtime bundle.
+export { _computeFoldRegions };
