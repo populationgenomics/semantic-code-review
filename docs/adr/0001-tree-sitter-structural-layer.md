@@ -119,6 +119,8 @@ LLM-derived layer is unaffected. No hard failure, no empty UI noise.
 
 - (i) **Symbol-aware fold boundaries** — fold at function/class
   boundaries rather than by indentation (upgrades `fold_summary`).
+  Scoped into vertical slices in
+  [`docs/slices/symbol-aware-folds.md`](../slices/symbol-aware-folds.md).
 - (ii) **Symbol-boundary hunk segmentation** — split a hunk spanning
   two definitions deterministically; seed/sanity-check
   `HunkAnnotations.segments`.

@@ -90,6 +90,10 @@ interface FileBlock {
   dels: number;
   summary: string;
   symbols: FileSymbols;
+  /** Flattened tree-sitter definition spans per side, for symbol-aware
+   *  folding. Empty lists for an unsupported language / unavailable
+   *  worktree. Inert in slice 1 — no consumer yet. */
+  fold_symbols: FoldSymbols;
   /** Full post-image content split into lines, or null when not
    *  shipped (large file, deleted/binary/generated, etc.). */
   head_lines: string[] | null;
@@ -100,6 +104,24 @@ interface FileSymbols {
   added: string[];
   modified: string[];
   removed: string[];
+}
+
+interface FoldSymbols {
+  /** Spans against head/<path> (new_line). */
+  head: FoldSymbolSpan[];
+  /** Spans against base/<path> (old_line). */
+  base: FoldSymbolSpan[];
+}
+
+/** One definition's line span, from the flattened `Symbol` forest.
+ *  Depth-first source order; `depth` is the nesting level (0 = top). */
+interface FoldSymbolSpan {
+  /** 1-indexed inclusive line numbers. */
+  start_line: number;
+  end_line: number;
+  kind: string;
+  qualified_name: string;
+  depth: number;
 }
 
 // --- Hunks ------------------------------------------------------------------
@@ -186,6 +208,11 @@ interface FoldRegion {
   left_start: number | null;
   left_end: number | null;
   has_changes: boolean;
+  /** Identity of the definition this region snapped to (e.g. "Foo.bar" /
+   *  "function"); null on an indentation-fallback region. The viewer
+   *  labels the collapsed placeholder with these when present. */
+  qualified_name: string | null;
+  kind: string | null;
   summary: string;
   /** Viewer-runtime only (not on the wire): set by folds.ts while a
    *  local POST /fold-summary is in flight, honoured by DataStore so

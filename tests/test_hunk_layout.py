@@ -2,8 +2,25 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+import pytest
+
 from semantic_code_review.augment.schemas import ParsedHunk
-from semantic_code_review.viewer.hunk_layout import build_rows, compute_fold_regions
+from semantic_code_review.viewer.hunk_layout import (
+    _Row, build_rows, compute_fold_regions,
+)
+
+# Shared cross-language lockstep fixture: the same (rows, spans) input
+# drives this pytest case and the vitest case in tests/js/folds.test.ts;
+# both detectors must produce the regions baked here.
+_FOLD_CASES_PATH = Path(__file__).parent / "fixtures" / "fold_regions_cases.json"
+_FOLD_REGION_KEYS = (
+    "header_idx", "body_start_idx", "body_end_idx", "context",
+    "right_start", "right_end", "left_start", "left_end",
+    "qualified_name", "kind",
+)
 
 
 def _hunk(body: str, *, old_start: int = 1, old_count: int = 1, new_start: int = 1, new_count: int = 1) -> ParsedHunk:
@@ -204,3 +221,66 @@ def test_fold_regions_pair_with_changes_picks_both_context() -> None:
     assert r.context == "both"
     assert r.right_start is not None and r.right_end is not None
     assert r.left_start is not None and r.left_end is not None
+
+
+# --- symbol-aware folding (slice 2) -----------------------------------------
+
+def _rows_from_dicts(specs: list[dict]) -> list[_Row]:
+    return [
+        _Row(
+            kind=s["kind"], old_line=s["old_line"], new_line=s["new_line"],
+            old_text=s["old_text"], new_text=s["new_text"],
+        )
+        for s in specs
+    ]
+
+
+def test_symbol_folding_snaps_method_under_class_and_drops_inner_block() -> None:
+    """A changed method folds as one region under its (unchanged) class;
+    the indentation guess that would split the method's inner `if` block
+    is dropped in favour of the definition boundary."""
+    rows = _rows_from_dicts([
+        {"kind": "ctx", "old_line": 1, "new_line": 1,
+         "old_text": "class Foo:", "new_text": "class Foo:"},
+        {"kind": "ctx", "old_line": 2, "new_line": 2,
+         "old_text": "    def bar(self):", "new_text": "    def bar(self):"},
+        {"kind": "ctx", "old_line": 3, "new_line": 3,
+         "old_text": "        if x:", "new_text": "        if x:"},
+        {"kind": "pair", "old_line": 4, "new_line": 4,
+         "old_text": "            return 1", "new_text": "            return 2"},
+        {"kind": "ctx", "old_line": 5, "new_line": 5,
+         "old_text": "        return 0", "new_text": "        return 0"},
+    ])
+    spans = [
+        {"start_line": 1, "end_line": 5, "kind": "class",
+         "qualified_name": "Foo", "depth": 0},
+        {"start_line": 2, "end_line": 5, "kind": "function",
+         "qualified_name": "Foo.bar", "depth": 1},
+    ]
+    regions = compute_fold_regions(rows, spans, spans)
+    # Exactly two regions — class and method — not three (no `if` fold).
+    assert [(r.header_idx, r.body_end_idx) for r in regions] == [(0, 4), (1, 4)]
+
+
+def test_symbol_folding_no_spans_is_identical_to_indentation() -> None:
+    """An all-unsupported file (no spans) folds byte-identically to the
+    pre-slice indentation output."""
+    rows = build_rows(_hunk(
+        " def foo():\n     x = 1\n     y = 2\n", old_count=3, new_count=3,
+    ))
+    with_empty = compute_fold_regions(rows, [], [])
+    indent_only = compute_fold_regions(rows)
+    assert [r.__dict__ for r in with_empty] == [r.__dict__ for r in indent_only]
+
+
+@pytest.mark.parametrize(
+    "case", json.loads(_FOLD_CASES_PATH.read_text(encoding="utf-8")),
+    ids=lambda c: c["name"],
+)
+def test_fold_regions_lockstep_fixture(case: dict) -> None:
+    """The Python detector reproduces the shared fixture's regions; the
+    vitest case asserts the TS detector reproduces the same ones."""
+    rows = _rows_from_dicts(case["rows"])
+    regions = compute_fold_regions(rows, case["head_spans"], case["base_spans"])
+    got = [{k: getattr(r, k) for k in _FOLD_REGION_KEYS} for r in regions]
+    assert got == case["expected"]

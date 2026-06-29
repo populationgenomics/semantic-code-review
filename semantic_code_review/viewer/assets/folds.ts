@@ -26,6 +26,10 @@ interface DetectedRegion {
   right_end: number | null;
   left_start: number | null;
   left_end: number | null;
+  // Identity of the definition the region snapped to; null for an
+  // indentation-fallback region.
+  qualified_name: string | null;
+  kind: string | null;
 }
 
 interface AttachedFold {
@@ -168,6 +172,8 @@ function _upsertFoldRegion(
     existing.body_start_idx = det.body_start_idx;
     existing.body_end_idx = det.body_end_idx;
     existing.has_changes = hasChanges;
+    existing.qualified_name = det.qualified_name;
+    existing.kind = det.kind;
     return existing;
   }
   const candidate: FoldRegion = {
@@ -178,6 +184,7 @@ function _upsertFoldRegion(
     right_start: det.right_start, right_end: det.right_end,
     left_start: det.left_start, left_end: det.left_end,
     has_changes: hasChanges,
+    qualified_name: det.qualified_name, kind: det.kind,
     summary: "",
   };
   if (file.hunks && file.hunks.length > 0) {
@@ -212,7 +219,7 @@ function _rowIndent(row: RowBlock): number {
   return ind;
 }
 
-function _computeFoldRegions(rows: RowWithEls[]): DetectedRegion[] {
+function _indentRawRegions(rows: RowWithEls[]): Array<[number, number]> {
   const indents = rows.map(_rowIndent);
   const nextNonBlank = (i: number): number | null => {
     for (let j = i + 1; j < indents.length; j++) {
@@ -236,9 +243,85 @@ function _computeFoldRegions(rows: RowWithEls[]): DetectedRegion[] {
     const top = stack.pop()!;
     raw.push([top[1], indents.length - 1]);
   }
-  raw.sort((a, b) => a[0] - b[0]);
+  return raw;
+}
+
+// Definition spans enclosing a row, outermost-first: the row maps by
+// line number into one side's tree — new_line into head spans (ctx /
+// pair / ins rows), else old_line into base spans (del-only rows).
+function _rowSymbols(
+  row: RowWithEls, headSpans: FoldSymbolSpan[], baseSpans: FoldSymbolSpan[],
+): FoldSymbolSpan[] {
+  let line: number | null;
+  let spans: FoldSymbolSpan[];
+  if (row.new_line != null) { line = row.new_line; spans = headSpans; }
+  else if (row.old_line != null) { line = row.old_line; spans = baseSpans; }
+  else return [];
+  return spans
+    .filter((s) => s.start_line <= line! && line! <= s.end_line)
+    .sort((a, b) => a.depth - b.depth);
+}
+
+// `(headerIdx, bodyEndIdx, qualifiedName, kind)` snapped to definition
+// spans, plus the set of row indices inside any definition. Every
+// definition with >=1 present row becomes a region from its first to its
+// last present row carrying that definition's identity; nested defs nest
+// because a row carries its whole enclosing chain.
+type RawRegion = [number, number, string | null, string | null];
+
+function _symbolRawRegions(
+  rows: RowWithEls[], headSpans: FoldSymbolSpan[], baseSpans: FoldSymbolSpan[],
+): { raw: RawRegion[]; covered: Set<number> } {
+  const runs = new Map<string, [number, number]>();
+  const kinds = new Map<string, string>();
+  const order: string[] = [];
+  const covered = new Set<number>();
+  for (let i = 0; i < rows.length; i++) {
+    for (const s of _rowSymbols(rows[i], headSpans, baseSpans)) {
+      covered.add(i);
+      const run = runs.get(s.qualified_name);
+      if (run === undefined) {
+        runs.set(s.qualified_name, [i, i]);
+        kinds.set(s.qualified_name, s.kind);
+        order.push(s.qualified_name);
+      } else {
+        run[1] = i;
+      }
+    }
+  }
+  const raw: RawRegion[] = order.map((qn) => {
+    const run = runs.get(qn)!;
+    return [run[0], run[1], qn, kinds.get(qn)!];
+  });
+  return { raw, covered };
+}
+
+function _computeFoldRegions(
+  rows: RowWithEls[],
+  headSpans: FoldSymbolSpan[] = [],
+  baseSpans: FoldSymbolSpan[] = [],
+): DetectedRegion[] {
+  // Uniform shape: [headerIdx, bodyEndIdx, qualifiedName|null, kind|null].
+  // Indentation regions carry no symbol.
+  let raw: RawRegion[];
+  if (headSpans.length || baseSpans.length) {
+    const sym = _symbolRawRegions(rows, headSpans, baseSpans);
+    // Keep an indentation region only where no row it spans is already
+    // covered by a definition — the snapped region owns that stretch.
+    raw = sym.raw.concat(
+      _indentRawRegions(rows)
+        .filter(([h, e]) => {
+          for (let j = h; j <= e; j++) if (sym.covered.has(j)) return false;
+          return true;
+        })
+        .map(([h, e]): RawRegion => [h, e, null, null]),
+    );
+  } else {
+    raw = _indentRawRegions(rows).map(([h, e]): RawRegion => [h, e, null, null]);
+  }
+  raw.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   const regions: DetectedRegion[] = [];
-  for (const [header_idx, body_end] of raw) {
+  for (const [header_idx, body_end, qualified_name, kind] of raw) {
     const body_start = header_idx + 1;
     if (body_start > body_end) continue;
     const right_start = _firstLine(rows, header_idx, body_end, "new_line");
@@ -253,6 +336,7 @@ function _computeFoldRegions(rows: RowWithEls[]): DetectedRegion[] {
     regions.push({
       header_idx, body_start_idx: body_start, body_end_idx: body_end,
       context, right_start, right_end, left_start, left_end,
+      qualified_name, kind,
     });
   }
   return regions;
@@ -304,6 +388,15 @@ function _foldAddress(region: FoldRegion): FoldRequestAddress | null {
   return addr;
 }
 
+// Prefix the collapsed placeholder with the region's symbol identity,
+// e.g. "function Foo.bar — ". Empty for an indentation-fallback region
+// (no symbol), which keeps today's unlabelled placeholder.
+function _foldLabel(region: FoldRegion): string {
+  if (!region.qualified_name) return "";
+  const kind = region.kind ? `${region.kind} ` : "";
+  return `${kind}${region.qualified_name} — `;
+}
+
 function _requestFoldSummary(
   fileIdx: number, region: FoldRegion,
   foldHandle: AnnotationHandle,
@@ -312,7 +405,8 @@ function _requestFoldSummary(
   const addr = _foldAddress(region);
   if (!addr) return;
   region._inflight = true;
-  _setFoldBoxContent(foldHandle, "summarising…", { pending: true });
+  const label = _foldLabel(region);
+  _setFoldBoxContent(foldHandle, label + "summarising…", { pending: true });
   const retry = (): void => _requestFoldSummary(fileIdx, region, foldHandle);
   fetch(_sessionEndpoint() + "/fold-summary", {
     method: "POST",
@@ -324,10 +418,10 @@ function _requestFoldSummary(
       region._inflight = false;
       if (status === 200 && body.summary) {
         region.summary = body.summary;
-        _setFoldBoxContent(foldHandle, body.summary, {});
+        _setFoldBoxContent(foldHandle, label + body.summary, {});
       } else {
         _setFoldBoxContent(
-          foldHandle, "(summary failed — click to retry)",
+          foldHandle, label + "(summary failed — click to retry)",
           { failed: true }, retry,
         );
       }
@@ -335,7 +429,7 @@ function _requestFoldSummary(
     .catch(() => {
       region._inflight = false;
       _setFoldBoxContent(
-        foldHandle, "(summary failed — click to retry)",
+        foldHandle, label + "(summary failed — click to retry)",
         { failed: true }, retry,
       );
     });
@@ -387,18 +481,22 @@ function _attachOneFold(
   let foldHandle: AnnotationHandle | null = null;
   const canSummarise = _canRequestFoldSummary(fileIdx, region);
   if (region.summary || region.has_changes || canSummarise) {
-    const initialContent = region.summary
+    // Seed the placeholder with the symbol identity (if any) followed by
+    // the summary or its pending/run-augment stand-in.
+    const label = _foldLabel(region);
+    const pending = !region.summary && canSummarise;
+    const bodyText = region.summary
       || (canSummarise
         ? "summarising…"
         : "(changes here; run augment to generate a description)");
     foldHandle = Annotations.attach({
       anchor, shadowAnchor: shadow,
-      variant: "fold", content: initialContent,
+      variant: "fold", content: label + bodyText,
     });
     if (!region.summary) {
       const box = foldHandle.element.querySelector(".annot-box");
       if (box) box.classList.add("missing");
-      if (initialContent === "summarising…" && box) box.classList.add("pending");
+      if (pending && box) box.classList.add("pending");
     }
     foldHandle.element.style.display = "none";
     if (foldHandle.placeholder) foldHandle.placeholder.style.display = "none";
@@ -437,7 +535,8 @@ function attachFileFolds(fileEl: HTMLElement, file: FileBlock): void {
   const fileIdx = Number(file.id.replace("F", ""));
   const rows = _collectFileRows(fileEl);
   if (rows.length === 0) return;
-  const detected = _computeFoldRegions(rows);
+  const syms = file.fold_symbols || { head: [], base: [] };
+  const detected = _computeFoldRegions(rows, syms.head, syms.base);
   const handles: AnnotationHandle[] = [];
   const chevrons: SVGElement[] = [];
   for (const det of detected) {
@@ -454,3 +553,8 @@ function attachFileFolds(fileEl: HTMLElement, file: FileBlock): void {
 // initial render, after every gap expand/collapse, and from
 // applyFoldSummary's cross-tab path.
 export const Folds = { attachFileFolds };
+
+// Exposed for the cross-language lockstep fixture (tests/js/folds.test.ts):
+// the same (rows, spans) input must yield the same regions as the Python
+// `compute_fold_regions`. Not used by the runtime bundle.
+export { _computeFoldRegions };

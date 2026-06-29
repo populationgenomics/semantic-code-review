@@ -22,6 +22,7 @@ from ..cache.store import CacheStore
 from ..format.emit import emit_augmented_diff
 from ..format.parse import parse_raw_diff
 from ..format.sidecar import dump_sidecar
+from ..viewer.build_json import file_fold_spans
 from ..viewer.hunk_layout import build_hunk_viewer_block
 from .agents import Client
 from .hunks import (
@@ -217,6 +218,21 @@ async def augment_run_dir(
 
         overview_json = overview_to_prompt_json(diff)
 
+        # Per-file definition spans, parsed once from the worktrees, so the
+        # per-hunk SSE re-emits below carry symbol-aware `fold_regions`
+        # addresses in lockstep with the full-page build and the viewer's
+        # client-side detector. Empty lists where a worktree is absent.
+        head_dir = run_dir / "head"
+        base_dir = run_dir / "base"
+        file_spans: dict[int, tuple[list, list]] = {
+            fi: file_fold_spans(
+                fp,
+                base_dir if base_dir.exists() else None,
+                head_dir if head_dir.exists() else None,
+            )
+            for fi, fp in enumerate(diff.files)
+        }
+
         # Subprocess clients allocate temp config files at first use;
         # `aclosing` calls `client.aclose()` on exit so /tmp doesn't
         # accumulate them across runs. SDKBackend's aclose is a no-op
@@ -231,6 +247,7 @@ async def augment_run_dir(
                         ord_idx, meter, sem, client, diff, fi, hi,
                         overview_json, repo_tools, model, cache,
                         trace_dir, stats, results, on_event,
+                        file_spans.get(fi, ([], [])),
                     )
                 )
                 for fi, hi, ord_idx in queued
@@ -270,7 +287,9 @@ async def augment_run_dir(
                         continue
                     if len(hunk.ann.line_notes) == len(old_fp.hunks[hi].ann.line_notes):
                         continue
-                    block = build_hunk_viewer_block(hunk, fi, hi)
+                    block = build_hunk_viewer_block(
+                        hunk, fi, hi, *file_spans.get(fi, ([], [])),
+                    )
                     _safe_emit(on_event, "hunk", {
                         "file_idx": fi, "hunk_idx": hi, "ok": True, "block": block,
                     })
@@ -328,6 +347,7 @@ async def _augment_one_hunk(
     stats: _HunkStats,
     results: dict[tuple[int, int], HunkAnnotations],
     on_event: OnEvent | None,
+    fold_spans: tuple[list, list],
 ) -> None:
     fp = diff.files[fi]
     hunk = fp.hunks[hi]
@@ -361,6 +381,7 @@ async def _augment_one_hunk(
                      len(ann.line_notes))
             block = build_hunk_viewer_block(
                 AnnotatedHunk(parsed=hunk.parsed, ann=ann), fi, hi,
+                fold_spans[0], fold_spans[1],
             )
             _safe_emit(on_event, "hunk", {
                 "file_idx": fi, "hunk_idx": hi, "ok": True, "block": block,
