@@ -36,6 +36,24 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _compact_query(query: str) -> str:
+    """Collapse a multi-line GraphQL document to one line for log output."""
+    return " ".join(query.split())
+
+
+def _loggable_vars(variables: dict[str, Any], *, limit: int = 300) -> dict[str, Any]:
+    """Render variables for a diagnostic log line, truncating long string
+    values so a multi-KB comment body doesn't bloat the record (we still
+    want the path/line/side anchors, which are short)."""
+    out: dict[str, Any] = {}
+    for k, v in variables.items():
+        if isinstance(v, str) and len(v) > limit:
+            out[k] = f"{v[:limit]}… (+{len(v) - limit} chars)"
+        else:
+            out[k] = v
+    return out
+
+
 def _gh_graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
     """Run a GraphQL request via ``gh api graphql``. Returns the parsed
     ``data`` envelope; raises :class:`GhError` on any failure.
@@ -43,6 +61,13 @@ def _gh_graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
     ``variables`` distinguishes ``int`` (sent with ``-F`` so gh emits
     a JSON number) from everything else (sent with ``-f`` as a string).
     GraphQL string + ID + enum inputs all accept the string form.
+
+    Every failure path logs the full gh output, the (compacted) query,
+    and the variables at ERROR before raising. The raised ``GhError``
+    stays terse for the UI; the log carries the diagnostics. In ``scr
+    pr`` these records land in ``<run>/trace/augment.log`` (the package
+    file handler installed by the augment pass persists for the process,
+    so post-time failures are captured there too).
     """
     args: list[str] = ["api", "graphql", "-f", f"query={query}"]
     for k, v in variables.items():
@@ -58,17 +83,42 @@ def _gh_graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
     rc, stdout, stderr = git_ops.gh_capture(*args)
     if rc != 0:
         detail = stderr.strip() or stdout.strip() or f"exit {rc}"
+        # gh exits non-zero on GraphQL-level errors too (bad line anchor,
+        # un-threadable reply, etc.), echoing them to stderr — so this
+        # branch is where most real posting failures surface.
+        log.error(
+            "gh api graphql failed (exit %s)\n  query: %s\n  variables: %s\n"
+            "  stderr: %s\n  stdout: %s",
+            rc, _compact_query(query), _loggable_vars(variables),
+            stderr.strip(), stdout.strip(),
+        )
         raise GhError(f"gh api graphql failed: {detail}")
     try:
         body = json.loads(stdout)
     except ValueError as e:
+        log.error(
+            "gh api graphql returned unparseable JSON: %s\n  query: %s\n  stdout: %s",
+            e, _compact_query(query), stdout[:2000],
+        )
         raise GhError(f"gh api graphql: unparseable JSON: {e}") from e
     if not isinstance(body, dict):
+        log.error(
+            "gh api graphql: expected object, got %s\n  query: %s\n  stdout: %s",
+            type(body).__name__, _compact_query(query), stdout[:2000],
+        )
         raise GhError(f"gh api graphql: expected object, got {type(body).__name__}")
     if body.get("errors"):
+        log.error(
+            "gh api graphql returned errors\n  query: %s\n  variables: %s\n  errors: %s",
+            _compact_query(query), _loggable_vars(variables), body["errors"],
+        )
         raise GhError(f"gh api graphql: {body['errors']}")
     data = body.get("data")
     if not isinstance(data, dict):
+        log.error(
+            "gh api graphql: response missing 'data' envelope\n  query: %s\n  stdout: %s",
+            _compact_query(query), stdout[:2000],
+        )
         raise GhError("gh api graphql: response missing 'data' envelope")
     return data
 
@@ -293,13 +343,34 @@ def post_review_via_graphql(
             review_id,
         )
 
-    for c in posted:
-        if c.is_reply:
-            assert c.in_reply_to_node_id is not None  # narrow for type-checker
-            add_review_comment_reply(review_id, c.in_reply_to_node_id, c.body)
-        else:
-            assert c.path is not None and c.line is not None and c.side is not None
-            add_review_thread(review_id, c.path, c.line, c.side, c.body)
+    total = len(posted)
+    log.info(
+        "posting review to %s#%s: %d comment(s), review %s (%s)",
+        repo, number, total, review_id,
+        "reused pending" if reused_pending else "newly created",
+    )
+    for i, c in enumerate(posted, start=1):
+        try:
+            if c.is_reply:
+                assert c.in_reply_to_node_id is not None  # narrow for type-checker
+                add_review_comment_reply(review_id, c.in_reply_to_node_id, c.body)
+            else:
+                assert c.path is not None and c.line is not None and c.side is not None
+                add_review_thread(review_id, c.path, c.line, c.side, c.body)
+        except GhError:
+            # _gh_graphql already logged the gh output + variables; add the
+            # position so "added 1..i-1, failed on i/total" is explicit —
+            # the i-1 successes are left as an unsubmitted draft review.
+            anchor = (
+                f"reply→{c.in_reply_to_node_id}" if c.is_reply
+                else f"{c.path}:{c.line} ({c.side})"
+            )
+            log.error(
+                "posting aborted on comment %d/%d (%s); %d already added to "
+                "draft review %s (left unsubmitted)",
+                i, total, anchor, i - 1, review_id,
+            )
+            raise
 
     submitted = submit_review(review_id, event=event, body="" if reused_pending else body)
     return PostResult(
