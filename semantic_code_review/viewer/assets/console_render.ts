@@ -73,7 +73,20 @@ let mermaidSeq = 0;
 let mermaidLoad: Promise<MermaidApi | null> | null = null;
 
 function initMermaid(m: MermaidApi): void {
-  m.initialize({ startOnLoad: false, securityLevel: "strict" });
+  // `htmlLabels: false` is load-bearing, not cosmetic. Mermaid's default
+  // renders node labels as HTML inside an `<foreignObject>`; DOMPurify
+  // (both our defence-in-depth pass in swapInSvg and its default policy)
+  // strips `<foreignObject>` wholesale as an mXSS / namespace-confusion
+  // vector, which silently removes every node label. Forcing SVG-native
+  // `<text>`/`<tspan>` labels — which survive the sanitizer — fixes that
+  // without widening the sanitizer to allow arbitrary HTML in untrusted
+  // (repo-sourced) diagram output.
+  m.initialize({
+    startOnLoad: false,
+    securityLevel: "strict",
+    htmlLabels: false,
+    flowchart: { htmlLabels: false },
+  });
 }
 
 /** Inject the vendored mermaid bundle once and resolve to its global.
