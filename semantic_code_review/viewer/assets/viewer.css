@@ -955,6 +955,18 @@ body { padding-bottom: 30px; }
 .console-input:focus { outline: none; border-color: var(--fg-muted); }
 .console-input.busy { opacity: 0.7; }
 
+/* Stop affordance: visible only while a turn streams. */
+.console-stop {
+  flex: 0 0 auto; align-self: center;
+  font: inherit; font-size: 12px; line-height: 1.2;
+  color: var(--fg); background: var(--bg-panel);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 3px 10px; cursor: pointer;
+}
+.console-stop:hover { border-color: var(--fg-muted); }
+.console-stop:disabled { opacity: 0.5; cursor: default; }
+.console-stop.hidden { display: none; }
+
 /* Transcript drawer: anchored above the footer, grows upward to a cap
  * then scrolls. `bottom` clears the fixed footer's reserved strip. */
 .console-drawer {
@@ -981,8 +993,22 @@ body { padding-bottom: 30px; }
   white-space: pre-wrap; word-break: break-word;
   font-size: 13px; color: var(--fg); line-height: 1.5;
 }
-.console-a.console-pending { color: var(--fg-muted); }
-.console-a.console-error { color: var(--danger, #e5534b); }
+.console-a.console-pending .console-text { color: var(--fg-muted); }
+.console-a.console-error .console-text { color: var(--danger, #e5534b); }
+/* A cancelled turn keeps its partial text but dims it. */
+.console-a.console-cancelled .console-text { opacity: 0.65; }
+
+/* Tool-activity lines stream above the answer text while the agent
+ * reaches for tools; muted + monospaced to read as machine activity. */
+.console-activity {
+  display: flex; flex-direction: column; gap: 2px;
+  margin-bottom: 4px;
+}
+.console-activity:empty { display: none; }
+.console-tool {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px; color: var(--fg-muted);
+}
 
 /* --- Help overlay --------------------------------------------------------- */
 .help-overlay {

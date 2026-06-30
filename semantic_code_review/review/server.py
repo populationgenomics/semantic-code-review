@@ -166,24 +166,107 @@ def _range_from_payload(payload: dict[str, Any], side: str) -> tuple[int, int] |
     return (s, e)
 
 
-def _ctx_publish(ctx: ServerContext, event_type: str, payload: dict[str, Any]) -> None:
-    """Append an event to the buffer + broadcast to subscribers.
+def _ctx_publish(
+    ctx: ServerContext, event_type: str, payload: dict[str, Any],
+    *, buffer: bool = True,
+) -> None:
+    """Broadcast an event to subscribers, optionally retaining it for
+    `Last-Event-ID` replay.
 
     Shared by `ReviewServer.publish` and route handlers so the
     /fold-summary route can fan out to other tabs without round-
     tripping through the ReviewServer instance.
+
+    With ``buffer=False`` the frame is fanned out live but neither
+    retained nor assigned an event id (no ``id:`` line) — it never
+    advances a reconnecting client's `Last-Event-ID` cursor and is
+    never replayed. The console stream (Slice 2) publishes this way so
+    a mid-turn reload starts the conversation fresh.
     """
     with ctx.state_lock:
-        ev = _BufferedEvent(
-            id=ctx.next_event_id, event_type=event_type, payload=payload,
-        )
-        ctx.next_event_id += 1
-        ctx.buffer.append(ev)
-        if len(ctx.buffer) > _BUFFER_CAP:
-            del ctx.buffer[: len(ctx.buffer) - _BUFFER_CAP]
+        if buffer:
+            ev = _BufferedEvent(
+                id=ctx.next_event_id, event_type=event_type, payload=payload,
+            )
+            ctx.next_event_id += 1
+            ctx.buffer.append(ev)
+            if len(ctx.buffer) > _BUFFER_CAP:
+                del ctx.buffer[: len(ctx.buffer) - _BUFFER_CAP]
+        else:
+            ev = _BufferedEvent(id=None, event_type=event_type, payload=payload)
         subs = list(ctx.subscribers)
     for q in subs:
         q.put(ev)
+
+
+def _run_console_worker(
+    ctx: "ServerContext",
+    asker: "ConsoleAsker",
+    question: str,
+    history: Any,
+    console_id: str,
+    cancel: threading.Event,
+) -> None:
+    """Drive one streaming console turn on a dedicated background thread.
+
+    Runs the asker (which drives ``Agent.iter``) under its own event
+    loop, fanning out ``console-delta`` / ``console-tool`` frames as the
+    answer streams, then a terminal ``console-done`` (or
+    ``console-error``). Every frame is tagged with ``console_id`` so
+    other tabs ignore streams that aren't theirs, and all are unbuffered
+    (a reload starts the console fresh). The conversation history is
+    advanced only on clean completion — a cancelled turn is discarded.
+    """
+    def on_delta(chunk: str) -> None:
+        _ctx_publish(
+            ctx, "console-delta",
+            {"console_id": console_id, "text": chunk}, buffer=False,
+        )
+
+    def on_tool(label: str) -> None:
+        _ctx_publish(
+            ctx, "console-tool",
+            {"console_id": console_id, "label": label}, buffer=False,
+        )
+
+    # Local import keeps the augment-side schemas off this stdlib-only
+    # module's import graph (mirrors the /fold-summary route).
+    from ..augment.console import ConsoleCancelled, ConsoleNotReady
+
+    try:
+        answer, new_history = asyncio.run(
+            asker(question, history, on_delta, on_tool, cancel)
+        )
+    except ConsoleCancelled:
+        # Partial turn abandoned: history stays as it was, the frontend
+        # keeps whatever streamed, and the conversation remains usable.
+        _ctx_publish(
+            ctx, "console-done",
+            {"console_id": console_id, "cancelled": True}, buffer=False,
+        )
+    except ConsoleNotReady as e:
+        _ctx_publish(
+            ctx, "console-error",
+            {"console_id": console_id, "error": str(e)}, buffer=False,
+        )
+    except Exception as e:  # noqa: BLE001 — surface every failure to the tab
+        log.exception("console turn failed for question=%r", question[:120])
+        _ctx_publish(
+            ctx, "console-error",
+            {"console_id": console_id, "error": f"{type(e).__name__}: {e}"},
+            buffer=False,
+        )
+    else:
+        with ctx.state_lock:
+            ctx.console_history = new_history
+        _ctx_publish(
+            ctx, "console-done",
+            {"console_id": console_id, "answer": answer}, buffer=False,
+        )
+    finally:
+        with ctx.state_lock:
+            ctx.console_busy = False
+            ctx.console_cancel = None
 
 
 #: Upper bound on the replay buffer. A 200-hunk PR emits ~200 hunk
@@ -196,9 +279,11 @@ _BUFFER_CAP = 2000
 
 @dataclass
 class _BufferedEvent:
-    """One SSE frame, retained for `Last-Event-ID` replay on reconnect."""
+    """One SSE frame. ``id`` is None for unbuffered live-only frames
+    (the console stream), which carry no ``id:`` line and so never
+    advance a client's `Last-Event-ID` reconnect cursor."""
 
-    id: int
+    id: int | None
     event_type: str
     payload: dict[str, Any]
 
@@ -213,14 +298,19 @@ class _BufferedEvent:
 FoldSummariser = Callable[..., Awaitable[str]]
 
 
-#: Signature of the console turn driver wired by ``serve_review`` once
-#: augmentation completes (SDK backends only, for now). Takes the
-#: reviewer's question and the opaque prior ``message_history`` (None on
-#: the first turn) and returns ``(answer_text, new_history)``. The
-#: history is held verbatim on ``ServerContext`` and threaded back in on
-#: the next turn; the server never inspects it. Stored as ``Any`` to
-#: keep the pydantic-ai message types out of this stdlib-only module —
-#: the concrete signature lives in ``augment/console.py``.
+#: Signature of the streaming console turn driver wired by
+#: ``serve_review`` once augmentation completes (SDK backends only, for
+#: now). Called as ``asker(question, history, on_delta, on_tool,
+#: cancel)`` and awaited to ``(answer_text, new_history)``: ``history``
+#: is the opaque prior ``message_history`` (None on the first turn),
+#: ``on_delta(str)`` / ``on_tool(str)`` are sync callbacks the driver
+#: invokes as text and tool activity stream, and ``cancel`` is a
+#: ``threading.Event`` it polls between chunks (raising
+#: ``ConsoleCancelled`` when set). The history is held verbatim on
+#: ``ServerContext`` and threaded back in on the next turn; the server
+#: never inspects it. Stored as ``Any`` to keep the pydantic-ai message
+#: types out of this stdlib-only module — the concrete signature lives
+#: in ``augment/console.py``.
 ConsoleAsker = Callable[..., Awaitable[Any]]
 
 
@@ -253,6 +343,16 @@ class ServerContext:
     # the asker; the server never reads into it.
     console_asker: ConsoleAsker | None = None
     console_history: Any = None
+    # In-flight turn coordination (Slice 2). ``console_busy`` enforces
+    # one streaming turn per conversation — a second /console/ask while
+    # a turn runs gets 409. ``console_cancel`` is the threading.Event the
+    # background worker polls between chunks; /console/cancel (and a
+    # mid-turn /console/reset) flips it. Both are guarded by
+    # ``state_lock``. A threading.Event (not asyncio.Event) so the
+    # request thread can flip it while the worker's own event loop polls
+    # it — no cross-loop signalling.
+    console_busy: bool = False
+    console_cancel: threading.Event | None = None
     # Optional, wired by serve_review when the caller wants posting to
     # happen via the in-browser confirmation modal (``scr pr``). When
     # both are None the modal stays absent and Done exits the way it
@@ -391,7 +491,7 @@ class _Handler(BaseHTTPRequestHandler):
         # single lock acquisition so a publish racing this connect can't
         # land an event that's neither in the replay nor in the queue.
         with self.ctx.state_lock:
-            replay = [ev for ev in self.ctx.buffer if ev.id > last_id]
+            replay = [ev for ev in self.ctx.buffer if ev.id is not None and ev.id > last_id]
             self.ctx.subscribers.append(q)
         try:
             self.send_response(200)
@@ -430,7 +530,11 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _write_event(self, ev: "_BufferedEvent") -> bool:
         body = json.dumps(ev.payload, ensure_ascii=False)
-        frame = f"id: {ev.id}\nevent: {ev.event_type}\ndata: {body}\n\n".encode("utf-8")
+        # Unbuffered (console) frames carry no id, so they don't move the
+        # browser's Last-Event-ID cursor — a reload won't try to replay
+        # them (they aren't in the buffer anyway).
+        id_line = "" if ev.id is None else f"id: {ev.id}\n"
+        frame = f"{id_line}event: {ev.event_type}\ndata: {body}\n\n".encode("utf-8")
         try:
             self.wfile.write(frame)
             self.wfile.flush()
@@ -486,6 +590,9 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": f"invalid json: {e}"})
                 return
             self._handle_console_ask(payload)
+            return
+        if path == "/console/cancel":
+            self._handle_console_cancel()
             return
         if path == "/console/reset":
             self._handle_console_reset()
@@ -568,15 +675,18 @@ class _Handler(BaseHTTPRequestHandler):
     # --- console (free-form Q&A) ---------------------------------------
 
     def _handle_console_ask(self, payload: dict[str, Any]) -> None:
-        """Run one console turn to completion and return the answer text.
+        """Kick off one streaming console turn; reply ``202`` immediately.
 
-        Wire format: ``{ "question": str }``. The turn driver
-        (``augment/console.py``) loads the sidecar, runs the free-form
-        agent over the run's worktrees, and returns
-        ``(answer, new_history)``; the history is stashed on the context
-        so the next turn continues the conversation. Slice 1 is a
-        blocking ``asyncio.run`` — exactly the ``/fold-summary`` shape;
-        streaming + cancel arrive in Slice 2.
+        Wire format: ``{ "question": str, "console_id"?: str }``. The
+        turn runs on a background worker (:func:`_run_console_worker`),
+        which streams ``console-delta`` / ``console-tool`` frames and a
+        terminal ``console-done`` / ``console-error`` over the SSE bus,
+        each tagged with ``console_id``. The POST itself carries no
+        answer — the client drives the transcript off the stream.
+
+        One turn per conversation: a second ask while a turn is in flight
+        gets ``409``. The prior history is snapshotted under the lock so
+        a concurrent reset/cancel can't tear it out mid-turn.
         """
         if self.ctx.console_asker is None:
             self._json(409, {"error": "console unavailable (augment incomplete or non-SDK backend)"})
@@ -585,38 +695,53 @@ class _Handler(BaseHTTPRequestHandler):
         if not question:
             self._json(400, {"error": "question must be a non-empty string"})
             return
+        console_id = str(payload.get("console_id", "")).strip()
 
-        # Snapshot the prior history under the lock so a concurrent
-        # /console/reset can't tear it out from under the turn.
         with self.ctx.state_lock:
+            if self.ctx.console_busy:
+                self._json(409, {"error": "a console turn is already in flight"})
+                return
+            self.ctx.console_busy = True
+            cancel = threading.Event()
+            self.ctx.console_cancel = cancel
             history = self.ctx.console_history
+            asker = self.ctx.console_asker
 
-        from ..augment.console import ConsoleNotReady
+        threading.Thread(
+            target=_run_console_worker,
+            args=(self.ctx, asker, question, history, console_id, cancel),
+            daemon=True,
+        ).start()
+        self._json(202, {"ok": True, "console_id": console_id})
 
-        try:
-            answer, new_history = asyncio.run(
-                self.ctx.console_asker(question, history)
-            )
-        except ConsoleNotReady as e:
-            self._json(409, {"error": str(e)})
-            return
-        except Exception as e:  # noqa: BLE001
-            log.exception("console turn failed for question=%r", question[:120])
-            self._json(500, {"error": f"{type(e).__name__}: {e}"})
-            return
+    def _handle_console_cancel(self) -> None:
+        """Flip the in-flight turn's cancel flag — Stop / Esc in the viewer.
 
+        Best-effort and idempotent: no in-flight turn means there's
+        nothing to cancel, which is still a ``200``. The worker observes
+        the flag between chunks and finishes with a cancelled
+        ``console-done``.
+        """
         with self.ctx.state_lock:
-            self.ctx.console_history = new_history
-        self._json(200, {"answer": answer})
+            cancel = self.ctx.console_cancel
+        if cancel is not None:
+            cancel.set()
+        self._json(200, {"ok": True})
 
     def _handle_console_reset(self) -> None:
         """Drop the in-memory conversation — `Esc` in the viewer.
 
         The history is ephemeral by design (ADR 0002); clearing it just
-        nulls the field so the next turn re-seeds from scratch.
+        nulls the field so the next turn re-seeds from scratch. Also
+        trips any in-flight turn's cancel flag so a reset mid-stream
+        doesn't leave a worker writing history back over the cleared
+        conversation.
         """
         with self.ctx.state_lock:
+            cancel = self.ctx.console_cancel
             self.ctx.console_history = None
+        if cancel is not None:
+            cancel.set()
         self._json(200, {"ok": True})
 
     # --- post (confirm-and-post modal) ---------------------------------

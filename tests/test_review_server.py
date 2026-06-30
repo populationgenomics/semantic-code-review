@@ -539,7 +539,7 @@ def test_console_ask_returns_409_when_asker_not_wired(server) -> None:
 
 
 def test_console_ask_empty_question_400(server) -> None:
-    async def asker(question, history):
+    async def asker(question, history, on_delta, on_tool, cancel):
         return "unused", []
 
     server.ctx.console_asker = asker
@@ -554,65 +554,214 @@ def test_console_ask_empty_question_400(server) -> None:
     conn.close()
 
 
-def test_console_ask_runs_turn_and_threads_history(server) -> None:
-    """The route dispatches to the wired asker, returns the answer text,
-    and threads the returned history back in on the next turn."""
+def _open_console_sse(server):
+    """Open the /events stream and block until the subscriber is
+    registered, so a turn kicked off right after can't publish into the
+    void. Returns (conn, response) — caller reads frames off
+    ``response.fp`` and closes ``conn``."""
+    conn = HTTPConnection("127.0.0.1", int(server.url().rsplit(":", 1)[1]), timeout=5)
+    conn.request("GET", "/events")
+    r = conn.getresponse()
+    assert r.status == 200
+    assert r.fp.readline().startswith(b":")  # primer comment
+    assert r.fp.readline() == b"\n"
+    for _ in range(100):
+        with server.ctx.state_lock:
+            if server.ctx.subscribers:
+                break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("subscriber never registered")
+    return conn, r
+
+
+def _wait_not_busy(server) -> None:
+    for _ in range(200):
+        with server.ctx.state_lock:
+            if not server.ctx.console_busy:
+                return
+        time.sleep(0.01)
+    raise AssertionError("console stayed busy")
+
+
+def _drain_console_turn(fp) -> list[tuple[str, dict]]:
+    """Read console frames off an SSE stream until the terminal
+    done/error frame, returning ``[(event_type, payload), ...]``."""
+    frames: list[tuple[str, dict]] = []
+    while True:
+        _id, etype, data = _read_sse_frame(fp)
+        frames.append((etype, json.loads(data) if data else {}))
+        if etype in ("console-done", "console-error"):
+            return frames
+
+
+def test_console_ask_streams_and_threads_history(server) -> None:
+    """A turn returns 202, streams console-delta/tool frames tagged with
+    the console_id, finishes with console-done carrying the answer, and
+    threads the returned history into the next turn."""
     seen: list = []
 
-    async def asker(question, history):
+    async def asker(question, history, on_delta, on_tool, cancel):
         seen.append((question, history))
-        new_history = (history or []) + [question]
-        return f"answer to {question!r}", new_history
+        on_tool("grep RepoTools")
+        on_delta("answer ")
+        on_delta(f"to {question!r}")
+        return f"answer to {question!r}", (history or []) + [question]
 
     server.set_console_asker(asker)
 
+    conn, r = _open_console_sse(server)
     code, body = _request(
-        server.url() + "/console/ask", "POST", {"question": "why pagination?"},
+        server.url() + "/console/ask", "POST",
+        {"question": "why pagination?", "console_id": "tab-1"},
     )
-    assert code == 200
-    assert body["answer"] == "answer to 'why pagination?'"
-    # First turn saw no prior history.
+    assert code == 202
+
+    frames = _drain_console_turn(r.fp)
+    types = [t for t, _ in frames]
+    assert types == ["console-tool", "console-delta", "console-delta", "console-done"]
+    # Every frame is tagged with the requesting tab's console_id.
+    assert all(p["console_id"] == "tab-1" for _, p in frames)
+    assert frames[0][1]["label"] == "grep RepoTools"
+    assert "".join(p["text"] for t, p in frames if t == "console-delta") == "answer to 'why pagination?'"
+    assert frames[-1][1]["answer"] == "answer to 'why pagination?'"
     assert seen[0] == ("why pagination?", None)
+    conn.close()
+    _wait_not_busy(server)
 
-    code, body = _request(
-        server.url() + "/console/ask", "POST", {"question": "follow-up"},
+    # Second turn threads the first turn's returned history back in.
+    conn, r = _open_console_sse(server)
+    code, _ = _request(
+        server.url() + "/console/ask", "POST",
+        {"question": "follow-up", "console_id": "tab-1"},
     )
-    assert code == 200
-    # Second turn received the history the first turn returned.
+    assert code == 202
+    _drain_console_turn(r.fp)
     assert seen[1] == ("follow-up", ["why pagination?"])
+    conn.close()
 
 
-def test_console_reset_clears_history(server) -> None:
-    async def asker(question, history):
-        return "ok", (history or []) + [question]
+def test_console_cancel_discards_turn(server) -> None:
+    """Cancelling an in-flight turn ends it with a cancelled
+    console-done and leaves the conversation history untouched."""
+    from semantic_code_review.augment.console import ConsoleCancelled
+
+    async def asker(question, history, on_delta, on_tool, cancel):
+        on_delta("partial")
+        while not cancel.is_set():
+            await asyncio.sleep(0.01)
+        raise ConsoleCancelled("cancelled")
 
     server.set_console_asker(asker)
-    _request(server.url() + "/console/ask", "POST", {"question": "q1"})
-    assert server.ctx.console_history == ["q1"]
 
-    code, body = _request(server.url() + "/console/reset", "POST", {})
+    conn, r = _open_console_sse(server)
+    code, _ = _request(
+        server.url() + "/console/ask", "POST",
+        {"question": "why?", "console_id": "tab-1"},
+    )
+    assert code == 202
+
+    # First the partial delta, then — once we cancel — the cancelled done.
+    _id, etype, data = _read_sse_frame(r.fp)
+    assert etype == "console-delta" and json.loads(data)["text"] == "partial"
+
+    code, body = _request(
+        server.url() + "/console/cancel", "POST", {"console_id": "tab-1"},
+    )
     assert code == 200 and body["ok"] is True
+
+    _id, etype, data = _read_sse_frame(r.fp)
+    assert etype == "console-done"
+    assert json.loads(data)["cancelled"] is True
+    conn.close()
+
+    _wait_not_busy(server)
+    # The abandoned turn never advanced the conversation history.
     assert server.ctx.console_history is None
 
 
-def test_console_ask_not_ready_maps_to_409(server) -> None:
-    """`ConsoleNotReady` from the turn driver surfaces as a 409."""
-    from semantic_code_review.augment.console import ConsoleNotReady
-
-    async def asker(question, history):
-        raise ConsoleNotReady("augmented.scr.json missing")
+def test_console_ask_second_turn_while_busy_409(server) -> None:
+    """One in-flight turn per conversation: a second ask gets 409."""
+    async def asker(question, history, on_delta, on_tool, cancel):
+        while not cancel.is_set():
+            await asyncio.sleep(0.01)
+        from semantic_code_review.augment.console import ConsoleCancelled
+        raise ConsoleCancelled("cancelled")
 
     server.set_console_asker(asker)
+
+    code, _ = _request(
+        server.url() + "/console/ask", "POST", {"question": "q1"},
+    )
+    assert code == 202
+
     conn = HTTPConnection("127.0.0.1", int(server.url().rsplit(":", 1)[1]), timeout=5)
     conn.request(
         "POST", "/console/ask",
-        body=json.dumps({"question": "x"}),
+        body=json.dumps({"question": "q2"}),
         headers={"Content-Type": "application/json"},
     )
     r = conn.getresponse()
     assert r.status == 409
-    assert "missing" in json.loads(r.read())["error"]
+    assert "in flight" in json.loads(r.read())["error"]
     conn.close()
+
+    # Clean up the blocked worker.
+    _request(server.url() + "/console/cancel", "POST", {})
+    _wait_not_busy(server)
+
+
+def test_console_error_emits_console_error_frame(server) -> None:
+    """A turn driver that raises surfaces as a console-error frame, not a
+    crashed worker, and clears the in-flight flag."""
+    async def asker(question, history, on_delta, on_tool, cancel):
+        raise RuntimeError("boom")
+
+    server.set_console_asker(asker)
+
+    conn, r = _open_console_sse(server)
+    code, _ = _request(
+        server.url() + "/console/ask", "POST",
+        {"question": "x", "console_id": "tab-1"},
+    )
+    assert code == 202
+
+    frames = _drain_console_turn(r.fp)
+    assert frames[-1][0] == "console-error"
+    assert "boom" in frames[-1][1]["error"]
+    conn.close()
+    _wait_not_busy(server)
+
+
+def test_console_ask_not_ready_emits_console_error(server) -> None:
+    """`ConsoleNotReady` from the turn driver streams as a console-error
+    frame (the route already returned 202)."""
+    from semantic_code_review.augment.console import ConsoleNotReady
+
+    async def asker(question, history, on_delta, on_tool, cancel):
+        raise ConsoleNotReady("augmented.scr.json missing")
+
+    server.set_console_asker(asker)
+
+    conn, r = _open_console_sse(server)
+    code, _ = _request(
+        server.url() + "/console/ask", "POST",
+        {"question": "x", "console_id": "tab-1"},
+    )
+    assert code == 202
+    frames = _drain_console_turn(r.fp)
+    assert frames[-1][0] == "console-error"
+    assert "missing" in frames[-1][1]["error"]
+    conn.close()
+    _wait_not_busy(server)
+
+
+def test_console_reset_clears_history(server) -> None:
+    """Reset nulls the conversation and trips any in-flight cancel."""
+    server.ctx.console_history = ["q1"]
+    code, body = _request(server.url() + "/console/reset", "POST", {})
+    assert code == 200 and body["ok"] is True
+    assert server.ctx.console_history is None
 
 
 def test_events_replay_from_zero_when_header_absent(server) -> None:

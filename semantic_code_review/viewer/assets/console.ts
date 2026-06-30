@@ -1,32 +1,58 @@
 // Review console — bottom-bar Q&A over the change under review.
 //
-// Slice 1 (ADR 0002): one-shot, plain-text turns. A persistent,
-// unobtrusive prompt input shares the footer with the status counts
-// (right); `Ctrl-P` focuses it (intercepting the browser Print
-// shortcut — acceptable on a dedicated localhost tab). On submit it
-// POSTs /console/ask and renders the answer as PLAIN TEXT in a
-// transcript drawer that grows upward above the footer. `Esc`
-// collapses the drawer and drops the server-side conversation
-// (POST /console/reset).
+// Slice 2 (ADR 0002): streaming turns over SSE, with cancel. A
+// persistent, unobtrusive prompt input shares the footer with the
+// status counts (right); `Ctrl-P` focuses it (intercepting the browser
+// Print shortcut — acceptable on a dedicated localhost tab). On submit
+// it POSTs /console/ask (which returns 202) and then drives the
+// transcript off the SSE stream: `console-delta` chunks accumulate into
+// the answer, `console-tool` frames surface tool activity, and a
+// terminal `console-done` / `console-error` ends the turn. A Stop
+// affordance (and `Esc`) cancels an in-flight turn via /console/cancel;
+// a second `Esc` collapses the drawer and drops the conversation.
 //
 // The conversation `message_history` lives server-side and is
-// ephemeral; this module only holds the visible transcript. Streaming,
-// markdown/mermaid rendering, and selection-awareness arrive in later
-// slices — answers are rendered with `textContent` here, so any
-// `<script>`-laden model output is inert by construction.
+// ephemeral; this module only holds the visible transcript. Every
+// console frame is tagged with a per-tab `console_id` so streams from
+// other tabs are ignored, and the frames are unbuffered server-side, so
+// a mid-turn reload starts the console fresh. Markdown/mermaid
+// rendering and selection-awareness arrive in later slices — answers
+// are rendered with `textContent` here, so any `<script>`-laden model
+// output is inert by construction.
 
 let _endpoint = "";
+let _consoleId = "";
 let _drawer: HTMLElement | null = null;
 let _transcript: HTMLElement | null = null;
 let _input: HTMLTextAreaElement | null = null;
+let _stop: HTMLButtonElement | null = null;
 let _busy = false;
 
+// The in-flight turn's DOM + accumulated answer text. Null between
+// turns; the SSE handlers no-op when there's nothing in flight.
+interface PendingTurn {
+  answer: HTMLElement;
+  activity: HTMLElement;
+  text: HTMLElement;
+  accumulated: string;
+}
+let _pending: PendingTurn | null = null;
+
 const MAX_INPUT_ROWS = 6;
+
+/** A per-tab id stamped on every /console request and matched against
+ *  every console SSE frame, so a tab ignores another tab's stream. */
+function genConsoleId(): string {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  if (c && typeof c.randomUUID === "function") return c.randomUUID();
+  return "c" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
 
 /** Mount the console bar into the footer. No-op (returns) when the
  *  footer is absent — e.g. a DOM that doesn't include the status bar. */
 function init(endpoint: string): void {
   _endpoint = endpoint;
+  _consoleId = genConsoleId();
   const footer = document.getElementById("status-bar");
   if (!footer || _input) return; // idempotent: don't double-mount
   build(footer);
@@ -53,6 +79,16 @@ function build(footer: HTMLElement): void {
   _input.setAttribute("aria-label", "Review console prompt");
   footer.insertBefore(_input, footer.firstChild);
 
+  // Stop affordance: hidden until a turn is in flight, sits between the
+  // prompt and the status counts.
+  _stop = document.createElement("button");
+  _stop.className = "console-stop hidden";
+  _stop.type = "button";
+  _stop.textContent = "Stop";
+  _stop.title = "Cancel the in-flight answer (Esc)";
+  _stop.addEventListener("click", () => cancelTurn());
+  footer.insertBefore(_stop, _input.nextSibling);
+
   _input.addEventListener("input", autogrow);
   _input.addEventListener("keydown", onInputKey);
 }
@@ -74,7 +110,10 @@ function onInputKey(e: KeyboardEvent): void {
     void submit();
   } else if (e.key === "Escape") {
     e.preventDefault();
-    dismiss();
+    // Esc cancels an in-flight turn first; only once nothing is running
+    // does it collapse the drawer and drop the conversation.
+    if (_busy) cancelTurn();
+    else dismiss();
   }
 }
 
@@ -96,41 +135,98 @@ async function submit(): Promise<void> {
   autogrow();
   reveal();
   appendQuestion(question);
-  const pending = appendAnswer();
+  _pending = appendAnswer();
   setBusy(true);
   try {
     const r = await fetch(`${_endpoint}/console/ask`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, console_id: _consoleId }),
     });
-    if (!r.ok) {
-      pending.classList.add("console-error");
-      pending.textContent = await errorText(r);
-    } else {
-      const data = (await r.json()) as { answer?: string };
-      pending.textContent = data.answer || "(empty answer)";
+    // 202 means the turn was accepted and is streaming over SSE; the
+    // answer arrives via onDelta/onDone, not this response body. Any
+    // other status is an immediate failure (409 busy / unavailable).
+    if (!r.ok && r.status !== 202) {
+      failPending(await errorText(r));
     }
   } catch (e) {
-    pending.classList.add("console-error");
-    pending.textContent = `request failed: ${e}`;
+    failPending(`request failed: ${e}`);
   } finally {
-    setBusy(false);
     scrollToEnd();
   }
 }
 
-// Esc: drop the conversation and collapse. The server-side history is
-// ephemeral; resetting it means the next turn re-seeds from scratch.
+// Stop / Esc-while-busy: ask the server to cancel. The turn ends when
+// the worker emits a cancelled `console-done`; we keep the partial
+// answer that already streamed.
+function cancelTurn(): void {
+  if (!_busy) return;
+  if (_stop) _stop.disabled = true;
+  fetch(`${_endpoint}/console/cancel`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ console_id: _consoleId }),
+  }).catch(() => { /* server may be tearing down; cancel is best-effort */ });
+}
+
+// Esc with nothing in flight: drop the conversation and collapse. The
+// server-side history is ephemeral; resetting it means the next turn
+// re-seeds from scratch.
 function dismiss(): void {
   _input?.blur();
   collapse();
   if (_transcript) _transcript.textContent = "";
+  _pending = null;
   fetch(`${_endpoint}/console/reset`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: "{}",
   }).catch(() => { /* server may be tearing down; reset is best-effort */ });
+}
+
+// --- SSE handlers (filtered by console_id) -------------------------------
+
+function mine(payload: { console_id?: string }): boolean {
+  return !!payload && payload.console_id === _consoleId;
+}
+
+function onDelta(payload: SseConsoleDeltaEvent): void {
+  if (!mine(payload) || !_pending) return;
+  _pending.accumulated += payload.text || "";
+  _pending.text.textContent = _pending.accumulated;
+  scrollToEnd();
+}
+
+function onTool(payload: SseConsoleToolEvent): void {
+  if (!mine(payload) || !_pending) return;
+  const line = document.createElement("div");
+  line.className = "console-tool";
+  line.textContent = payload.label || "";
+  _pending.activity.appendChild(line);
+  scrollToEnd();
+}
+
+function onDone(payload: SseConsoleDoneEvent): void {
+  if (!mine(payload)) return;
+  const pending = _pending;
+  if (pending) {
+    // Backends that don't stream deltas (CLI, Slice 5) carry the whole
+    // answer on `done`; fall back to it when nothing streamed.
+    if (!pending.accumulated && payload.answer) {
+      pending.text.textContent = payload.answer;
+    }
+    if (payload.cancelled) pending.answer.classList.add("console-cancelled");
+    else if (!pending.accumulated && !payload.answer) {
+      pending.text.textContent = "(empty answer)";
+    }
+  }
+  endTurn();
+}
+
+function onError(payload: SseConsoleErrorEvent): void {
+  if (!mine(payload)) return;
+  failPending(payload.error || "console error");
+  endTurn();
 }
 
 // --- transcript rendering ------------------------------------------------
@@ -144,13 +240,27 @@ function appendQuestion(text: string): void {
   scrollToEnd();
 }
 
-function appendAnswer(): HTMLElement {
-  const a = document.createElement("div");
-  a.className = "console-a console-pending";
-  a.textContent = "…";
-  _transcript?.appendChild(a);
+function appendAnswer(): PendingTurn {
+  const answer = document.createElement("div");
+  answer.className = "console-a console-pending";
+  const activity = document.createElement("div");
+  activity.className = "console-activity";
+  const text = document.createElement("div");
+  text.className = "console-text";
+  text.textContent = "…";
+  answer.appendChild(activity);
+  answer.appendChild(text);
+  _transcript?.appendChild(answer);
   scrollToEnd();
-  return a;
+  return { answer, activity, text, accumulated: "" };
+}
+
+// Mark the in-flight answer as failed and show the error in place of
+// whatever (if anything) had streamed.
+function failPending(message: string): void {
+  if (!_pending) return;
+  _pending.answer.classList.add("console-error");
+  _pending.text.textContent = message;
 }
 
 async function errorText(r: Response): Promise<string> {
@@ -161,14 +271,21 @@ async function errorText(r: Response): Promise<string> {
   return `request failed (${r.status})`;
 }
 
+// Clear the busy state and detach the in-flight turn. The pending
+// marker comes off so the answer renders in its final style.
+function endTurn(): void {
+  if (_pending) _pending.answer.classList.remove("console-pending");
+  _pending = null;
+  setBusy(false);
+  scrollToEnd();
+}
+
 function setBusy(busy: boolean): void {
   _busy = busy;
   if (_input) _input.classList.toggle("busy", busy);
-  // Drop the pending marker on the just-resolved answer.
-  if (!busy && _transcript) {
-    _transcript.querySelectorAll(".console-pending").forEach((el) => {
-      el.classList.remove("console-pending");
-    });
+  if (_stop) {
+    _stop.classList.toggle("hidden", !busy);
+    _stop.disabled = false;
   }
 }
 
@@ -184,4 +301,4 @@ function scrollToEnd(): void {
   if (_drawer) _drawer.scrollTop = _drawer.scrollHeight;
 }
 
-export const Console = { init };
+export const Console = { init, onDelta, onTool, onDone, onError };

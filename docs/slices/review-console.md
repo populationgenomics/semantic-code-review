@@ -82,7 +82,7 @@ bar, asks a question, and a tool-grounded plain-text answer appears in
 the drawer; follow-ups retain context; `Esc` clears the conversation;
 the bar is absent on `--no-augment` / static `render`.
 
-## Slice 2 — Streaming over SSE, with cancel (SDK)
+## Slice 2 — Streaming over SSE, with cancel (SDK) ✅ done
 
 Upgrade the transport from blocking-response to live streaming.
 

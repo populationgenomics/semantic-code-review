@@ -7,9 +7,11 @@ It is wired into the live `scr review` server after augmentation
 completes and only for SDK backends (Slice 1 of ADR 0002 — console).
 
 This module owns the agent factory, the compact first-turn seed, and
-the one-shot turn driver. Streaming, cancellation, and CLI-backend
-support arrive in later slices; Slice 1 runs a turn to completion and
-returns the full answer text.
+the turn drivers. The streaming driver (`stream_console_turn`, Slice 2)
+drives `Agent.iter` and pumps text deltas + tool-activity out through
+caller-supplied callbacks while polling a cancel flag between chunks;
+`run_console_turn` is the Slice 1 blocking shape, retained as a thin
+no-callback wrapper. CLI-backend support arrives in Slice 5.
 
 Context discipline (ADR 0002): **seed compact, pull on demand.** The
 first turn carries the overview JSON + changed-file list + the
@@ -20,11 +22,20 @@ tools, including `hunk(id)`. The seed rides the conversation's
 
 from __future__ import annotations
 
+import json
 import logging
+import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from pydantic_ai import Agent
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
+)
 from pydantic_ai.models import Model
 
 from .agents import Client
@@ -64,6 +75,16 @@ class ConsoleNotReady(RuntimeError):
     Maps to HTTP 409 at the review-server boundary — augmentation is
     still in flight or was skipped, so there's no diff to ground the
     console against.
+    """
+
+
+class ConsoleCancelled(RuntimeError):
+    """The reviewer cancelled an in-flight turn (Stop / Esc).
+
+    Raised by `stream_console_turn` when the cancel flag trips between
+    chunks. The background worker catches it and emits a `console-done`
+    with `cancelled: true`; the partial turn is discarded (its messages
+    never join the conversation history).
     """
 
 
@@ -110,20 +131,16 @@ def build_console_seed(diff: Any, *, symbol_delta_json: str | None) -> str:
     return "\n\n".join(parts)
 
 
-async def run_console_turn(
-    client: Client,
-    *,
-    run_dir: Path,
-    question: str,
-    history: list | None = None,
-) -> tuple[str, list]:
-    """Run one console turn to completion and return (answer, new_history).
+def _prepare_turn(
+    client: Client, *, run_dir: Path, question: str, history: list | None,
+) -> tuple[Agent[RepoTools, str], str, RepoTools]:
+    """Shared per-turn setup: load the sidecar, bind `RepoTools`, build
+    the agent, and assemble the prompt (the compact seed prefix on the
+    first turn, the bare question thereafter).
 
-    Loads the augmented sidecar (raising :class:`ConsoleNotReady` if it
-    isn't on disk yet), binds `RepoTools` to the run's worktrees + diff,
-    seeds the first turn, and runs the agent. `history` is the opaque
-    pydantic-ai `message_history` from the prior turn (None on the first
-    turn); the returned list is the full history to carry forward.
+    Raises :class:`ConsoleNotReady` if the augmented sidecar isn't on
+    disk yet. Returns ``(agent, prompt, repo_tools)`` ready to run or
+    iterate.
     """
     sidecar = run_dir / "augmented.scr.json"
     if not sidecar.exists():
@@ -155,6 +172,123 @@ async def run_console_turn(
         seed = build_console_seed(diff, symbol_delta_json=symbol_delta_json)
         prompt = f"{seed}\n\n# Reviewer question\n{question}"
 
-    agent = make_console_agent(client.model)
-    result = await agent.run(prompt, deps=repo_tools, message_history=history)
+    return make_console_agent(client.model), prompt, repo_tools
+
+
+def _delta_text(event: Any) -> str:
+    """Pull streamed assistant text out of a pydantic-ai stream event.
+
+    A `TextPart` opens with its first chunk in `PartStartEvent`; the
+    rest arrive as `TextPartDelta`s. Everything else (tool-call parts,
+    thinking deltas) yields the empty string and is skipped by callers.
+    """
+    if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+        return event.part.content
+    if isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
+        return event.delta.content_delta
+    return ""
+
+
+def _tool_label(part: Any) -> str:
+    """A compact, human-readable label for a tool call — e.g.
+    ``grep RepoTools`` or ``read_file src/users.py``.
+
+    Surfaces the tool name plus a representative scalar argument so the
+    reviewer sees *what* the console is reaching for, not just *that* it
+    is. Args arrive as a dict or a JSON string depending on the backend.
+    """
+    name = getattr(part, "tool_name", None) or "tool"
+    args = getattr(part, "args", None)
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            args = None
+    if isinstance(args, dict):
+        for value in args.values():
+            text = str(value).strip()
+            if text:
+                return f"{name} {text[:60]}"
+    return name
+
+
+async def stream_console_turn(
+    client: Client,
+    *,
+    run_dir: Path,
+    question: str,
+    history: list | None = None,
+    on_delta: Callable[[str], None] | None = None,
+    on_tool: Callable[[str], None] | None = None,
+    cancel: threading.Event | None = None,
+) -> tuple[str, list]:
+    """Stream one console turn, returning ``(answer, new_history)``.
+
+    Drives the agent via ``Agent.iter`` so assistant text can be pumped
+    to ``on_delta`` chunk-by-chunk and each tool invocation announced to
+    ``on_tool`` as it fires. Between chunks it polls ``cancel`` (a
+    ``threading.Event`` flipped from another thread by ``/console/cancel``)
+    and raises :class:`ConsoleCancelled` when set — the partial turn is
+    abandoned and its messages never join the returned history.
+
+    `history` is the opaque prior `message_history` (None on the first
+    turn); the returned list is the full history to carry forward.
+    """
+    agent, prompt, repo_tools = _prepare_turn(
+        client, run_dir=run_dir, question=question, history=history,
+    )
+
+    def cancelled() -> bool:
+        return cancel is not None and cancel.is_set()
+
+    abort = False
+    async with agent.iter(
+        prompt, deps=repo_tools, message_history=history,
+    ) as run:
+        async for node in run:
+            if cancelled():
+                abort = True
+                break
+            if Agent.is_model_request_node(node):
+                async with node.stream(run.ctx) as stream:
+                    async for event in stream:
+                        if cancelled():
+                            abort = True
+                            break
+                        chunk = _delta_text(event)
+                        if chunk and on_delta is not None:
+                            on_delta(chunk)
+                if abort:
+                    break
+            elif Agent.is_call_tools_node(node):
+                async with node.stream(run.ctx) as stream:
+                    async for event in stream:
+                        if isinstance(event, FunctionToolCallEvent) and on_tool is not None:
+                            on_tool(_tool_label(event.part))
+
+    if abort:
+        raise ConsoleCancelled("console turn cancelled")
+    result = run.result
+    # Non-None once the iteration runs to completion (only the cancel
+    # path leaves it unset, and that raised above).
+    assert result is not None, "agent run finished without a result"
     return result.output, list(result.all_messages())
+
+
+async def run_console_turn(
+    client: Client,
+    *,
+    run_dir: Path,
+    question: str,
+    history: list | None = None,
+) -> tuple[str, list]:
+    """Run one console turn to completion and return (answer, new_history).
+
+    The Slice 1 blocking shape, retained for the non-streaming callers
+    and tests: a thin wrapper over :func:`stream_console_turn` with no
+    callbacks and no cancel flag, so it accumulates the full answer and
+    returns it once the agent finishes.
+    """
+    return await stream_console_turn(
+        client, run_dir=run_dir, question=question, history=history,
+    )

@@ -8,6 +8,7 @@ carries the bounded context, and `run_console_turn` round-trips history.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -15,10 +16,12 @@ from pydantic_ai.models.test import TestModel
 
 from semantic_code_review.augment.agents import Client
 from semantic_code_review.augment.console import (
+    ConsoleCancelled,
     ConsoleNotReady,
     build_console_seed,
     make_console_agent,
     run_console_turn,
+    stream_console_turn,
 )
 from semantic_code_review.augment.tools import RepoTools, console_tool_functions
 from semantic_code_review.format.parse import parse_augmented_diff
@@ -153,3 +156,80 @@ async def test_run_console_turn_seeds_and_returns_history(
     )
     assert answer2 == "grounded answer"
     assert len(history2) > len(history)
+
+
+# --- streaming driver ---------------------------------------------------
+
+
+def _patch_test_model(
+    monkeypatch: pytest.MonkeyPatch, *, output_text: str, call_tools: list[str],
+) -> None:
+    """Force every console agent onto a canned TestModel."""
+    import semantic_code_review.augment.console as console_mod
+
+    real_make = console_mod.make_console_agent
+
+    def _make(_model):  # noqa: ANN001 — ignore the resolved string model
+        return real_make(
+            TestModel(custom_output_text=output_text, call_tools=call_tools)
+        )
+
+    monkeypatch.setattr(console_mod, "make_console_agent", _make)
+
+
+async def test_stream_console_turn_pumps_deltas_and_tool_activity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The streaming driver pushes assistant text through `on_delta`
+    chunk-by-chunk and announces each tool call to `on_tool`, and still
+    returns the full answer + history."""
+    run_dir = _populate_run_dir(tmp_path)
+    client = Client(model="anthropic:claude-opus-4-7")
+    # `hunk` resolves against the bound diff (no worktree needed), so the
+    # forced tool call fires an activity event without erroring out.
+    _patch_test_model(monkeypatch, output_text="streamed answer", call_tools=["hunk"])
+
+    deltas: list[str] = []
+    tools: list[str] = []
+    answer, history = await stream_console_turn(
+        client, run_dir=run_dir, question="why pagination?",
+        on_delta=deltas.append, on_tool=tools.append, cancel=threading.Event(),
+    )
+
+    assert answer == "streamed answer"
+    assert "".join(deltas) == "streamed answer"  # deltas reconstruct the answer
+    assert tools and tools[0].startswith("hunk")
+    assert history
+
+
+async def test_stream_console_turn_cancel_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tripped cancel flag aborts the turn with `ConsoleCancelled`
+    rather than returning an answer."""
+    run_dir = _populate_run_dir(tmp_path)
+    client = Client(model="anthropic:claude-opus-4-7")
+    _patch_test_model(monkeypatch, output_text="unused", call_tools=[])
+
+    cancel = threading.Event()
+    cancel.set()  # pre-tripped: caught on the first node, before any output
+    with pytest.raises(ConsoleCancelled):
+        await stream_console_turn(
+            client, run_dir=run_dir, question="why?", cancel=cancel,
+        )
+
+
+async def test_run_console_turn_is_streaming_wrapper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The blocking shape still works — it's a no-callback wrapper over
+    the streaming driver."""
+    run_dir = _populate_run_dir(tmp_path)
+    client = Client(model="anthropic:claude-opus-4-7")
+    _patch_test_model(monkeypatch, output_text="wrapped", call_tools=[])
+
+    answer, history = await run_console_turn(
+        client, run_dir=run_dir, question="q",
+    )
+    assert answer == "wrapped"
+    assert history

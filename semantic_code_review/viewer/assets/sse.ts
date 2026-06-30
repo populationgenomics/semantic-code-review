@@ -17,6 +17,10 @@ interface SseHandlers {
   hunk?: (payload: SseHunkEvent) => void;
   foldSummary?: (payload: SseFoldSummaryEvent) => void;
   done?: (payload: SseDoneEvent) => void;
+  consoleDelta?: (payload: SseConsoleDeltaEvent) => void;
+  consoleTool?: (payload: SseConsoleToolEvent) => void;
+  consoleDone?: (payload: SseConsoleDoneEvent) => void;
+  consoleError?: (payload: SseConsoleErrorEvent) => void;
 }
 
 /** Subscribe to `<endpoint>/events`. Returns the EventSource so
@@ -63,6 +67,10 @@ function connect(endpoint: string, handlers: SseHandlers): EventSource | null {
   if (handlers.hunk) wireJson<SseHunkEvent>("hunk", handlers.hunk);
   if (handlers.foldSummary) wireJson<SseFoldSummaryEvent>("fold-summary", handlers.foldSummary);
   if (handlers.done) wireJson<SseDoneEvent>("done", handlers.done);
+  if (handlers.consoleDelta) wireJson<SseConsoleDeltaEvent>("console-delta", handlers.consoleDelta);
+  if (handlers.consoleTool) wireJson<SseConsoleToolEvent>("console-tool", handlers.consoleTool);
+  if (handlers.consoleDone) wireJson<SseConsoleDoneEvent>("console-done", handlers.consoleDone);
+  if (handlers.consoleError) wireJson<SseConsoleErrorEvent>("console-error", handlers.consoleError);
   return es;
 }
 

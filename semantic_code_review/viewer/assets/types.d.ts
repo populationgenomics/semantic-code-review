@@ -284,6 +284,36 @@ interface SseDoneEvent {
   reason: string;
 }
 
+// --- Console stream events --------------------------------------------------
+// Emitted by the background console worker (Slice 2). Every frame is
+// tagged with `console_id` so a tab ignores streams from other tabs;
+// they are unbuffered (no `id:` line) so a reload starts fresh.
+
+interface SseConsoleDeltaEvent {
+  console_id: string;
+  /** A chunk of assistant text to append to the in-flight answer. */
+  text: string;
+}
+
+interface SseConsoleToolEvent {
+  console_id: string;
+  /** Human-readable tool-activity label, e.g. "grep RepoTools". */
+  label: string;
+}
+
+interface SseConsoleDoneEvent {
+  console_id: string;
+  /** Present on a clean finish — the full answer text. */
+  answer?: string;
+  /** True when the turn was cancelled mid-flight (Stop / Esc). */
+  cancelled?: boolean;
+}
+
+interface SseConsoleErrorEvent {
+  console_id: string;
+  error: string;
+}
+
 // --- /fold-summary HTTP request --------------------------------------------
 
 interface FoldSummaryRequest {

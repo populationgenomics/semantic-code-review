@@ -188,6 +188,13 @@ function installSessionEvents(): void {
     },
     done: () => finaliseStreaming(),
     foldSummary: (payload) => applyFoldSummary(payload),
+    // Console stream (Slice 2): the worker fans deltas/tool-activity
+    // out here; Console filters by its own console_id and ignores the
+    // rest. The single EventSource is shared with the augment events.
+    consoleDelta: (payload) => Console.onDelta(payload),
+    consoleTool: (payload) => Console.onTool(payload),
+    consoleDone: (payload) => Console.onDone(payload),
+    consoleError: (payload) => Console.onError(payload),
   });
 }
 

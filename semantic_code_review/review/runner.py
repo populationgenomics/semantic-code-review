@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import sys
+import threading
 import webbrowser
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -61,14 +62,19 @@ FoldSummaryCallable = Callable[
 ]
 
 
-#: Signature of the console turn driver accepted by ``serve_review``.
-#: Takes the reviewer's question and the opaque prior message history
-#: (None on the first turn), returns ``(answer_text, new_history)``.
-#: Wired only when augmentation runs on an SDK backend; ``--no-augment``
-#: and CLI-subprocess reviews leave this ``None`` and /console/ask 409s
-#: (CLI support is Slice 5).
+#: Signature of the streaming console turn driver accepted by
+#: ``serve_review``. Called as ``(question, history, on_delta, on_tool,
+#: cancel)`` and awaited to ``(answer_text, new_history)``:
+#: ``on_delta(str)`` / ``on_tool(str)`` stream text and tool activity,
+#: ``cancel`` is the ``threading.Event`` the driver polls between
+#: chunks. Wired only when augmentation runs on an SDK backend;
+#: ``--no-augment`` and CLI-subprocess reviews leave this ``None`` and
+#: /console/ask 409s (CLI support is Slice 5).
 ConsoleCallable = Callable[
-    [str, "list | None"],
+    [
+        str, "list | None", "Callable[[str], None]", "Callable[[str], None]",
+        "threading.Event",
+    ],
     Awaitable["tuple[str, list]"],
 ]
 
@@ -344,11 +350,18 @@ def _build_console_task(
     server module stays independent of the augment-side machinery.
     """
     # Lazy import: keeps pydantic-ai off the `--no-augment` path.
-    from ..augment.console import run_console_turn
+    from ..augment.console import stream_console_turn
 
-    async def task(question: str, history: "list | None") -> "tuple[str, list]":
-        return await run_console_turn(
+    async def task(
+        question: str,
+        history: "list | None",
+        on_delta: "Callable[[str], None]",
+        on_tool: "Callable[[str], None]",
+        cancel: "threading.Event",
+    ) -> "tuple[str, list]":
+        return await stream_console_turn(
             client, run_dir=run_dir, question=question, history=history,
+            on_delta=on_delta, on_tool=on_tool, cancel=cancel,
         )
 
     return task
