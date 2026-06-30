@@ -15,10 +15,13 @@
 // ephemeral; this module only holds the visible transcript. Every
 // console frame is tagged with a per-tab `console_id` so streams from
 // other tabs are ignored, and the frames are unbuffered server-side, so
-// a mid-turn reload starts the console fresh. Markdown/mermaid
-// rendering and selection-awareness arrive in later slices — answers
-// are rendered with `textContent` here, so any `<script>`-laden model
-// output is inert by construction.
+// a mid-turn reload starts the console fresh. Selection-awareness
+// arrives in a later slice; answers here render as markdown (with
+// inline mermaid) via `renderConsoleMarkdown`, with raw HTML disabled
+// and the output sanitised, so `<script>`-laden model output is
+// neutralised.
+
+import { renderConsoleMarkdown } from "./console_render";
 
 let _endpoint = "";
 let _consoleId = "";
@@ -193,7 +196,7 @@ function mine(payload: { console_id?: string }): boolean {
 function onDelta(payload: SseConsoleDeltaEvent): void {
   if (!mine(payload) || !_pending) return;
   _pending.accumulated += payload.text || "";
-  _pending.text.textContent = _pending.accumulated;
+  renderConsoleMarkdown(_pending.text, _pending.accumulated);
   scrollToEnd();
 }
 
@@ -213,7 +216,7 @@ function onDone(payload: SseConsoleDoneEvent): void {
     // Backends that don't stream deltas (CLI, Slice 5) carry the whole
     // answer on `done`; fall back to it when nothing streamed.
     if (!pending.accumulated && payload.answer) {
-      pending.text.textContent = payload.answer;
+      renderConsoleMarkdown(pending.text, payload.answer);
     }
     if (payload.cancelled) pending.answer.classList.add("console-cancelled");
     else if (!pending.accumulated && !payload.answer) {

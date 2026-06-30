@@ -23,6 +23,30 @@ with a SHA-256 hash; the refresh script verifies both.
 | `github-dark.min.css`    | `9f208d022102b1d0c7aebfecd8e42ca7997d5de636649d2b31ea63093d809019` |
 | `LICENSE`                | `6c081431591d9df696c82dc598fe1423765b8a299b200ed00b281afd0f64c490` |
 
+## mermaid
+
+Lazy-loaded by the review console (`<script>` injection) the first time
+an answer completes a `mermaid` fence — it is MB-class and rarely used,
+so it never enters the main `viewer.js` bundle.
+
+- **Upstream:** https://github.com/mermaid-js/mermaid
+- **Pinned version:** `11.16.0`
+- **License:** MIT — see the adjacent `mermaid.LICENSE` file, a verbatim
+  copy of the license shipped in the npm package at the pinned version.
+- **Source URLs:** `https://cdn.jsdelivr.net/npm/mermaid@11.16.0/` for both
+  the bundle and the license.
+- **Note:** mermaid 11 ships ESM-only on npm (code-split into many
+  chunks); `dist/mermaid.min.js` is jsdelivr's single self-contained
+  classic-script bundle of that version, whose final line assigns
+  `globalThis.mermaid`. That is what the `<script>`-injection loader
+  reads. If jsdelivr ever regenerates the bundle the SHA-256 will change
+  and `refresh.sh` will flag it.
+
+| File                     | SHA-256                                                            |
+| ------------------------ | ------------------------------------------------------------------ |
+| `mermaid.min.js`         | `74d7c46dabca328c2294733910a8aa1ed0c37451776e8d5295da38a2b758fb9b` |
+| `mermaid.LICENSE`        | `ec9fb67dcb25eccc416ed56e1aab819222c805a2a4bfe4cb19e7556bf2ffde80` |
+
 ## Refreshing
 
 Run `./refresh.sh` from this directory. It re-downloads every pinned

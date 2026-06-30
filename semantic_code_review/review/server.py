@@ -454,6 +454,9 @@ class _Handler(BaseHTTPRequestHandler):
         "vendor/highlight.min.js":   "application/javascript; charset=utf-8",
         "vendor/github.min.css":     "text/css; charset=utf-8",
         "vendor/github-dark.min.css": "text/css; charset=utf-8",
+        # Lazy-loaded by the review console the first time an answer
+        # completes a mermaid fence; never bundled into viewer.js.
+        "vendor/mermaid.min.js":     "application/javascript; charset=utf-8",
     }
 
     def _serve_static(self, rel: str) -> None:

@@ -66,6 +66,18 @@ def test_get_static_viewer_js(server) -> None:
         assert body  # non-empty
 
 
+def test_get_static_vendor_mermaid(server) -> None:
+    """The console lazy-loads the vendored mermaid bundle by `<script>`
+    injection; it must be served and must expose the `globalThis.mermaid`
+    global the loader reads."""
+    req = urllib.request.Request(server.url() + "/static/vendor/mermaid.min.js")
+    with urllib.request.urlopen(req, timeout=5) as r:
+        assert r.status == 200
+        assert r.headers.get("Content-Type", "").startswith("application/javascript")
+        body = r.read()
+        assert b'globalThis["mermaid"]' in body
+
+
 def test_get_static_unknown_404(server) -> None:
     """Unlisted static paths 404 even if the file would exist on disk."""
     try:

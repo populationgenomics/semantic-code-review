@@ -1446,8 +1446,9 @@ describe("review console", () => {
 
     // Tool activity surfaced, deltas accumulated, pending marker dropped.
     expect(document.querySelector(".console-tool")?.textContent).toBe("grep list_users");
+    // The answer is rendered markdown (Slice 3): a single paragraph here.
     const text = document.querySelector(".console-a .console-text");
-    expect(text?.textContent).toBe("pagination threads page/size through list_users");
+    expect(text?.querySelector("p")?.textContent).toBe("pagination threads page/size through list_users");
     expect(document.querySelector(".console-a")?.classList.contains("console-pending")).toBe(false);
   });
 
@@ -1456,19 +1457,21 @@ describe("review console", () => {
     const id = await ask("x");
     // Zero deltas, one done carrying the full text (the Slice 5 CLI shape).
     lastEventSource().dispatch("console-done", { console_id: id, answer: "all at once" });
-    expect(document.querySelector(".console-a .console-text")?.textContent).toBe("all at once");
+    expect(document.querySelector(".console-a .console-text p")?.textContent).toBe("all at once");
   });
 
-  test("streamed text renders as plain text — script-laden output is inert", async () => {
+  test("rendered markdown neutralises script-laden output", async () => {
     await bootViewer(makeData({ pending: false }));
     const id = await ask("x");
     const es = lastEventSource();
     es.dispatch("console-delta", { console_id: id, text: "<script>alert(1)</script>" });
     es.dispatch("console-done", { console_id: id, answer: "<script>alert(1)</script>" });
 
+    // markdown-it runs with html:false and the output is DOMPurify'd, so
+    // the tag is inert text, never a live <script> node.
     const text = document.querySelector(".console-a .console-text")!;
-    expect(text.querySelector("script")).toBeNull(); // textContent ⇒ no node
-    expect(text.textContent).toBe("<script>alert(1)</script>");
+    expect(text.querySelector("script")).toBeNull();
+    expect(text.textContent).toContain("<script>alert(1)</script>");
   });
 
   test("frames tagged with another tab's console_id are ignored", async () => {
@@ -1517,7 +1520,7 @@ describe("review console", () => {
     lastEventSource().dispatch("console-done", { console_id: id, cancelled: true });
     const answer = document.querySelector(".console-a")!;
     expect(answer.classList.contains("console-cancelled")).toBe(true);
-    expect(answer.querySelector(".console-text")?.textContent).toBe("partial");
+    expect(answer.querySelector(".console-text p")?.textContent).toBe("partial");
   });
 
   function es_clickStop(stop: HTMLButtonElement): void {
