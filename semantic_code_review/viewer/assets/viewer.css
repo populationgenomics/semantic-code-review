@@ -933,10 +933,56 @@ body {
   position: fixed; bottom: 0; left: 0; right: 0;
   background: var(--bg-alt); border-top: 1px solid var(--border);
   padding: 6px 16px; color: var(--fg-muted); font-size: 12px;
-  display: flex; gap: 16px;
+  display: flex; gap: 16px; align-items: flex-end;
   z-index: 40;
 }
 body { padding-bottom: 30px; }
+
+/* The status counts sit on the right; when the console mounts, the
+ * prompt input takes the flexible left and pushes them over. */
+.status-counts { margin-left: auto; white-space: nowrap; }
+
+/* --- Review console ------------------------------------------------------- */
+.console-input {
+  flex: 1 1 auto; min-width: 0;
+  resize: none; overflow-y: auto;
+  font: inherit; line-height: 1.4;
+  color: var(--fg); background: var(--bg-panel);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 3px 8px;
+}
+.console-input::placeholder { color: var(--fg-muted); }
+.console-input:focus { outline: none; border-color: var(--fg-muted); }
+.console-input.busy { opacity: 0.7; }
+
+/* Transcript drawer: anchored above the footer, grows upward to a cap
+ * then scrolls. `bottom` clears the fixed footer's reserved strip. */
+.console-drawer {
+  position: fixed; left: 0; right: 0; bottom: 30px;
+  max-height: 58vh; overflow-y: auto;
+  background: var(--bg-alt); border-top: 1px solid var(--border);
+  z-index: 39;
+  padding: 12px 16px;
+}
+.console-drawer.hidden { display: none; }
+.console-transcript {
+  display: flex; flex-direction: column; gap: 10px;
+  max-width: 980px; margin: 0 auto;
+}
+.console-q {
+  align-self: flex-end; max-width: 85%;
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 10px;
+  white-space: pre-wrap; word-break: break-word;
+  font-size: 13px; color: var(--fg);
+}
+.console-a {
+  max-width: 100%;
+  white-space: pre-wrap; word-break: break-word;
+  font-size: 13px; color: var(--fg); line-height: 1.5;
+}
+.console-a.console-pending { color: var(--fg-muted); }
+.console-a.console-error { color: var(--danger, #e5534b); }
 
 /* --- Help overlay --------------------------------------------------------- */
 .help-overlay {

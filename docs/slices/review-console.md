@@ -56,7 +56,7 @@ history as text every turn.
 
 ---
 
-## Slice 1 — End-to-end one-shot console (SDK, plain text)
+## Slice 1 — End-to-end one-shot console (SDK, plain text) ✅ done
 
 The tracer bullet: a working text Q&A console, thinnest everything.
 

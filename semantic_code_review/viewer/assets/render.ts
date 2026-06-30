@@ -824,7 +824,11 @@ function _updateSliderButtons(): void {
 }
 
 function _updateStatus(): void {
-  const s = document.getElementById("status-bar");
+  // Prefer the dedicated counts span (the console bar shares the footer
+  // with it); fall back to the footer itself for the static-render path
+  // where no console bar is mounted.
+  const s = document.getElementById("status-counts")
+    || document.getElementById("status-bar");
   if (!s) return;
   let smells = 0, critical = 0;
   for (const f of _data.files) {

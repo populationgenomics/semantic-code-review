@@ -1404,3 +1404,113 @@ describe("lazy fold summaries", () => {
     expect(box?.textContent).toBe("remote summary");
   });
 });
+
+describe("review console", () => {
+  test("submitting a question POSTs /console/ask and renders the answer", async () => {
+    await bootViewer(makeData({ pending: false }));
+
+    const input = document.querySelector<HTMLTextAreaElement>(".console-input");
+    expect(input).not.toBeNull();
+
+    // The /console/ask POST is the next fetch — capture its body and
+    // return a canned answer.
+    let postedBody: Record<string, unknown> | null = null;
+    (globalThis.fetch as unknown as { mockImplementationOnce: (fn: typeof fetch) => void })
+      .mockImplementationOnce(((url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, init });
+        postedBody = JSON.parse(init!.body as string);
+        return Promise.resolve({
+          status: 200, ok: true,
+          json: () => Promise.resolve({ answer: "pagination threads page/size through list_users" }),
+        } as Response);
+      }) as typeof fetch);
+
+    input!.value = "why pagination?";
+    input!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    const ask = fetchCalls.filter((c) => c.url.includes("/console/ask"));
+    expect(ask.length).toBe(1);
+    expect(postedBody!.question).toBe("why pagination?");
+
+    // The drawer is revealed and shows the question + the answer text.
+    const drawer = document.querySelector(".console-drawer");
+    expect(drawer?.classList.contains("hidden")).toBe(false);
+    expect(document.querySelector(".console-q")?.textContent).toBe("why pagination?");
+    const answer = document.querySelector(".console-a");
+    expect(answer?.textContent).toBe("pagination threads page/size through list_users");
+    expect(answer?.classList.contains("console-pending")).toBe(false);
+    // Input cleared, ready for the next turn.
+    expect(input!.value).toBe("");
+  });
+
+  test("answer renders as plain text — script-laden output is inert", async () => {
+    await bootViewer(makeData({ pending: false }));
+    const input = document.querySelector<HTMLTextAreaElement>(".console-input")!;
+
+    (globalThis.fetch as unknown as { mockImplementationOnce: (fn: typeof fetch) => void })
+      .mockImplementationOnce(((url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, init });
+        return Promise.resolve({
+          status: 200, ok: true,
+          json: () => Promise.resolve({ answer: "<script>alert(1)</script>" }),
+        } as Response);
+      }) as typeof fetch);
+
+    input.value = "x";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    const answer = document.querySelector(".console-a")!;
+    // textContent rendering means no <script> node is created.
+    expect(answer.querySelector("script")).toBeNull();
+    expect(answer.textContent).toBe("<script>alert(1)</script>");
+  });
+
+  test("a failed turn surfaces the error inline", async () => {
+    await bootViewer(makeData({ pending: false }));
+    const input = document.querySelector<HTMLTextAreaElement>(".console-input")!;
+
+    (globalThis.fetch as unknown as { mockImplementationOnce: (fn: typeof fetch) => void })
+      .mockImplementationOnce(((url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, init });
+        return Promise.resolve({
+          status: 409, ok: false,
+          json: () => Promise.resolve({ error: "console unavailable" }),
+        } as Response);
+      }) as typeof fetch);
+
+    input.value = "x";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    const answer = document.querySelector(".console-a")!;
+    expect(answer.classList.contains("console-error")).toBe(true);
+    expect(answer.textContent).toBe("console unavailable");
+  });
+
+  test("Esc collapses the drawer, clears the transcript, and resets the server", async () => {
+    await bootViewer(makeData({ pending: false }));
+    const input = document.querySelector<HTMLTextAreaElement>(".console-input")!;
+
+    (globalThis.fetch as unknown as { mockImplementationOnce: (fn: typeof fetch) => void })
+      .mockImplementationOnce(((url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, init });
+        return Promise.resolve({
+          status: 200, ok: true, json: () => Promise.resolve({ answer: "ok" }),
+        } as Response);
+      }) as typeof fetch);
+
+    input.value = "q";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(document.querySelector(".console-q")).not.toBeNull();
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    expect(document.querySelector(".console-drawer")?.classList.contains("hidden")).toBe(true);
+    expect(document.querySelector(".console-q")).toBeNull();
+    expect(fetchCalls.some((c) => c.url.includes("/console/reset"))).toBe(true);
+  });
+});

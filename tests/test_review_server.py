@@ -522,6 +522,99 @@ def test_fold_summary_typed_errors_map_to_http_codes(tmp_path: Path) -> None:
         srv.stop()
 
 
+def test_console_ask_returns_409_when_asker_not_wired(server) -> None:
+    """Before serve_review installs the asker (pre-augment / non-SDK
+    backend), POST /console/ask returns 409."""
+    conn = HTTPConnection("127.0.0.1", int(server.url().rsplit(":", 1)[1]), timeout=5)
+    conn.request(
+        "POST", "/console/ask",
+        body=json.dumps({"question": "what changed?"}),
+        headers={"Content-Type": "application/json"},
+    )
+    r = conn.getresponse()
+    assert r.status == 409
+    body = json.loads(r.read())
+    assert "console" in body["error"]
+    conn.close()
+
+
+def test_console_ask_empty_question_400(server) -> None:
+    async def asker(question, history):
+        return "unused", []
+
+    server.ctx.console_asker = asker
+    conn = HTTPConnection("127.0.0.1", int(server.url().rsplit(":", 1)[1]), timeout=5)
+    conn.request(
+        "POST", "/console/ask",
+        body=json.dumps({"question": "   "}),
+        headers={"Content-Type": "application/json"},
+    )
+    r = conn.getresponse()
+    assert r.status == 400
+    conn.close()
+
+
+def test_console_ask_runs_turn_and_threads_history(server) -> None:
+    """The route dispatches to the wired asker, returns the answer text,
+    and threads the returned history back in on the next turn."""
+    seen: list = []
+
+    async def asker(question, history):
+        seen.append((question, history))
+        new_history = (history or []) + [question]
+        return f"answer to {question!r}", new_history
+
+    server.set_console_asker(asker)
+
+    code, body = _request(
+        server.url() + "/console/ask", "POST", {"question": "why pagination?"},
+    )
+    assert code == 200
+    assert body["answer"] == "answer to 'why pagination?'"
+    # First turn saw no prior history.
+    assert seen[0] == ("why pagination?", None)
+
+    code, body = _request(
+        server.url() + "/console/ask", "POST", {"question": "follow-up"},
+    )
+    assert code == 200
+    # Second turn received the history the first turn returned.
+    assert seen[1] == ("follow-up", ["why pagination?"])
+
+
+def test_console_reset_clears_history(server) -> None:
+    async def asker(question, history):
+        return "ok", (history or []) + [question]
+
+    server.set_console_asker(asker)
+    _request(server.url() + "/console/ask", "POST", {"question": "q1"})
+    assert server.ctx.console_history == ["q1"]
+
+    code, body = _request(server.url() + "/console/reset", "POST", {})
+    assert code == 200 and body["ok"] is True
+    assert server.ctx.console_history is None
+
+
+def test_console_ask_not_ready_maps_to_409(server) -> None:
+    """`ConsoleNotReady` from the turn driver surfaces as a 409."""
+    from semantic_code_review.augment.console import ConsoleNotReady
+
+    async def asker(question, history):
+        raise ConsoleNotReady("augmented.scr.json missing")
+
+    server.set_console_asker(asker)
+    conn = HTTPConnection("127.0.0.1", int(server.url().rsplit(":", 1)[1]), timeout=5)
+    conn.request(
+        "POST", "/console/ask",
+        body=json.dumps({"question": "x"}),
+        headers={"Content-Type": "application/json"},
+    )
+    r = conn.getresponse()
+    assert r.status == 409
+    assert "missing" in json.loads(r.read())["error"]
+    conn.close()
+
+
 def test_events_replay_from_zero_when_header_absent(server) -> None:
     """A fresh connection with no Last-Event-ID gets the full buffer."""
     server.publish("overview", {"summary": "first"})

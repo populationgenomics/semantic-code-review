@@ -8,6 +8,7 @@
 
 import { Annotations } from "./annotations";
 import { Comments } from "./comments";
+import { Console } from "./console";
 import { DataStore, type FoldRegionAddress } from "./data_store";
 import { Folds } from "./folds";
 import { PostModal } from "./post_modal";
@@ -163,6 +164,9 @@ function installDoneButton(): void {
 
 function installSessionEvents(): void {
   if (SESSION_ENDPOINT === null) return;
+  // The console is a live-session feature (it talks to /console/ask on
+  // the review server); mount it only when a session endpoint exists.
+  Console.init(SESSION_ENDPOINT);
   Sse.connect(SESSION_ENDPOINT, {
     overviewStart: () => Progress.setOverviewState("running"),
     overviewFailed: () => Progress.setOverviewState("failed"),

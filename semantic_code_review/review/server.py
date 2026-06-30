@@ -213,6 +213,17 @@ class _BufferedEvent:
 FoldSummariser = Callable[..., Awaitable[str]]
 
 
+#: Signature of the console turn driver wired by ``serve_review`` once
+#: augmentation completes (SDK backends only, for now). Takes the
+#: reviewer's question and the opaque prior ``message_history`` (None on
+#: the first turn) and returns ``(answer_text, new_history)``. The
+#: history is held verbatim on ``ServerContext`` and threaded back in on
+#: the next turn; the server never inspects it. Stored as ``Any`` to
+#: keep the pydantic-ai message types out of this stdlib-only module —
+#: the concrete signature lives in ``augment/console.py``.
+ConsoleAsker = Callable[..., Awaitable[Any]]
+
+
 #: Signature of the post callback accepted by ``serve_review`` when the
 #: caller wants the viewer to handle confirm-and-post in-browser.
 #: Takes the comment IDs the reviewer selected in the confirmation
@@ -233,6 +244,15 @@ class ServerContext:
     # The /fold-summary route returns 409 until this is set (the augment
     # pass has to finish first so the sidecar exists).
     fold_summariser: FoldSummariser | None = None
+    # Optional, wired by serve_review once augmentation completes and
+    # only for SDK backends (ADR 0002 — console). The /console/ask
+    # route returns 409 until this is set. `console_history` is the
+    # ephemeral, in-memory conversation `message_history` — never
+    # persisted, dropped on /console/reset, excluded from the SSE
+    # replay buffer (a reload starts fresh). Threaded opaquely through
+    # the asker; the server never reads into it.
+    console_asker: ConsoleAsker | None = None
+    console_history: Any = None
     # Optional, wired by serve_review when the caller wants posting to
     # happen via the in-browser confirmation modal (``scr pr``). When
     # both are None the modal stays absent and Done exits the way it
@@ -459,6 +479,17 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             self._handle_post_review(payload)
             return
+        if path == "/console/ask":
+            try:
+                payload = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": f"invalid json: {e}"})
+                return
+            self._handle_console_ask(payload)
+            return
+        if path == "/console/reset":
+            self._handle_console_reset()
+            return
         self._json(404, {"error": "not found"})
 
     def _handle_fold_summary(self, payload: dict[str, Any]) -> None:
@@ -533,6 +564,60 @@ class _Handler(BaseHTTPRequestHandler):
         # Caller's RPC response carries the summary so the requesting
         # tab doesn't need to wait for its own SSE event to round-trip.
         self._json(200, result)
+
+    # --- console (free-form Q&A) ---------------------------------------
+
+    def _handle_console_ask(self, payload: dict[str, Any]) -> None:
+        """Run one console turn to completion and return the answer text.
+
+        Wire format: ``{ "question": str }``. The turn driver
+        (``augment/console.py``) loads the sidecar, runs the free-form
+        agent over the run's worktrees, and returns
+        ``(answer, new_history)``; the history is stashed on the context
+        so the next turn continues the conversation. Slice 1 is a
+        blocking ``asyncio.run`` — exactly the ``/fold-summary`` shape;
+        streaming + cancel arrive in Slice 2.
+        """
+        if self.ctx.console_asker is None:
+            self._json(409, {"error": "console unavailable (augment incomplete or non-SDK backend)"})
+            return
+        question = str(payload.get("question", "")).strip()
+        if not question:
+            self._json(400, {"error": "question must be a non-empty string"})
+            return
+
+        # Snapshot the prior history under the lock so a concurrent
+        # /console/reset can't tear it out from under the turn.
+        with self.ctx.state_lock:
+            history = self.ctx.console_history
+
+        from ..augment.console import ConsoleNotReady
+
+        try:
+            answer, new_history = asyncio.run(
+                self.ctx.console_asker(question, history)
+            )
+        except ConsoleNotReady as e:
+            self._json(409, {"error": str(e)})
+            return
+        except Exception as e:  # noqa: BLE001
+            log.exception("console turn failed for question=%r", question[:120])
+            self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            return
+
+        with self.ctx.state_lock:
+            self.ctx.console_history = new_history
+        self._json(200, {"answer": answer})
+
+    def _handle_console_reset(self) -> None:
+        """Drop the in-memory conversation — `Esc` in the viewer.
+
+        The history is ephemeral by design (ADR 0002); clearing it just
+        nulls the field so the next turn re-seeds from scratch.
+        """
+        with self.ctx.state_lock:
+            self.ctx.console_history = None
+        self._json(200, {"ok": True})
 
     # --- post (confirm-and-post modal) ---------------------------------
 
@@ -721,6 +806,15 @@ class ReviewServer:
         409 because the diff can't be resolved.
         """
         self.ctx.fold_summariser = summariser
+
+    def set_console_asker(self, asker: ConsoleAsker | None) -> None:
+        """Install (or clear) the console turn driver.
+
+        ``serve_review`` calls this once augmentation completes (SDK
+        backends only). Before then, /console/ask returns 409 because
+        there's no augmented diff to ground the conversation against.
+        """
+        self.ctx.console_asker = asker
 
     def update_viewer_json(self, viewer_json: dict[str, Any]) -> None:
         """Replace the JSON returned by ``GET /data.json``.
