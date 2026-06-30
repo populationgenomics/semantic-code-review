@@ -1000,20 +1000,25 @@ body { padding-bottom: 30px; }
 }
 .console-drawer.hidden { display: none; }
 .console-transcript {
-  display: flex; flex-direction: column; gap: 10px;
+  display: flex; flex-direction: column; gap: 16px;
   max-width: 980px; margin: 0 auto;
 }
+/* Both question and answer read top-to-bottom, left-aligned and
+ * full-width — no chat bubbles. The question is a quieter left-bordered
+ * echo of the prompt; the answer below it is the prominent prose. */
 .console-q {
-  align-self: flex-end; max-width: 85%;
-  background: var(--bg-panel); border: 1px solid var(--border);
-  border-radius: 8px; padding: 6px 10px;
+  max-width: 100%;
   white-space: pre-wrap; word-break: break-word;
-  font-size: 13px; color: var(--fg);
+  font-size: 13px; color: var(--fg-muted);
+  border-left: 2px solid var(--border); padding-left: 10px;
 }
 .console-a {
   max-width: 100%;
   white-space: pre-wrap; word-break: break-word;
   font-size: 13px; color: var(--fg); line-height: 1.5;
+  /* Pull the answer up under its question so a turn reads as one
+   * block, with the larger transcript gap separating turns. */
+  margin-top: -8px;
 }
 .console-a.console-pending .console-text { color: var(--fg-muted); }
 .console-a.console-error .console-text { color: var(--danger, #e5534b); }
