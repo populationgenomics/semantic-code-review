@@ -206,6 +206,7 @@ def _run_console_worker(
     history: Any,
     console_id: str,
     cancel: threading.Event,
+    selection: Any = None,
 ) -> None:
     """Drive one streaming console turn on a dedicated background thread.
 
@@ -235,7 +236,7 @@ def _run_console_worker(
 
     try:
         answer, new_history = asyncio.run(
-            asker(question, history, on_delta, on_tool, cancel)
+            asker(question, history, on_delta, on_tool, cancel, selection)
         )
     except ConsoleCancelled:
         # Partial turn abandoned: history stays as it was, the frontend
@@ -699,6 +700,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": "question must be a non-empty string"})
             return
         console_id = str(payload.get("console_id", "")).strip()
+        # The reviewer's pinned selection (Slice 4), if any. Passed
+        # through opaquely — the asker folds it into the turn's user
+        # message; non-dict payloads are ignored downstream.
+        selection = payload.get("selection")
+        if not isinstance(selection, dict):
+            selection = None
 
         with self.ctx.state_lock:
             if self.ctx.console_busy:
@@ -712,7 +719,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         threading.Thread(
             target=_run_console_worker,
-            args=(self.ctx, asker, question, history, console_id, cancel),
+            args=(self.ctx, asker, question, history, console_id, cancel, selection),
             daemon=True,
         ).start()
         self._json(202, {"ok": True, "console_id": console_id})

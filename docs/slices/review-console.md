@@ -126,7 +126,7 @@ highlighted code, a question that warrants a diagram produces a rendered
 inline mermaid SVG, a deliberately malformed diagram degrades to source,
 and `<script>`-laden model output is neutralised.
 
-## Slice 4 — Selection-aware context
+## Slice 4 — Selection-aware context ✅ done
 
 "Ask about *this*" — bind the reviewer's selection to the turn.
 

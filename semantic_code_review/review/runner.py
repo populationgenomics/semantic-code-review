@@ -18,6 +18,7 @@ import webbrowser
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ..augment.agents import Client
 from ..augment.prompts import PROMPT_VERSION
@@ -358,10 +359,12 @@ def _build_console_task(
         on_delta: "Callable[[str], None]",
         on_tool: "Callable[[str], None]",
         cancel: "threading.Event",
+        selection: "Any" = None,
     ) -> "tuple[str, list]":
         return await stream_console_turn(
             client, run_dir=run_dir, question=question, history=history,
             on_delta=on_delta, on_tool=on_tool, cancel=cancel,
+            selection=selection,
         )
 
     return task

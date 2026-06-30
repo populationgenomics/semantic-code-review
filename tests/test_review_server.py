@@ -551,7 +551,7 @@ def test_console_ask_returns_409_when_asker_not_wired(server) -> None:
 
 
 def test_console_ask_empty_question_400(server) -> None:
-    async def asker(question, history, on_delta, on_tool, cancel):
+    async def asker(question, history, on_delta, on_tool, cancel, selection=None):
         return "unused", []
 
     server.ctx.console_asker = asker
@@ -613,7 +613,7 @@ def test_console_ask_streams_and_threads_history(server) -> None:
     threads the returned history into the next turn."""
     seen: list = []
 
-    async def asker(question, history, on_delta, on_tool, cancel):
+    async def asker(question, history, on_delta, on_tool, cancel, selection=None):
         seen.append((question, history))
         on_tool("grep RepoTools")
         on_delta("answer ")
@@ -658,7 +658,7 @@ def test_console_cancel_discards_turn(server) -> None:
     console-done and leaves the conversation history untouched."""
     from semantic_code_review.augment.console import ConsoleCancelled
 
-    async def asker(question, history, on_delta, on_tool, cancel):
+    async def asker(question, history, on_delta, on_tool, cancel, selection=None):
         on_delta("partial")
         while not cancel.is_set():
             await asyncio.sleep(0.01)
@@ -694,7 +694,7 @@ def test_console_cancel_discards_turn(server) -> None:
 
 def test_console_ask_second_turn_while_busy_409(server) -> None:
     """One in-flight turn per conversation: a second ask gets 409."""
-    async def asker(question, history, on_delta, on_tool, cancel):
+    async def asker(question, history, on_delta, on_tool, cancel, selection=None):
         while not cancel.is_set():
             await asyncio.sleep(0.01)
         from semantic_code_review.augment.console import ConsoleCancelled
@@ -726,7 +726,7 @@ def test_console_ask_second_turn_while_busy_409(server) -> None:
 def test_console_error_emits_console_error_frame(server) -> None:
     """A turn driver that raises surfaces as a console-error frame, not a
     crashed worker, and clears the in-flight flag."""
-    async def asker(question, history, on_delta, on_tool, cancel):
+    async def asker(question, history, on_delta, on_tool, cancel, selection=None):
         raise RuntimeError("boom")
 
     server.set_console_asker(asker)
@@ -750,7 +750,7 @@ def test_console_ask_not_ready_emits_console_error(server) -> None:
     frame (the route already returned 202)."""
     from semantic_code_review.augment.console import ConsoleNotReady
 
-    async def asker(question, history, on_delta, on_tool, cancel):
+    async def asker(question, history, on_delta, on_tool, cancel, selection=None):
         raise ConsoleNotReady("augmented.scr.json missing")
 
     server.set_console_asker(asker)

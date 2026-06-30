@@ -18,6 +18,7 @@ from semantic_code_review.augment.agents import Client
 from semantic_code_review.augment.console import (
     ConsoleCancelled,
     ConsoleNotReady,
+    _format_selection,
     build_console_seed,
     make_console_agent,
     run_console_turn,
@@ -112,6 +113,84 @@ def test_build_console_seed_omits_delta_when_absent() -> None:
     diff = parse_augmented_diff(FIXTURE.read_text(encoding="utf-8"))
     seed = build_console_seed(diff, symbol_delta_json=None)
     assert "# Structural symbol delta" not in seed
+
+
+# --- selection folding (Slice 4) ----------------------------------------
+
+
+def _bound_tools() -> RepoTools:
+    diff = parse_augmented_diff(FIXTURE.read_text(encoding="utf-8"))
+    return RepoTools(
+        head_worktree=Path("/dev/null"), repo_git=Path("/dev/null"),
+        base_sha="", head_sha="", diff=diff,
+    )
+
+
+def test_format_selection_code_inlines_enclosing_hunk() -> None:
+    """A code selection with a resolvable hunk id quotes the text and
+    inlines the hunk via the `hunk(id)` accessor."""
+    block = _format_selection(
+        {
+            "selection_text": "def deactivate(user):",
+            "selection_kind": "code",
+            "file": "src/users.py",
+            "side": "new",
+            "hunk_id": "H0_0",
+            "line_range": [10, 12],
+        },
+        _bound_tools(),
+    )
+    assert "Reviewer selection (code)" in block
+    assert "src/users.py" in block
+    assert "lines 10–12" in block
+    assert "def deactivate(user):" in block  # the quoted selection
+    assert "Enclosing hunk:" in block
+    assert "@@" in block  # the inlined hunk header
+
+
+def test_format_selection_comment_is_text_only() -> None:
+    """A comment selection carries just the quoted text — no hunk."""
+    block = _format_selection(
+        {"selection_text": "is this intentional?", "selection_kind": "comment"},
+        _bound_tools(),
+    )
+    assert "Reviewer selection (comment)" in block
+    assert "is this intentional?" in block
+    assert "Enclosing hunk:" not in block
+
+
+def test_format_selection_bad_hunk_id_degrades_to_text() -> None:
+    """An unresolvable hunk id never leaks the accessor's error string —
+    the block degrades to text-only."""
+    block = _format_selection(
+        {
+            "selection_text": "x = 1",
+            "selection_kind": "code",
+            "file": "src/users.py",
+            "hunk_id": "H99_99",
+        },
+        _bound_tools(),
+    )
+    assert "x = 1" in block
+    assert "Enclosing hunk:" not in block
+    assert "error:" not in block
+
+
+def test_format_selection_empty_and_non_dict() -> None:
+    rt = _bound_tools()
+    assert _format_selection(None, rt) == ""
+    assert _format_selection({}, rt) == ""
+    assert _format_selection({"selection_text": "   "}, rt) == ""
+    assert _format_selection("nope", rt) == ""
+
+
+def test_format_selection_caps_oversized_text() -> None:
+    block = _format_selection(
+        {"selection_text": "x" * 9000, "selection_kind": "plain"},
+        _bound_tools(),
+    )
+    assert "(truncated)" in block
+    assert len(block) < 9000
 
 
 # --- turn driver --------------------------------------------------------
@@ -217,6 +296,29 @@ async def test_stream_console_turn_cancel_raises(
         await stream_console_turn(
             client, run_dir=run_dir, question="why?", cancel=cancel,
         )
+
+
+async def test_stream_console_turn_accepts_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pinned selection threads through the driver without disturbing
+    the answer (the selection is folded into the turn's user message)."""
+    run_dir = _populate_run_dir(tmp_path)
+    client = Client(model="anthropic:claude-opus-4-7")
+    _patch_test_model(monkeypatch, output_text="answer", call_tools=[])
+
+    answer, history = await stream_console_turn(
+        client, run_dir=run_dir, question="what does this do?",
+        selection={
+            "selection_text": "def deactivate(user):",
+            "selection_kind": "code",
+            "file": "src/users.py",
+            "hunk_id": "H0_0",
+            "line_range": [10, 12],
+        },
+    )
+    assert answer == "answer"
+    assert history
 
 
 async def test_run_console_turn_is_streaming_wrapper(
