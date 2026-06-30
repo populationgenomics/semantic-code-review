@@ -693,7 +693,7 @@ class _Handler(BaseHTTPRequestHandler):
         a concurrent reset/cancel can't tear it out mid-turn.
         """
         if self.ctx.console_asker is None:
-            self._json(409, {"error": "console unavailable (augment incomplete or non-SDK backend)"})
+            self._json(409, {"error": "review console not ready yet — it becomes available once analysis finishes (and is disabled for --no-augment runs)"})
             return
         question = str(payload.get("question", "")).strip()
         if not question:

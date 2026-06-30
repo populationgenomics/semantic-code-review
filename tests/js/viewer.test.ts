@@ -1502,6 +1502,36 @@ describe("review console", () => {
     expect(answer.querySelector(".console-text")?.textContent).toBe("console unavailable");
   });
 
+  test("input is gated while augmentation is pending, then unlocked on done", async () => {
+    await bootViewer(makeData({ pending: true }));
+    const input = document.querySelector<HTMLTextAreaElement>(".console-input")!;
+    // Disabled with an explanatory placeholder until analysis lands.
+    expect(input.disabled).toBe(true);
+    expect(input.placeholder).toContain("analysis");
+
+    // The augment-complete event installs the asker server-side; the
+    // prompt unlocks to match.
+    lastEventSource().dispatch("done", { reason: "augment-complete" });
+    expect(input.disabled).toBe(false);
+    expect(input.placeholder).toContain("Ask about this change");
+  });
+
+  test("an immediate non-ok POST clears busy so the reviewer can retry", async () => {
+    await bootViewer(makeData({ pending: false }));
+    queueFetchResponse({ status: 409, body: { error: "review console not ready yet" } });
+
+    await ask("x");
+    // The failed turn ends: Stop is hidden and the input is no longer busy,
+    // so a second question can be asked rather than the console wedging.
+    const stop = document.querySelector<HTMLButtonElement>(".console-stop")!;
+    expect(stop.classList.contains("hidden")).toBe(true);
+    expect(document.querySelector(".console-input")?.classList.contains("busy")).toBe(false);
+
+    await ask("y");
+    const askCalls = fetchCalls.filter((c) => c.url.includes("/console/ask"));
+    expect(askCalls.length).toBe(2);
+  });
+
   test("Stop cancels the in-flight turn via /console/cancel", async () => {
     await bootViewer(makeData({ pending: false }));
     const id = await ask("why?");

@@ -36,6 +36,16 @@ let _input: HTMLTextAreaElement | null = null;
 let _stop: HTMLButtonElement | null = null;
 let _chip: HTMLElement | null = null;
 let _busy = false;
+// The console asker is only wired server-side once augmentation
+// completes (it grounds answers in the on-disk sidecar — see runner's
+// `done` publish). Until then /console/ask 409s, so the input stays
+// disabled with an explanatory placeholder rather than letting the
+// reviewer fire a confusing error. Flipped by `markReady` on the
+// augment-complete `done` event.
+let _ready = true;
+
+const READY_PLACEHOLDER = "Ask about this change…  (Ctrl-P)";
+const PENDING_PLACEHOLDER = "Console available once analysis finishes…";
 
 // The reviewer's pinned selection (Slice 4), tracked live off the page's
 // selection and folded into the next turn. Set when a usable selection
@@ -66,13 +76,28 @@ function genConsoleId(): string {
 
 /** Mount the console bar into the footer. No-op (returns) when the
  *  footer is absent — e.g. a DOM that doesn't include the status bar. */
-function init(endpoint: string): void {
+function init(endpoint: string, opts: { ready?: boolean } = {}): void {
   _endpoint = endpoint;
   _consoleId = genConsoleId();
+  // The console is unusable until augmentation lands (see `_ready`).
+  // The caller knows the augment state from the initial data payload;
+  // a page opened after augmentation already completed is ready at once.
+  _ready = opts.ready ?? true;
   const footer = document.getElementById("status-bar");
   if (!footer || _input) return; // idempotent: don't double-mount
   build(footer);
   wireGlobalKeys();
+}
+
+/** Enable the console once augmentation completes (the augment-complete
+ *  `done` SSE event), at which point the server has installed the asker.
+ *  Idempotent: a page that booted post-augment is already ready. */
+function markReady(): void {
+  _ready = true;
+  if (_input) {
+    _input.disabled = false;
+    _input.placeholder = READY_PLACEHOLDER;
+  }
 }
 
 function build(footer: HTMLElement): void {
@@ -98,7 +123,8 @@ function build(footer: HTMLElement): void {
   _input = document.createElement("textarea");
   _input.className = "console-input";
   _input.rows = 1;
-  _input.placeholder = "Ask about this change…  (Ctrl-P)";
+  _input.placeholder = _ready ? READY_PLACEHOLDER : PENDING_PLACEHOLDER;
+  _input.disabled = !_ready;
   _input.setAttribute("aria-label", "Review console prompt");
   footer.insertBefore(_input, _chip.nextSibling);
 
@@ -237,11 +263,16 @@ async function submit(): Promise<void> {
     // 202 means the turn was accepted and is streaming over SSE; the
     // answer arrives via onDelta/onDone, not this response body. Any
     // other status is an immediate failure (409 busy / unavailable).
+    // No SSE terminal frame is coming for these, so end the turn here —
+    // otherwise the console stays stuck "busy" (Stop pinned, input
+    // locked) and the reviewer can never ask again.
     if (!r.ok && r.status !== 202) {
       failPending(await errorText(r));
+      endTurn();
     }
   } catch (e) {
     failPending(`request failed: ${e}`);
+    endTurn();
   } finally {
     scrollToEnd();
   }
@@ -392,4 +423,4 @@ function scrollToEnd(): void {
   if (_drawer) _drawer.scrollTop = _drawer.scrollHeight;
 }
 
-export const Console = { init, onDelta, onTool, onDone, onError };
+export const Console = { init, markReady, onDelta, onTool, onDone, onError };

@@ -166,7 +166,10 @@ function installSessionEvents(): void {
   if (SESSION_ENDPOINT === null) return;
   // The console is a live-session feature (it talks to /console/ask on
   // the review server); mount it only when a session endpoint exists.
-  Console.init(SESSION_ENDPOINT);
+  // The console asker is wired server-side only when augmentation
+  // completes; a page that booted mid-augment (DATA.pending) keeps the
+  // input disabled until the augment-complete `done` event below.
+  Console.init(SESSION_ENDPOINT, { ready: !DATA.pending });
   Sse.connect(SESSION_ENDPOINT, {
     overviewStart: () => Progress.setOverviewState("running"),
     overviewFailed: () => Progress.setOverviewState("failed"),
@@ -186,7 +189,12 @@ function installSessionEvents(): void {
       );
       applyHunkPatch(payload);
     },
-    done: () => finaliseStreaming(),
+    done: () => {
+      finaliseStreaming();
+      // Augmentation is complete: the server has now installed the
+      // console asker, so unlock the prompt.
+      Console.markReady();
+    },
     foldSummary: (payload) => applyFoldSummary(payload),
     // Console stream (Slice 2): the worker fans deltas/tool-activity
     // out here; Console filters by its own console_id and ignores the
