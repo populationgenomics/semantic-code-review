@@ -4,14 +4,18 @@ The console is the first agent in the codebase without a `ToolOutput`
 submit tool: it emits prose and calls the same read-only `RepoTools`
 the augment passes use, plus a console-only `hunk(id)` diff accessor.
 It is wired into the live `scr review` server after augmentation
-completes and only for SDK backends (Slice 1 of ADR 0002 — console).
+completes, for both SDK and CLI subprocess backends (ADR 0002 —
+console).
 
 This module owns the agent factory, the compact first-turn seed, and
 the turn drivers. The streaming driver (`stream_console_turn`, Slice 2)
 drives `Agent.iter` and pumps text deltas + tool-activity out through
-caller-supplied callbacks while polling a cancel flag between chunks;
-`run_console_turn` is the Slice 1 blocking shape, retained as a thin
-no-callback wrapper. CLI-backend support arrives in Slice 5.
+caller-supplied callbacks while polling a cancel flag between chunks.
+CLI subprocess backends (Slice 5) can't stream, so `stream_console_turn`
+detects them and falls back to a one-shot `Agent.run`
+(`_run_console_turn_oneshot`): one `console-done` with the whole answer,
+no intermediate deltas. `run_console_turn` is the Slice 1 blocking
+shape, retained as a thin no-callback wrapper.
 
 Context discipline (ADR 0002): **seed compact, pull on demand.** The
 first turn carries the overview JSON + changed-file list + the
@@ -295,6 +299,37 @@ def _tool_label(part: Any) -> str:
     return name
 
 
+async def _run_console_turn_oneshot(
+    client: Client,
+    agent: Agent[RepoTools, str],
+    prompt: str,
+    repo_tools: RepoTools,
+    *,
+    history: list | None,
+    cancel: threading.Event | None,
+) -> tuple[str, list]:
+    """Run one console turn to completion via `Agent.run` (CLI backends).
+
+    The CLI driver exposes the worktree to the subprocess through MCP,
+    not pydantic-ai `deps`, so `RepoTools` is bound onto the client's
+    inner Model for the duration of the call (and unbound after, which
+    also cleans up the temp MCP-config file). `deps=` is still passed so
+    the agent's tool surface validates. Cancel is best-effort: the
+    subprocess runs as one opaque shot, so we honour the flag before and
+    after rather than mid-flight.
+    """
+    if cancel is not None and cancel.is_set():
+        raise ConsoleCancelled("console turn cancelled")
+    client.set_repo_tools(repo_tools)
+    try:
+        result = await agent.run(prompt, deps=repo_tools, message_history=history)
+    finally:
+        client.set_repo_tools(None)
+    if cancel is not None and cancel.is_set():
+        raise ConsoleCancelled("console turn cancelled")
+    return result.output, list(result.all_messages())
+
+
 async def stream_console_turn(
     client: Client,
     *,
@@ -324,6 +359,18 @@ async def stream_console_turn(
         client, run_dir=run_dir, question=question, history=history,
         selection=selection,
     )
+
+    # CLI backends (Slice 5) can't stream: the subprocess runs its own
+    # opaque tool loop and returns the whole answer at once, and
+    # `Agent.iter`'s per-node streaming would hit the driver's
+    # unimplemented `request_stream`. Run one-shot via `Agent.run`
+    # instead — the worker emits a single `console-done` with the full
+    # text, which the frontend renders identically to "zero deltas, one
+    # done". `on_delta`/`on_tool` simply never fire.
+    if client.is_subprocess_backend:
+        return await _run_console_turn_oneshot(
+            client, agent, prompt, repo_tools, history=history, cancel=cancel,
+        )
 
     def cancelled() -> bool:
         return cancel is not None and cancel.is_set()

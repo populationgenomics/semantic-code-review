@@ -146,16 +146,15 @@ def run_review(opts: ReviewOptions) -> int:
             client=opts.client, model=opts.model, cache=cache, run_dir=run_dir,
         )
 
-        # The console reuses the augment backend. SDK backends only for
-        # now (ADR 0002 — CLI support is Slice 5); a subprocess backend
-        # leaves the asker unset and /console/ask 409s. When opts.client
-        # is None the augment path defaults to the Anthropic SDK, so we
-        # mirror that to construct the console's client.
+        # The console reuses the augment backend — SDK backends stream
+        # token-by-token, CLI subprocess backends answer one-shot per turn
+        # (ADR 0002, Slice 5). When opts.client is None the augment path
+        # defaults to the Anthropic SDK, so we mirror that to construct
+        # the console's client.
         console_client = opts.client or Client(model=f"anthropic:{opts.model}")
-        if not console_client.is_subprocess_backend:
-            console_task = _build_console_task(
-                client=console_client, run_dir=run_dir,
-            )
+        console_task = _build_console_task(
+            client=console_client, run_dir=run_dir,
+        )
     else:
         # When augment is skipped, copy raw.diff to augmented.diff so render
         # has something to parse. It'll have no annotations.

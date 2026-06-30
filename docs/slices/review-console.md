@@ -147,7 +147,7 @@ the highlighted text — plus, for code, its enclosing hunk — into the
 prompt; the chip reflects the live selection and clears on submit; a
 prompt with no selection behaves exactly as Slices 1–3.
 
-## Slice 5 — CLI backend support (non-streaming)
+## Slice 5 — CLI backend support (non-streaming) ✅ done
 
 Un-gate the console for the OAuth-`claude` / `gemini` CLI backends.
 

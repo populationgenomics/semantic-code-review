@@ -12,6 +12,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from pydantic_ai.models import Model
 from pydantic_ai.models.test import TestModel
 
 from semantic_code_review.augment.agents import Client
@@ -335,3 +336,84 @@ async def test_run_console_turn_is_streaming_wrapper(
     )
     assert answer == "wrapped"
     assert history
+
+
+# --- CLI subprocess backend (Slice 5) -----------------------------------
+
+
+class _RecordingCLIModel(Model):
+    """A minimal subprocess-style Model: records `set_repo_tools` calls
+    and answers free-form with a fixed text. Stands in for a CLI driver
+    (which can't stream) so the one-shot console path can be exercised
+    without a real subprocess."""
+
+    is_subprocess_backend = True
+
+    def __init__(self, answer: str = "cli answer") -> None:
+        super().__init__()
+        self._answer = answer
+        self.repo_tools_calls: list = []
+
+    @property
+    def model_name(self) -> str:
+        return "recording-cli"
+
+    @property
+    def system(self) -> str:
+        return "recording-cli"
+
+    def set_repo_tools(self, repo_tools) -> None:  # noqa: ANN001
+        self.repo_tools_calls.append(repo_tools)
+
+    async def request(self, messages, model_settings, model_request_parameters):  # noqa: ANN001
+        from pydantic_ai.messages import ModelResponse, TextPart
+
+        # Free-form turn: pydantic-ai leaves output_tools empty.
+        assert not model_request_parameters.output_tools
+        return ModelResponse(
+            parts=[TextPart(content=self._answer)], model_name="recording-cli",
+        )
+
+
+async def test_stream_console_turn_cli_backend_runs_oneshot(
+    tmp_path: Path,
+) -> None:
+    """A subprocess backend runs one-shot via `Agent.run`: the full
+    answer comes back with no incremental `on_delta` chunks, and
+    `RepoTools` is bound onto the model for the call then unbound."""
+    run_dir = _populate_run_dir(tmp_path)
+    model = _RecordingCLIModel(answer="grounded cli answer")
+    client = Client(model=model, is_subprocess_backend=True)
+
+    deltas: list[str] = []
+    tools: list[str] = []
+    answer, history = await stream_console_turn(
+        client, run_dir=run_dir, question="why pagination?",
+        on_delta=deltas.append, on_tool=tools.append, cancel=threading.Event(),
+    )
+
+    assert answer == "grounded cli answer"
+    assert history
+    # One-shot: nothing streamed incrementally.
+    assert deltas == []
+    assert tools == []
+    # RepoTools bound for the call, then unbound (cleans up the MCP temp).
+    assert len(model.repo_tools_calls) == 2
+    assert isinstance(model.repo_tools_calls[0], RepoTools)
+    assert model.repo_tools_calls[1] is None
+
+
+async def test_stream_console_turn_cli_backend_honours_cancel(
+    tmp_path: Path,
+) -> None:
+    """A pre-tripped cancel aborts the CLI turn with `ConsoleCancelled`
+    rather than returning the subprocess answer."""
+    run_dir = _populate_run_dir(tmp_path)
+    client = Client(model=_RecordingCLIModel(), is_subprocess_backend=True)
+
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(ConsoleCancelled):
+        await stream_console_turn(
+            client, run_dir=run_dir, question="why?", cancel=cancel,
+        )
