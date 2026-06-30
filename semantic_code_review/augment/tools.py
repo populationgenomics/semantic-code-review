@@ -54,6 +54,12 @@ class RepoTools:
     repo_git: Path
     base_sha: str
     head_sha: str
+    # Optional augmented diff (an `AnnotatedDiff`), bound only by the
+    # review console so its `hunk(id)` accessor can resolve a viewer
+    # hunk id to that hunk's diff text. Kept loosely typed (`Any`) so
+    # the augment-side schemas stay off this module's import path;
+    # left None on every augment/MCP path, where no sidecar exists yet.
+    diff: Any = None
 
     # --- file reads -------------------------------------------------------
 
@@ -285,6 +291,51 @@ class RepoTools:
         except git_ops.GitError as e:
             return f"error: {e}"
 
+    # --- diff (review console only) ---------------------------------------
+
+    def hunk(self, hunk_id: str) -> str:
+        """Read one hunk's diff text, addressed by its viewer id.
+
+        Returns the hunk's `@@` header followed by its body (the `+`/`-`/
+        context lines as they appear in the change under review). Use this
+        to pull the exact diff for a hunk the reviewer is asking about
+        rather than re-reading whole files.
+
+        Args:
+            hunk_id: Viewer hunk id of the form 'H<file_idx>_<hunk_idx>'.
+        """
+        if self.diff is None:
+            return "error: no diff bound — hunk() is only available in the review console"
+        try:
+            fi, hi = _parse_hunk_id(hunk_id)
+        except ValueError as e:
+            return f"error: {e}"
+        files = getattr(self.diff, "files", [])
+        if not (0 <= fi < len(files)):
+            return f"error: file index {fi} not in diff (hunk_id {hunk_id!r})"
+        hunks = files[fi].hunks
+        if not (0 <= hi < len(hunks)):
+            return f"error: hunk index {hi} not in file {files[fi].path!r} (hunk_id {hunk_id!r})"
+        parsed = hunks[hi].parsed
+        body = parsed.body or ""
+        text = parsed.header if not body else f"{parsed.header}\n{body}"
+        return _cap(f"# {files[fi].path}\n{text}")
+
+
+def _parse_hunk_id(hunk_id: str) -> tuple[int, int]:
+    """`"H{fi}_{hi}"` -> (fi, hi). Raises ValueError on malformed input.
+
+    Mirrors `review/server.py`'s parser; duplicated rather than imported
+    to keep this module free of the stdlib-only server module.
+    """
+    if not hunk_id.startswith("H") or "_" not in hunk_id:
+        raise ValueError(f"malformed hunk_id {hunk_id!r}")
+    try:
+        fi_str, hi_str = hunk_id[1:].split("_", 1)
+        return int(fi_str), int(hi_str)
+    except ValueError as e:
+        raise ValueError(f"malformed hunk_id {hunk_id!r}") from e
+
 
 def _is_inside(child: Path, parent: Path) -> bool:
     try:
@@ -371,6 +422,19 @@ def _make_tool_fn(method_name: str, method: Callable) -> Callable:
 
 
 TOOL_FUNCTIONS: list = [_make_tool_fn(n, m) for n, m in _exported_methods()]
+
+
+def console_tool_functions() -> list:
+    """Tool surface for the review console: the shared `@_tool` surface
+    plus the console-only `hunk(id)` diff accessor.
+
+    `hunk` is deliberately *not* `@_tool`-marked — it needs a bound diff
+    that only exists once augmentation has produced the sidecar, so it
+    has no place on the augment-time per-hunk pass or the MCP server.
+    The console binds `RepoTools.diff` and wires this extended list as
+    its `tools=`.
+    """
+    return [*TOOL_FUNCTIONS, _make_tool_fn("hunk", RepoTools.hunk)]
 
 
 def mcp_tool_schemas() -> list[dict[str, Any]]:

@@ -202,3 +202,36 @@ def test_picker_garbage_returns_none() -> None:
     in_ = io.StringIO("not-a-number\n")
     chosen = gh.pick_pr_interactive("o/r", _prs(), out=out, in_=in_)
     assert chosen is None
+
+
+# ---------------------------------------------------------------------------
+# task wiring — the PR flow must build the same console/fold tasks as the
+# local review flow, or /console/ask 409s on PR reviews (regression).
+# ---------------------------------------------------------------------------
+
+
+def _pr_opts(tmp_path, *, augment: bool):
+    from semantic_code_review.augment.agents import Client
+    from semantic_code_review.review.pr_flow import PrFlowOptions
+
+    return PrFlowOptions(
+        repo="o/r", number=1, runs_root=tmp_path, augment=augment,
+        model="claude-opus-4-7", concurrency=4, no_cache=True, cache_dir=None,
+        open_browser=False, port=0, timeout=1, extra_review_prompt=None,
+        client=Client(model="anthropic:claude-opus-4-7"), yes=True,
+    )
+
+
+def test_build_tasks_wires_console_when_augmenting(tmp_path) -> None:
+    from semantic_code_review.review.pr_flow import _build_tasks
+
+    augment, fold, console = _build_tasks(_pr_opts(tmp_path, augment=True), tmp_path)
+    assert augment is not None
+    assert fold is not None
+    assert console is not None  # the console callback the server installs
+
+
+def test_build_tasks_returns_none_triple_without_augment(tmp_path) -> None:
+    from semantic_code_review.review.pr_flow import _build_tasks
+
+    assert _build_tasks(_pr_opts(tmp_path, augment=False), tmp_path) == (None, None, None)

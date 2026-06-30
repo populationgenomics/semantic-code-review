@@ -14,9 +14,12 @@
   },
   "devDependencies": {
     "@playwright/test": "1.48.2",
+    "@types/markdown-it": "^14.1.2",
     "@types/node": "22.10.2",
+    "dompurify": "^3.4.11",
     "esbuild": "^0.28.0",
     "jsdom": "25.0.1",
+    "markdown-it": "^14.2.0",
     "typescript": "5.7.3",
     "vitest": "2.1.9"
   }

@@ -251,6 +251,50 @@ class GeminiCLIModel(SubprocessModel):
             extra_log={"prompt_chars": len(prompt)},
         )
 
+    # ---- free-form (console) ---------------------------------------------
+
+    def _build_text_invocation(
+        self, *, system_text: str, user_text: str
+    ) -> _Invocation:
+        """`gemini -p` in plain-text mode for a free-form console turn.
+
+        Same argv/env plumbing as `_build_invocation` (prompt as the argv
+        value, `--output-format json` for the envelope, MCP via the temp
+        settings file) but without the embedded schema / no-prose nudge —
+        the console wants prose, and the CLI runs its own MCP tool loop.
+        """
+        parts: list[str] = []
+        if system_text:
+            parts.append(f"# System\n{system_text}")
+        if user_text:
+            parts.append(user_text)
+        prompt = "\n\n".join(parts)
+
+        argv = [
+            self._gemini, "-p", prompt,
+            "--output-format", "json",
+            "--skip-trust",
+        ]
+        if self._repo_tools is not None:
+            argv += ["--allowed-mcp-server-names", "scr"]
+
+        env = dict(os.environ)
+        env["GEMINI_CLI_TRUST_WORKSPACE"] = "true"
+        if self._repo_tools is not None:
+            env["GEMINI_CLI_SYSTEM_SETTINGS_PATH"] = str(self._ensure_settings())
+
+        return _Invocation(
+            argv=argv,
+            env=env,
+            stdin=None,
+            extra_log={"prompt_chars": len(prompt), "free_form": True},
+        )
+
+    def _envelope_to_text(self, *, envelope: dict[str, Any]) -> str:
+        # `_parse_envelope` already raised on error/auth envelopes, so a
+        # plain (possibly empty) response is all that's left to surface.
+        return envelope.get("response") or ""
+
     # ---- envelope --------------------------------------------------------
 
     def _parse_envelope(

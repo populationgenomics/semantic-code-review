@@ -121,6 +121,7 @@ class ClaudeCLIModel(SubprocessModel):
         fallback_model: str | None = "claude-sonnet-4-6",
         max_turns_single_shot: int = 3,
         max_turns_with_mcp: int = 20,
+        console_effort: str | None = "high",
     ) -> None:
         super().__init__(model=model, max_validation_retries=0)
         resolved = claude_path or shutil.which("claude")
@@ -130,6 +131,14 @@ class ClaudeCLIModel(SubprocessModel):
         self._fallback_model = fallback_model
         self._max_turns_single_shot = max_turns_single_shot
         self._max_turns_with_mcp = max_turns_with_mcp
+        # Reasoning depth for the free-form review console only (`--effort`,
+        # passed to `claude -p` in _build_text_invocation). On adaptive-
+        # thinking models (Opus 4.7+) this is the lever that turns reasoning
+        # up; without it the console answers at the CLI's bare default and
+        # feels shallow. The structured augment passes deliberately don't set
+        # it — their cost/latency profile is tuned separately. None omits the
+        # flag. "high" is supported on both Opus 4.8 and the Sonnet fallback.
+        self._console_effort = console_effort
         self._mcp_config_path: Path | None = None
 
     # ---- mcp config plumbing ---------------------------------------------
@@ -227,6 +236,69 @@ class ClaudeCLIModel(SubprocessModel):
             extra_log={"mcp": mcp_active, "max_turns": max_turns},
         )
 
+    # ---- free-form (console) ---------------------------------------------
+
+    def _build_text_invocation(
+        self, *, system_text: str, user_text: str
+    ) -> _Invocation:
+        """`claude -p` in plain-text mode for a free-form console turn.
+
+        Same shape as `_build_invocation` minus `--json-schema` and the
+        emit-JSON prompt nudge: the user text goes in verbatim and we ask
+        for `--output-format json` only to recover the envelope's `result`
+        text and usage. MCP is wired exactly as in the structured path, so
+        the model can explore the worktrees mid-answer.
+        """
+        mcp_active = self._repo_tools is not None
+        max_turns = (
+            self._max_turns_with_mcp if mcp_active else self._max_turns_single_shot
+        )
+        argv = [
+            self._claude, "-p",
+            "--model", self._model,
+            "--system-prompt", system_text,
+            "--tools", "",
+            "--no-session-persistence",
+            "--setting-sources", "",
+            "--permission-mode", "bypassPermissions",
+            "--output-format", "json",
+            "--max-turns", str(max_turns),
+        ]
+        # Turn reasoning up for the console (see __init__). The structured
+        # path omits this on purpose.
+        if self._console_effort:
+            argv += ["--effort", self._console_effort]
+        if self._fallback_model:
+            argv += ["--fallback-model", self._fallback_model]
+        if mcp_active:
+            argv += [
+                "--mcp-config", str(self._ensure_mcp_config()),
+                "--strict-mcp-config",
+            ]
+
+        return _Invocation(
+            argv=argv,
+            stdin=user_text.encode("utf-8"),
+            extra_log={
+                "mcp": mcp_active, "max_turns": max_turns, "free_form": True,
+                "effort": self._console_effort,
+            },
+        )
+
+    def _envelope_to_text(self, *, envelope: dict[str, Any]) -> str:
+        self._raise_if_error(envelope)
+        result = envelope.get("result")
+        if not result:
+            stop = envelope.get("stop_reason")
+            turns = envelope.get("num_turns")
+            raise ClaudeCLIError(
+                "claude -p returned an empty result for a free-form turn "
+                f"(stop_reason={stop!r}, num_turns={turns}). This usually "
+                "means the model exhausted --max-turns mid-tool-loop — bump "
+                "--max-turns or simplify the question."
+            )
+        return result
+
     # ---- envelope --------------------------------------------------------
 
     def _parse_envelope(
@@ -260,6 +332,31 @@ class ClaudeCLIModel(SubprocessModel):
                 f"claude -p envelope not JSON: {e}; stdout[:200]={text[:200]!r}"
             ) from e
 
+    @staticmethod
+    def _raise_if_error(envelope: dict[str, Any]) -> None:
+        """Map an error envelope to a `ClaudeCLIError`, else return.
+
+        `claude -p` frequently writes the real failure into the stdout
+        envelope (`is_error=true`, `result=<message>`) and exits non-zero
+        with empty stderr — e.g. when not logged in. Both the structured
+        and free-form paths funnel error envelopes through here.
+        """
+        if not envelope.get("is_error"):
+            return
+        message = (envelope.get("result") or "").strip()
+        lower = message.lower()
+        if "not logged in" in lower or "please run /login" in lower:
+            raise ClaudeCLIError(
+                "claude is not logged in; run `claude /login` (or "
+                "`claude setup-token` for a long-lived token) before "
+                "using --backend=claude-cli."
+            )
+        raise ClaudeCLIError(
+            f"claude -p returned error "
+            f"(stop_reason={envelope.get('stop_reason')!r}, "
+            f"num_turns={envelope.get('num_turns')}): {message or '<empty>'}"
+        )
+
     def _envelope_to_structured(
         self,
         *,
@@ -272,20 +369,7 @@ class ClaudeCLIModel(SubprocessModel):
         # don't have access to returncode, but `is_error` plus an empty
         # `structured_output` covers both the "exit 1, envelope says
         # not-logged-in" path and clean-exit logic failures.
-        if envelope.get("is_error"):
-            message = (envelope.get("result") or "").strip()
-            lower = message.lower()
-            if "not logged in" in lower or "please run /login" in lower:
-                raise ClaudeCLIError(
-                    "claude is not logged in; run `claude /login` (or "
-                    "`claude setup-token` for a long-lived token) before "
-                    "using --backend=claude-cli."
-                )
-            raise ClaudeCLIError(
-                f"claude -p returned error "
-                f"(stop_reason={envelope.get('stop_reason')!r}, "
-                f"num_turns={envelope.get('num_turns')}): {message or '<empty>'}"
-            )
+        self._raise_if_error(envelope)
 
         # When --json-schema is set, the validated object is returned in
         # `structured_output` (already parsed). `result` is empty in that

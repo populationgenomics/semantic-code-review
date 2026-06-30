@@ -171,6 +171,16 @@ def _mcp_config_for(rt: RepoTools) -> dict[str, Any]:
     }
 
 
+def _usage_from_envelope(envelope: dict[str, Any]) -> RequestUsage:
+    usage_src = envelope.get("usage") or {}
+    return RequestUsage(
+        input_tokens=int(usage_src.get("input_tokens", 0) or 0),
+        output_tokens=int(usage_src.get("output_tokens", 0) or 0),
+        cache_write_tokens=int(usage_src.get("cache_creation_input_tokens", 0) or 0),
+        cache_read_tokens=int(usage_src.get("cache_read_input_tokens", 0) or 0),
+    )
+
+
 def _structured_to_response(
     structured: dict[str, Any],
     *,
@@ -179,13 +189,6 @@ def _structured_to_response(
     model_name: str,
     provider_name: str,
 ) -> ModelResponse:
-    usage_src = envelope.get("usage") or {}
-    usage = RequestUsage(
-        input_tokens=int(usage_src.get("input_tokens", 0) or 0),
-        output_tokens=int(usage_src.get("output_tokens", 0) or 0),
-        cache_write_tokens=int(usage_src.get("cache_creation_input_tokens", 0) or 0),
-        cache_read_tokens=int(usage_src.get("cache_read_input_tokens", 0) or 0),
-    )
     return ModelResponse(
         parts=[
             ToolCallPart(
@@ -194,10 +197,33 @@ def _structured_to_response(
                 tool_call_id=envelope.get("session_id", "") or "",
             ),
         ],
-        usage=usage,
+        usage=_usage_from_envelope(envelope),
         model_name=model_name,
         provider_name=provider_name,
         finish_reason="tool_call",
+    )
+
+
+def _text_to_response(
+    text: str,
+    *,
+    envelope: dict[str, Any],
+    model_name: str,
+    provider_name: str,
+) -> ModelResponse:
+    """Wrap a free-form text answer as a `ModelResponse`.
+
+    The free-form (console) counterpart to `_structured_to_response`:
+    the CLI ran its own tool loop internally (via MCP) and returned prose,
+    so the response carries a single `TextPart` rather than a submit-tool
+    `ToolCallPart`. pydantic-ai surfaces this as the agent's `str` output.
+    """
+    return ModelResponse(
+        parts=[TextPart(content=text)],
+        usage=_usage_from_envelope(envelope),
+        model_name=model_name,
+        provider_name=provider_name,
+        finish_reason="stop",
     )
 
 
@@ -320,6 +346,28 @@ class SubprocessModel(Model, ABC):
         self, last_error: str | None, attempts: list[str]
     ) -> Exception: ...
 
+    # ---- free-form (console) hooks ---------------------------------------
+    #
+    # The structured hooks above drive the augment passes' forced
+    # `output_type=ToolOutput(...)` path. The console (ADR 0002) runs a
+    # *free-form* agent with no output_type: the request loop dispatches
+    # to these instead when `output_tools` is empty. The default raises —
+    # a driver opts into console support by overriding both.
+
+    def _build_text_invocation(
+        self, *, system_text: str, user_text: str
+    ) -> _Invocation:
+        """Spawn the CLI in plain-text mode (no schema-constrained output)."""
+        raise NotImplementedError(
+            f"{self._provider_name} does not support free-form console turns"
+        )
+
+    def _envelope_to_text(self, *, envelope: dict[str, Any]) -> str:
+        """Envelope → the model's prose answer. Hard failures raise."""
+        raise NotImplementedError(
+            f"{self._provider_name} does not support free-form console turns"
+        )
+
     # ---- core request loop ------------------------------------------------
 
     async def request(
@@ -331,6 +379,16 @@ class SubprocessModel(Model, ABC):
         sys_text, user_text = _flatten_messages(messages)
         instructions = _instructions_to_system(model_request_parameters)
         system_text = "\n\n".join(x for x in (instructions, sys_text) if x)
+
+        # Free-form branch (ADR 0002 — console). A no-`output_type` Agent
+        # leaves `output_tools` empty: skip the submit-tool path entirely,
+        # spawn the CLI in plain-text mode, and return a `TextPart`. There
+        # is no schema to validate against, so no retry loop — the CLI ran
+        # its own tool loop internally and either answered or errored.
+        if not model_request_parameters.output_tools:
+            return await self._request_text(
+                system_text=system_text, user_text=user_text,
+            )
 
         tool_def = _output_tool(model_request_parameters)
         schema = tool_def.parameters_json_schema
@@ -372,6 +430,29 @@ class SubprocessModel(Model, ABC):
             )
 
         raise self._validation_exhausted_error(last_error, attempts)
+
+    async def _request_text(
+        self, *, system_text: str, user_text: str
+    ) -> ModelResponse:
+        inv = self._build_text_invocation(
+            system_text=system_text, user_text=user_text,
+        )
+        log.info(
+            "%s invoking (free-form): model=%s%s",
+            self._provider_name, self._model,
+            "".join(f" {k}={v}" for k, v in inv.extra_log.items()),
+        )
+        stdout, stderr, returncode = await self._spawn(inv)
+        envelope = self._parse_envelope(
+            stdout=stdout, stderr=stderr, returncode=returncode,
+        )
+        text = self._envelope_to_text(envelope=envelope)
+        return _text_to_response(
+            text,
+            envelope=self._envelope_to_usage(envelope),
+            model_name=self._model,
+            provider_name=self._provider_name,
+        )
 
     async def _spawn(self, inv: _Invocation) -> tuple[bytes, bytes, int]:
         stdin_arg = (
@@ -487,5 +568,7 @@ __all__ = [
     "_stringify",
     "_structured_to_response",
     "_tail",
+    "_text_to_response",
+    "_usage_from_envelope",
     "_validate_against_schema",
 ]

@@ -7,3 +7,4 @@ earlier slices never depend on later ones. Slice plans pair with the
 slice plan holds the *how, in order*.
 
 - [Tree-sitter structural layer](tree-sitter-structural-layer.md) — ADR 0001
+- [Review console](review-console.md) — ADR 0002

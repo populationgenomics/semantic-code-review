@@ -34,7 +34,9 @@ from .github import (
     pick_pr_interactive,
 )
 from .github_graphql import post_review_via_graphql
-from .runner import _build_fold_summary_task, serve_review
+from .runner import (
+    _build_console_task, _build_fold_summary_task, serve_review,
+)
 from .server import PostCallable
 
 
@@ -100,7 +102,7 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
         _err("scr pr: meta.json is missing headRefOid; can't anchor review")
         return 2
 
-    augment_task, fold_summary_task = _build_tasks(opts, run_dir)
+    augment_task, fold_summary_task, console_task = _build_tasks(opts, run_dir)
     if not opts.augment:
         # Mirror cli/review.py's behaviour: copy raw → augmented so render
         # has something to parse when augment is skipped.
@@ -127,6 +129,7 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
         run_dir,
         augment=augment_task,
         fold_summary=fold_summary_task,
+        console=console_task,
         post=post_callback,
         post_meta=post_meta,
         port=opts.port,
@@ -206,10 +209,12 @@ def _resolve_pr_number(repo: str) -> tuple[int | None, int | None]:
 
 def _build_tasks(
     opts: PrFlowOptions, run_dir: Path,
-) -> tuple[Callable | None, Callable | None]:
-    """Build the augment + fold-summary closures, or ``(None, None)``."""
+) -> tuple[Callable | None, Callable | None, Callable | None]:
+    """Build the augment + fold-summary + console closures, or ``(None,
+    None, None)`` when augmentation is skipped (the console grounds its
+    answers in the augment sidecar, so it's unavailable without it)."""
     if not opts.augment:
-        return None, None
+        return None, None, None
 
     # Imports inside: anthropic SDK + augment pipeline are lazy-loaded so
     # `--no-augment` runs (and `scr --help`) don't pay the cost.
@@ -239,7 +244,12 @@ def _build_tasks(
     fold_summary_task = _build_fold_summary_task(
         client=opts.client, model=opts.model, cache=cache, run_dir=run_dir,
     )
-    return augment_task, fold_summary_task
+    # Console reuses the augment backend (SDK streams; CLI answers
+    # one-shot). When opts.client is None augment defaults to the
+    # Anthropic SDK, so mirror that for the console's client.
+    console_client = opts.client or Client(model=f"anthropic:{opts.model}")
+    console_task = _build_console_task(client=console_client, run_dir=run_dir)
+    return augment_task, fold_summary_task, console_task
 
 
 def _build_post_callback(

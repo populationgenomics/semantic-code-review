@@ -125,6 +125,11 @@ def _agent(model) -> Agent:  # type: ignore[no-untyped-def]
     )
 
 
+def _freeform_agent(model) -> Agent:  # type: ignore[no-untyped-def]
+    """A no-`output_type` Agent — the review-console shape (ADR 0002)."""
+    return Agent(model=model, instructions="SYS")
+
+
 # ---------------------------------------------------------------------------
 # CLI driver — prompt builder
 # ---------------------------------------------------------------------------
@@ -288,3 +293,58 @@ async def test_gemini_repo_tools_attaches_settings_and_allowed_servers(
     assert "--head-worktree" in settings["mcpServers"]["scr"]["args"]
 
     await gemini_model.aclose()
+
+
+# ---------------------------------------------------------------------------
+# CLI driver — free-form (review console, ADR 0002 Slice 5)
+# ---------------------------------------------------------------------------
+
+async def test_gemini_freeform_round_trip(
+    gemini_model: GeminiCLIModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A no-output_type Agent gets the envelope's `response` text back,
+    and the prompt carries no embedded schema / no-prose nudge."""
+    proc = FakeProc(gemini_envelope("It dedups before the write."))
+    calls = install_fake_subproc(monkeypatch, [proc])
+
+    result = await _freeform_agent(gemini_model).run("what does it do?")
+    assert result.output == "It dedups before the write."
+
+    # gemini's prompt is the argv value right after -p.
+    argv = calls[0]["argv"]
+    prompt = argv[argv.index("-p") + 1]
+    assert "what does it do?" in prompt
+    assert "## Schema" not in prompt
+    assert "Do not include any prose" not in prompt
+
+
+async def test_gemini_freeform_mcp_injected_when_repo_tools_set(
+    gemini_model: GeminiCLIModel, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    gemini_model.set_repo_tools(RepoTools(
+        head_worktree=tmp_path / "head", repo_git=tmp_path / ".git",
+        base_sha="b" * 40, head_sha="h" * 40,
+    ))
+    proc = FakeProc(gemini_envelope("answer"))
+    calls = install_fake_subproc(monkeypatch, [proc])
+    await _freeform_agent(gemini_model).run("explain")
+
+    argv = calls[0]["argv"]
+    env = calls[0]["kwargs"]["env"]
+    assert "--allowed-mcp-server-names" in argv
+    assert "GEMINI_CLI_SYSTEM_SETTINGS_PATH" in env
+    await gemini_model.aclose()
+
+
+async def test_gemini_freeform_auth_error_raises(
+    gemini_model: GeminiCLIModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Auth/error envelopes still raise via `_parse_envelope`, even on
+    the free-form path."""
+    proc = FakeProc(
+        gemini_envelope("", error={"message": "request unauthenticated"}),
+        returncode=1,
+    )
+    install_fake_subproc(monkeypatch, [proc])
+    with pytest.raises(GeminiCLIError, match="not authenticated"):
+        await _freeform_agent(gemini_model).run("explain")

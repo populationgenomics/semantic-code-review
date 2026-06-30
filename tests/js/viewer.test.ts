@@ -1404,3 +1404,180 @@ describe("lazy fold summaries", () => {
     expect(box?.textContent).toBe("remote summary");
   });
 });
+
+describe("review console", () => {
+  // The console_id the module stamped on the most recent /console/ask;
+  // SSE frames must carry it to be accepted.
+  function lastConsoleId(): string {
+    const ask = fetchCalls.filter((c) => c.url.includes("/console/ask")).pop();
+    if (!ask) throw new Error("no /console/ask POST captured");
+    return (JSON.parse(ask.init!.body as string) as { console_id: string }).console_id;
+  }
+
+  async function ask(question: string): Promise<string> {
+    const input = document.querySelector<HTMLTextAreaElement>(".console-input")!;
+    input.value = question;
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    return lastConsoleId();
+  }
+
+  test("submitting a question POSTs /console/ask and streams the answer over SSE", async () => {
+    await bootViewer(makeData({ pending: false }));
+    const input = document.querySelector<HTMLTextAreaElement>(".console-input");
+    expect(input).not.toBeNull();
+
+    const id = await ask("why pagination?");
+    const askCalls = fetchCalls.filter((c) => c.url.includes("/console/ask"));
+    expect(askCalls.length).toBe(1);
+
+    // The drawer reveals with the question; the answer is empty until
+    // the stream lands (the POST body carries no answer).
+    const drawer = document.querySelector(".console-drawer");
+    expect(drawer?.classList.contains("hidden")).toBe(false);
+    expect(document.querySelector(".console-q")?.textContent).toBe("why pagination?");
+    expect(input!.value).toBe(""); // cleared, ready for the next turn
+
+    const es = lastEventSource();
+    es.dispatch("console-tool", { console_id: id, label: "grep list_users" });
+    es.dispatch("console-delta", { console_id: id, text: "pagination threads " });
+    es.dispatch("console-delta", { console_id: id, text: "page/size through list_users" });
+    es.dispatch("console-done", { console_id: id, answer: "pagination threads page/size through list_users" });
+
+    // Tool activity surfaced, deltas accumulated, pending marker dropped.
+    expect(document.querySelector(".console-tool")?.textContent).toBe("grep list_users");
+    // The answer is rendered markdown (Slice 3): a single paragraph here.
+    const text = document.querySelector(".console-a .console-text");
+    expect(text?.querySelector("p")?.textContent).toBe("pagination threads page/size through list_users");
+    expect(document.querySelector(".console-a")?.classList.contains("console-pending")).toBe(false);
+  });
+
+  test("a non-streaming backend's single console-done renders the whole answer", async () => {
+    await bootViewer(makeData({ pending: false }));
+    const id = await ask("x");
+    // Zero deltas, one done carrying the full text (the Slice 5 CLI shape).
+    lastEventSource().dispatch("console-done", { console_id: id, answer: "all at once" });
+    expect(document.querySelector(".console-a .console-text p")?.textContent).toBe("all at once");
+  });
+
+  test("rendered markdown neutralises script-laden output", async () => {
+    await bootViewer(makeData({ pending: false }));
+    const id = await ask("x");
+    const es = lastEventSource();
+    es.dispatch("console-delta", { console_id: id, text: "<script>alert(1)</script>" });
+    es.dispatch("console-done", { console_id: id, answer: "<script>alert(1)</script>" });
+
+    // markdown-it runs with html:false and the output is DOMPurify'd, so
+    // the tag is inert text, never a live <script> node.
+    const text = document.querySelector(".console-a .console-text")!;
+    expect(text.querySelector("script")).toBeNull();
+    expect(text.textContent).toContain("<script>alert(1)</script>");
+  });
+
+  test("frames tagged with another tab's console_id are ignored", async () => {
+    await bootViewer(makeData({ pending: false }));
+    await ask("x");
+    lastEventSource().dispatch("console-delta", { console_id: "some-other-tab", text: "not mine" });
+    // Still the placeholder — the foreign delta didn't accumulate.
+    expect(document.querySelector(".console-a .console-text")?.textContent).toBe("…");
+  });
+
+  test("a console-error frame surfaces the error inline", async () => {
+    await bootViewer(makeData({ pending: false }));
+    const id = await ask("x");
+    lastEventSource().dispatch("console-error", { console_id: id, error: "console unavailable" });
+
+    const answer = document.querySelector(".console-a")!;
+    expect(answer.classList.contains("console-error")).toBe(true);
+    expect(answer.querySelector(".console-text")?.textContent).toBe("console unavailable");
+  });
+
+  test("an immediate non-ok POST fails the turn inline", async () => {
+    await bootViewer(makeData({ pending: false }));
+    queueFetchResponse({ status: 409, body: { error: "console unavailable" } });
+
+    await ask("x");
+    const answer = document.querySelector(".console-a")!;
+    expect(answer.classList.contains("console-error")).toBe(true);
+    expect(answer.querySelector(".console-text")?.textContent).toBe("console unavailable");
+  });
+
+  test("input is gated while augmentation is pending, then unlocked on done", async () => {
+    await bootViewer(makeData({ pending: true }));
+    const input = document.querySelector<HTMLTextAreaElement>(".console-input")!;
+    // Disabled with an explanatory placeholder until analysis lands.
+    expect(input.disabled).toBe(true);
+    expect(input.placeholder).toContain("analysis");
+
+    // The augment-complete event installs the asker server-side; the
+    // prompt unlocks to match.
+    lastEventSource().dispatch("done", { reason: "augment-complete" });
+    expect(input.disabled).toBe(false);
+    expect(input.placeholder).toContain("Ask about this change");
+  });
+
+  test("an immediate non-ok POST clears busy so the reviewer can retry", async () => {
+    await bootViewer(makeData({ pending: false }));
+    queueFetchResponse({ status: 409, body: { error: "review console not ready yet" } });
+
+    await ask("x");
+    // The failed turn ends: Stop is hidden and the input is no longer busy,
+    // so a second question can be asked rather than the console wedging.
+    const stop = document.querySelector<HTMLButtonElement>(".console-stop")!;
+    expect(stop.classList.contains("hidden")).toBe(true);
+    expect(document.querySelector(".console-input")?.classList.contains("busy")).toBe(false);
+
+    await ask("y");
+    const askCalls = fetchCalls.filter((c) => c.url.includes("/console/ask"));
+    expect(askCalls.length).toBe(2);
+  });
+
+  test("Stop cancels the in-flight turn via /console/cancel", async () => {
+    await bootViewer(makeData({ pending: false }));
+    const id = await ask("why?");
+
+    const stop = document.querySelector<HTMLButtonElement>(".console-stop")!;
+    expect(stop.classList.contains("hidden")).toBe(false); // visible while busy
+    es_clickStop(stop);
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    const cancel = fetchCalls.filter((c) => c.url.includes("/console/cancel"));
+    expect(cancel.length).toBe(1);
+    expect((JSON.parse(cancel[0].init!.body as string) as { console_id: string }).console_id).toBe(id);
+
+    // The worker acknowledges with a cancelled done; the partial answer stays.
+    lastEventSource().dispatch("console-delta", { console_id: id, text: "partial" });
+    lastEventSource().dispatch("console-done", { console_id: id, cancelled: true });
+    const answer = document.querySelector(".console-a")!;
+    expect(answer.classList.contains("console-cancelled")).toBe(true);
+    expect(answer.querySelector(".console-text p")?.textContent).toBe("partial");
+  });
+
+  function es_clickStop(stop: HTMLButtonElement): void {
+    stop.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  }
+
+  test("Esc cancels an in-flight turn before it collapses the drawer", async () => {
+    await bootViewer(makeData({ pending: false }));
+    const input = document.querySelector<HTMLTextAreaElement>(".console-input")!;
+    const id = await ask("q");
+    expect(document.querySelector(".console-q")).not.toBeNull();
+
+    // First Esc, while busy: cancels but leaves the drawer open.
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(fetchCalls.some((c) => c.url.includes("/console/cancel"))).toBe(true);
+    expect(document.querySelector(".console-drawer")?.classList.contains("hidden")).toBe(false);
+    expect(fetchCalls.some((c) => c.url.includes("/console/reset"))).toBe(false);
+
+    // The worker finishes the cancelled turn, clearing the busy state.
+    lastEventSource().dispatch("console-done", { console_id: id, cancelled: true });
+
+    // Second Esc, idle: collapses, clears the transcript, resets the server.
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(document.querySelector(".console-drawer")?.classList.contains("hidden")).toBe(true);
+    expect(document.querySelector(".console-q")).toBeNull();
+    expect(fetchCalls.some((c) => c.url.includes("/console/reset"))).toBe(true);
+  });
+});

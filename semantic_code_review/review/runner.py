@@ -13,10 +13,12 @@ import asyncio
 import json
 import logging
 import sys
+import threading
 import webbrowser
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ..augment.agents import Client
 from ..augment.prompts import PROMPT_VERSION
@@ -61,6 +63,23 @@ FoldSummaryCallable = Callable[
 ]
 
 
+#: Signature of the streaming console turn driver accepted by
+#: ``serve_review``. Called as ``(question, history, on_delta, on_tool,
+#: cancel)`` and awaited to ``(answer_text, new_history)``:
+#: ``on_delta(str)`` / ``on_tool(str)`` stream text and tool activity,
+#: ``cancel`` is the ``threading.Event`` the driver polls between
+#: chunks. Wired only when augmentation runs on an SDK backend;
+#: ``--no-augment`` and CLI-subprocess reviews leave this ``None`` and
+#: /console/ask 409s (CLI support is Slice 5).
+ConsoleCallable = Callable[
+    [
+        str, "list | None", "Callable[[str], None]", "Callable[[str], None]",
+        "threading.Event",
+    ],
+    Awaitable["tuple[str, list]"],
+]
+
+
 @dataclass
 class ReviewOptions:
     spec: str                       # git ref or range, user-supplied
@@ -100,6 +119,7 @@ def run_review(opts: ReviewOptions) -> int:
 
     augment_task: AugmentCallable | None = None
     fold_summary_task: FoldSummaryCallable | None = None
+    console_task: ConsoleCallable | None = None
     if opts.augment:
         from ..augment.pipeline import augment_run_dir  # lazy: anthropic SDK
 
@@ -125,6 +145,16 @@ def run_review(opts: ReviewOptions) -> int:
         fold_summary_task = _build_fold_summary_task(
             client=opts.client, model=opts.model, cache=cache, run_dir=run_dir,
         )
+
+        # The console reuses the augment backend — SDK backends stream
+        # token-by-token, CLI subprocess backends answer one-shot per turn
+        # (ADR 0002, Slice 5). When opts.client is None the augment path
+        # defaults to the Anthropic SDK, so we mirror that to construct
+        # the console's client.
+        console_client = opts.client or Client(model=f"anthropic:{opts.model}")
+        console_task = _build_console_task(
+            client=console_client, run_dir=run_dir,
+        )
     else:
         # When augment is skipped, copy raw.diff to augmented.diff so render
         # has something to parse. It'll have no annotations.
@@ -137,6 +167,7 @@ def run_review(opts: ReviewOptions) -> int:
         run_dir,
         augment=augment_task,
         fold_summary=fold_summary_task,
+        console=console_task,
         port=opts.port,
         timeout=opts.timeout,
         open_browser=opts.open_browser,
@@ -173,6 +204,7 @@ def serve_review(
     *,
     augment: AugmentCallable | None = None,
     fold_summary: FoldSummaryCallable | None = None,
+    console: ConsoleCallable | None = None,
     post: PostCallable | None = None,
     post_meta: dict | None = None,
     port: int = 0,
@@ -246,6 +278,12 @@ def serve_review(
                 # that opens before augmentation lands.
                 if fold_summary is not None:
                     srv.set_fold_summariser(fold_summary)
+                # Same gate as the fold summariser: the console needs the
+                # sidecar on disk to ground its answers, so bind it here
+                # rather than at start(). Unset for --no-augment / CLI
+                # backends, where /console/ask stays 409.
+                if console is not None:
+                    srv.set_console_asker(console)
                 srv.publish("done", {"reason": "augment-complete"})
             if augment_error is not None and not isinstance(augment_error, Exception):
                 # KeyboardInterrupt / SystemExit shouldn't be swallowed —
@@ -299,6 +337,33 @@ def _build_fold_summary_task(
             qualified_name=qualified_name,
             kind=kind,
             model=model, cache=cache,
+        )
+
+    return task
+
+
+def _build_console_task(
+    *, client: Client, run_dir: Path,
+) -> ConsoleCallable:
+    """Construct the console turn driver ``serve_review`` installs once
+    augmentation completes. Captures the LLM backend + run_dir so the
+    server module stays independent of the augment-side machinery.
+    """
+    # Lazy import: keeps pydantic-ai off the `--no-augment` path.
+    from ..augment.console import stream_console_turn
+
+    async def task(
+        question: str,
+        history: "list | None",
+        on_delta: "Callable[[str], None]",
+        on_tool: "Callable[[str], None]",
+        cancel: "threading.Event",
+        selection: "Any" = None,
+    ) -> "tuple[str, list]":
+        return await stream_console_turn(
+            client, run_dir=run_dir, question=question, history=history,
+            on_delta=on_delta, on_tool=on_tool, cancel=cancel,
+            selection=selection,
         )
 
     return task
