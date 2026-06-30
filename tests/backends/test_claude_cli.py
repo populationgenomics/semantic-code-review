@@ -307,6 +307,42 @@ async def test_claude_freeform_round_trip(
     assert "single JSON object" not in stdin
 
 
+async def test_claude_freeform_passes_effort(
+    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The console spawn carries `--effort` (reasoning depth) by default,
+    so adaptive-thinking models don't answer at the bare default."""
+    proc = FakeProc(claude_envelope("answer", use_structured_output=False))
+    calls = install_fake_subproc(monkeypatch, [proc])
+    await _freeform_agent(claude_model).run("why?")
+
+    argv = calls[0]["argv"]
+    assert "--effort" in argv
+    assert argv[argv.index("--effort") + 1] == "high"
+
+
+async def test_claude_freeform_effort_omitted_when_none(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """console_effort=None drops the flag entirely (CLI default depth)."""
+    model = ClaudeCLIModel(model="claude-opus-4-7", console_effort=None)
+    proc = FakeProc(claude_envelope("answer", use_structured_output=False))
+    calls = install_fake_subproc(monkeypatch, [proc])
+    await _freeform_agent(model).run("why?")
+    assert "--effort" not in calls[0]["argv"]
+
+
+async def test_claude_structured_path_has_no_effort(
+    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The structured augment path is tuned separately — it must not
+    inherit the console's `--effort`."""
+    proc = FakeProc(claude_envelope({"intent": "explain the refactor"}))
+    calls = install_fake_subproc(monkeypatch, [proc])
+    await _agent(claude_model).run("review this hunk")
+    assert "--effort" not in calls[0]["argv"]
+
+
 async def test_claude_freeform_mcp_injected_when_repo_tools_set(
     claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:

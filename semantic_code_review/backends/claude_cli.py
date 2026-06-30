@@ -121,6 +121,7 @@ class ClaudeCLIModel(SubprocessModel):
         fallback_model: str | None = "claude-sonnet-4-6",
         max_turns_single_shot: int = 3,
         max_turns_with_mcp: int = 20,
+        console_effort: str | None = "high",
     ) -> None:
         super().__init__(model=model, max_validation_retries=0)
         resolved = claude_path or shutil.which("claude")
@@ -130,6 +131,14 @@ class ClaudeCLIModel(SubprocessModel):
         self._fallback_model = fallback_model
         self._max_turns_single_shot = max_turns_single_shot
         self._max_turns_with_mcp = max_turns_with_mcp
+        # Reasoning depth for the free-form review console only (`--effort`,
+        # passed to `claude -p` in _build_text_invocation). On adaptive-
+        # thinking models (Opus 4.7+) this is the lever that turns reasoning
+        # up; without it the console answers at the CLI's bare default and
+        # feels shallow. The structured augment passes deliberately don't set
+        # it — their cost/latency profile is tuned separately. None omits the
+        # flag. "high" is supported on both Opus 4.8 and the Sonnet fallback.
+        self._console_effort = console_effort
         self._mcp_config_path: Path | None = None
 
     # ---- mcp config plumbing ---------------------------------------------
@@ -255,6 +264,10 @@ class ClaudeCLIModel(SubprocessModel):
             "--output-format", "json",
             "--max-turns", str(max_turns),
         ]
+        # Turn reasoning up for the console (see __init__). The structured
+        # path omits this on purpose.
+        if self._console_effort:
+            argv += ["--effort", self._console_effort]
         if self._fallback_model:
             argv += ["--fallback-model", self._fallback_model]
         if mcp_active:
@@ -266,7 +279,10 @@ class ClaudeCLIModel(SubprocessModel):
         return _Invocation(
             argv=argv,
             stdin=user_text.encode("utf-8"),
-            extra_log={"mcp": mcp_active, "max_turns": max_turns, "free_form": True},
+            extra_log={
+                "mcp": mcp_active, "max_turns": max_turns, "free_form": True,
+                "effort": self._console_effort,
+            },
         )
 
     def _envelope_to_text(self, *, envelope: dict[str, Any]) -> str:
