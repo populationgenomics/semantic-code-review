@@ -129,6 +129,70 @@ describe("renderConsoleMarkdown — mermaid", () => {
     expect(el.querySelector("pre code.language-mermaid")).toBeNull();
   });
 
+  test("initialises mermaid with htmlLabels:false so labels survive the sanitizer", async () => {
+    const initialize = vi.fn();
+    (window as unknown as { mermaid: unknown }).mermaid = {
+      initialize,
+      render: vi.fn(async () => ({ svg: "<svg></svg>" })),
+    };
+    const renderMd = await freshRender();
+    renderMd(document.createElement("div"), "```mermaid\ngraph TD;A-->B\n```\n");
+    await flush();
+    expect(initialize).toHaveBeenCalledOnce();
+    const cfg = initialize.mock.calls[0][0] as Record<string, unknown>;
+    // Mermaid's default HTML labels render inside <foreignObject>, which
+    // DOMPurify strips — so node labels must be SVG-native text.
+    expect(cfg.htmlLabels).toBe(false);
+    expect((cfg.flowchart as { htmlLabels?: boolean }).htmlLabels).toBe(false);
+  });
+
+  test("themes mermaid to match the viewer colour scheme", async () => {
+    const init = vi.fn();
+    (window as unknown as { mermaid: unknown }).mermaid = {
+      initialize: init,
+      render: vi.fn(async () => ({ svg: "<svg></svg>" })),
+    };
+    const orig = window.matchMedia;
+
+    // No prefers-color-scheme support / no match → dark (the CSS default).
+    (window as unknown as { matchMedia?: unknown }).matchMedia = undefined;
+    let renderMd = await freshRender();
+    renderMd(document.createElement("div"), "```mermaid\nA-->B\n```\n");
+    await flush();
+    expect((init.mock.calls[0][0] as { theme: string }).theme).toBe("dark");
+
+    // prefers-color-scheme: light matches → light ("default") theme.
+    init.mockClear();
+    (window as unknown as { matchMedia: unknown }).matchMedia = (q: string) => ({
+      matches: q.includes("light"),
+      media: q,
+      addEventListener() {},
+      removeEventListener() {},
+    });
+    renderMd = await freshRender();
+    renderMd(document.createElement("div"), "```mermaid\nA-->B\n```\n");
+    await flush();
+    expect((init.mock.calls[0][0] as { theme: string }).theme).toBe("default");
+
+    (window as unknown as { matchMedia?: unknown }).matchMedia = orig;
+  });
+
+  test("keeps <text>/<tspan> label content through the SVG sanitizer", async () => {
+    (window as unknown as { mermaid: unknown }).mermaid = {
+      initialize: vi.fn(),
+      // SVG-native labels (htmlLabels:false shape) — must not be stripped.
+      render: vi.fn(async () => ({
+        svg: "<svg><g><text class='lbl'><tspan>NodeLabel</tspan></text></g></svg>",
+      })),
+    };
+    const renderMd = await freshRender();
+    const el = document.createElement("div");
+    renderMd(el, "```mermaid\ngraph TD;A-->B\n```\n");
+    await flush();
+    const fig = el.querySelector(".console-mermaid");
+    expect(fig?.querySelector("text tspan")?.textContent).toBe("NodeLabel");
+  });
+
   test("falls back to source when mermaid rejects the diagram", async () => {
     (window as unknown as { mermaid: unknown }).mermaid = {
       initialize: vi.fn(),
