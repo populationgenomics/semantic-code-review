@@ -72,6 +72,20 @@ const mermaidFailed = new Set<string>();
 let mermaidSeq = 0;
 let mermaidLoad: Promise<MermaidApi | null> | null = null;
 
+/** Mermaid's built-in theme matching the viewer's active colour scheme.
+ *  Mirrors the CSS cascade in viewer.css: `:root` is dark by default and
+ *  only a `prefers-color-scheme: light` match flips it to light. So pick
+ *  the light ("default") theme only when that query matches; otherwise
+ *  dark. Without this, mermaid renders its light theme over the (default)
+ *  dark page — light elements on a transparent background, unreadable. */
+function activeMermaidTheme(): "dark" | "default" {
+  const mq =
+    typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-color-scheme: light)")
+      : null;
+  return mq && mq.matches ? "default" : "dark";
+}
+
 function initMermaid(m: MermaidApi): void {
   // `htmlLabels: false` is load-bearing, not cosmetic. Mermaid's default
   // renders node labels as HTML inside an `<foreignObject>`; DOMPurify
@@ -84,6 +98,7 @@ function initMermaid(m: MermaidApi): void {
   m.initialize({
     startOnLoad: false,
     securityLevel: "strict",
+    theme: activeMermaidTheme(),
     htmlLabels: false,
     flowchart: { htmlLabels: false },
   });

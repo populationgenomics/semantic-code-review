@@ -146,6 +146,37 @@ describe("renderConsoleMarkdown — mermaid", () => {
     expect((cfg.flowchart as { htmlLabels?: boolean }).htmlLabels).toBe(false);
   });
 
+  test("themes mermaid to match the viewer colour scheme", async () => {
+    const init = vi.fn();
+    (window as unknown as { mermaid: unknown }).mermaid = {
+      initialize: init,
+      render: vi.fn(async () => ({ svg: "<svg></svg>" })),
+    };
+    const orig = window.matchMedia;
+
+    // No prefers-color-scheme support / no match → dark (the CSS default).
+    (window as unknown as { matchMedia?: unknown }).matchMedia = undefined;
+    let renderMd = await freshRender();
+    renderMd(document.createElement("div"), "```mermaid\nA-->B\n```\n");
+    await flush();
+    expect((init.mock.calls[0][0] as { theme: string }).theme).toBe("dark");
+
+    // prefers-color-scheme: light matches → light ("default") theme.
+    init.mockClear();
+    (window as unknown as { matchMedia: unknown }).matchMedia = (q: string) => ({
+      matches: q.includes("light"),
+      media: q,
+      addEventListener() {},
+      removeEventListener() {},
+    });
+    renderMd = await freshRender();
+    renderMd(document.createElement("div"), "```mermaid\nA-->B\n```\n");
+    await flush();
+    expect((init.mock.calls[0][0] as { theme: string }).theme).toBe("default");
+
+    (window as unknown as { matchMedia?: unknown }).matchMedia = orig;
+  });
+
   test("keeps <text>/<tspan> label content through the SVG sanitizer", async () => {
     (window as unknown as { mermaid: unknown }).mermaid = {
       initialize: vi.fn(),
