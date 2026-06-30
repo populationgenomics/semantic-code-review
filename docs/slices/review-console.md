@@ -104,7 +104,7 @@ Upgrade the transport from blocking-response to live streaming.
 activity, `Esc`/Stop aborts a turn mid-flight and leaves the
 conversation usable, and a mid-turn reload starts the console fresh.
 
-## Slice 3 — Markdown + mermaid rendering
+## Slice 3 — Markdown + mermaid rendering ✅ done
 
 Make answers render correctly, including inline diagrams.
 
