@@ -1001,7 +1001,10 @@ body { padding-bottom: 30px; }
 .console-drawer.hidden { display: none; }
 .console-transcript {
   display: flex; flex-direction: column; gap: 16px;
-  max-width: 980px; margin: 0 auto;
+  /* Left-aligned (not centred) so the transcript lines up under the
+   * prompt input, the way a terminal/Claude-Code log reads. The
+   * max-width just caps line length for readability. */
+  max-width: 980px; margin: 0;
 }
 /* Both question and answer read top-to-bottom, left-aligned and
  * full-width — no chat bubbles. The question is a quieter left-bordered
