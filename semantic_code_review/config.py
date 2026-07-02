@@ -64,7 +64,6 @@ class BackendType(str, Enum):
     ANTHROPIC_SDK = "anthropic-sdk"
     CLAUDE_CLI = "claude-cli"
     GOOGLE_SDK = "google-sdk"
-    GEMINI_CLI = "gemini-cli"
     OPENAI_COMPAT = "openai-compat"
 
 
@@ -156,14 +155,6 @@ BUILTIN_BACKENDS: dict[str, BackendDef] = {
         description=(
             "Google SDK. Paid tier via API key; if GOOGLE_CLOUD_PROJECT "
             "is set, uses Vertex AI via Application Default Credentials."
-        ),
-    ),
-    "gemini-cli": BackendDef(
-        type=BackendType.GEMINI_CLI,
-        default_model="gemini-2.5-pro",
-        description=(
-            "`gemini -p` subprocess. Free tier via `gemini auth login`. "
-            "Install: `npm install -g @google/gemini-cli`."
         ),
     ),
     "groq": BackendDef(

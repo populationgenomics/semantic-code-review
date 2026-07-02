@@ -408,12 +408,12 @@ flowchart TB
               </div>
               <div class="border border-slate-300 rounded p-3 space-y-2">
                 <div class="font-semibold text-slate-700">CLI driver family</div>
-                <div class="schematic">claude-cli · gemini-cli</div>
+                <div class="schematic">claude-cli</div>
                 <p class="text-slate-600 text-[11px]">
-                  Each driver is a custom
+                  The driver is a custom
                   <code>pydantic_ai.Model</code> subclass — extends
                   <code>SubprocessModel</code> base. Spawns
-                  <code>claude -p</code> / <code>gemini -p</code> per
+                  <code>claude -p</code> per
                   request. Tool-use loop runs <em>inside</em> the
                   subprocess via MCP, not in pydantic-ai.
                 </p>

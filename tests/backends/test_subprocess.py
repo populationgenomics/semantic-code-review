@@ -2,7 +2,7 @@
 
 Plus the pure helpers (`_flatten_messages`, `_extract_json_object`,
 `_validate_against_schema`) that the CLI drivers share. Per-driver
-specifics live in `test_claude_cli.py` / `test_gemini_cli.py`.
+specifics live in `test_claude_cli.py`.
 """
 
 from __future__ import annotations

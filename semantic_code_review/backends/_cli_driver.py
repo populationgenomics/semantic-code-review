@@ -1,7 +1,7 @@
 """Shared base for the CLI drivers in this package.
 
 A **CLI driver** is a concrete `pydantic_ai.Model` subclass we author to
-wrap a third-party LLM CLI (`claude -p`, `gemini -p`). Each `request()`
+wrap a third-party LLM CLI (`claude -p`). Each `request()`
 spawns the CLI, parses its envelope, and returns a synthetic
 `ModelResponse`; the multi-turn tool-call loop runs inside the
 subprocess via MCP, not in pydantic-ai.
@@ -261,7 +261,7 @@ class _Invocation:
 
 
 class SubprocessModel(Model, ABC):
-    """Base for the CLI drivers — `claude -p` / `gemini -p` style.
+    """Base for the CLI drivers — `claude -p` style.
 
     Owns: message flattening, retry loop, subprocess spawn, response
     assembly. Subclasses (the per-backend CLI drivers) provide the
