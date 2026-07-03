@@ -82,17 +82,6 @@ def _parse_last_event_id(raw: str | None) -> int:
         return 0
 
 
-def _parse_hunk_id(hunk_id: str) -> tuple[int, int]:
-    """`"H{fi}_{hi}"` → (fi, hi). Raises ValueError on malformed input."""
-    if not hunk_id.startswith("H") or "_" not in hunk_id:
-        raise ValueError(f"malformed hunk_id {hunk_id!r}")
-    try:
-        fi_str, hi_str = hunk_id[1:].split("_", 1)
-        return int(fi_str), int(hi_str)
-    except ValueError as e:
-        raise ValueError(f"malformed hunk_id {hunk_id!r}") from e
-
-
 def _update_viewer_json_fold(
     viewer_json: dict[str, Any],
     payload: dict[str, Any],
