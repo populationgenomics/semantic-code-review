@@ -11,9 +11,6 @@ session so the agent can walk through them with you.
 Prerequisites on the user's machine:
 
 - Python 3.11 or newer on `PATH`
-- Node.js 20+ and `npm` on `PATH` (used to compile the viewer's
-  TypeScript module on first run; gitignored output is cached under
-  `$CLAUDE_PLUGIN_DATA`)
 - `git` on `PATH`
 - Either `ANTHROPIC_API_KEY` in the environment (or a `.env` in the
   repo you run `/scr:review` from), **or** a logged-in `claude` CLI
@@ -33,21 +30,17 @@ Install:
 /plugin install scr
 ```
 
-The first time you run `/scr:review`, the plugin's `bin/scr` wrapper:
-
-1. Creates a hash-pinned Python virtualenv under
-   `$CLAUDE_PLUGIN_DATA/venv` (every dependency installed via
-   `pip install --require-hashes` so any tampered tarball fails the
-   install instead of silently landing).
-2. Runs `npm ci --ignore-scripts` for the viewer's TypeScript build
-   toolchain (typescript, vitest, @playwright/test pinned via
-   `package-lock.json`).
-3. Compiles `annotations.ts` → `annotations.js` into the data dir
-   via `tsc --outDir`.
-
-All three steps are stamped by sha256 of their inputs and only re-run
-when something changes. Subsequent invocations exec the cached venv
-and start immediately.
+The first time you run `/scr:review`, the plugin's `bin/scr` wrapper
+creates a Python virtualenv under `$CLAUDE_PLUGIN_DATA/venv`, installs
+the dependency closure with `pip install --require-hashes` (so any
+tampered tarball fails the install instead of silently landing), then
+installs `semantic-code-review` from PyPI at the version pinned in the
+plugin's `pyproject.toml`. That published wheel carries the prebuilt
+`viewer.js` bundle as package data, so the wrapper needs no Node, npm, or
+build step — the git checkout is a thin launcher over a PyPI release. The
+install is stamped (lockfile hash + version) and only re-runs when one
+changes; subsequent invocations exec the cached venv and start
+immediately.
 
 ### The `/scr:review` slash command
 
@@ -216,7 +209,7 @@ python3 -m venv .venv
 .venv/bin/pip install --no-deps --no-build-isolation -e .
 
 npm ci --ignore-scripts
-npm run build           # tsc → semantic_code_review/viewer/assets/annotations.js
+npm run build           # tsc --noEmit typecheck, then esbuild bundle → semantic_code_review/viewer/assets/viewer.js
 npm run test:js         # vitest
 .venv/bin/python -m pytest
 ```
@@ -238,6 +231,12 @@ cloud credentials. To cut a release:
    release: it compiles the viewer bundle, builds the wheel + sdist with
    `uv build`, and uploads to PyPI. A guard fails the run loudly if the
    tag and `pyproject.toml` version disagree.
+
+The plugin installs `semantic-code-review==<pyproject version>` from
+PyPI, so the version on the default branch must always be one that is
+published (or being published) there — bump it only as part of cutting a
+release. A plugin update that lands a version PyPI doesn't yet carry will
+fail its first-run install until the release finishes.
 
 One-time setup (recorded here for a fresh fork): register a
 [Trusted Publisher](https://docs.pypi.org/trusted-publishers/) on the
@@ -263,7 +262,8 @@ in the repo's GitHub settings.
   `gh api`.
 - `commands/review.md` — the Claude Code slash-command prompt.
 - `bin/scr` — bootstrap wrapper; preflights deps, maintains the
-  Python venv + Node build cache, execs the real `scr`.
+  Python venv, installs `scr` from PyPI at the pinned version, execs
+  the real `scr`.
 - `TREE_SITTER.md` — design notes on a possible future structural
   pass (symbol grouping, AST-driven fold regions, semantic hunk
   splitting). Speculative; nothing in tree depends on it.

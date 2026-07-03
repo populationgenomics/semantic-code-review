@@ -26,3 +26,20 @@ jobs:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
       - run: uv run pre-commit run --all-files --show-diff-on-failure
+
+  viewer:
+    # The viewer TypeScript ships in the published wheel (release.yml bundles
+    # it), so it never runs through Python CI. Typecheck and unit-test it here.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm run test:js

@@ -7,13 +7,20 @@
 #    requirements; gh and rg are optional and we only warn if missing.
 # 2. Maintain a per-plugin virtualenv under $CLAUDE_PLUGIN_DATA/venv. Two
 #    cache keys gate the work:
-#      - deps stamp : sha256(requirements.lock, build-requirements.lock)
-#                     → gates the slow `pip install --require-hashes` steps.
-#      - pkg stamp  : sha256(pyproject.toml)
-#                     → gates only the fast `pip install --no-deps .` step.
-#    A pyproject-only change (version bump, entry-point tweak) reinstalls
-#    the local package in ~1s instead of re-running the full deps install.
+#      - deps stamp : sha256(requirements.lock)
+#                     → gates the slow hashed dependency install.
+#      - pkg stamp  : the target version string
+#                     → gates only the fast scr wheel install from PyPI.
+#    A version bump reinstalls just the scr wheel in ~1s instead of
+#    re-running the full dependency install.
 # 3. Exec the real `scr` out of that venv, passing through all argv.
+#
+# The scr package (with its prebuilt viewer.js bundle) is installed from
+# PyPI at the version pinned in the plugin tree's pyproject.toml, so the
+# git checkout is a thin launcher, not a build tree — no Node, npm, or
+# build backend is ever needed. Third-party deps are hash-pinned via
+# requirements.lock; scr itself is version-pinned from its own PyPI project
+# (Trusted Publishing) and installed --no-deps against those deps.
 #
 # The script is idempotent and cheap on the hot path (one sha256 check, one
 # stamp read, one exec) — the expensive bootstrap only runs when something
@@ -41,21 +48,9 @@ mkdir -p "$CLAUDE_PLUGIN_DATA"
 VENV="$CLAUDE_PLUGIN_DATA/venv"
 PYPROJECT="$CLAUDE_PLUGIN_ROOT/pyproject.toml"
 LOCKFILE="$CLAUDE_PLUGIN_ROOT/requirements.lock"
-BUILD_LOCKFILE="$CLAUDE_PLUGIN_ROOT/build-requirements.lock"
-PACKAGE_LOCK="$CLAUDE_PLUGIN_ROOT/package-lock.json"
-TS_ASSETS_DIR="$CLAUDE_PLUGIN_ROOT/semantic_code_review/viewer/assets"
-# Compiled viewer JS lives under the data dir, NOT in the plugin tree
-# or site-packages. render_html.py reads from SCR_VIEWER_BUILD_DIR if
-# set (that's where this bootstrap points it), falling back to the
-# package's assets/ directory for future wheel-installed setups that
-# ship prebuilt JS as package_data.
-BUILD_DIR="$CLAUDE_PLUGIN_DATA/viewer-build"
-ANNOT_JS="$BUILD_DIR/annotations.js"
 
-[ -f "$PYPROJECT" ]      || die "pyproject.toml missing from plugin tree at $PYPROJECT"
-[ -f "$LOCKFILE" ]       || die "requirements.lock missing from plugin tree at $LOCKFILE"
-[ -f "$BUILD_LOCKFILE" ] || die "build-requirements.lock missing from plugin tree at $BUILD_LOCKFILE"
-[ -f "$PACKAGE_LOCK" ]   || die "package-lock.json missing from plugin tree at $PACKAGE_LOCK"
+[ -f "$PYPROJECT" ] || die "pyproject.toml missing from plugin tree at $PYPROJECT"
+[ -f "$LOCKFILE" ]  || die "requirements.lock missing from plugin tree at $LOCKFILE"
 
 # --- preflight --------------------------------------------------------------
 
@@ -71,8 +66,6 @@ fi
 [ "$need_python" -eq 0 ] || die "python3 >= 3.11 is required but missing or too old"
 
 command -v git >/dev/null 2>&1 || die "git is required but not on PATH"
-command -v node >/dev/null 2>&1 || die "node is required to compile the viewer's TypeScript module. Install Node.js >= 20."
-command -v npm >/dev/null 2>&1 || die "npm is required to install the Node build toolchain. It ships with Node.js."
 
 if ! command -v gh >/dev/null 2>&1; then
   warn "gh not found — 'scr fetch' on a GitHub PR URL will fail. /review on local diffs still works."
@@ -81,10 +74,17 @@ if ! command -v rg >/dev/null 2>&1; then
   warn "ripgrep (rg) not found — falling back to 'git grep' for LLM tool-use searches."
 fi
 
+# --- resolve target version -------------------------------------------------
+
+# The plugin installs this exact scr version from PyPI, so the cloned
+# slash-command definitions and the installed CLI always move together.
+# tomllib is stdlib on the python3 >= 3.11 required above.
+VERSION=$(python3 -c 'import tomllib,sys; print(tomllib.load(open(sys.argv[1],"rb"))["project"]["version"])' "$PYPROJECT") \
+  || die "could not read project version from $PYPROJECT"
+[ -n "$VERSION" ] || die "empty project version in $PYPROJECT"
+
 # --- venv install (split-stamp, idempotent) -------------------------------
 
-# Two cache keys: a pyproject-only change (version bump, entry-point tweak)
-# only re-runs the fast local-package install, not the slow deps install.
 hash_files() {
   local shacmd
   if command -v shasum >/dev/null 2>&1; then shacmd="shasum -a 256";
@@ -92,106 +92,54 @@ hash_files() {
   $shacmd "$@" | awk '{print $1}' | $shacmd | awk '{print $1}'
 }
 
-deps_hash=$(hash_files "$LOCKFILE" "$BUILD_LOCKFILE")
-pkg_hash=$(hash_files "$PYPROJECT")
+deps_hash=$(hash_files "$LOCKFILE")
 deps_stamp="$CLAUDE_PLUGIN_DATA/deps-${deps_hash}"
-pkg_stamp="$CLAUDE_PLUGIN_DATA/pkg-${pkg_hash}"
+pkg_stamp="$CLAUDE_PLUGIN_DATA/pkg-${VERSION}"
 
 did_install=0
 
-# Slow path: lockfile changed (or fresh install). Every install step uses
-# --require-hashes, so pip refuses any package whose on-disk SHA-256
-# doesn't match the lockfile. A compromised PyPI release, typo-squat, or
-# mirror MITM will fail the install rather than silently land. Ordering:
-#   1. Build backend (setuptools, wheel) from build-requirements.lock.
-#   2. Runtime deps from requirements.lock.
-# The local package itself is installed below in the (always-run when
-# pkg stamp is stale) fast path.
+# Slow path: lockfile changed (or fresh install). --require-hashes makes pip
+# refuse any dependency whose on-disk SHA-256 doesn't match requirements.lock,
+# so a compromised release, typo-squat, or mirror MITM fails the install
+# rather than silently landing. scr's own wheel is installed below.
 if [ ! -x "$VENV/bin/python" ] || [ ! -f "$deps_stamp" ]; then
-  printf 'scr: installing python dependencies under %s (first run / lockfiles changed)\n' "$VENV" >&2
+  printf 'scr: installing python dependencies under %s (first run / lockfile changed)\n' "$VENV" >&2
   if [ -d "$VENV" ]; then
     rm -rf "$VENV"
   fi
   python3 -m venv "$VENV"
   # shellcheck disable=SC1090,SC1091
-  "$VENV/bin/pip" install --quiet --require-hashes -r "$BUILD_LOCKFILE"
   "$VENV/bin/pip" install --quiet --require-hashes -r "$LOCKFILE"
   find "$CLAUDE_PLUGIN_DATA" -maxdepth 1 -name 'deps-*' -print0 2>/dev/null | xargs -0 rm -f || true
   printf '%s\n' "$deps_hash" > "$deps_stamp"
-  # Fresh venv → force the local-package reinstall below regardless of
-  # pkg stamp (the venv has no `scr` binary yet).
+  # Fresh venv → force the scr reinstall below regardless of pkg stamp
+  # (the venv has no `scr` binary yet).
   find "$CLAUDE_PLUGIN_DATA" -maxdepth 1 -name 'pkg-*' -print0 2>/dev/null | xargs -0 rm -f || true
   did_install=1
 fi
 
-# Fast path: pyproject changed but lockfiles didn't — only the local
-# package needs reinstalling. --no-deps (nothing to resolve) and
-# --no-build-isolation (use the setuptools already pinned in the venv
-# instead of letting pip fetch a fresh unpinned copy into an isolated
-# build env).
+# Fast path: the pinned version changed but the lockfile didn't — only the
+# scr wheel needs reinstalling. --no-deps because requirements.lock already
+# installed the full, hashed dependency closure above; pip must not resolve
+# (and unpin) anything here. The wheel carries the prebuilt viewer.js.
 if [ ! -x "$VENV/bin/scr" ] || [ ! -f "$pkg_stamp" ]; then
   if [ "$did_install" -eq 0 ]; then
-    printf 'scr: reinstalling local package (pyproject.toml changed)\n' >&2
+    printf 'scr: installing scr %s from PyPI\n' "$VERSION" >&2
   fi
-  "$VENV/bin/pip" install --quiet --no-deps --no-build-isolation "$CLAUDE_PLUGIN_ROOT"
+  "$VENV/bin/pip" install --quiet --no-deps "semantic-code-review==$VERSION" \
+    || die "could not install semantic-code-review==$VERSION from PyPI (is the release published?)"
   find "$CLAUDE_PLUGIN_DATA" -maxdepth 1 -name 'pkg-*' -print0 2>/dev/null | xargs -0 rm -f || true
-  printf '%s\n' "$pkg_hash" > "$pkg_stamp"
+  printf '%s\n' "$VERSION" > "$pkg_stamp"
   did_install=1
 fi
 
 if [ "$did_install" -eq 1 ]; then
-  # One-time migration: clear stamps from the pre-split format so they
-  # don't accumulate.
-  find "$CLAUDE_PLUGIN_DATA" -maxdepth 1 -name 'installed-*' -print0 2>/dev/null | xargs -0 rm -f || true
+  # Clear stamps and build dirs from older bootstrap formats so they don't
+  # accumulate (pre-split `installed-*`, and the local-build `node-built-*`
+  # stamp + its viewer-build output dir).
+  find "$CLAUDE_PLUGIN_DATA" -maxdepth 1 \( -name 'installed-*' -o -name 'node-built-*' \) -print0 2>/dev/null | xargs -0 rm -f || true
+  rm -rf "$CLAUDE_PLUGIN_DATA/viewer-build" 2>/dev/null || true
   printf 'scr: ready\n' >&2
 fi
-
-# --- Node toolchain install + TypeScript build (idempotent) ---------------
-#
-# The viewer's annotation component is written in TypeScript. The
-# compiled JS is an npm-built artifact that is NOT committed; the
-# bootstrap maintains it via `npm ci` + `tsc`, keyed to the plugin
-# tree's package-lock.json and any .ts source changes.
-#
-# node_modules/ lives inside the plugin tree (gitignored). For a
-# pip-installed-only world (read-only plugin tree, no Node), we'll
-# ship prebuilt JS in the wheel — that path is deferred until we
-# actually publish wheels.
-
-hash_node_inputs() {
-  local shacmd
-  if command -v shasum >/dev/null 2>&1; then shacmd="shasum -a 256";
-  else shacmd="sha256sum"; fi
-  { $shacmd "$PACKAGE_LOCK"; find "$TS_ASSETS_DIR" -name '*.ts' -print0 2>/dev/null | xargs -0 $shacmd 2>/dev/null; } \
-    | awk '{print $1}' | $shacmd | awk '{print $1}'
-}
-
-node_want_hash=$(hash_node_inputs)
-node_stamp="$CLAUDE_PLUGIN_DATA/node-built-${node_want_hash}"
-
-if [ ! -f "$node_stamp" ] || [ ! -f "$ANNOT_JS" ]; then
-  printf 'scr: building viewer TypeScript module (first run / sources changed)\n' >&2
-  mkdir -p "$BUILD_DIR"
-  (
-    cd "$CLAUDE_PLUGIN_ROOT"
-    # `--ignore-scripts` keeps any package's install hooks from running
-    # (defense in depth; our deps are all well-known). Lock-hashed
-    # integrity is already enforced by package-lock.json's `integrity`
-    # fields — npm ci refuses mismatching tarballs.
-    if [ ! -d "node_modules" ] || ! node -e 'process.exit(require("fs").existsSync("node_modules/.bin/tsc") ? 0 : 1)'; then
-      npm ci --ignore-scripts --no-audit --no-fund >&2
-    fi
-    # `--outDir` overrides tsconfig.json so the compiled JS lands in
-    # the data-dir build directory instead of the (gitignored) source
-    # tree. That keeps the source checkout clean and lets the Python
-    # install stay non-editable.
-    "$CLAUDE_PLUGIN_ROOT/node_modules/.bin/tsc" --outDir "$BUILD_DIR"
-  )
-  find "$CLAUDE_PLUGIN_DATA" -maxdepth 1 -name 'node-built-*' -print0 2>/dev/null | xargs -0 rm -f || true
-  printf '%s\n' "$node_want_hash" > "$node_stamp"
-fi
-
-# Let render_html.py find the compiled JS under the data dir.
-export SCR_VIEWER_BUILD_DIR="$BUILD_DIR"
 
 exec "$VENV/bin/scr" "$@"
