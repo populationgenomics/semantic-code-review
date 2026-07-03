@@ -17,6 +17,7 @@ unsupported language, parse failure, or a malformed query all yield
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
@@ -25,6 +26,8 @@ from pathlib import Path
 from tree_sitter import Language, Node, Parser, Query, QueryCursor
 
 from .symbols import Symbol, SymbolRange
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Language registry
@@ -132,7 +135,8 @@ def outline_symbols(source: bytes | str, lang_name: str) -> list[Symbol]:
         tree = Parser(language).parse(source)
         defs = _collect_definitions(tree.root_node, query, source)
         return _nest(defs, source, lang_name)
-    except Exception:
+    except Exception as e:  # noqa: BLE001 — documented contract: any parse failure degrades to []
+        log.debug("structural parse failed for %s: %s", lang_name, e)
         return []
 
 

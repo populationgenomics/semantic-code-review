@@ -29,5 +29,5 @@ def fetch(
         run_dir = materialize_github_pr_run(pr_url, runs_root)
     except GhFetchError as e:
         typer.echo(f"scr: {e}", err=True)
-        raise typer.Exit(code=2)
+        raise typer.Exit(code=2) from None
     typer.echo(f"run directory: {run_dir}")

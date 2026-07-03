@@ -11,10 +11,16 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 
 from ..config import ConfigError, ScrConfig
+
+if TYPE_CHECKING:
+    # Type-only: importing agents eagerly pulls pydantic_ai into every CLI
+    # startup. See docs/style/python.md — the sanctioned expensive-import case.
+    from ..augment.agents import Client
 
 # Lazily-loaded user/per-repo config. Loading is deferred to the first
 # `get_config()` call so a malformed config doesn't brick commands that
@@ -40,7 +46,7 @@ def get_config() -> ScrConfig:
         except ConfigError as e:
             sys.stderr.write(f"scr: {e}\n")
             sys.stderr.flush()
-            raise SystemExit(1)
+            raise SystemExit(1) from None
         cfg.apply_env()
         _CONFIG_CACHE = cfg
     return _CONFIG_CACHE
@@ -104,7 +110,7 @@ def configure_logging(verbose: bool) -> None:
         h.setLevel(level)
 
 
-def select_client(backend: str, *, model: str):
+def select_client(backend: str, *, model: str) -> Client:
     """Resolve a backend name to a `Client` for the augment pipeline.
 
     `backend` is "auto" or any name in `get_config().backends` (builtins +
@@ -133,7 +139,7 @@ def resolve_extra_review_prompt(cli_path: Path | None) -> str | None:
             text = cli_path.read_text(encoding="utf-8").strip()
         except OSError as e:
             typer.echo(f"scr: extra-review prompt {cli_path}: {e}", err=True)
-            raise typer.Exit(code=2)
+            raise typer.Exit(code=2) from None
         if not text:
             typer.echo(f"scr: extra-review prompt {cli_path} is empty", err=True)
             raise typer.Exit(code=2)

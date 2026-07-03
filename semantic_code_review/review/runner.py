@@ -131,7 +131,7 @@ def run_review(opts: ReviewOptions) -> int:
 
         cache = None if opts.no_cache else CacheStore(root=opts.cache_dir, prompt_version=PROMPT_VERSION)
 
-        async def augment_task(rd: Path, publish) -> None:
+        async def augment_task(rd: Path, publish: Callable[..., None]) -> None:
             await augment_run_dir(
                 rd,
                 model=opts.model,

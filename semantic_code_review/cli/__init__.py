@@ -51,7 +51,7 @@ load_dotenv()
 # decorators, which is what actually registers each command with the
 # Typer app above. Order is irrelevant. The `noqa: F401` markers
 # acknowledge the imports are intentionally side-effect-only.
-from . import (
+from . import (  # noqa: E402  # side-effect imports must follow the `app` definition above
     augment,
     config_cmd,
     fetch,

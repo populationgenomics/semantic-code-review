@@ -21,7 +21,7 @@ import logging
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TextIO
 
 from .. import git_ops
 
@@ -153,8 +153,8 @@ def pick_pr_interactive(
     repo: str,
     prs: list[OpenPR],
     *,
-    out=sys.stderr,
-    in_=sys.stdin,
+    out: TextIO = sys.stderr,
+    in_: TextIO = sys.stdin,
 ) -> int | None:
     """Numbered stdin picker. Returns the chosen PR's number, or None
     if the user typed `q` / EOF'd out. `out` and `in_` are injectable

@@ -134,7 +134,7 @@ def _resolve_config_edit_path(scope: str) -> Path:
         root_text = git_ops.git(None, "rev-parse", "--show-toplevel").strip()
     except git_ops.GitError as e:
         typer.echo(f"scr: --scope=repo needs a git repo: {e}", err=True)
-        raise typer.Exit(code=2)
+        raise typer.Exit(code=2) from None
     return Path(root_text) / ".scr" / "config.toml"
 
 

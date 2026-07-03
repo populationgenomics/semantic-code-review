@@ -112,6 +112,15 @@ ignore = [
     # imports and ANN401 bans `Any` — both are large, review-gated changes, and
     # TID252 overlaps the "import modules, not symbols" refactor in docs/style.
     "TID252", "ANN401",
+    # Subjective simplifications — nested `with` and if-else-vs-ternary are
+    # often clearer left as written; not worth churning.
+    "SIM108", "SIM117",
+    # En-dashes and similar typography are intentional in user-facing strings.
+    "RUF001", "RUF002", "RUF003",
+    "UP038",  # deprecated rule; `isinstance(x, (A, B))` stays
+    # False-positives on prose/section comments that look code-like
+    # (`# scope == "repo"`, sphinx `#:` type comments, section headers).
+    "ERA001",
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -122,6 +131,11 @@ ignore = [
     "SLF001", # tests legitimately reach into module privates
     "PT018",  # multi-part asserts are fine in tests
     "BLE001", # best-effort helpers in tests: log/continue
+    "PT011",  # broad pytest.raises without match= is fine in tests
+    "PT017",  # asserting on the caught exception in an except block is fine
+    "N802",   # test names may echo camelCase API fields (databaseId, …)
+    "DTZ001", # naive datetimes are fine in fixture data
+    "SIM115", # tests may open files without a context manager
 ]
 
 [tool.ruff.lint.pydocstyle]

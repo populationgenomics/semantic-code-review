@@ -12,8 +12,10 @@ fans events out and never blocks the caller.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import os
 import queue
 import threading
 import time
@@ -21,7 +23,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from .comments import CommentStore, ReadOnlyCommentError
 
@@ -35,9 +37,6 @@ log = logging.getLogger(__name__)
 # packaged assets when no override is set. Only viewer.js is expected
 # to live in the build dir; everything else (CSS, vendor, index.html)
 # is always read from the in-tree assets/.
-
-import contextlib
-import os
 
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "viewer" / "assets"
 
@@ -474,7 +473,7 @@ class _Handler(BaseHTTPRequestHandler):
     #: Whitelist of asset basenames that may be served via /static/.
     #: Keeps the route from doubling as a generic file-read primitive
     #: even though _resolve_static guards against path traversal too.
-    _STATIC_ASSETS: dict[str, str] = {
+    _STATIC_ASSETS: ClassVar[dict[str, str]] = {
         "viewer.css": "text/css; charset=utf-8",
         "viewer.js": "application/javascript; charset=utf-8",
         "vendor/highlight.min.js": "application/javascript; charset=utf-8",
@@ -733,7 +732,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(
                 409,
                 {
-                    "error": "review console not ready yet — it becomes available once analysis finishes (and is disabled for --no-augment runs)"
+                    "error": (
+                        "review console not ready yet — it becomes available once "
+                        "analysis finishes (and is disabled for --no-augment runs)"
+                    )
                 },
             )
             return

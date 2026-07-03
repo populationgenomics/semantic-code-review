@@ -97,8 +97,8 @@ def review(
         # ("review every commit on this branch") don't have to special-
         # case "this commit changed nothing".
         typer.echo(f"scr: {e}", err=True)
-        raise typer.Exit(code=0)
+        raise typer.Exit(code=0) from None
     except LocalDiffError as e:
         typer.echo(f"scr: {e}", err=True)
-        raise typer.Exit(code=2)
+        raise typer.Exit(code=2) from None
     raise typer.Exit(code=code)

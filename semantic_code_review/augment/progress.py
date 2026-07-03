@@ -26,6 +26,7 @@ import contextlib
 import os
 import sys
 import time
+import types
 from dataclasses import dataclass
 from typing import Self, TextIO
 
@@ -129,7 +130,12 @@ class ProgressMeter:
             self._task = asyncio.create_task(self._tick())
         return self
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: types.TracebackType | None,
+    ) -> None:
         if self._task is not None:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

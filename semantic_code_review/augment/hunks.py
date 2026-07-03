@@ -11,8 +11,6 @@ import logging
 from pathlib import Path
 from typing import Any
 
-log = logging.getLogger(__name__)
-
 from pydantic_ai import CachePoint
 from pydantic_ai.messages import UserContent
 
@@ -34,6 +32,8 @@ from .agents import Client, make_hunk_agent
 from .pass_ import PassMeta, run_pass
 from .prompts import HUNK_SYSTEM
 from .tools import TOOL_FUNCTIONS, RepoTools
+
+log = logging.getLogger(__name__)
 
 _HUNK = PassMeta(
     name="hunk",
