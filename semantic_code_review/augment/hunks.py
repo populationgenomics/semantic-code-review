@@ -55,8 +55,8 @@ _HUNK = PassMeta(
 # backends (TypedDict total=False), so this is safe to apply
 # unconditionally — Google + the CLI drivers see them as no-ops.
 _HUNK_CACHE_SETTINGS: dict[str, Any] = {
-    "anthropic_cache_instructions": True,       # system prompt block
-    "anthropic_cache_tool_definitions": True,   # tools/<RepoTools>
+    "anthropic_cache_instructions": True,  # system prompt block
+    "anthropic_cache_tool_definitions": True,  # tools/<RepoTools>
 }
 
 
@@ -78,9 +78,7 @@ def format_hunk_prompt(
     fold-close; see :mod:`semantic_code_review.augment.fold_summary`.
     """
     hunk_text = (
-        f"# File\npath: {fp.path}\n"
-        f"lang: {fp.ann.lang or ''}\n\n"
-        f"# Hunk\n{hunk.parsed.header}\n{hunk.parsed.body}"
+        f"# File\npath: {fp.path}\nlang: {fp.ann.lang or ''}\n\n# Hunk\n{hunk.parsed.header}\n{hunk.parsed.body}"
     )
     return [
         f"# PR overview\n{overview_json}",
@@ -92,15 +90,15 @@ def format_hunk_prompt(
 
 
 def _hunk_trace_path(
-    trace_dir: Path | None, fp: AnnotatedFile, hunk: AnnotatedHunk,
+    trace_dir: Path | None,
+    fp: AnnotatedFile,
+    hunk: AnnotatedHunk,
 ) -> Path | None:
     if trace_dir is None:
         return None
     safe_file = fp.path.replace("/", "_")
     safe_hunk = (
-        hunk.parsed.header
-        .replace(" ", "_").replace("@", "").replace(",", "_")
-        .replace("+", "p").replace("-", "m")
+        hunk.parsed.header.replace(" ", "_").replace("@", "").replace(",", "_").replace("+", "p").replace("-", "m")
     )
     return trace_dir / f"hunk-{safe_file}-{safe_hunk[:40]}.json"
 
@@ -125,15 +123,19 @@ async def run_hunk_pass(
         system=HUNK_SYSTEM,
         model=model,
         cache_inputs=(
-            overview_json, file_summary,
-            fp.path, hunk.parsed.header, hunk.parsed.body,
+            overview_json,
+            file_summary,
+            fp.path,
+            hunk.parsed.header,
+            hunk.parsed.body,
         ),
         deps=repo_tools,
         model_settings=_HUNK_CACHE_SETTINGS,
         cache=cache,
         trace_path=_hunk_trace_path(trace_dir, fp, hunk),
         cache_request={
-            "file": fp.path, "header": hunk.parsed.header,
+            "file": fp.path,
+            "header": hunk.parsed.header,
             "body_len": len(hunk.parsed.body),
         },
     )
@@ -164,18 +166,26 @@ def build_hunk_annotations(parsed: ParsedHunk, submit_args: dict[str, Any]) -> H
         if count <= 0 or start < parsed.new_start or end > hunk_end:
             log.warning(
                 "hunk %s: segment +%d..+%d outside range +%d..+%d — dropped",
-                parsed.header, start, end, parsed.new_start, hunk_end,
+                parsed.header,
+                start,
+                end,
+                parsed.new_start,
+                hunk_end,
             )
             continue
         if start <= last_end:
             log.warning(
                 "hunk %s: segment +%d..+%d overlaps previous (ends +%d) — dropped",
-                parsed.header, start, end, last_end,
+                parsed.header,
+                start,
+                end,
+                last_end,
             )
             continue
         segments.append(
             Segment(
-                new_start=start, new_count=count,
+                new_start=start,
+                new_count=count,
                 intent=seg.get("intent", "") or "",
                 smells=[_smell(s) for s in seg.get("smells") or []],
                 context=seg.get("context", "") or "",
@@ -196,19 +206,18 @@ def build_hunk_annotations(parsed: ParsedHunk, submit_args: dict[str, Any]) -> H
         if count <= 0 or start < parsed.new_start or end > hunk_end:
             log.warning(
                 "hunk %s: fold +%d..+%d outside range — dropped",
-                parsed.header, start, end,
+                parsed.header,
+                start,
+                end,
             )
             continue
         summary = (fd.get("summary") or "").strip()
         if not summary:
             continue
-        fold_descriptions.append(
-            FoldDescription(new_start=start, new_count=count, summary=summary)
-        )
+        fold_descriptions.append(FoldDescription(new_start=start, new_count=count, summary=summary))
 
     line_notes = [
-        LineNote(**ln) for ln in submit_args.get("line_notes") or []
-        if _line_in_hunk(int(ln["line"]), parsed)
+        LineNote(**ln) for ln in submit_args.get("line_notes") or [] if _line_in_hunk(int(ln["line"]), parsed)
     ]
 
     return HunkAnnotations(

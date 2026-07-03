@@ -57,7 +57,11 @@ def git(cwd: Path | None, *args: str) -> str:
     non-zero exit. ``cwd=None`` runs in the current process's cwd.
     """
     proc = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, check=False,
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if proc.returncode != 0:
         raise GitError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
@@ -72,7 +76,11 @@ def git_capture(cwd: Path | None, *args: str) -> tuple[int, str, str]:
     into domain errors.
     """
     proc = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, check=False,
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     return proc.returncode, proc.stdout, proc.stderr
 
@@ -83,10 +91,13 @@ def gh(*args: str, input: str | None = None) -> str:
     """
     proc = subprocess.run(
         ["gh", *args],
-        input=input, capture_output=True, text=True, check=False,
+        input=input,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if proc.returncode != 0:
-        msg = (proc.stderr.strip() or proc.stdout.strip())
+        msg = proc.stderr.strip() or proc.stdout.strip()
         raise GhError(f"gh {' '.join(args)} failed: {msg}")
     return proc.stdout
 
@@ -99,7 +110,10 @@ def gh_capture(*args: str, input: str | None = None) -> tuple[int, str, str]:
     """
     proc = subprocess.run(
         ["gh", *args],
-        input=input, capture_output=True, text=True, check=False,
+        input=input,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     return proc.returncode, proc.stdout, proc.stderr
 
@@ -217,8 +231,7 @@ def preflight_gh() -> str:
     path = shutil.which("gh")
     if not path:
         raise GhMissingError(
-            "`gh` (GitHub CLI) not found on PATH. Install it from "
-            "https://cli.github.com/ or via your package manager."
+            "`gh` (GitHub CLI) not found on PATH. Install it from https://cli.github.com/ or via your package manager."
         )
     rc, stdout, stderr = gh_capture("--version")
     if rc != 0:

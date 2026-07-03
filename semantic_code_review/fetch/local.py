@@ -62,10 +62,10 @@ class LocalResolved:
     """
 
     spec: RunSpec
-    repo_git: Path           # .git dir of the cwd repo
-    head_is_working: bool    # if True, head/ is a symlink to head_worktree
-    head_worktree: Path      # the cwd checkout (used only when head_is_working)
-    mode: str                # "range" | "ref-working" | "ref..HEAD" | ...
+    repo_git: Path  # .git dir of the cwd repo
+    head_is_working: bool  # if True, head/ is a symlink to head_worktree
+    head_worktree: Path  # the cwd checkout (used only when head_is_working)
+    mode: str  # "range" | "ref-working" | "ref..HEAD" | ...
 
     # Convenience aliases so tests don't need to dig through `.spec.*`.
     @property
@@ -114,9 +114,7 @@ def resolve_local_diff(
     m = _RANGE_RE.match(spec_str)
     if m:
         if no_staged or no_unstaged:
-            raise LocalDiffError(
-                "--no-staged / --no-unstaged only apply when a single ref is given"
-            )
+            raise LocalDiffError("--no-staged / --no-unstaged only apply when a single ref is given")
         base_ref, head_ref = m.group("a"), m.group("b")
         sep = "..." if "..." in spec_str else ".."
         raw, base_sha, head_sha = _diff_committed_range(cwd, base_ref, head_ref, sep)
@@ -146,8 +144,12 @@ def resolve_local_diff(
         head_sha=head_sha,
         files=files,
         meta=_synthesise_meta(
-            slug=slug, base_sha=base_sha, head_sha=head_sha,
-            files=files, mode=mode, head_is_working=head_is_working,
+            slug=slug,
+            base_sha=base_sha,
+            head_sha=head_sha,
+            files=files,
+            mode=mode,
+            head_is_working=head_is_working,
             spec_md_text=spec_md_text,
         ),
         spec_md_text=spec_md_text,
@@ -186,12 +188,16 @@ def setup_local_worktrees(run_dir: Path, resolved: LocalResolved) -> None:
             _symlink(head_link, resolved.head_worktree)
     elif not head_link.exists():
         git_ops.worktree_add(
-            resolved.repo_git.parent, head_link.resolve(), resolved.head_sha,
+            resolved.repo_git.parent,
+            head_link.resolve(),
+            resolved.head_sha,
         )
 
     if not base_dir.exists():
         git_ops.worktree_add(
-            resolved.repo_git.parent, base_dir.resolve(), resolved.base_sha,
+            resolved.repo_git.parent,
+            base_dir.resolve(),
+            resolved.base_sha,
         )
 
 
@@ -236,9 +242,7 @@ def _find_repo_root(start: Path) -> Path:
         p = p.parent
 
 
-def _diff_committed_range(
-    cwd: Path, base_ref: str, head_ref: str, sep: str
-) -> tuple[str, str, str]:
+def _diff_committed_range(cwd: Path, base_ref: str, head_ref: str, sep: str) -> tuple[str, str, str]:
     base_sha = _safe_rev_parse(cwd, base_ref)
     head_sha = _safe_rev_parse(cwd, head_ref)
     # Use the resolved SHAs in the diff command so rename/symbol churn in the
@@ -301,6 +305,7 @@ def _diff_single_ref(
 
 # Thin shims that re-raise GitError as LocalDiffError so callers of
 # resolve_local_diff catch a single domain exception.
+
 
 def _safe_rev_parse(cwd: Path, ref: str) -> str:
     try:
@@ -429,8 +434,10 @@ def _symlink(link: Path, target: Path) -> None:
 
 
 __all__ = [
-    "EmptyDiff", "LocalDiffError",
+    "EmptyDiff",
+    "LocalDiffError",
     "LocalResolved",
     "materialize_local_diff_run",
-    "resolve_local_diff", "setup_local_worktrees",
+    "resolve_local_diff",
+    "setup_local_worktrees",
 ]

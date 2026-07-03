@@ -47,8 +47,7 @@ class AnthropicSdkBackend(Backend):
             v = os.environ.get("ANTHROPIC_API_KEY")
             if not v:
                 raise typer.BadParameter(
-                    f"--backend={self.name} but $ANTHROPIC_API_KEY is not "
-                    "set (load a .env or export the variable)."
+                    f"--backend={self.name} but $ANTHROPIC_API_KEY is not set (load a .env or export the variable)."
                 )
             return v
         return resolve_api_key(self.name, bdef)

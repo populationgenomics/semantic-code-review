@@ -28,8 +28,10 @@ def _minimal(
 ) -> AnnotatedDiff:
     parsed = ParsedHunk(
         header=f"@@ -1,{old_count} +1,{new_count} @@",
-        old_start=1, old_count=old_count,
-        new_start=1, new_count=new_count,
+        old_start=1,
+        old_count=old_count,
+        new_start=1,
+        new_count=new_count,
         body=hunk_body,
     )
     return AnnotatedDiff(
@@ -52,19 +54,14 @@ def _minimal(
 
 
 def test_two_segments_round_trip() -> None:
-    body = (
-        "-a\n"
-        "+a1\n"
-        "+a2\n"
-        "+a3\n"
-        "+a4\n"
-    )
+    body = "-a\n+a1\n+a2\n+a3\n+a4\n"
     diff = _minimal(
-        body, old_count=1, new_count=4,
+        body,
+        old_count=1,
+        new_count=4,
         segments=[
             Segment(new_start=1, new_count=2, intent="first edit"),
-            Segment(new_start=3, new_count=2, intent="second edit",
-                    smells=[Smell(tag="string-sql", note="demo")]),
+            Segment(new_start=3, new_count=2, intent="second edit", smells=[Smell(tag="string-sql", note="demo")]),
         ],
     )
     text = emit_augmented_diff(diff)
@@ -80,7 +77,9 @@ def test_two_segments_round_trip() -> None:
 def test_overlapping_segments_rejected() -> None:
     body = "-a\n+a1\n+a2\n+a3\n"
     diff = _minimal(
-        body, old_count=1, new_count=3,
+        body,
+        old_count=1,
+        new_count=3,
         segments=[
             Segment(new_start=1, new_count=2),
             Segment(new_start=2, new_count=2),  # overlaps previous
@@ -94,7 +93,9 @@ def test_overlapping_segments_rejected() -> None:
 def test_segment_out_of_hunk_range_rejected() -> None:
     body = "-a\n+a1\n+a2\n"
     diff = _minimal(
-        body, old_count=1, new_count=2,
+        body,
+        old_count=1,
+        new_count=2,
         segments=[Segment(new_start=1, new_count=5)],  # exceeds hunk
     )
     text = emit_augmented_diff(diff)
@@ -125,15 +126,21 @@ def test_missing_segment_end_rejected() -> None:
 def test_fold_description_round_trip() -> None:
     body = "-a\n+a1\n+a2\n+a3\n+a4\n"
     diff = _minimal(
-        body, old_count=1, new_count=4,
+        body,
+        old_count=1,
+        new_count=4,
         segments=[],
     )
     diff.files[0].hunks[0].ann.fold_descriptions = [
         FoldDescription(context="right", right_start=1, right_end=2, summary="Intro block"),
         FoldDescription(context="left", left_start=3, left_end=4, summary="Deleted tail"),
         FoldDescription(
-            context="both", right_start=5, right_end=8,
-            left_start=4, left_end=6, summary="Refactor",
+            context="both",
+            right_start=5,
+            right_end=8,
+            left_start=4,
+            left_end=6,
+            summary="Refactor",
         ),
     ]
     text = emit_augmented_diff(diff)

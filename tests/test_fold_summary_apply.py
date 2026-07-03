@@ -33,7 +33,8 @@ def _populate_run_dir(tmp_path: Path) -> Path:
     sidecar = tmp_path / "augmented.scr.json"
     dump_sidecar(diff, sidecar)
     (tmp_path / "augmented.diff").write_text(
-        FIXTURE.read_text(encoding="utf-8"), encoding="utf-8",
+        FIXTURE.read_text(encoding="utf-8"),
+        encoding="utf-8",
     )
     head_file = tmp_path / "head" / diff.files[0].path
     head_file.parent.mkdir(parents=True, exist_ok=True)
@@ -52,19 +53,36 @@ def stub_summarise(monkeypatch: pytest.MonkeyPatch) -> dict:
     seen: dict = {}
 
     async def _stub(
-        client, *,
-        run_dir, file_path, file_summary, overview_json,
-        context, right_range, left_range,
-        model, qualified_name=None, kind=None, cache=None, trace_dir=None,
+        client,
+        *,
+        run_dir,
+        file_path,
+        file_summary,
+        overview_json,
+        context,
+        right_range,
+        left_range,
+        model,
+        qualified_name=None,
+        kind=None,
+        cache=None,
+        trace_dir=None,
     ) -> str:
         seen.update(
-            run_dir=run_dir, file_path=file_path, file_summary=file_summary,
-            context=context, right_range=right_range, left_range=left_range,
-            model=model, qualified_name=qualified_name, kind=kind,
+            run_dir=run_dir,
+            file_path=file_path,
+            file_summary=file_summary,
+            context=context,
+            right_range=right_range,
+            left_range=left_range,
+            model=model,
+            qualified_name=qualified_name,
+            kind=kind,
         )
         return f"stub-summary-{context}"
 
     import semantic_code_review.augment.fold_summary as mod
+
     monkeypatch.setattr(mod, "summarise_fold", _stub)
     return seen
 
@@ -78,19 +96,28 @@ def _client() -> Client:
 # Happy path — right / left / both contexts
 # ---------------------------------------------------------------------------
 
+
 async def test_right_context_persists_and_returns_payload(
-    tmp_path: Path, stub_summarise: dict,
+    tmp_path: Path,
+    stub_summarise: dict,
 ) -> None:
     sidecar = _populate_run_dir(tmp_path)
     result = await apply_fold_summary_to_run(
         _client(),
-        run_dir=tmp_path, file_idx=0, context="right",
-        right_range=(1, 3), left_range=None, model="x",
+        run_dir=tmp_path,
+        file_idx=0,
+        context="right",
+        right_range=(1, 3),
+        left_range=None,
+        model="x",
     )
     assert result == {
-        "file_idx": 0, "context": "right",
-        "right_start": 1, "right_end": 3,
-        "left_start": 0, "left_end": 0,
+        "file_idx": 0,
+        "context": "right",
+        "right_start": 1,
+        "right_end": 3,
+        "left_start": 0,
+        "left_end": 0,
         "summary": "stub-summary-right",
     }
     # Stub saw the file_path the function resolved from the sidecar.
@@ -103,52 +130,61 @@ async def test_right_context_persists_and_returns_payload(
     reloaded = load_sidecar(sidecar)
     folds = reloaded.files[0].hunks[0].ann.fold_descriptions
     assert any(
-        fd.context == "right" and fd.right_start == 1 and fd.right_end == 3
-        and fd.summary == "stub-summary-right"
+        fd.context == "right" and fd.right_start == 1 and fd.right_end == 3 and fd.summary == "stub-summary-right"
         for fd in folds
     )
 
 
 async def test_left_context_persists(
-    tmp_path: Path, stub_summarise: dict,
+    tmp_path: Path,
+    stub_summarise: dict,
 ) -> None:
     sidecar = _populate_run_dir(tmp_path)
     result = await apply_fold_summary_to_run(
         _client(),
-        run_dir=tmp_path, file_idx=0, context="left",
-        right_range=None, left_range=(12, 14), model="x",
+        run_dir=tmp_path,
+        file_idx=0,
+        context="left",
+        right_range=None,
+        left_range=(12, 14),
+        model="x",
     )
     assert result["context"] == "left"
     assert result["left_start"] == 12 and result["left_end"] == 14
     reloaded = load_sidecar(sidecar)
     folds = reloaded.files[0].hunks[0].ann.fold_descriptions
-    assert any(
-        fd.context == "left" and fd.left_start == 12 and fd.left_end == 14
-        for fd in folds
-    )
+    assert any(fd.context == "left" and fd.left_start == 12 and fd.left_end == 14 for fd in folds)
 
 
 async def test_replaces_existing_fold_description_with_same_key(
-    tmp_path: Path, stub_summarise: dict,
+    tmp_path: Path,
+    stub_summarise: dict,
 ) -> None:
     """Two calls with the same (context, ranges) end up with one entry,
     not two — so a re-summarise overwrites rather than accumulating."""
     sidecar = _populate_run_dir(tmp_path)
     await apply_fold_summary_to_run(
-        _client(), run_dir=tmp_path, file_idx=0, context="right",
-        right_range=(1, 3), left_range=None, model="x",
+        _client(),
+        run_dir=tmp_path,
+        file_idx=0,
+        context="right",
+        right_range=(1, 3),
+        left_range=None,
+        model="x",
     )
     # Second call with the same key — stub returns the same string.
     await apply_fold_summary_to_run(
-        _client(), run_dir=tmp_path, file_idx=0, context="right",
-        right_range=(1, 3), left_range=None, model="x",
+        _client(),
+        run_dir=tmp_path,
+        file_idx=0,
+        context="right",
+        right_range=(1, 3),
+        left_range=None,
+        model="x",
     )
     reloaded = load_sidecar(sidecar)
     folds = reloaded.files[0].hunks[0].ann.fold_descriptions
-    matching = [
-        fd for fd in folds
-        if fd.context == "right" and fd.right_start == 1 and fd.right_end == 3
-    ]
+    matching = [fd for fd in folds if fd.context == "right" and fd.right_start == 1 and fd.right_end == 3]
     assert len(matching) == 1
 
 
@@ -156,25 +192,36 @@ async def test_replaces_existing_fold_description_with_same_key(
 # Typed errors
 # ---------------------------------------------------------------------------
 
+
 async def test_raises_not_ready_when_sidecar_missing(
-    tmp_path: Path, stub_summarise: dict,
+    tmp_path: Path,
+    stub_summarise: dict,
 ) -> None:
     # No sidecar laid down.
     with pytest.raises(FoldSummaryNotReady):
         await apply_fold_summary_to_run(
             _client(),
-            run_dir=tmp_path, file_idx=0, context="right",
-            right_range=(1, 3), left_range=None, model="x",
+            run_dir=tmp_path,
+            file_idx=0,
+            context="right",
+            right_range=(1, 3),
+            left_range=None,
+            model="x",
         )
 
 
 async def test_raises_file_index_error_when_out_of_range(
-    tmp_path: Path, stub_summarise: dict,
+    tmp_path: Path,
+    stub_summarise: dict,
 ) -> None:
     _populate_run_dir(tmp_path)
     with pytest.raises(FoldSummaryFileIndexError):
         await apply_fold_summary_to_run(
             _client(),
-            run_dir=tmp_path, file_idx=999, context="right",
-            right_range=(1, 3), left_range=None, model="x",
+            run_dir=tmp_path,
+            file_idx=999,
+            context="right",
+            right_range=(1, 3),
+            left_range=None,
+            model="x",
         )

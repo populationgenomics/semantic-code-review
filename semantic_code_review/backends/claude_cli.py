@@ -41,8 +41,7 @@ class ClaudeCliBackend(Backend):
     def resolve(self, *, model: str) -> Client:
         if not shutil.which("claude"):
             raise typer.BadParameter(
-                f"--backend={self.name} but `claude` is not on PATH "
-                "(install Claude Code CLI or set ANTHROPIC_API_KEY)."
+                f"--backend={self.name} but `claude` is not on PATH (install Claude Code CLI or set ANTHROPIC_API_KEY)."
             )
         _warn_once()
         return Client(
@@ -74,6 +73,7 @@ def _warn_once() -> None:
 # Errors
 # ---------------------------------------------------------------------------
 
+
 class ClaudeCLINotFound(RuntimeError):
     pass
 
@@ -90,6 +90,7 @@ class ClaudeCLIError(RuntimeError):
 # ---------------------------------------------------------------------------
 # ClaudeCLIModel — `claude -p` with --json-schema
 # ---------------------------------------------------------------------------
+
 
 class ClaudeCLIModel(SubprocessModel):
     """`claude -p` subprocess as a pydantic-ai Model.
@@ -198,9 +199,7 @@ class ClaudeCLIModel(SubprocessModel):
         schema_json = json.dumps(schema, ensure_ascii=False)
 
         mcp_active = self._repo_tools is not None
-        max_turns = (
-            self._max_turns_with_mcp if mcp_active else self._max_turns_single_shot
-        )
+        max_turns = self._max_turns_with_mcp if mcp_active else self._max_turns_single_shot
 
         # NOTE: do NOT pass --bare here. Its docs are explicit:
         # "Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper
@@ -210,22 +209,32 @@ class ClaudeCLIModel(SubprocessModel):
         # would defeat the point and always return "Not logged in".
         # We pick the useful pieces of --bare individually below.
         argv = [
-            self._claude, "-p",
-            "--model", self._model,
-            "--system-prompt", system_text,
-            "--json-schema", schema_json,
-            "--tools", "",
+            self._claude,
+            "-p",
+            "--model",
+            self._model,
+            "--system-prompt",
+            system_text,
+            "--json-schema",
+            schema_json,
+            "--tools",
+            "",
             "--no-session-persistence",
-            "--setting-sources", "",
-            "--permission-mode", "bypassPermissions",
-            "--output-format", "json",
-            "--max-turns", str(max_turns),
+            "--setting-sources",
+            "",
+            "--permission-mode",
+            "bypassPermissions",
+            "--output-format",
+            "json",
+            "--max-turns",
+            str(max_turns),
         ]
         if self._fallback_model:
             argv += ["--fallback-model", self._fallback_model]
         if mcp_active:
             argv += [
-                "--mcp-config", str(self._ensure_mcp_config()),
+                "--mcp-config",
+                str(self._ensure_mcp_config()),
                 "--strict-mcp-config",
             ]
 
@@ -237,9 +246,7 @@ class ClaudeCLIModel(SubprocessModel):
 
     # ---- free-form (console) ---------------------------------------------
 
-    def _build_text_invocation(
-        self, *, system_text: str, user_text: str
-    ) -> _Invocation:
+    def _build_text_invocation(self, *, system_text: str, user_text: str) -> _Invocation:
         """`claude -p` in plain-text mode for a free-form console turn.
 
         Same shape as `_build_invocation` minus `--json-schema` and the
@@ -249,19 +256,25 @@ class ClaudeCLIModel(SubprocessModel):
         the model can explore the worktrees mid-answer.
         """
         mcp_active = self._repo_tools is not None
-        max_turns = (
-            self._max_turns_with_mcp if mcp_active else self._max_turns_single_shot
-        )
+        max_turns = self._max_turns_with_mcp if mcp_active else self._max_turns_single_shot
         argv = [
-            self._claude, "-p",
-            "--model", self._model,
-            "--system-prompt", system_text,
-            "--tools", "",
+            self._claude,
+            "-p",
+            "--model",
+            self._model,
+            "--system-prompt",
+            system_text,
+            "--tools",
+            "",
             "--no-session-persistence",
-            "--setting-sources", "",
-            "--permission-mode", "bypassPermissions",
-            "--output-format", "json",
-            "--max-turns", str(max_turns),
+            "--setting-sources",
+            "",
+            "--permission-mode",
+            "bypassPermissions",
+            "--output-format",
+            "json",
+            "--max-turns",
+            str(max_turns),
         ]
         # Turn reasoning up for the console (see __init__). The structured
         # path omits this on purpose.
@@ -271,7 +284,8 @@ class ClaudeCLIModel(SubprocessModel):
             argv += ["--fallback-model", self._fallback_model]
         if mcp_active:
             argv += [
-                "--mcp-config", str(self._ensure_mcp_config()),
+                "--mcp-config",
+                str(self._ensure_mcp_config()),
                 "--strict-mcp-config",
             ]
 
@@ -279,7 +293,9 @@ class ClaudeCLIModel(SubprocessModel):
             argv=argv,
             stdin=user_text.encode("utf-8"),
             extra_log={
-                "mcp": mcp_active, "max_turns": max_turns, "free_form": True,
+                "mcp": mcp_active,
+                "max_turns": max_turns,
+                "free_form": True,
                 "effort": self._console_effort,
             },
         )
@@ -300,9 +316,7 @@ class ClaudeCLIModel(SubprocessModel):
 
     # ---- envelope --------------------------------------------------------
 
-    def _parse_envelope(
-        self, *, stdout: bytes, stderr: bytes, returncode: int
-    ) -> dict[str, Any]:
+    def _parse_envelope(self, *, stdout: bytes, stderr: bytes, returncode: int) -> dict[str, Any]:
         # `claude -p` frequently writes the real failure into the stdout
         # envelope (is_error=true, result=<message>) and exits non-zero
         # with empty stderr — e.g. when not logged in. So we parse stdout
@@ -312,24 +326,19 @@ class ClaudeCLIModel(SubprocessModel):
         if not text:
             if returncode != 0:
                 raise ClaudeCLIError(
-                    f"claude -p exited {returncode}: "
-                    f"{_tail(stderr.decode('utf-8', errors='replace')) or '<no stderr>'}"
+                    f"claude -p exited {returncode}: {_tail(stderr.decode('utf-8', errors='replace')) or '<no stderr>'}"
                 )
             raise ClaudeCLIError(
-                f"claude -p produced empty stdout; stderr="
-                f"{_tail(stderr.decode('utf-8', errors='replace'))}"
+                f"claude -p produced empty stdout; stderr={_tail(stderr.decode('utf-8', errors='replace'))}"
             )
         try:
             return json.loads(text)
         except json.JSONDecodeError as e:
             if returncode != 0:
                 raise ClaudeCLIError(
-                    f"claude -p exited {returncode}: "
-                    f"{_tail(stderr.decode('utf-8', errors='replace')) or '<no stderr>'}"
+                    f"claude -p exited {returncode}: {_tail(stderr.decode('utf-8', errors='replace')) or '<no stderr>'}"
                 ) from e
-            raise ClaudeCLIError(
-                f"claude -p envelope not JSON: {e}; stdout[:200]={text[:200]!r}"
-            ) from e
+            raise ClaudeCLIError(f"claude -p envelope not JSON: {e}; stdout[:200]={text[:200]!r}") from e
 
     @staticmethod
     def _raise_if_error(envelope: dict[str, Any]) -> None:
@@ -399,14 +408,10 @@ class ClaudeCLIModel(SubprocessModel):
                 f"result[:400]={result_text[:400]!r}"
             ) from e
 
-    def _validation_exhausted_error(
-        self, last_error: str | None, attempts: list[str]
-    ) -> Exception:
+    def _validation_exhausted_error(self, last_error: str | None, attempts: list[str]) -> Exception:
         # Unreachable — claude doesn't retry — but the abstract method
         # demands an implementation.
-        return ClaudeCLIError(
-            f"claude -p validation retries exhausted: {last_error!r}"
-        )
+        return ClaudeCLIError(f"claude -p validation retries exhausted: {last_error!r}")
 
 
 __all__ = [

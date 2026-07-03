@@ -12,9 +12,7 @@ from semantic_code_review.backends.anthropic_sdk import AnthropicSdkBackend
 from semantic_code_review.config import BackendDef, BackendType
 
 
-def test_resolves_key_via_command(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_resolves_key_via_command(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     """User's stated case: Anthropic key fetched from a gcloud secret."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     fake_cmd = tmp_path / "secret-fetcher"
@@ -50,9 +48,7 @@ def test_no_key_no_env_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         AnthropicSdkBackend("claude-api", bdef).resolve(model="claude-opus-4-7")
 
 
-def test_supports_auto_when_key_resolves(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_supports_auto_when_key_resolves(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     fake_cmd = tmp_path / "fetch"
     fake_cmd.write_text("#!/bin/sh\nprintf 'sk-ant-x\\n'\n")

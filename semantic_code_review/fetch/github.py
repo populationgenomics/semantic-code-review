@@ -101,8 +101,13 @@ _PR_FIELDS = [
 
 def _fetch_pr_meta(ref: PRRef) -> dict:
     rc, stdout, stderr = git_ops.gh_capture(
-        "pr", "view", str(ref.number), "--repo", ref.slug,
-        "--json", ",".join(_PR_FIELDS),
+        "pr",
+        "view",
+        str(ref.number),
+        "--repo",
+        ref.slug,
+        "--json",
+        ",".join(_PR_FIELDS),
     )
     if rc != 0:
         # preflight_gh is responsible for asserting a minimum gh
@@ -114,7 +119,11 @@ def _fetch_pr_meta(ref: PRRef) -> dict:
 
 def _fetch_pr_diff(ref: PRRef) -> str:
     rc, stdout, stderr = git_ops.gh_capture(
-        "pr", "diff", str(ref.number), "--repo", ref.slug,
+        "pr",
+        "diff",
+        str(ref.number),
+        "--repo",
+        ref.slug,
     )
     if rc != 0:
         raise GhFetchError(f"gh pr diff failed: {stderr.strip()}")
@@ -202,14 +211,19 @@ def materialize_github_pr_run(pr_url: str, runs_root: Path) -> Path:
     run_dir = materialize_run_metadata(resolved.spec, runs_root)
     setup_github_worktrees(run_dir, resolved)
     from .github_comments import materialize_pr_comments
+
     materialize_pr_comments(run_dir, resolved.ref, head_sha=resolved.spec.head_sha)
     return run_dir
 
 
 __all__ = [
-    "GhFetchError", "GhMissingError",
-    "GithubResolved", "PRRef",
+    "GhFetchError",
+    "GhMissingError",
+    "GithubResolved",
+    "PRRef",
     "materialize_github_pr_run",
-    "parse_pr_url", "preflight_gh",
-    "resolve_github_pr", "setup_github_worktrees",
+    "parse_pr_url",
+    "preflight_gh",
+    "resolve_github_pr",
+    "setup_github_worktrees",
 ]

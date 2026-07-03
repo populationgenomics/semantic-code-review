@@ -12,7 +12,10 @@ from semantic_code_review.augment.tools import RepoTools
 
 def _rt(head: Path) -> RepoTools:
     return RepoTools(
-        head_worktree=head, repo_git=head, base_sha="x", head_sha="y",
+        head_worktree=head,
+        repo_git=head,
+        base_sha="x",
+        head_sha="y",
     )
 
 
@@ -47,7 +50,8 @@ def test_initialize_returns_capabilities(tmp_path: Path) -> None:
 def test_initialized_notification_produces_no_response(tmp_path: Path) -> None:
     rt = _rt(tmp_path)
     responses = _run(
-        rt, _request("notifications/initialized", id_=None),
+        rt,
+        _request("notifications/initialized", id_=None),
     )
     assert responses == []
 
@@ -57,7 +61,16 @@ def test_tools_list_exposes_repo_tools(tmp_path: Path) -> None:
     responses = _run(rt, _request("tools/list", id_=2))
     assert len(responses) == 1
     names = {t["name"] for t in responses[0]["result"]["tools"]}
-    assert names == {"read_file", "read_file_at", "outline", "symbol_at", "changed_symbols", "grep", "list_dir", "git_log"}
+    assert names == {
+        "read_file",
+        "read_file_at",
+        "outline",
+        "symbol_at",
+        "changed_symbols",
+        "grep",
+        "list_dir",
+        "git_log",
+    }
     for t in responses[0]["result"]["tools"]:
         assert "inputSchema" in t  # MCP uses camelCase
 
@@ -65,10 +78,14 @@ def test_tools_list_exposes_repo_tools(tmp_path: Path) -> None:
 def test_tools_call_read_file_roundtrip(tmp_path: Path) -> None:
     (tmp_path / "hello.txt").write_text("HELLO\nworld\n", encoding="utf-8")
     rt = _rt(tmp_path)
-    responses = _run(rt, _request(
-        "tools/call", id_=3,
-        params={"name": "read_file", "arguments": {"path": "hello.txt"}},
-    ))
+    responses = _run(
+        rt,
+        _request(
+            "tools/call",
+            id_=3,
+            params={"name": "read_file", "arguments": {"path": "hello.txt"}},
+        ),
+    )
     assert len(responses) == 1
     r = responses[0]
     assert r["id"] == 3
@@ -78,10 +95,14 @@ def test_tools_call_read_file_roundtrip(tmp_path: Path) -> None:
 
 def test_tools_call_error_surface(tmp_path: Path) -> None:
     rt = _rt(tmp_path)
-    responses = _run(rt, _request(
-        "tools/call", id_=4,
-        params={"name": "read_file", "arguments": {"path": "does-not-exist"}},
-    ))
+    responses = _run(
+        rt,
+        _request(
+            "tools/call",
+            id_=4,
+            params={"name": "read_file", "arguments": {"path": "does-not-exist"}},
+        ),
+    )
     assert responses[0]["result"]["isError"] is True
     assert "error:" in responses[0]["result"]["content"][0]["text"]
 

@@ -50,6 +50,7 @@ log = logging.getLogger(__name__)
 # Shared message → flat-text translation
 # ---------------------------------------------------------------------------
 
+
 def _stringify(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -82,21 +83,13 @@ def _flatten_messages(messages: list[ModelMessage]) -> tuple[str, str]:
                         user_chunks.append(f"# user\n{content}")
                     else:
                         for item in content:
-                            text = (
-                                getattr(item, "text", None)
-                                or (item if isinstance(item, str) else None)
-                            )
+                            text = getattr(item, "text", None) or (item if isinstance(item, str) else None)
                             if text:
                                 user_chunks.append(f"# user\n{text}")
                 elif isinstance(part, ToolReturnPart):
-                    user_chunks.append(
-                        f"# tool_result {part.tool_call_id}\n{_stringify(part.content)}"
-                    )
+                    user_chunks.append(f"# tool_result {part.tool_call_id}\n{_stringify(part.content)}")
                 elif isinstance(part, RetryPromptPart):
-                    user_chunks.append(
-                        f"# retry {part.tool_call_id or ''}\n"
-                        f"{_stringify(part.content)}"
-                    )
+                    user_chunks.append(f"# retry {part.tool_call_id or ''}\n{_stringify(part.content)}")
         elif isinstance(msg, ModelResponse):
             for part in msg.parts:
                 if isinstance(part, TextPart):
@@ -114,8 +107,7 @@ def _output_tool(mrp: ModelRequestParameters) -> ToolDefinition:
     """The `output_type=ToolOutput(...)` tool the Agent expects us to call."""
     if not mrp.output_tools:
         raise RuntimeError(
-            "CLI driver requires an output_type-driven Agent — "
-            "model_request_parameters.output_tools is empty."
+            "CLI driver requires an output_type-driven Agent — model_request_parameters.output_tools is empty."
         )
     return mrp.output_tools[0]
 
@@ -129,7 +121,7 @@ def _instructions_to_system(mrp: ModelRequestParameters) -> str:
     misses them.
     """
     chunks: list[str] = []
-    for ip in (mrp.instruction_parts or []):
+    for ip in mrp.instruction_parts or []:
         text = getattr(ip, "content", None) or getattr(ip, "text", None) or ""
         if text:
             chunks.append(text)
@@ -152,19 +144,23 @@ def _mcp_config_for(rt: RepoTools) -> dict[str, Any]:
     launched from an unrelated cwd.
     """
     import semantic_code_review as _pkg
+
     pkg_root = str(Path(_pkg.__file__).resolve().parent.parent)
     existing_pp = os.environ.get("PYTHONPATH", "")
-    pythonpath = (
-        f"{pkg_root}{os.pathsep}{existing_pp}" if existing_pp else pkg_root
-    )
+    pythonpath = f"{pkg_root}{os.pathsep}{existing_pp}" if existing_pp else pkg_root
     return {
         "command": sys.executable,
         "args": [
-            "-m", "semantic_code_review.augment.mcp_server",
-            "--head-worktree", str(rt.head_worktree),
-            "--repo-git", str(rt.repo_git),
-            "--base-sha", rt.base_sha,
-            "--head-sha", rt.head_sha,
+            "-m",
+            "semantic_code_review.augment.mcp_server",
+            "--head-worktree",
+            str(rt.head_worktree),
+            "--repo-git",
+            str(rt.repo_git),
+            "--base-sha",
+            rt.base_sha,
+            "--head-sha",
+            rt.head_sha,
         ],
         "env": {"PYTHONPATH": pythonpath},
     }
@@ -230,6 +226,7 @@ def _text_to_response(
 # Shared validation-retry sentinels
 # ---------------------------------------------------------------------------
 
+
 class _SchemaValidationError(ValueError):
     pass
 
@@ -249,6 +246,7 @@ class _ValidationFailure(Exception):
 # ---------------------------------------------------------------------------
 # SubprocessModel — request loop / spawn / retry skeleton
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class _Invocation:
@@ -318,9 +316,7 @@ class SubprocessModel(Model, ABC):
     ) -> _Invocation: ...
 
     @abstractmethod
-    def _parse_envelope(
-        self, *, stdout: bytes, stderr: bytes, returncode: int
-    ) -> dict[str, Any]:
+    def _parse_envelope(self, *, stdout: bytes, stderr: bytes, returncode: int) -> dict[str, Any]:
         """Raw output → JSON envelope. Hard failures raise the typed error."""
 
     @abstractmethod
@@ -342,9 +338,7 @@ class SubprocessModel(Model, ABC):
         return envelope
 
     @abstractmethod
-    def _validation_exhausted_error(
-        self, last_error: str | None, attempts: list[str]
-    ) -> Exception: ...
+    def _validation_exhausted_error(self, last_error: str | None, attempts: list[str]) -> Exception: ...
 
     # ---- free-form (console) hooks ---------------------------------------
     #
@@ -354,19 +348,13 @@ class SubprocessModel(Model, ABC):
     # to these instead when `output_tools` is empty. The default raises —
     # a driver opts into console support by overriding both.
 
-    def _build_text_invocation(
-        self, *, system_text: str, user_text: str
-    ) -> _Invocation:
+    def _build_text_invocation(self, *, system_text: str, user_text: str) -> _Invocation:
         """Spawn the CLI in plain-text mode (no schema-constrained output)."""
-        raise NotImplementedError(
-            f"{self._provider_name} does not support free-form console turns"
-        )
+        raise NotImplementedError(f"{self._provider_name} does not support free-form console turns")
 
     def _envelope_to_text(self, *, envelope: dict[str, Any]) -> str:
         """Envelope → the model's prose answer. Hard failures raise."""
-        raise NotImplementedError(
-            f"{self._provider_name} does not support free-form console turns"
-        )
+        raise NotImplementedError(f"{self._provider_name} does not support free-form console turns")
 
     # ---- core request loop ------------------------------------------------
 
@@ -387,7 +375,8 @@ class SubprocessModel(Model, ABC):
         # its own tool loop internally and either answered or errored.
         if not model_request_parameters.output_tools:
             return await self._request_text(
-                system_text=system_text, user_text=user_text,
+                system_text=system_text,
+                user_text=user_text,
             )
 
         tool_def = _output_tool(model_request_parameters)
@@ -405,17 +394,24 @@ class SubprocessModel(Model, ABC):
             )
             log.info(
                 "%s invoking: model=%s attempt=%d submit=%s%s",
-                self._provider_name, self._model, attempt + 1, tool_def.name,
+                self._provider_name,
+                self._model,
+                attempt + 1,
+                tool_def.name,
                 "".join(f" {k}={v}" for k, v in inv.extra_log.items()),
             )
             stdout, stderr, returncode = await self._spawn(inv)
 
             envelope = self._parse_envelope(
-                stdout=stdout, stderr=stderr, returncode=returncode,
+                stdout=stdout,
+                stderr=stderr,
+                returncode=returncode,
             )
             try:
                 structured = self._envelope_to_structured(
-                    envelope=envelope, schema=schema, submit_tool_name=tool_def.name,
+                    envelope=envelope,
+                    schema=schema,
+                    submit_tool_name=tool_def.name,
                 )
             except _ValidationFailure as e:
                 last_error = e.reason
@@ -431,20 +427,22 @@ class SubprocessModel(Model, ABC):
 
         raise self._validation_exhausted_error(last_error, attempts)
 
-    async def _request_text(
-        self, *, system_text: str, user_text: str
-    ) -> ModelResponse:
+    async def _request_text(self, *, system_text: str, user_text: str) -> ModelResponse:
         inv = self._build_text_invocation(
-            system_text=system_text, user_text=user_text,
+            system_text=system_text,
+            user_text=user_text,
         )
         log.info(
             "%s invoking (free-form): model=%s%s",
-            self._provider_name, self._model,
+            self._provider_name,
+            self._model,
             "".join(f" {k}={v}" for k, v in inv.extra_log.items()),
         )
         stdout, stderr, returncode = await self._spawn(inv)
         envelope = self._parse_envelope(
-            stdout=stdout, stderr=stderr, returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+            returncode=returncode,
         )
         text = self._envelope_to_text(envelope=envelope)
         return _text_to_response(
@@ -455,10 +453,7 @@ class SubprocessModel(Model, ABC):
         )
 
     async def _spawn(self, inv: _Invocation) -> tuple[bytes, bytes, int]:
-        stdin_arg = (
-            asyncio.subprocess.PIPE if inv.stdin is not None
-            else asyncio.subprocess.DEVNULL
-        )
+        stdin_arg = asyncio.subprocess.PIPE if inv.stdin is not None else asyncio.subprocess.DEVNULL
         proc = await asyncio.create_subprocess_exec(
             *inv.argv,
             stdin=stdin_arg,
@@ -470,7 +465,10 @@ class SubprocessModel(Model, ABC):
         rc = proc.returncode if proc.returncode is not None else -1
         log.info(
             "%s exit=%d stdout=%d stderr=%d",
-            self._provider_name, rc, len(stdout), len(stderr),
+            self._provider_name,
+            rc,
+            len(stdout),
+            len(stderr),
         )
         return stdout, stderr, rc
 
@@ -478,6 +476,7 @@ class SubprocessModel(Model, ABC):
 # ---------------------------------------------------------------------------
 # JSON helpers (used by drivers that validate/extract client-side)
 # ---------------------------------------------------------------------------
+
 
 def _validate_against_schema(value: Any, schema: dict[str, Any]) -> None:
     """Minimal JSON-Schema check: required-keys + top-level type.
@@ -488,9 +487,7 @@ def _validate_against_schema(value: Any, schema: dict[str, Any]) -> None:
     contract bug" so the retry path is bounded.
     """
     if schema.get("type") == "object" and not isinstance(value, dict):
-        raise _SchemaValidationError(
-            f"top-level type must be object, got {type(value).__name__}"
-        )
+        raise _SchemaValidationError(f"top-level type must be object, got {type(value).__name__}")
     required = schema.get("required") or []
     missing = [k for k in required if k not in value]
     if missing:

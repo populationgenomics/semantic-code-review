@@ -9,9 +9,7 @@ from semantic_code_review.backends.base import resolve_api_key
 from semantic_code_review.config import BackendDef, BackendType
 
 
-def test_command_runs_when_env_unset(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_command_runs_when_env_unset(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.delenv("FAKE_KEY", raising=False)
     fake_cmd = tmp_path / "fake-token-printer"
     fake_cmd.write_text("#!/bin/sh\nprintf 'sk-from-cmd\\n'\n")
@@ -37,14 +35,10 @@ def test_env_wins_over_command(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resolve_api_key("gh-style", bdef) == "sk-from-env"
 
 
-def test_command_failure_includes_stderr(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_command_failure_includes_stderr(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.delenv("FAKE_KEY", raising=False)
     fake_cmd = tmp_path / "fail-cmd"
-    fake_cmd.write_text(
-        "#!/bin/sh\necho 'auth: not logged in' 1>&2\nexit 4\n"
-    )
+    fake_cmd.write_text("#!/bin/sh\necho 'auth: not logged in' 1>&2\nexit 4\n")
     fake_cmd.chmod(0o755)
     bdef = BackendDef(
         type=BackendType.OPENAI_COMPAT,
@@ -56,9 +50,7 @@ def test_command_failure_includes_stderr(
         resolve_api_key("gh-style", bdef)
 
 
-def test_command_empty_output_raises(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_command_empty_output_raises(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.delenv("FAKE_KEY", raising=False)
     fake_cmd = tmp_path / "empty-cmd"
     fake_cmd.write_text("#!/bin/sh\nexit 0\n")

@@ -299,11 +299,7 @@ def test_ts_method_nests_under_class() -> None:
 
 
 def test_tsx_parses_jsx_returning_component() -> None:
-    src = (
-        "export function Button(props: {label: string}): JSX.Element {\n"
-        "  return <button>{props.label}</button>;\n"
-        "}\n"
-    )
+    src = "export function Button(props: {label: string}): JSX.Element {\n  return <button>{props.label}</button>;\n}\n"
     top = _by_name(outline_symbols(src, "tsx"))
     assert top["Button"].kind == "function"
     assert top["Button"].signature == "function Button(props: {label: string}): JSX.Element"
@@ -311,15 +307,7 @@ def test_tsx_parses_jsx_returning_component() -> None:
 
 def test_js_outline_has_no_signature() -> None:
     """Untyped JS carries no declared signature (Slice 6)."""
-    src = (
-        "function greet(name) {\n"
-        "  return name;\n"
-        "}\n"
-        "\n"
-        "class Box {\n"
-        "  open() { return 1; }\n"
-        "}\n"
-    )
+    src = "function greet(name) {\n  return name;\n}\n\nclass Box {\n  open() { return 1; }\n}\n"
     top = _by_name(outline_symbols(src, "javascript"))
     assert set(top) >= {"greet", "Box"}
     assert top["greet"].kind == "function" and top["greet"].signature is None
@@ -328,12 +316,8 @@ def test_js_outline_has_no_signature() -> None:
 
 
 def test_ts_changed_symbols_diff() -> None:
-    base = outline_symbols(
-        "function keep(): void {}\nfunction gone(): void {}\n", "typescript"
-    )
-    head = outline_symbols(
-        "function keep(): void {}\nfunction added(): void {}\n", "typescript"
-    )
+    base = outline_symbols("function keep(): void {}\nfunction gone(): void {}\n", "typescript")
+    head = outline_symbols("function keep(): void {}\nfunction added(): void {}\n", "typescript")
     delta = diff_file("m.ts", base, head)
     assert [c.qualified_name for c in delta.added] == ["added"]
     assert [c.qualified_name for c in delta.removed] == ["gone"]

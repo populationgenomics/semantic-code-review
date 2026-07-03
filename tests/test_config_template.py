@@ -68,10 +68,7 @@ def test_render_output_is_valid_toml_when_uncommented() -> None:
     produce parseable TOML — sanity check on the line shape."""
     block = render_backend_template("groq")
     # Strip the leading "# " from every override line.
-    body = "\n".join(
-        line[2:] if line.startswith("# ") and "=" in line else line
-        for line in block.splitlines()
-    )
+    body = "\n".join(line[2:] if line.startswith("# ") and "=" in line else line for line in block.splitlines())
     # Comments + section header + uncommented overrides.
     parsed = tomllib.loads(body)
     assert "backends" in parsed
@@ -82,9 +79,7 @@ def test_appended_template_still_loads_via_scrconfig(tmp_path) -> None:
     """End-to-end: append a builtin template, uncomment a model
     override, and verify ScrConfig.load picks it up."""
     config_path = tmp_path / "config.toml"
-    config_path.write_text(
-        '# header\nbackend = "claude-api"\n', encoding="utf-8"
-    )
+    config_path.write_text('# header\nbackend = "claude-api"\n', encoding="utf-8")
     block = render_backend_template("groq")
     # Simulate user uncommenting the model line.
     block = block.replace(

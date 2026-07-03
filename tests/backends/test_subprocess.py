@@ -30,6 +30,7 @@ from ._subproc_fakes import FakeProc, install_fake_subproc
 # Pure helpers
 # ---------------------------------------------------------------------------
 
+
 def test_flatten_messages_separates_system_and_user() -> None:
     """SystemPromptParts go to the system channel; user prompts to the prompt body."""
     from datetime import datetime
@@ -98,6 +99,7 @@ def test_validate_against_schema_rejects_wrong_top_type() -> None:
 # SubprocessModel — base-class request loop / spawn / retry
 # ---------------------------------------------------------------------------
 
+
 class _StubModel(SubprocessModel):
     """Minimal `SubprocessModel` for testing the request loop in isolation.
 
@@ -146,9 +148,7 @@ async def test_subprocess_model_retries_until_success(monkeypatch: pytest.Monkey
     and stops retrying once _envelope_to_structured returns a dict."""
     model = _StubModel(max_validation_retries=2)
     bad = FakeProc(json.dumps({"retry": True, "reason": "bad-1"}).encode("utf-8"))
-    good = FakeProc(
-        json.dumps({"structured": {"intent": "ok"}}).encode("utf-8")
-    )
+    good = FakeProc(json.dumps({"structured": {"intent": "ok"}}).encode("utf-8"))
     install_fake_subproc(monkeypatch, [bad, good])
 
     result = await _agent(model).run("USER")

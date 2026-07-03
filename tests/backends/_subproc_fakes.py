@@ -35,9 +35,7 @@ class FakeProc:
         return self._stdout, self._stderr
 
 
-def install_fake_subproc(
-    monkeypatch: pytest.MonkeyPatch, procs: list[FakeProc]
-) -> list[dict[str, Any]]:
+def install_fake_subproc(monkeypatch: pytest.MonkeyPatch, procs: list[FakeProc]) -> list[dict[str, Any]]:
     """Replace `asyncio.create_subprocess_exec` with a queue of fakes.
 
     Returns a list that the patch populates with one
@@ -54,6 +52,7 @@ def install_fake_subproc(
         return queue.pop(0)
 
     import semantic_code_review.backends._cli_driver as mod
+
     monkeypatch.setattr(mod.asyncio, "create_subprocess_exec", _fake)
     return calls
 
@@ -78,7 +77,8 @@ def claude_envelope(
         "is_error": is_error,
         "stop_reason": "end_turn",
         "session_id": "sess-abc",
-        "usage": usage or {
+        "usage": usage
+        or {
             "input_tokens": 42,
             "output_tokens": 17,
             "cache_creation_input_tokens": 0,
@@ -104,7 +104,8 @@ def gemini_envelope(
     payload: dict[str, Any] = {
         "response": response if isinstance(response, str) else json.dumps(response),
         "stats": {
-            "models": stats_models or {
+            "models": stats_models
+            or {
                 "gemini-2.5-pro": {
                     "tokens": {"input": 42, "candidates": 17, "cached": 0},
                 },

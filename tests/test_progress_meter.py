@@ -42,6 +42,7 @@ def test_disabled_under_no_color(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeTTY:
         def isatty(self) -> bool:
             return True
+
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setenv("COLORTERM", "truecolor")
     assert is_truecolor_tty(FakeTTY()) is False
@@ -95,7 +96,7 @@ def test_age_pushes_in_flight_color_toward_red(monkeypatch: pytest.MonkeyPatch) 
 
 def test_out_of_range_index_is_no_op() -> None:
     meter = ProgressMeter(total=2, enabled=True, stream=io.StringIO())
-    meter.start_hunk(99)   # silently ignored
+    meter.start_hunk(99)  # silently ignored
     meter.finish_hunk(-1)  # silently ignored
     line = meter.render_line()
     assert "0/2" in line

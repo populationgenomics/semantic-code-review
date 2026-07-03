@@ -42,9 +42,7 @@ def _rgb(r: int, g: int, b: int) -> str:
     return f"{ESC}38;2;{r};{g};{b}m"
 
 
-def _lerp(
-    a: tuple[int, int, int], b: tuple[int, int, int], t: float
-) -> tuple[int, int, int]:
+def _lerp(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[int, int, int]:
     return (
         int(a[0] + (b[0] - a[0]) * t),
         int(a[1] + (b[1] - a[1]) * t),
@@ -53,16 +51,16 @@ def _lerp(
 
 
 # Heat curve stops. Cool when fresh, hot when stale.
-COOL = (96, 200, 240)   # cyan
-WARM = (240, 200, 80)   # yellow
-HOT = (240, 80, 60)     # red
+COOL = (96, 200, 240)  # cyan
+WARM = (240, 200, 80)  # yellow
+HOT = (240, 80, 60)  # red
 
 DONE_FRESH = (100, 220, 120)  # green
-DONE_FADED = (90, 90, 90)     # dim grey
-FAILED = (220, 80, 60)        # red
+DONE_FADED = (90, 90, 90)  # dim grey
+FAILED = (220, 80, 60)  # red
 
-HEAT_FULL_SECONDS = 30.0    # ~p99 hunk latency target.
-DONE_FADE_SECONDS = 4.0     # how long a closed square stays prominent.
+HEAT_FULL_SECONDS = 30.0  # ~p99 hunk latency target.
+DONE_FADE_SECONDS = 4.0  # how long a closed square stays prominent.
 
 
 def _heat_color(heat: float) -> tuple[int, int, int]:
@@ -113,9 +111,7 @@ class ProgressMeter:
     ) -> None:
         self.total = total
         self.stream = stream if stream is not None else sys.stderr
-        self.enabled = (
-            is_truecolor_tty(self.stream) if enabled is None else enabled
-        )
+        self.enabled = is_truecolor_tty(self.stream) if enabled is None else enabled
         self.start_time = time.monotonic()
         self.hunks: list[_HunkState] = [_HunkState() for _ in range(total)]
         self.overview_started: float | None = None
@@ -184,9 +180,7 @@ class ProgressMeter:
             mark = "✓" if self.overview_ok else "✗"
             parts.append(f"overview {mark}")
         elif self.overview_started is not None:
-            r, g, b = _heat_color(
-                (now - self.overview_started) / HEAT_FULL_SECONDS
-            )
+            r, g, b = _heat_color((now - self.overview_started) / HEAT_FULL_SECONDS)
             parts.append(f"overview {_rgb(r, g, b)}■{RESET}")
         else:
             parts.append(f"overview {DIM}·{RESET}")
@@ -197,17 +191,13 @@ class ProgressMeter:
         for h in self.hunks:
             if h.finished is not None:
                 if h.ok:
-                    fade = max(
-                        0.0, min(1.0, (now - h.finished) / DONE_FADE_SECONDS)
-                    )
+                    fade = max(0.0, min(1.0, (now - h.finished) / DONE_FADE_SECONDS))
                     r, g, b = _lerp(DONE_FRESH, DONE_FADED, fade)
                     squares.append(f"{_rgb(r, g, b)}■{RESET}")
                 else:
                     squares.append(f"{_rgb(*FAILED)}■{RESET}")
             elif h.started is not None:
-                r, g, b = _heat_color(
-                    (now - h.started) / HEAT_FULL_SECONDS
-                )
+                r, g, b = _heat_color((now - h.started) / HEAT_FULL_SECONDS)
                 squares.append(f"{_rgb(r, g, b)}■{RESET}")
             else:
                 squares.append(f"{DIM}·{RESET}")

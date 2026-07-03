@@ -158,6 +158,7 @@ class OverviewGroupMember(BaseModel):
     present, or index out of range) are dropped at parse time by
     `apply_overview_to_diff`.
     """
+
     path: str
     hunk_index: int
 
@@ -170,6 +171,7 @@ class OverviewGroup(BaseModel):
     diff. The viewer renders each group as a sidebar entry; clicking
     one filters the visible hunks to that group's members.
     """
+
     title: str
     rationale: str = ""
     members: list[OverviewGroupMember] = Field(default_factory=list)

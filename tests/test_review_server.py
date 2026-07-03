@@ -30,7 +30,8 @@ def server(tmp_path: Path):
 
 def _request(url: str, method: str = "GET", body: dict | None = None) -> tuple[int, dict]:
     req = urllib.request.Request(
-        url, method=method,
+        url,
+        method=method,
         data=json.dumps(body).encode("utf-8") if body is not None else None,
         headers={"Content-Type": "application/json"} if body is not None else {},
     )
@@ -95,9 +96,17 @@ def test_get_data_json(server) -> None:
 
 
 def test_post_comment_upserts_and_persists(server, tmp_path: Path) -> None:
-    code, body = _request(server.url() + "/comments", "POST", {
-        "id": "c1", "file": "a.py", "side": "new", "line": 5, "body": "hmm",
-    })
+    code, body = _request(
+        server.url() + "/comments",
+        "POST",
+        {
+            "id": "c1",
+            "file": "a.py",
+            "side": "new",
+            "line": 5,
+            "body": "hmm",
+        },
+    )
     assert code == 200
     assert body["id"] == "c1"
     # File on disk
@@ -107,9 +116,17 @@ def test_post_comment_upserts_and_persists(server, tmp_path: Path) -> None:
     assert data["comments"][0]["body"] == "hmm"
 
     # Update the same id
-    code, body = _request(server.url() + "/comments", "POST", {
-        "id": "c1", "file": "a.py", "side": "new", "line": 5, "body": "clearer",
-    })
+    code, body = _request(
+        server.url() + "/comments",
+        "POST",
+        {
+            "id": "c1",
+            "file": "a.py",
+            "side": "new",
+            "line": 5,
+            "body": "clearer",
+        },
+    )
     assert code == 200
     data = json.loads(comments_path.read_text())
     assert data["comments"][0]["body"] == "clearer"
@@ -117,7 +134,8 @@ def test_post_comment_upserts_and_persists(server, tmp_path: Path) -> None:
 
 def test_post_invalid_comment_400(server) -> None:
     req = urllib.request.Request(
-        server.url() + "/comments", method="POST",
+        server.url() + "/comments",
+        method="POST",
         data=json.dumps({"id": "x"}).encode(),
         headers={"Content-Type": "application/json"},
     )
@@ -133,22 +151,41 @@ def test_post_cannot_overwrite_ingested_comment(server, tmp_path: Path) -> None:
     body get rewritten in place."""
     # Seed comments.json with an ingested comment, then re-create the
     # server so it loads from the file we just wrote.
-    (tmp_path / "comments.json").write_text(json.dumps({
-        "comments": [{
-            "id": "gh-1", "file": "a.py", "side": "new", "line": 1,
-            "body": "upstream", "source": "github", "author": "alice",
-            "created_at": 1.0, "updated_at": 1.0,
-        }],
-    }))
+    (tmp_path / "comments.json").write_text(
+        json.dumps(
+            {
+                "comments": [
+                    {
+                        "id": "gh-1",
+                        "file": "a.py",
+                        "side": "new",
+                        "line": 1,
+                        "body": "upstream",
+                        "source": "github",
+                        "author": "alice",
+                        "created_at": 1.0,
+                        "updated_at": 1.0,
+                    }
+                ],
+            }
+        )
+    )
     server.stop()
     srv2 = ReviewServer(run_dir=tmp_path, viewer_json={"version": "1", "files": []})
     srv2.start()
     try:
         try:
-            _request(srv2.url() + "/comments", "POST", {
-                "id": "gh-1", "file": "a.py", "side": "new", "line": 1,
-                "body": "overwritten",
-            })
+            _request(
+                srv2.url() + "/comments",
+                "POST",
+                {
+                    "id": "gh-1",
+                    "file": "a.py",
+                    "side": "new",
+                    "line": 1,
+                    "body": "overwritten",
+                },
+            )
         except urllib.error.HTTPError as e:
             assert e.code == 403
         else:
@@ -161,13 +198,25 @@ def test_post_cannot_overwrite_ingested_comment(server, tmp_path: Path) -> None:
 
 
 def test_delete_cannot_remove_ingested_comment(server, tmp_path: Path) -> None:
-    (tmp_path / "comments.json").write_text(json.dumps({
-        "comments": [{
-            "id": "gh-1", "file": "a.py", "side": "new", "line": 1,
-            "body": "upstream", "source": "github", "author": "alice",
-            "created_at": 1.0, "updated_at": 1.0,
-        }],
-    }))
+    (tmp_path / "comments.json").write_text(
+        json.dumps(
+            {
+                "comments": [
+                    {
+                        "id": "gh-1",
+                        "file": "a.py",
+                        "side": "new",
+                        "line": 1,
+                        "body": "upstream",
+                        "source": "github",
+                        "author": "alice",
+                        "created_at": 1.0,
+                        "updated_at": 1.0,
+                    }
+                ],
+            }
+        )
+    )
     server.stop()
     srv2 = ReviewServer(run_dir=tmp_path, viewer_json={"version": "1", "files": []})
     srv2.start()
@@ -187,18 +236,35 @@ def test_post_resets_source_to_local_on_new_comment(server, tmp_path: Path) -> N
     """A new comment claiming source=github on the wire is still stored
     as local — provenance can only be set by the ingest path, not by a
     client POST."""
-    code, body = _request(server.url() + "/comments", "POST", {
-        "id": "c1", "file": "a.py", "side": "new", "line": 1, "body": "x",
-        "source": "github", "author": "evil",
-    })
+    code, body = _request(
+        server.url() + "/comments",
+        "POST",
+        {
+            "id": "c1",
+            "file": "a.py",
+            "side": "new",
+            "line": 1,
+            "body": "x",
+            "source": "github",
+            "author": "evil",
+        },
+    )
     assert code == 200
     assert body["source"] == "local"
 
 
 def test_delete_comment(server, tmp_path: Path) -> None:
-    _request(server.url() + "/comments", "POST", {
-        "id": "c1", "file": "a.py", "side": "new", "line": 1, "body": "x",
-    })
+    _request(
+        server.url() + "/comments",
+        "POST",
+        {
+            "id": "c1",
+            "file": "a.py",
+            "side": "new",
+            "line": 1,
+            "body": "x",
+        },
+    )
     # Delete via stdlib (no helper method for DELETE with body)
     conn = HTTPConnection("127.0.0.1", int(server.url().rsplit(":", 1)[1]), timeout=5)
     conn.request("DELETE", "/comments/c1")
@@ -329,7 +395,8 @@ def test_fold_summary_returns_409_when_summariser_not_wired(server) -> None:
     """Before serve_review installs the summariser, POST returns 409."""
     conn = HTTPConnection("127.0.0.1", int(server.url().rsplit(":", 1)[1]), timeout=5)
     conn.request(
-        "POST", "/fold-summary",
+        "POST",
+        "/fold-summary",
         body=json.dumps({"hunk_id": "H0_0", "new_start": 1, "new_count": 3}),
         headers={"Content-Type": "application/json"},
     )
@@ -351,18 +418,29 @@ def test_fold_summary_broadcasts_and_patches_viewer_json(tmp_path: Path) -> None
 
     viewer_json = {
         "version": "1",
-        "files": [{
-            "id": "F0", "path": "src/x.py",
-            "hunks": [{
-                "id": "H0_0",
-                "fold_regions": [{
-                    "context": "right", "right_start": 1, "right_end": 3,
-                    "left_start": 0, "left_end": 0,
-                    "qualified_name": "Foo.bar", "kind": "function",
-                    "summary": "",
-                }],
-            }],
-        }],
+        "files": [
+            {
+                "id": "F0",
+                "path": "src/x.py",
+                "hunks": [
+                    {
+                        "id": "H0_0",
+                        "fold_regions": [
+                            {
+                                "context": "right",
+                                "right_start": 1,
+                                "right_end": 3,
+                                "left_start": 0,
+                                "left_end": 0,
+                                "qualified_name": "Foo.bar",
+                                "kind": "function",
+                                "summary": "",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
     }
 
     srv = ReviewServer(run_dir=tmp_path, viewer_json=viewer_json)
@@ -371,8 +449,12 @@ def test_fold_summary_broadcasts_and_patches_viewer_json(tmp_path: Path) -> None
         captured = {}
 
         async def fake_task(
-            file_idx, context, right_range, left_range,
-            qualified_name=None, kind=None,
+            file_idx,
+            context,
+            right_range,
+            left_range,
+            qualified_name=None,
+            kind=None,
         ):
             captured["file_idx"] = file_idx
             captured["context"] = context
@@ -381,7 +463,8 @@ def test_fold_summary_broadcasts_and_patches_viewer_json(tmp_path: Path) -> None
             captured["qualified_name"] = qualified_name
             captured["kind"] = kind
             return {
-                "file_idx": file_idx, "context": context,
+                "file_idx": file_idx,
+                "context": context,
                 "right_start": (right_range or (0, 0))[0],
                 "right_end": (right_range or (0, 0))[1],
                 "left_start": (left_range or (0, 0))[0],
@@ -405,7 +488,8 @@ def test_fold_summary_broadcasts_and_patches_viewer_json(tmp_path: Path) -> None
             time.sleep(0.01)
 
         code, body = _request(
-            srv.url() + "/fold-summary", "POST",
+            srv.url() + "/fold-summary",
+            "POST",
             {"file_idx": 0, "context": "right", "right_start": 1, "right_end": 3},
         )
         assert code == 200
@@ -423,9 +507,7 @@ def test_fold_summary_broadcasts_and_patches_viewer_json(tmp_path: Path) -> None
         # `/data.json` reflects the patched viewer_json.
         code, data = _request(srv.url() + "/data.json")
         assert code == 200
-        assert data["files"][0]["hunks"][0]["fold_regions"][0]["summary"].startswith(
-            "wraps the body"
-        )
+        assert data["files"][0]["hunks"][0]["fold_regions"][0]["summary"].startswith("wraps the body")
         # The SSE channel broadcast the same payload.
         events_resp.fp.readline()  # id
         event_line = events_resp.fp.readline()
@@ -451,15 +533,21 @@ def test_fold_summary_for_left_context_passes_ranges_through(tmp_path: Path) -> 
         seen = {}
 
         async def fake_task(
-            file_idx, context, right_range, left_range,
-            qualified_name=None, kind=None,
+            file_idx,
+            context,
+            right_range,
+            left_range,
+            qualified_name=None,
+            kind=None,
         ):
             seen["context"] = context
             seen["right_range"] = right_range
             seen["left_range"] = left_range
             return {
-                "file_idx": file_idx, "context": context,
-                "right_start": 0, "right_end": 0,
+                "file_idx": file_idx,
+                "context": context,
+                "right_start": 0,
+                "right_end": 0,
                 "left_start": (left_range or (0, 0))[0],
                 "left_end": (left_range or (0, 0))[1],
                 "summary": "drops the legacy retry loop",
@@ -467,12 +555,15 @@ def test_fold_summary_for_left_context_passes_ranges_through(tmp_path: Path) -> 
 
         srv.set_fold_summariser(fake_task)
         code, body = _request(
-            srv.url() + "/fold-summary", "POST",
+            srv.url() + "/fold-summary",
+            "POST",
             {"file_idx": 0, "context": "left", "left_start": 12, "left_end": 14},
         )
         assert code == 200
         assert seen == {
-            "context": "left", "right_range": None, "left_range": (12, 14),
+            "context": "left",
+            "right_range": None,
+            "left_range": (12, 14),
         }
         assert body["context"] == "left" and body["left_start"] == 12
     finally:
@@ -497,7 +588,8 @@ def test_fold_summary_typed_errors_map_to_http_codes(tmp_path: Path) -> None:
             # urlopen raises on non-2xx; HTTPConnection lets us read the body.
             conn = HTTPConnection(host, port, timeout=5)
             conn.request(
-                "POST", "/fold-summary",
+                "POST",
+                "/fold-summary",
                 body=json.dumps(payload),
                 headers={"Content-Type": "application/json"},
             )
@@ -507,8 +599,12 @@ def test_fold_summary_typed_errors_map_to_http_codes(tmp_path: Path) -> None:
             return r.status, body
 
         async def raises_not_ready(
-            file_idx, context, right_range, left_range,
-            qualified_name=None, kind=None,
+            file_idx,
+            context,
+            right_range,
+            left_range,
+            qualified_name=None,
+            kind=None,
         ):
             raise FoldSummaryNotReady("sidecar gone walkabout")
 
@@ -520,8 +616,12 @@ def test_fold_summary_typed_errors_map_to_http_codes(tmp_path: Path) -> None:
         assert "walkabout" in body["error"]
 
         async def raises_oob(
-            file_idx, context, right_range, left_range,
-            qualified_name=None, kind=None,
+            file_idx,
+            context,
+            right_range,
+            left_range,
+            qualified_name=None,
+            kind=None,
         ):
             raise FoldSummaryFileIndexError("file_idx 999 not in diff")
 
@@ -540,7 +640,8 @@ def test_console_ask_returns_409_when_asker_not_wired(server) -> None:
     backend), POST /console/ask returns 409."""
     conn = HTTPConnection("127.0.0.1", int(server.url().rsplit(":", 1)[1]), timeout=5)
     conn.request(
-        "POST", "/console/ask",
+        "POST",
+        "/console/ask",
         body=json.dumps({"question": "what changed?"}),
         headers={"Content-Type": "application/json"},
     )
@@ -558,7 +659,8 @@ def test_console_ask_empty_question_400(server) -> None:
     server.ctx.console_asker = asker
     conn = HTTPConnection("127.0.0.1", int(server.url().rsplit(":", 1)[1]), timeout=5)
     conn.request(
-        "POST", "/console/ask",
+        "POST",
+        "/console/ask",
         body=json.dumps({"question": "   "}),
         headers={"Content-Type": "application/json"},
     )
@@ -625,7 +727,8 @@ def test_console_ask_streams_and_threads_history(server) -> None:
 
     conn, r = _open_console_sse(server)
     code, body = _request(
-        server.url() + "/console/ask", "POST",
+        server.url() + "/console/ask",
+        "POST",
         {"question": "why pagination?", "console_id": "tab-1"},
     )
     assert code == 202
@@ -645,7 +748,8 @@ def test_console_ask_streams_and_threads_history(server) -> None:
     # Second turn threads the first turn's returned history back in.
     conn, r = _open_console_sse(server)
     code, _ = _request(
-        server.url() + "/console/ask", "POST",
+        server.url() + "/console/ask",
+        "POST",
         {"question": "follow-up", "console_id": "tab-1"},
     )
     assert code == 202
@@ -669,7 +773,8 @@ def test_console_cancel_discards_turn(server) -> None:
 
     conn, r = _open_console_sse(server)
     code, _ = _request(
-        server.url() + "/console/ask", "POST",
+        server.url() + "/console/ask",
+        "POST",
         {"question": "why?", "console_id": "tab-1"},
     )
     assert code == 202
@@ -679,7 +784,9 @@ def test_console_cancel_discards_turn(server) -> None:
     assert etype == "console-delta" and json.loads(data)["text"] == "partial"
 
     code, body = _request(
-        server.url() + "/console/cancel", "POST", {"console_id": "tab-1"},
+        server.url() + "/console/cancel",
+        "POST",
+        {"console_id": "tab-1"},
     )
     assert code == 200 and body["ok"] is True
 
@@ -695,22 +802,27 @@ def test_console_cancel_discards_turn(server) -> None:
 
 def test_console_ask_second_turn_while_busy_409(server) -> None:
     """One in-flight turn per conversation: a second ask gets 409."""
+
     async def asker(question, history, on_delta, on_tool, cancel, selection=None):
         while not cancel.is_set():
             await asyncio.sleep(0.01)
         from semantic_code_review.augment.console import ConsoleCancelled
+
         raise ConsoleCancelled("cancelled")
 
     server.set_console_asker(asker)
 
     code, _ = _request(
-        server.url() + "/console/ask", "POST", {"question": "q1"},
+        server.url() + "/console/ask",
+        "POST",
+        {"question": "q1"},
     )
     assert code == 202
 
     conn = HTTPConnection("127.0.0.1", int(server.url().rsplit(":", 1)[1]), timeout=5)
     conn.request(
-        "POST", "/console/ask",
+        "POST",
+        "/console/ask",
         body=json.dumps({"question": "q2"}),
         headers={"Content-Type": "application/json"},
     )
@@ -727,6 +839,7 @@ def test_console_ask_second_turn_while_busy_409(server) -> None:
 def test_console_error_emits_console_error_frame(server) -> None:
     """A turn driver that raises surfaces as a console-error frame, not a
     crashed worker, and clears the in-flight flag."""
+
     async def asker(question, history, on_delta, on_tool, cancel, selection=None):
         raise RuntimeError("boom")
 
@@ -734,7 +847,8 @@ def test_console_error_emits_console_error_frame(server) -> None:
 
     conn, r = _open_console_sse(server)
     code, _ = _request(
-        server.url() + "/console/ask", "POST",
+        server.url() + "/console/ask",
+        "POST",
         {"question": "x", "console_id": "tab-1"},
     )
     assert code == 202
@@ -758,7 +872,8 @@ def test_console_ask_not_ready_emits_console_error(server) -> None:
 
     conn, r = _open_console_sse(server)
     code, _ = _request(
-        server.url() + "/console/ask", "POST",
+        server.url() + "/console/ask",
+        "POST",
         {"question": "x", "console_id": "tab-1"},
     )
     assert code == 202
@@ -823,13 +938,18 @@ index 0123456..89abcde 100644
 
 def _populate_minimal_run_dir(run_dir: Path) -> None:
     (run_dir / "raw.diff").write_text(_RAW_DIFF_FOR_RUN, encoding="utf-8")
-    (run_dir / "meta.json").write_text(json.dumps({
-        "title": "Bump",
-        "author": {"login": "tester"},
-        "url": "",
-        "baseRefOid": "aaa",
-        "headRefOid": "bbb",
-    }), encoding="utf-8")
+    (run_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "title": "Bump",
+                "author": {"login": "tester"},
+                "url": "",
+                "baseRefOid": "aaa",
+                "headRefOid": "bbb",
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_serve_review_serves_pending_then_streams_and_finalises(tmp_path: Path) -> None:
@@ -854,7 +974,9 @@ def test_serve_review_serves_pending_then_streams_and_finalises(tmp_path: Path) 
         # Otherwise the post-augment swap races us and the assertion
         # below sees the final state.
         await asyncio.get_running_loop().run_in_executor(
-            None, augment_release.wait, 5.0,
+            None,
+            augment_release.wait,
+            5.0,
         )
         # Mimic a per-hunk completion before the pipeline writes its
         # final on-disk output. The page would react by patching the
@@ -869,6 +991,7 @@ def test_serve_review_serves_pending_then_streams_and_finalises(tmp_path: Path) 
         def _on_ready(url: str) -> None:
             ready_url["url"] = url
             url_ready.set()
+
         result_box["r"] = serve_review(
             tmp_path,
             augment=fake_augment,

@@ -30,6 +30,7 @@ def test_fixture_lint_passes() -> None:
 
 def test_fixture_has_expected_structure() -> None:
     from semantic_code_review.augment.schemas import Overview
+
     diff = parse_augmented_diff(FIXTURE.read_text(encoding="utf-8"))
     assert diff.pr.base_sha == "7c3a2b1"
     assert isinstance(diff.overview, Overview)
@@ -148,8 +149,10 @@ def test_handwritten_annotated_diff_round_trips() -> None:
                     AnnotatedHunk(
                         parsed=ParsedHunk(
                             header="@@ -1,1 +1,3 @@",
-                            old_start=1, old_count=1,
-                            new_start=1, new_count=3,
+                            old_start=1,
+                            old_count=1,
+                            new_start=1,
+                            new_count=3,
                             body="-pass\n+def f():\n+    return 1\n+\n",
                         ),
                         ann=HunkAnnotations(
@@ -174,9 +177,7 @@ def test_handwritten_annotated_diff_round_trips() -> None:
 
 
 def test_lint_rejects_unknown_smell_tag() -> None:
-    text = FIXTURE.read_text(encoding="utf-8").replace(
-        "string-sql", "made-up-smell"
-    )
+    text = FIXTURE.read_text(encoding="utf-8").replace("string-sql", "made-up-smell")
     result = lint_text(text)
     # Parse still succeeds (tags are free strings), but lint rejects.
     assert not result.ok

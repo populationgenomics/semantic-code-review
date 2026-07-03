@@ -15,6 +15,7 @@ from semantic_code_review.review.comments import Comment
 # side mapping
 # ---------------------------------------------------------------------------
 
+
 def test_map_side_old_to_left() -> None:
     assert gh.map_side("old") == "LEFT"
 
@@ -32,6 +33,7 @@ def test_map_side_rejects_unknown() -> None:
 # comments_to_github
 # ---------------------------------------------------------------------------
 
+
 def _comment(**kw) -> Comment:
     base = dict(id="c1", file="a.py", side="new", line=10, body="hi")
     base.update(kw)
@@ -39,8 +41,7 @@ def _comment(**kw) -> Comment:
 
 
 def test_comments_to_github_maps_basic_fields() -> None:
-    cs = [_comment(side="old", line=5, body="left side"),
-          _comment(id="c2", side="new", line=12, body="right side")]
+    cs = [_comment(side="old", line=5, body="left side"), _comment(id="c2", side="new", line=12, body="right side")]
     posted = gh.comments_to_github(cs)
     assert [(p.path, p.line, p.side, p.body) for p in posted] == [
         ("a.py", 5, "LEFT", "left side"),
@@ -75,11 +76,15 @@ def test_comments_to_github_emits_reply_using_parent_node_id() -> None:
     addPullRequestReviewComment mutation wants."""
     cs = [
         _comment(
-            id="gh-3331909762", source="github", body="upstream",
+            id="gh-3331909762",
+            source="github",
+            body="upstream",
             node_id="PRRC_kw1234",
         ),
         _comment(
-            id="local-1", source="local", body="reply text",
+            id="local-1",
+            source="local",
+            body="reply text",
             in_reply_to_id="gh-3331909762",
         ),
     ]
@@ -102,7 +107,9 @@ def test_comments_to_github_skips_reply_whose_parent_has_no_node_id() -> None:
     cs = [
         _comment(id="local-root", source="local", body="root"),
         _comment(
-            id="local-reply", source="local", body="reply",
+            id="local-reply",
+            source="local",
+            body="reply",
             in_reply_to_id="local-root",
         ),
     ]
@@ -122,6 +129,7 @@ class _FakeProc:
 # ---------------------------------------------------------------------------
 # list_review_requested_prs
 # ---------------------------------------------------------------------------
+
 
 def test_list_review_requested_prs_parses_json(monkeypatch) -> None:
     payload = [
@@ -156,14 +164,12 @@ def test_list_review_requested_prs_parses_json(monkeypatch) -> None:
 # pick_pr_interactive
 # ---------------------------------------------------------------------------
 
+
 def _prs() -> list[gh.OpenPR]:
     return [
-        gh.OpenPR(number=42, title="A", author="alice", head_ref="x", base_ref="main",
-                  updated_at="", url=""),
-        gh.OpenPR(number=45, title="B", author="bob", head_ref="y", base_ref="main",
-                  updated_at="", url=""),
-        gh.OpenPR(number=50, title="C", author="carol", head_ref="z", base_ref="main",
-                  updated_at="", url=""),
+        gh.OpenPR(number=42, title="A", author="alice", head_ref="x", base_ref="main", updated_at="", url=""),
+        gh.OpenPR(number=45, title="B", author="bob", head_ref="y", base_ref="main", updated_at="", url=""),
+        gh.OpenPR(number=50, title="C", author="carol", head_ref="z", base_ref="main", updated_at="", url=""),
     ]
 
 
@@ -214,10 +220,20 @@ def _pr_opts(tmp_path, *, augment: bool):
     from semantic_code_review.review.pr_flow import PrFlowOptions
 
     return PrFlowOptions(
-        repo="o/r", number=1, runs_root=tmp_path, augment=augment,
-        model="claude-opus-4-7", concurrency=4, no_cache=True, cache_dir=None,
-        open_browser=False, port=0, timeout=1, extra_review_prompt=None,
-        client=Client(model="anthropic:claude-opus-4-7"), yes=True,
+        repo="o/r",
+        number=1,
+        runs_root=tmp_path,
+        augment=augment,
+        model="claude-opus-4-7",
+        concurrency=4,
+        no_cache=True,
+        cache_dir=None,
+        open_browser=False,
+        port=0,
+        timeout=1,
+        extra_review_prompt=None,
+        client=Client(model="anthropic:claude-opus-4-7"),
+        yes=True,
     )
 
 

@@ -141,10 +141,7 @@ def build_console_seed(diff: Any, *, symbol_delta_json: str | None) -> str:
         f"# Changed files\n{files_block}",
     ]
     if symbol_delta_json:
-        parts.append(
-            "# Structural symbol delta (deterministic tree-sitter base->head)\n"
-            f"{symbol_delta_json}"
-        )
+        parts.append(f"# Structural symbol delta (deterministic tree-sitter base->head)\n{symbol_delta_json}")
     return "\n\n".join(parts)
 
 
@@ -356,7 +353,10 @@ async def stream_console_turn(
     once into this turn's user message (see :func:`_format_selection`).
     """
     agent, prompt, repo_tools = _prepare_turn(
-        client, run_dir=run_dir, question=question, history=history,
+        client,
+        run_dir=run_dir,
+        question=question,
+        history=history,
         selection=selection,
     )
 
@@ -369,7 +369,12 @@ async def stream_console_turn(
     # done". `on_delta`/`on_tool` simply never fire.
     if client.is_subprocess_backend:
         return await _run_console_turn_oneshot(
-            client, agent, prompt, repo_tools, history=history, cancel=cancel,
+            client,
+            agent,
+            prompt,
+            repo_tools,
+            history=history,
+            cancel=cancel,
         )
 
     def cancelled() -> bool:
@@ -377,7 +382,9 @@ async def stream_console_turn(
 
     abort = False
     async with agent.iter(
-        prompt, deps=repo_tools, message_history=history,
+        prompt,
+        deps=repo_tools,
+        message_history=history,
     ) as run:
         async for node in run:
             if cancelled():
@@ -425,6 +432,9 @@ async def run_console_turn(
     returns it once the agent finishes.
     """
     return await stream_console_turn(
-        client, run_dir=run_dir, question=question, history=history,
+        client,
+        run_dir=run_dir,
+        question=question,
+        history=history,
         selection=selection,
     )

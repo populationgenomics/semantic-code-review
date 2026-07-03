@@ -52,9 +52,7 @@ def build_viewer_json(
             }
             for tag, d in SMELL_CATALOGUE.items()
         },
-        "files": [
-            _file_block(f, i, head_dir, file_syms[i]) for i, f in enumerate(diff.files)
-        ],
+        "files": [_file_block(f, i, head_dir, file_syms[i]) for i, f in enumerate(diff.files)],
         "groups": _group_blocks(diff),
         "symbols": _symbol_blocks(diff, file_syms),
     }
@@ -84,7 +82,8 @@ def build_pending_viewer_json(run_dir: Path) -> dict[str, Any]:
     head_dir = run_dir / "head"
     base_dir = run_dir / "base"
     data = build_viewer_json(
-        diff, meta,
+        diff,
+        meta,
         head_dir=head_dir if head_dir.exists() else None,
         base_dir=base_dir if base_dir.exists() else None,
     )
@@ -114,12 +113,14 @@ def _group_blocks(diff: AnnotatedDiff) -> list[dict[str, Any]]:
             hunk_ids.append(f"H{fi}_{m.hunk_index}")
         if not hunk_ids:
             continue
-        out.append({
-            "id": f"G{gi}",
-            "title": g.title,
-            "rationale": g.rationale,
-            "hunk_ids": hunk_ids,
-        })
+        out.append(
+            {
+                "id": f"G{gi}",
+                "title": g.title,
+                "rationale": g.rationale,
+                "hunk_ids": hunk_ids,
+            }
+        )
     return out
 
 
@@ -158,7 +159,9 @@ class _FileSymbols:
 
 
 def _file_symbols(
-    f: AnnotatedFile, base_dir: Path | None, head_dir: Path | None,
+    f: AnnotatedFile,
+    base_dir: Path | None,
+    head_dir: Path | None,
 ) -> _FileSymbols:
     """Parse one file's base/head `Symbol` forests, or empty on degrade."""
     lang = structural.language_for_path(f.path)
@@ -182,19 +185,23 @@ def _fold_spans(symbols: list[structural.Symbol], depth: int = 0) -> list[dict[s
     """
     out: list[dict[str, Any]] = []
     for s in symbols:
-        out.append({
-            "start_line": s.range.start_line,
-            "end_line": s.range.end_line,
-            "kind": s.kind,
-            "qualified_name": s.qualified_name,
-            "depth": depth,
-        })
+        out.append(
+            {
+                "start_line": s.range.start_line,
+                "end_line": s.range.end_line,
+                "kind": s.kind,
+                "qualified_name": s.qualified_name,
+                "depth": depth,
+            }
+        )
         out.extend(_fold_spans(s.children, depth + 1))
     return out
 
 
 def file_fold_spans(
-    f: AnnotatedFile, base_dir: Path | None, head_dir: Path | None,
+    f: AnnotatedFile,
+    base_dir: Path | None,
+    head_dir: Path | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Flattened per-side definition spans for one file, as `(head, base)`.
 
@@ -243,9 +250,7 @@ def _symbol_blocks(
             (h.parsed.old_start, h.parsed.old_start + h.parsed.old_count - 1, f"H{fi}_{hi}")
             for hi, h in enumerate(f.hunks)
         ]
-        out.extend(
-            _symbol_tree_blocks(f.path, delta, head_spans, base_spans, head_syms, base_syms, counter)
-        )
+        out.extend(_symbol_tree_blocks(f.path, delta, head_spans, base_spans, head_syms, base_syms, counter))
     return out
 
 
@@ -325,8 +330,7 @@ def _symbol_tree_blocks(
         if not node.hunk_ids:  # nothing in this subtree touches a hunk
             return None
         rationale = (
-            f"{node.status} {node.kind} in {path}" if node.status is not None
-            else f"{node.kind} (unchanged) in {path}"
+            f"{node.status} {node.kind} in {path}" if node.status is not None else f"{node.kind} (unchanged) in {path}"
         )
         block: dict[str, Any] = {
             "id": f"SY{counter[0]}",
@@ -353,17 +357,15 @@ def _hunk_sort_key(hid: str) -> tuple[int, int]:
 
 
 def _overlapping_hunks(
-    spans: list[tuple[int, int, str]], rng: structural.SymbolRange,
+    spans: list[tuple[int, int, str]],
+    rng: structural.SymbolRange,
 ) -> list[str]:
     """Hunk ids whose [start, end] line span overlaps `rng`.
 
     Empty hunk spans (count 0 — e.g. a pure deletion on the head side)
     have end < start and so never overlap.
     """
-    return [
-        hid for start, end, hid in spans
-        if start <= end and rng.start_line <= end and start <= rng.end_line
-    ]
+    return [hid for start, end, hid in spans if start <= end and rng.start_line <= end and start <= rng.end_line]
 
 
 def _read_tree_source(tree_dir: Path | None, rel_path: str) -> str | None:
@@ -399,14 +401,14 @@ def _pr_block(diff: AnnotatedDiff, meta: dict[str, Any]) -> dict[str, Any]:
 
 
 def _file_block(
-    f: AnnotatedFile, idx: int, head_dir: Path | None, syms: _FileSymbols,
+    f: AnnotatedFile,
+    idx: int,
+    head_dir: Path | None,
+    syms: _FileSymbols,
 ) -> dict[str, Any]:
     head_spans = _fold_spans(syms.head)
     base_spans = _fold_spans(syms.base)
-    hunks = [
-        build_hunk_viewer_block(h, idx, hi, head_spans, base_spans)
-        for hi, h in enumerate(f.hunks)
-    ]
+    hunks = [build_hunk_viewer_block(h, idx, hi, head_spans, base_spans) for hi, h in enumerate(f.hunks)]
     adds = sum(h["adds"] for h in hunks)
     dels = sum(h["dels"] for h in hunks)
     head_lines = _load_head_lines(f, head_dir)
@@ -459,24 +461,62 @@ def _load_head_lines(f: AnnotatedFile, head_dir: Path | None) -> list[str] | Non
 _LANG_BY_EXT = {
     # Python / JS / TS (incl. the module variants the structural layer parses)
     ".py": "python",
-    ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript", ".cjs": "javascript",
-    ".ts": "typescript", ".tsx": "typescript", ".mts": "typescript", ".cts": "typescript",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".mts": "typescript",
+    ".cts": "typescript",
     # Systems / compiled
-    ".go": "go", ".rs": "rust", ".c": "c", ".h": "c",
-    ".cc": "cpp", ".cpp": "cpp", ".cxx": "cpp", ".hpp": "cpp", ".hh": "cpp",
-    ".cs": "csharp", ".java": "java", ".kt": "kotlin", ".kts": "kotlin",
-    ".swift": "swift", ".vb": "vbnet",
+    ".go": "go",
+    ".rs": "rust",
+    ".c": "c",
+    ".h": "c",
+    ".cc": "cpp",
+    ".cpp": "cpp",
+    ".cxx": "cpp",
+    ".hpp": "cpp",
+    ".hh": "cpp",
+    ".cs": "csharp",
+    ".java": "java",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
+    ".swift": "swift",
+    ".vb": "vbnet",
     # Scripting
-    ".rb": "ruby", ".php": "php", ".lua": "lua", ".pl": "perl", ".pm": "perl",
-    ".r": "r", ".sh": "bash", ".bash": "bash", ".zsh": "bash",
+    ".rb": "ruby",
+    ".php": "php",
+    ".lua": "lua",
+    ".pl": "perl",
+    ".pm": "perl",
+    ".r": "r",
+    ".sh": "bash",
+    ".bash": "bash",
+    ".zsh": "bash",
     # Web / styling
-    ".css": "css", ".scss": "scss", ".sass": "scss", ".less": "less",
-    ".html": "xml", ".xml": "xml", ".svg": "xml",
+    ".css": "css",
+    ".scss": "scss",
+    ".sass": "scss",
+    ".less": "less",
+    ".html": "xml",
+    ".xml": "xml",
+    ".svg": "xml",
     # Data / config / docs
-    ".yaml": "yaml", ".yml": "yaml", ".json": "json", ".toml": "ini", ".ini": "ini",
-    ".cfg": "ini", ".sql": "sql", ".graphql": "graphql", ".gql": "graphql",
-    ".md": "markdown", ".markdown": "markdown",
-    ".diff": "diff", ".patch": "diff",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".json": "json",
+    ".toml": "ini",
+    ".ini": "ini",
+    ".cfg": "ini",
+    ".sql": "sql",
+    ".graphql": "graphql",
+    ".gql": "graphql",
+    ".md": "markdown",
+    ".markdown": "markdown",
+    ".diff": "diff",
+    ".patch": "diff",
 }
 
 

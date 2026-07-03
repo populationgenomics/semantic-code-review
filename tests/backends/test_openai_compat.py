@@ -59,9 +59,7 @@ def test_missing_base_url_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         OpenAICompatBackend("broken", bdef).resolve(model="anything")
 
 
-def test_github_builtin_falls_back_to_gh_auth_token(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_github_builtin_falls_back_to_gh_auth_token(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     """End-to-end: the shipped github preset uses gh auth token when
     GITHUB_TOKEN is unset. Stub `gh` on PATH to verify the wiring."""
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)

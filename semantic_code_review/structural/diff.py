@@ -88,11 +88,7 @@ def diff_file(path: str, base: list[Symbol], head: list[Symbol]) -> SymbolDelta:
     h = flatten(head)
     added = [_changed(path, h[q]) for q in h if q not in b]
     removed = [_changed(path, b[q]) for q in b if q not in h]
-    modified = [
-        _changed(path, h[q])
-        for q in h
-        if q in b and h[q].range != b[q].range
-    ]
+    modified = [_changed(path, h[q]) for q in h if q in b and h[q].range != b[q].range]
     return SymbolDelta(added=added, removed=removed, modified=modified)
 
 

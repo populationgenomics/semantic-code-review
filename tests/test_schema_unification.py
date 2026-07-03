@@ -24,8 +24,14 @@ def test_overview_submission_dump_has_keys_apply_overview_reads() -> None:
     sub = OverviewSubmission(summary="hi", files=[])
     dump = sub.model_dump(by_alias=True)
     expected = {
-        "summary", "symbols_added", "symbols_modified", "symbols_removed",
-        "callgraph_edges", "themes", "files", "groups",
+        "summary",
+        "symbols_added",
+        "symbols_modified",
+        "symbols_removed",
+        "callgraph_edges",
+        "themes",
+        "files",
+        "groups",
     }
     assert expected <= dump.keys()
 
@@ -36,8 +42,14 @@ def test_hunk_annotations_dump_has_keys_apply_hunk_reads() -> None:
     sub = HunkAnnotations(intent="x")
     dump = sub.model_dump(by_alias=True)
     expected = {
-        "intent", "segments", "smells", "context", "refs", "confidence",
-        "line_notes", "fold_descriptions",
+        "intent",
+        "segments",
+        "smells",
+        "context",
+        "refs",
+        "confidence",
+        "line_notes",
+        "fold_descriptions",
     }
     assert expected <= dump.keys()
 

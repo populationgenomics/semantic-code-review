@@ -20,10 +20,16 @@ from semantic_code_review.structural import ChangedSymbol, SymbolDelta, SymbolRa
 
 
 def _hunk(header: str) -> AnnotatedHunk:
-    return AnnotatedHunk(parsed=ParsedHunk(
-        header=header, body="+a\n-b\n",
-        old_start=1, old_count=1, new_start=1, new_count=1,
-    ))
+    return AnnotatedHunk(
+        parsed=ParsedHunk(
+            header=header,
+            body="+a\n-b\n",
+            old_start=1,
+            old_count=1,
+            new_start=1,
+            new_count=1,
+        )
+    )
 
 
 def _make_diff() -> AnnotatedDiff:
@@ -44,7 +50,10 @@ _META = {"title": "T", "body": ""}
 
 def _changed(name: str, qn: str, kind: str = "function") -> ChangedSymbol:
     return ChangedSymbol(
-        path="a.py", kind=kind, name=name, qualified_name=qn,
+        path="a.py",
+        kind=kind,
+        name=name,
+        qualified_name=qn,
         range=SymbolRange(start_line=1, end_line=2, start_col=0, end_col=0),
     )
 

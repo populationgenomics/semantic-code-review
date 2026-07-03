@@ -19,7 +19,10 @@ from semantic_code_review.review.comments import Comment
 
 def _proc(stdout: str = "", stderr: str = "", rc: int = 0):
     return subprocess.CompletedProcess(
-        args=["gh"], returncode=rc, stdout=stdout, stderr=stderr,
+        args=["gh"],
+        returncode=rc,
+        stdout=stdout,
+        stderr=stderr,
     )
 
 
@@ -46,7 +49,7 @@ class _GhSequence:
         variables: dict[str, str] = {}
         for i, a in enumerate(argv):
             if a == "-f" and i + 1 < len(argv) and argv[i + 1].startswith("query="):
-                query = argv[i + 1][len("query="):]
+                query = argv[i + 1][len("query=") :]
             elif a in ("-f", "-F") and i + 1 < len(argv):
                 kv = argv[i + 1]
                 if "=" in kv and not kv.startswith("query="):
@@ -78,20 +81,25 @@ class _GhSequence:
 
 def test_query_pr_review_state_returns_pending_review_when_present(monkeypatch) -> None:
     seq = _GhSequence()
-    seq.expect("query", {
-        "data": {
-            "viewer": {"login": "alice"},
-            "repository": {
-                "pullRequest": {
-                    "id": "PR_kw1",
-                    "reviews": {"nodes": [
-                        {"id": "PRR_pending", "author": {"login": "alice"}},
-                        {"id": "PRR_other", "author": {"login": "bob"}},
-                    ]},
+    seq.expect(
+        "query",
+        {
+            "data": {
+                "viewer": {"login": "alice"},
+                "repository": {
+                    "pullRequest": {
+                        "id": "PR_kw1",
+                        "reviews": {
+                            "nodes": [
+                                {"id": "PRR_pending", "author": {"login": "alice"}},
+                                {"id": "PRR_other", "author": {"login": "bob"}},
+                            ]
+                        },
+                    },
                 },
             },
         },
-    })
+    )
     with patch("semantic_code_review.git_ops.subprocess.run", side_effect=seq):
         state = gh_gql.query_pr_review_state("o/r", 1)
     assert state.pr_node_id == "PR_kw1"
@@ -102,19 +110,24 @@ def test_query_pr_review_state_returns_pending_review_when_present(monkeypatch) 
 def test_query_pr_review_state_returns_none_when_no_viewer_pending(monkeypatch) -> None:
     """A pending review owned by someone else is NOT ours to reuse."""
     seq = _GhSequence()
-    seq.expect("query", {
-        "data": {
-            "viewer": {"login": "alice"},
-            "repository": {
-                "pullRequest": {
-                    "id": "PR_kw1",
-                    "reviews": {"nodes": [
-                        {"id": "PRR_someone_else", "author": {"login": "bob"}},
-                    ]},
+    seq.expect(
+        "query",
+        {
+            "data": {
+                "viewer": {"login": "alice"},
+                "repository": {
+                    "pullRequest": {
+                        "id": "PR_kw1",
+                        "reviews": {
+                            "nodes": [
+                                {"id": "PRR_someone_else", "author": {"login": "bob"}},
+                            ]
+                        },
+                    },
                 },
             },
         },
-    })
+    )
     with patch("semantic_code_review.git_ops.subprocess.run", side_effect=seq):
         state = gh_gql.query_pr_review_state("o/r", 1)
     assert state.pending_review_id is None
@@ -122,9 +135,12 @@ def test_query_pr_review_state_returns_none_when_no_viewer_pending(monkeypatch) 
 
 def test_query_pr_review_state_raises_when_pr_missing(monkeypatch) -> None:
     seq = _GhSequence()
-    seq.expect("query", {
-        "data": {"viewer": {"login": "alice"}, "repository": {"pullRequest": None}},
-    })
+    seq.expect(
+        "query",
+        {
+            "data": {"viewer": {"login": "alice"}, "repository": {"pullRequest": None}},
+        },
+    )
     with patch("semantic_code_review.git_ops.subprocess.run", side_effect=seq):
         with pytest.raises(gh_rest.GhError, match="not found"):
             gh_gql.query_pr_review_state("o/r", 1)
@@ -137,9 +153,12 @@ def test_query_pr_review_state_raises_when_pr_missing(monkeypatch) -> None:
 
 def test_create_pending_review_returns_review_id(monkeypatch) -> None:
     seq = _GhSequence()
-    seq.expect("addPullRequestReview", {
-        "data": {"addPullRequestReview": {"pullRequestReview": {"id": "PRR_new"}}},
-    })
+    seq.expect(
+        "addPullRequestReview",
+        {
+            "data": {"addPullRequestReview": {"pullRequestReview": {"id": "PRR_new"}}},
+        },
+    )
     with patch("semantic_code_review.git_ops.subprocess.run", side_effect=seq):
         rid = gh_gql.create_pending_review("PR_kw1", body="hi")
     assert rid == "PRR_new"
@@ -149,9 +168,12 @@ def test_create_pending_review_returns_review_id(monkeypatch) -> None:
 
 def test_add_review_thread_sends_typed_line(monkeypatch) -> None:
     seq = _GhSequence()
-    seq.expect("addPullRequestReviewThread", {
-        "data": {"addPullRequestReviewThread": {"thread": {"id": "TH1"}}},
-    })
+    seq.expect(
+        "addPullRequestReviewThread",
+        {
+            "data": {"addPullRequestReviewThread": {"thread": {"id": "TH1"}}},
+        },
+    )
     with patch("semantic_code_review.git_ops.subprocess.run", side_effect=seq) as run_mock:
         tid = gh_gql.add_review_thread("PRR1", "a.py", 42, "RIGHT", "nit")
     assert tid == "TH1"
@@ -163,9 +185,12 @@ def test_add_review_thread_sends_typed_line(monkeypatch) -> None:
 
 def test_add_review_comment_reply_sends_parent_node_id(monkeypatch) -> None:
     seq = _GhSequence()
-    seq.expect("addPullRequestReviewComment", {
-        "data": {"addPullRequestReviewComment": {"comment": {"id": "C1"}}},
-    })
+    seq.expect(
+        "addPullRequestReviewComment",
+        {
+            "data": {"addPullRequestReviewComment": {"comment": {"id": "C1"}}},
+        },
+    )
     with patch("semantic_code_review.git_ops.subprocess.run", side_effect=seq):
         cid = gh_gql.add_review_comment_reply("PRR1", "PRRC_parent", "ack")
     assert cid == "C1"
@@ -174,17 +199,20 @@ def test_add_review_comment_reply_sends_parent_node_id(monkeypatch) -> None:
 
 def test_submit_review_returns_url_and_databaseId(monkeypatch) -> None:
     seq = _GhSequence()
-    seq.expect("submitPullRequestReview", {
-        "data": {
-            "submitPullRequestReview": {
-                "pullRequestReview": {
-                    "id": "PRR1",
-                    "databaseId": 999,
-                    "url": "https://github.com/o/r/pull/1#pullrequestreview-999",
+    seq.expect(
+        "submitPullRequestReview",
+        {
+            "data": {
+                "submitPullRequestReview": {
+                    "pullRequestReview": {
+                        "id": "PRR1",
+                        "databaseId": 999,
+                        "url": "https://github.com/o/r/pull/1#pullrequestreview-999",
+                    },
                 },
             },
         },
-    })
+    )
     with patch("semantic_code_review.git_ops.subprocess.run", side_effect=seq):
         result = gh_gql.submit_review("PRR1")
     assert result["databaseId"] == 999
@@ -204,8 +232,14 @@ def _local(**kw) -> Comment:
 
 def _ingested(**kw) -> Comment:
     base = dict(
-        id="gh-1", file="a.py", side="new", line=1, body="upstream",
-        source="github", author="alice", node_id="PRRC_parent",
+        id="gh-1",
+        file="a.py",
+        side="new",
+        line=1,
+        body="upstream",
+        source="github",
+        author="alice",
+        node_id="PRRC_parent",
     )
     base.update(kw)
     return Comment(**base)
@@ -214,25 +248,48 @@ def _ingested(**kw) -> Comment:
 def test_post_creates_review_then_adds_threads_then_submits(monkeypatch) -> None:
     """No pending review exists → create one, add each thread, submit."""
     seq = _GhSequence()
-    seq.expect("query", {"data": {
-        "viewer": {"login": "alice"},
-        "repository": {"pullRequest": {
-            "id": "PR_kw1",
-            "reviews": {"nodes": []},     # no pending review
-        }},
-    }})
-    seq.expect("addPullRequestReview", {
-        "data": {"addPullRequestReview": {"pullRequestReview": {"id": "PRR_new"}}},
-    })
-    seq.expect("addPullRequestReviewThread", {
-        "data": {"addPullRequestReviewThread": {"thread": {"id": "TH1"}}},
-    })
-    seq.expect("addPullRequestReviewThread", {
-        "data": {"addPullRequestReviewThread": {"thread": {"id": "TH2"}}},
-    })
-    seq.expect("submitPullRequestReview", {"data": {"submitPullRequestReview": {
-        "pullRequestReview": {"databaseId": 7, "url": "u"},
-    }}})
+    seq.expect(
+        "query",
+        {
+            "data": {
+                "viewer": {"login": "alice"},
+                "repository": {
+                    "pullRequest": {
+                        "id": "PR_kw1",
+                        "reviews": {"nodes": []},  # no pending review
+                    }
+                },
+            }
+        },
+    )
+    seq.expect(
+        "addPullRequestReview",
+        {
+            "data": {"addPullRequestReview": {"pullRequestReview": {"id": "PRR_new"}}},
+        },
+    )
+    seq.expect(
+        "addPullRequestReviewThread",
+        {
+            "data": {"addPullRequestReviewThread": {"thread": {"id": "TH1"}}},
+        },
+    )
+    seq.expect(
+        "addPullRequestReviewThread",
+        {
+            "data": {"addPullRequestReviewThread": {"thread": {"id": "TH2"}}},
+        },
+    )
+    seq.expect(
+        "submitPullRequestReview",
+        {
+            "data": {
+                "submitPullRequestReview": {
+                    "pullRequestReview": {"databaseId": 7, "url": "u"},
+                }
+            }
+        },
+    )
 
     cs = [
         _local(id="local-1", line=5, body="thread one"),
@@ -258,19 +315,36 @@ def test_post_reuses_existing_pending_review_and_skips_create(monkeypatch) -> No
     """A pending review owned by the viewer is reused — no create
     mutation fires."""
     seq = _GhSequence()
-    seq.expect("query", {"data": {
-        "viewer": {"login": "alice"},
-        "repository": {"pullRequest": {
-            "id": "PR_kw1",
-            "reviews": {"nodes": [{"id": "PRR_pending", "author": {"login": "alice"}}]},
-        }},
-    }})
-    seq.expect("addPullRequestReviewThread", {
-        "data": {"addPullRequestReviewThread": {"thread": {"id": "TH1"}}},
-    })
-    seq.expect("submitPullRequestReview", {"data": {"submitPullRequestReview": {
-        "pullRequestReview": {"databaseId": 1, "url": ""},
-    }}})
+    seq.expect(
+        "query",
+        {
+            "data": {
+                "viewer": {"login": "alice"},
+                "repository": {
+                    "pullRequest": {
+                        "id": "PR_kw1",
+                        "reviews": {"nodes": [{"id": "PRR_pending", "author": {"login": "alice"}}]},
+                    }
+                },
+            }
+        },
+    )
+    seq.expect(
+        "addPullRequestReviewThread",
+        {
+            "data": {"addPullRequestReviewThread": {"thread": {"id": "TH1"}}},
+        },
+    )
+    seq.expect(
+        "submitPullRequestReview",
+        {
+            "data": {
+                "submitPullRequestReview": {
+                    "pullRequestReview": {"databaseId": 1, "url": ""},
+                }
+            }
+        },
+    )
 
     cs = [_local(body="nit")]
     with patch("semantic_code_review.git_ops.subprocess.run", side_effect=seq):
@@ -288,25 +362,45 @@ def test_post_routes_replies_to_reply_mutation(monkeypatch) -> None:
     """A local reply to an ingested parent (carrying node_id) becomes
     an addPullRequestReviewComment mutation against the parent's node id."""
     seq = _GhSequence()
-    seq.expect("query", {"data": {
-        "viewer": {"login": "alice"},
-        "repository": {"pullRequest": {
-            "id": "PR_kw1",
-            "reviews": {"nodes": []},
-        }},
-    }})
-    seq.expect("addPullRequestReview", {
-        "data": {"addPullRequestReview": {"pullRequestReview": {"id": "PRR_new"}}},
-    })
-    seq.expect("addPullRequestReviewComment", {
-        "data": {"addPullRequestReviewComment": {"comment": {"id": "C1"}}},
-    })
-    seq.expect("submitPullRequestReview", {"data": {"submitPullRequestReview": {
-        "pullRequestReview": {"databaseId": 9, "url": ""},
-    }}})
+    seq.expect(
+        "query",
+        {
+            "data": {
+                "viewer": {"login": "alice"},
+                "repository": {
+                    "pullRequest": {
+                        "id": "PR_kw1",
+                        "reviews": {"nodes": []},
+                    }
+                },
+            }
+        },
+    )
+    seq.expect(
+        "addPullRequestReview",
+        {
+            "data": {"addPullRequestReview": {"pullRequestReview": {"id": "PRR_new"}}},
+        },
+    )
+    seq.expect(
+        "addPullRequestReviewComment",
+        {
+            "data": {"addPullRequestReviewComment": {"comment": {"id": "C1"}}},
+        },
+    )
+    seq.expect(
+        "submitPullRequestReview",
+        {
+            "data": {
+                "submitPullRequestReview": {
+                    "pullRequestReview": {"databaseId": 9, "url": ""},
+                }
+            }
+        },
+    )
 
     cs = [
-        _ingested(),       # gh-1 with node_id="PRRC_parent" (filtered)
+        _ingested(),  # gh-1 with node_id="PRRC_parent" (filtered)
         _local(body="ack", in_reply_to_id="gh-1"),
     ]
     with patch("semantic_code_review.git_ops.subprocess.run", side_effect=seq):
@@ -323,22 +417,42 @@ def test_post_accepts_already_mapped_PostedComments(monkeypatch) -> None:
     """CLI calls comments_to_github once for the prompt count, then
     passes the mapped list here — orchestrator must accept either."""
     seq = _GhSequence()
-    seq.expect("query", {"data": {
-        "viewer": {"login": "alice"},
-        "repository": {"pullRequest": {
-            "id": "PR_kw1",
-            "reviews": {"nodes": []},
-        }},
-    }})
-    seq.expect("addPullRequestReview", {
-        "data": {"addPullRequestReview": {"pullRequestReview": {"id": "PRR_new"}}},
-    })
-    seq.expect("addPullRequestReviewThread", {
-        "data": {"addPullRequestReviewThread": {"thread": {"id": "TH"}}},
-    })
-    seq.expect("submitPullRequestReview", {"data": {"submitPullRequestReview": {
-        "pullRequestReview": {"databaseId": 1, "url": ""},
-    }}})
+    seq.expect(
+        "query",
+        {
+            "data": {
+                "viewer": {"login": "alice"},
+                "repository": {
+                    "pullRequest": {
+                        "id": "PR_kw1",
+                        "reviews": {"nodes": []},
+                    }
+                },
+            }
+        },
+    )
+    seq.expect(
+        "addPullRequestReview",
+        {
+            "data": {"addPullRequestReview": {"pullRequestReview": {"id": "PRR_new"}}},
+        },
+    )
+    seq.expect(
+        "addPullRequestReviewThread",
+        {
+            "data": {"addPullRequestReviewThread": {"thread": {"id": "TH"}}},
+        },
+    )
+    seq.expect(
+        "submitPullRequestReview",
+        {
+            "data": {
+                "submitPullRequestReview": {
+                    "pullRequestReview": {"databaseId": 1, "url": ""},
+                }
+            }
+        },
+    )
 
     posted = [gh_rest.PostedComment(body="x", path="a.py", line=1, side="RIGHT")]
     with patch("semantic_code_review.git_ops.subprocess.run", side_effect=seq):

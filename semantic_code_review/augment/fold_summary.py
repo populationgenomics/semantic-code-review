@@ -110,8 +110,10 @@ def extract_fold_body(
     right_lines = _slice_lines(head_path, *right_range) if right_range else []
     left_lines = _slice_lines(base_path, *left_range) if left_range else []
     diff = difflib.unified_diff(
-        left_lines, right_lines,
-        fromfile=f"base/{file_path}", tofile=f"head/{file_path}",
+        left_lines,
+        right_lines,
+        fromfile=f"base/{file_path}",
+        tofile=f"head/{file_path}",
         lineterm="",
     )
     return "\n".join(diff)
@@ -156,9 +158,7 @@ def _format_fold_prompt(
     else:
         rs, re_ = right_range or (0, 0)
         ls, le = left_range or (0, 0)
-        region_label = (
-            f"both sides — head/{file_path}:{rs}..{re_} vs base/{file_path}:{ls}..{le}"
-        )
+        region_label = f"both sides — head/{file_path}:{rs}..{re_} vs base/{file_path}:{ls}..{le}"
     # When the region snapped to a definition, name it so the model
     # describes that symbol's effect rather than re-deriving its identity
     # from the body text. Indentation-fallback regions carry no symbol.
@@ -210,25 +210,39 @@ async def summarise_fold(
     diagnosable alongside the per-hunk traces.
     """
     body = extract_fold_body(
-        run_dir, file_path, context, right_range, left_range,
+        run_dir,
+        file_path,
+        context,
+        right_range,
+        left_range,
     )
     payload = await run_pass(
         _FOLD,
         client=client,
         agent=make_fold_summary_agent(client.model),
         user_content=_format_fold_prompt(
-            overview_json=overview_json, file_path=file_path,
-            file_summary=file_summary, context=context, body=body,
-            right_range=right_range, left_range=left_range,
-            qualified_name=qualified_name, kind=kind,
+            overview_json=overview_json,
+            file_path=file_path,
+            file_summary=file_summary,
+            context=context,
+            body=body,
+            right_range=right_range,
+            left_range=left_range,
+            qualified_name=qualified_name,
+            kind=kind,
         ),
         system=FOLD_SYSTEM,
         model=model,
         cache_inputs=(
-            overview_json, file_summary, file_path, context,
-            str(right_range or ""), str(left_range or ""),
+            overview_json,
+            file_summary,
+            file_path,
+            context,
+            str(right_range or ""),
+            str(left_range or ""),
             # Symbol identity seeds the prompt, so vary the cache key by it.
-            qualified_name or "", kind or "",
+            qualified_name or "",
+            kind or "",
             # Include the body so a re-run after the file content changed
             # is invalidated even when ranges happen to line up.
             body,
@@ -236,11 +250,17 @@ async def summarise_fold(
         model_settings=_FOLD_CACHE_SETTINGS,
         cache=cache,
         trace_path=_trace_path(
-            trace_dir, file_path, context, right_range, left_range,
+            trace_dir,
+            file_path,
+            context,
+            right_range,
+            left_range,
         ),
         cache_request={
-            "file": file_path, "context": context,
-            "right_range": right_range, "left_range": left_range,
+            "file": file_path,
+            "context": context,
+            "right_range": right_range,
+            "left_range": left_range,
         },
     )
     assert payload is not None  # `_FOLD.swallow_errors` is false
@@ -290,9 +310,7 @@ async def apply_fold_summary_to_run(
     """
     sidecar = run_dir / "augmented.scr.json"
     if not sidecar.exists():
-        raise FoldSummaryNotReady(
-            "augmented.scr.json missing — augment not complete"
-        )
+        raise FoldSummaryNotReady("augmented.scr.json missing — augment not complete")
 
     # Lazy: keeps the augment-side format machinery off the import
     # path for callers that only want :func:`summarise_fold`.
@@ -302,9 +320,7 @@ async def apply_fold_summary_to_run(
 
     diff = load_sidecar(sidecar)
     if not (0 <= file_idx < len(diff.files)):
-        raise FoldSummaryFileIndexError(
-            f"file_idx {file_idx} not in diff"
-        )
+        raise FoldSummaryFileIndexError(f"file_idx {file_idx} not in diff")
 
     fp = diff.files[file_idx]
     summary = await summarise_fold(
@@ -331,18 +347,26 @@ async def apply_fold_summary_to_run(
     # the chosen home.
     if fp.hunks:
         updated_diff = _attach_fold_summary(
-            diff, file_idx=file_idx, context=context,
-            right=(rs, re_), left=(ls, le), summary=summary,
+            diff,
+            file_idx=file_idx,
+            context=context,
+            right=(rs, re_),
+            left=(ls, le),
+            summary=summary,
         )
         dump_sidecar(updated_diff, sidecar)
         (run_dir / "augmented.diff").write_text(
-            emit_augmented_diff(updated_diff), encoding="utf-8",
+            emit_augmented_diff(updated_diff),
+            encoding="utf-8",
         )
 
     return {
-        "file_idx": file_idx, "context": context,
-        "right_start": rs, "right_end": re_,
-        "left_start": ls, "left_end": le,
+        "file_idx": file_idx,
+        "context": context,
+        "right_start": rs,
+        "right_end": re_,
+        "left_start": ls,
+        "left_end": le,
         "summary": summary,
     }
 
@@ -370,19 +394,26 @@ def _attach_fold_summary(
     ls, le = left
     hunk = fp.hunks[0]
     new_folds = [
-        fd for fd in hunk.ann.fold_descriptions
+        fd
+        for fd in hunk.ann.fold_descriptions
         if not (
             fd.context == context
-            and fd.right_start == rs and fd.right_end == re_
-            and fd.left_start == ls and fd.left_end == le
+            and fd.right_start == rs
+            and fd.right_end == re_
+            and fd.left_start == ls
+            and fd.left_end == le
         )
     ]
-    new_folds.append(FoldDescription(
-        context=context,
-        right_start=rs, right_end=re_,
-        left_start=ls, left_end=le,
-        summary=summary,
-    ))
+    new_folds.append(
+        FoldDescription(
+            context=context,
+            right_start=rs,
+            right_end=re_,
+            left_start=ls,
+            left_end=le,
+            summary=summary,
+        )
+    )
     updated_ann = hunk.ann.model_copy(update={"fold_descriptions": new_folds})
     updated_hunk = hunk.model_copy(update={"ann": updated_ann})
     updated_hunks = list(fp.hunks)
@@ -394,8 +425,11 @@ def _attach_fold_summary(
 
 
 def _trace_path(
-    trace_dir: Path | None, file_path: str, context: FoldContext,
-    right_range: tuple[int, int] | None, left_range: tuple[int, int] | None,
+    trace_dir: Path | None,
+    file_path: str,
+    context: FoldContext,
+    right_range: tuple[int, int] | None,
+    left_range: tuple[int, int] | None,
 ) -> Path | None:
     if trace_dir is None:
         return None

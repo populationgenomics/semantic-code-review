@@ -20,9 +20,7 @@ def default_config_path() -> Path:
     when set. The file is optional — its absence is the same as an
     empty config.
     """
-    config_root = Path(
-        os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
-    ) / "scr"
+    config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")) / "scr"
     return config_root / "config.toml"
 
 
@@ -54,13 +52,9 @@ def default_runs_root() -> Path:
     deploy-tool footgun (gcloud, docker, tar), and its worktrees can
     contain a full git history that no one ever wants uploaded.
     """
-    cache_root = Path(
-        os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")
-    ) / "scr" / "runs"
+    cache_root = Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")) / "scr" / "runs"
     try:
-        identity = str(Path(
-            git_ops.git(None, "rev-parse", "--git-common-dir").strip()
-        ).resolve())
+        identity = str(Path(git_ops.git(None, "rev-parse", "--git-common-dir").strip()).resolve())
     except (git_ops.GitError, FileNotFoundError):
         identity = str(Path.cwd().resolve())
     fp = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]

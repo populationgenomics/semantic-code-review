@@ -28,9 +28,7 @@ def review(
             "committed-only."
         ),
     ),
-    spec_md: Path = typer.Option(
-        None, "--spec", help="Markdown file with the spec/intent for this change."
-    ),
+    spec_md: Path = typer.Option(None, "--spec", help="Markdown file with the spec/intent for this change."),
     runs_root: Path = typer.Option(
         None, help="Root directory for run artefacts (default: ~/.cache/scr/runs/<repo-fingerprint>/)."
     ),
@@ -49,7 +47,8 @@ def review(
         None, help="LLM backend (default from config or 'auto'); see `scr config show` for registered names."
     ),
     extra_prompt: Path = typer.Option(
-        None, "--extra-prompt",
+        None,
+        "--extra-prompt",
         help=(
             "Path to a markdown/text file with an extra review prompt. "
             "Runs as a second per-hunk LLM call alongside the main "

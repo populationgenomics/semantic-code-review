@@ -134,6 +134,7 @@ class _ReviewCommentMeta:
     REST ``databaseId``) that mutations need when referencing this
     comment as a reply parent.
     """
+
     thread_resolved: bool
     node_id: str
 
@@ -154,11 +155,16 @@ def fetch_review_thread_metadata(ref: PRRef) -> dict[int, _ReviewCommentMeta]:
     comfortably fit; the cap is a deliberate v1 simplification.
     """
     rc, stdout, stderr = git_ops.gh_capture(
-        "api", "graphql",
-        "-f", f"query={_REVIEW_THREAD_QUERY}",
-        "-F", f"owner={ref.owner}",
-        "-F", f"repo={ref.repo}",
-        "-F", f"number={ref.number}",
+        "api",
+        "graphql",
+        "-f",
+        f"query={_REVIEW_THREAD_QUERY}",
+        "-F",
+        f"owner={ref.owner}",
+        "-F",
+        f"repo={ref.repo}",
+        "-F",
+        f"number={ref.number}",
     )
     if rc != 0:
         raise GhError(f"gh api graphql failed: {stderr.strip()}")
@@ -172,22 +178,22 @@ def fetch_review_thread_metadata(ref: PRRef) -> dict[int, _ReviewCommentMeta]:
         raise GhError(f"gh api graphql: {body['errors']}")
 
     pr = ((body.get("data") or {}).get("repository") or {}).get("pullRequest") or {}
-    threads = (pr.get("reviewThreads") or {})
+    threads = pr.get("reviewThreads") or {}
     if threads.get("pageInfo", {}).get("hasNextPage"):
         log.warning(
-            "PR %s has >100 review threads; trailing metadata "
-            "(resolution, node_id) will default to absent", ref.url,
+            "PR %s has >100 review threads; trailing metadata (resolution, node_id) will default to absent",
+            ref.url,
         )
     out: dict[int, _ReviewCommentMeta] = {}
     for t in threads.get("nodes") or []:
         if not isinstance(t, dict):
             continue
         resolved = bool(t.get("isResolved"))
-        comments = (t.get("comments") or {})
+        comments = t.get("comments") or {}
         if comments.get("pageInfo", {}).get("hasNextPage"):
             log.warning(
-                "review thread in %s has >100 comments; trailing "
-                "metadata may be incomplete", ref.url,
+                "review thread in %s has >100 comments; trailing metadata may be incomplete",
+                ref.url,
             )
         for c in comments.get("nodes") or []:
             if not isinstance(c, dict):
@@ -196,7 +202,8 @@ def fetch_review_thread_metadata(ref: PRRef) -> dict[int, _ReviewCommentMeta]:
             node_id = c.get("id")
             if isinstance(dbid, int) and isinstance(node_id, str):
                 out[dbid] = _ReviewCommentMeta(
-                    thread_resolved=resolved, node_id=node_id,
+                    thread_resolved=resolved,
+                    node_id=node_id,
                 )
     return out
 
@@ -227,9 +234,11 @@ def fetch_pr_review_comments(ref: PRRef) -> list[Comment]:
     """
     endpoint = f"repos/{ref.slug}/pulls/{ref.number}/comments"
     rc, stdout, stderr = git_ops.gh_capture(
-        "api", endpoint,
+        "api",
+        endpoint,
         "--paginate",
-        "-H", "Accept: application/vnd.github.full+json",
+        "-H",
+        "Accept: application/vnd.github.full+json",
     )
     if rc != 0:
         raise GhError(f"gh api {endpoint} failed: {stderr.strip()}")
@@ -299,7 +308,9 @@ def write_comments_file(path: Path, comments: list[Comment]) -> None:
 
 
 def decorate_with_head_anchors(
-    repo_git: Path, head_sha: str, comments: list[Comment],
+    repo_git: Path,
+    head_sha: str,
+    comments: list[Comment],
 ) -> None:
     """Propagate every ingested side=new comment's anchor through to
     ``head_sha`` and stamp ``head_line`` + ``anchor_status`` on each.
@@ -340,17 +351,16 @@ def fetch_comment_commits(repo_git: Path, comments: list[Comment]) -> set[str]:
     a 404 on one commit (force-push >90d ago) leaves the rest fetchable
     and the affected comments are marked orphaned downstream.
     """
-    wanted = sorted({
-        c.commit_id for c in comments
-        if c.commit_id and c.source == "github"
-    })
+    wanted = sorted({c.commit_id for c in comments if c.commit_id and c.source == "github"})
     if not wanted:
         return set()
     return git_ops.try_fetch_depth1(repo_git, wanted)
 
 
 def materialize_pr_comments(
-    run_dir: Path, ref: PRRef, head_sha: str | None = None,
+    run_dir: Path,
+    ref: PRRef,
+    head_sha: str | None = None,
 ) -> int:
     """Fetch + persist PR review comments into the run directory.
 

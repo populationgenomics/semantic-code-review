@@ -29,6 +29,7 @@ def test_lint_ok_on_fixture() -> None:
 
 def test_version_flag_prints_pyproject_version() -> None:
     from importlib.metadata import version as pkg_version
+
     runner = CliRunner()
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
@@ -52,6 +53,7 @@ def test_config_show_reports_absent_user_config(tmp_path: Path, monkeypatch) -> 
     # module may already have populated it from the developer's real
     # ~/.config/scr/config.toml.
     from semantic_code_review import cli as cli_module
+
     cli_module._reset_config_cache()
     runner = CliRunner()
     result = runner.invoke(app, ["config", "show"])
@@ -135,5 +137,3 @@ def test_show_prints_augmented(tmp_path: Path) -> None:
     result = runner.invoke(app, ["show", str(run)])
     assert result.exit_code == 0
     assert "scr-version" in result.stdout
-
-

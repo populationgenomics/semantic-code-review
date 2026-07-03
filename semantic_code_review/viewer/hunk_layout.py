@@ -93,10 +93,15 @@ def build_rows(hunk: ParsedHunk) -> list[_Row]:
     def flush_dels_as_solo() -> None:
         nonlocal old_line
         for text in dels_buf:
-            rows.append(_Row(
-                kind="del", old_line=old_line, new_line=None,
-                old_text=text, new_text="",
-            ))
+            rows.append(
+                _Row(
+                    kind="del",
+                    old_line=old_line,
+                    new_line=None,
+                    old_text=text,
+                    new_text="",
+                )
+            )
             old_line += 1
         dels_buf.clear()
 
@@ -113,10 +118,15 @@ def build_rows(hunk: ParsedHunk) -> list[_Row]:
         if line == "" or line.startswith(" "):
             flush_dels_as_solo()
             text = "" if line == "" else line[1:]
-            rows.append(_Row(
-                kind="ctx", old_line=old_line, new_line=new_line,
-                old_text=text, new_text=text,
-            ))
+            rows.append(
+                _Row(
+                    kind="ctx",
+                    old_line=old_line,
+                    new_line=new_line,
+                    old_text=text,
+                    new_text=text,
+                )
+            )
             old_line += 1
             new_line += 1
             i += 1
@@ -135,23 +145,38 @@ def build_rows(hunk: ParsedHunk) -> list[_Row]:
                 i += 1
             paired = min(len(dels_buf), len(adds))
             for j in range(paired):
-                rows.append(_Row(
-                    kind="pair", old_line=old_line, new_line=new_line,
-                    old_text=dels_buf[j], new_text=adds[j],
-                ))
+                rows.append(
+                    _Row(
+                        kind="pair",
+                        old_line=old_line,
+                        new_line=new_line,
+                        old_text=dels_buf[j],
+                        new_text=adds[j],
+                    )
+                )
                 old_line += 1
                 new_line += 1
             for j in range(paired, len(dels_buf)):
-                rows.append(_Row(
-                    kind="del", old_line=old_line, new_line=None,
-                    old_text=dels_buf[j], new_text="",
-                ))
+                rows.append(
+                    _Row(
+                        kind="del",
+                        old_line=old_line,
+                        new_line=None,
+                        old_text=dels_buf[j],
+                        new_text="",
+                    )
+                )
                 old_line += 1
             for j in range(paired, len(adds)):
-                rows.append(_Row(
-                    kind="ins", old_line=None, new_line=new_line,
-                    old_text="", new_text=adds[j],
-                ))
+                rows.append(
+                    _Row(
+                        kind="ins",
+                        old_line=None,
+                        new_line=new_line,
+                        old_text="",
+                        new_text=adds[j],
+                    )
+                )
                 new_line += 1
             dels_buf = []
             continue
@@ -263,9 +288,7 @@ def _symbol_raw_regions(
                 order.append(qn)
             else:
                 run[1] = i
-    out: list[tuple[int, int, str | None, str | None]] = [
-        (runs[qn][0], runs[qn][1], qn, kinds[qn]) for qn in order
-    ]
+    out: list[tuple[int, int, str | None, str | None]] = [(runs[qn][0], runs[qn][1], qn, kinds[qn]) for qn in order]
     return out, covered
 
 
@@ -294,23 +317,20 @@ def compute_fold_regions(
         # Keep an indentation region only where no row it spans is already
         # covered by a definition — the snapped region owns that stretch.
         raw += [
-            (h, e, None, None) for h, e in _indent_raw_regions(rows)
-            if not any(j in covered for j in range(h, e + 1))
+            (h, e, None, None) for h, e in _indent_raw_regions(rows) if not any(j in covered for j in range(h, e + 1))
         ]
     else:
         raw = [(h, e, None, None) for h, e in _indent_raw_regions(rows)]
 
     regions: list[_FoldRegion] = []
     for header_idx, body_end, qualified_name, kind in sorted(
-        raw, key=lambda r: (r[0], r[1]),
+        raw,
+        key=lambda r: (r[0], r[1]),
     ):
         body_start = header_idx + 1
         if body_start > body_end:
             continue
-        has_changes = any(
-            rows[j].kind in ("ins", "del", "pair")
-            for j in range(header_idx, body_end + 1)
-        )
+        has_changes = any(rows[j].kind in ("ins", "del", "pair") for j in range(header_idx, body_end + 1))
         right_start = _first_side_line(rows, header_idx, body_end, "right")
         right_end = _last_side_line(rows, header_idx, body_end, "right")
         left_start = _first_side_line(rows, header_idx, body_end, "left")
@@ -325,19 +345,21 @@ def compute_fold_regions(
             context = "right"
         else:
             context = "left"
-        regions.append(_FoldRegion(
-            header_idx=header_idx,
-            body_start_idx=body_start,
-            body_end_idx=body_end,
-            context=context,
-            right_start=right_start,
-            right_end=right_end,
-            left_start=left_start,
-            left_end=left_end,
-            has_changes=has_changes,
-            qualified_name=qualified_name,
-            kind=kind,
-        ))
+        regions.append(
+            _FoldRegion(
+                header_idx=header_idx,
+                body_start_idx=body_start,
+                body_end_idx=body_end,
+                context=context,
+                right_start=right_start,
+                right_end=right_end,
+                left_start=left_start,
+                left_end=left_end,
+                has_changes=has_changes,
+                qualified_name=qualified_name,
+                kind=kind,
+            )
+        )
     return regions
 
 
@@ -363,7 +385,9 @@ def _last_side_line(rows: list[_Row], start: int, end: int, side: str) -> int | 
 
 
 def build_hunk_viewer_block(
-    h: AnnotatedHunk, file_idx: int, hunk_idx: int,
+    h: AnnotatedHunk,
+    file_idx: int,
+    hunk_idx: int,
     head_spans: list[dict[str, Any]] | None = None,
     base_spans: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -389,32 +413,38 @@ def build_hunk_viewer_block(
     for reg in regions:
         key = (
             reg.context,
-            reg.right_start or 0, reg.right_end or 0,
-            reg.left_start or 0, reg.left_end or 0,
+            reg.right_start or 0,
+            reg.right_end or 0,
+            reg.left_start or 0,
+            reg.left_end or 0,
         )
         summary = summary_by_key.get(key, "")
-        fold_region_blocks.append({
-            "header_idx": reg.header_idx,
-            "body_start_idx": reg.body_start_idx,
-            "body_end_idx": reg.body_end_idx,
-            "context": reg.context,
-            "right_start": reg.right_start,
-            "right_end": reg.right_end,
-            "left_start": reg.left_start,
-            "left_end": reg.left_end,
-            "has_changes": reg.has_changes,
-            "qualified_name": reg.qualified_name,
-            "kind": reg.kind,
-            "summary": summary,
-        })
+        fold_region_blocks.append(
+            {
+                "header_idx": reg.header_idx,
+                "body_start_idx": reg.body_start_idx,
+                "body_end_idx": reg.body_end_idx,
+                "context": reg.context,
+                "right_start": reg.right_start,
+                "right_end": reg.right_end,
+                "left_start": reg.left_start,
+                "left_end": reg.left_end,
+                "has_changes": reg.has_changes,
+                "qualified_name": reg.qualified_name,
+                "kind": reg.kind,
+                "summary": summary,
+            }
+        )
     body_lines = parsed.body.splitlines()
     adds = sum(1 for ln in body_lines if ln.startswith("+"))
     dels = sum(1 for ln in body_lines if ln.startswith("-"))
     return {
         "id": hunk_id,
         "header": parsed.header,
-        "old_start": parsed.old_start, "old_count": parsed.old_count,
-        "new_start": parsed.new_start, "new_count": parsed.new_count,
+        "old_start": parsed.old_start,
+        "old_count": parsed.old_count,
+        "new_start": parsed.new_start,
+        "new_count": parsed.new_count,
         "adds": adds,
         "dels": dels,
         "intent": ann.intent,

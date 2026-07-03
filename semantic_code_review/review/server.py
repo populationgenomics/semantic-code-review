@@ -61,7 +61,7 @@ def _resolve_asset(rel: str) -> Path:
     p = ASSETS_DIR / rel
     if p.exists():
         return p
-    raise FileNotFoundError(f"asset not found: {rel} (looked in {ASSETS_DIR}{', '+build_dir if build_dir else ''})")
+    raise FileNotFoundError(f"asset not found: {rel} (looked in {ASSETS_DIR}{', ' + build_dir if build_dir else ''})")
 
 
 # Sentinel pushed onto subscriber queues to ask the handler thread to
@@ -94,7 +94,8 @@ def _parse_hunk_id(hunk_id: str) -> tuple[int, int]:
 
 
 def _update_viewer_json_fold(
-    viewer_json: dict[str, Any], payload: dict[str, Any],
+    viewer_json: dict[str, Any],
+    payload: dict[str, Any],
 ) -> None:
     """Patch the matching fold_regions[i].summary in the viewer JSON
     so a fresh `/data.json` fetch sees the result.
@@ -109,8 +110,10 @@ def _update_viewer_json_fold(
     if fi is None or fi >= len(files):
         return
     context = payload.get("context")
-    rs = payload.get("right_start", 0); re_ = payload.get("right_end", 0)
-    ls = payload.get("left_start", 0); le = payload.get("left_end", 0)
+    rs = payload.get("right_start", 0)
+    re_ = payload.get("right_end", 0)
+    ls = payload.get("left_start", 0)
+    le = payload.get("left_end", 0)
     summary = payload.get("summary", "")
     for hunk in files[fi].get("hunks") or []:
         for reg in hunk.get("fold_regions") or []:
@@ -126,8 +129,11 @@ def _update_viewer_json_fold(
 
 
 def _fold_symbol_from_viewer_json(
-    viewer_json: dict[str, Any], file_idx: int, context: str,
-    right_range: tuple[int, int] | None, left_range: tuple[int, int] | None,
+    viewer_json: dict[str, Any],
+    file_idx: int,
+    context: str,
+    right_range: tuple[int, int] | None,
+    left_range: tuple[int, int] | None,
 ) -> tuple[str | None, str | None]:
     """Look up the symbol a fold region snapped to, from the viewer JSON.
 
@@ -169,8 +175,11 @@ def _range_from_payload(payload: dict[str, Any], side: str) -> tuple[int, int] |
 
 
 def _ctx_publish(
-    ctx: ServerContext, event_type: str, payload: dict[str, Any],
-    *, buffer: bool = True,
+    ctx: ServerContext,
+    event_type: str,
+    payload: dict[str, Any],
+    *,
+    buffer: bool = True,
 ) -> None:
     """Broadcast an event to subscribers, optionally retaining it for
     `Last-Event-ID` replay.
@@ -188,7 +197,9 @@ def _ctx_publish(
     with ctx.state_lock:
         if buffer:
             ev = _BufferedEvent(
-                id=ctx.next_event_id, event_type=event_type, payload=payload,
+                id=ctx.next_event_id,
+                event_type=event_type,
+                payload=payload,
             )
             ctx.next_event_id += 1
             ctx.buffer.append(ev)
@@ -220,16 +231,21 @@ def _run_console_worker(
     (a reload starts the console fresh). The conversation history is
     advanced only on clean completion — a cancelled turn is discarded.
     """
+
     def on_delta(chunk: str) -> None:
         _ctx_publish(
-            ctx, "console-delta",
-            {"console_id": console_id, "text": chunk}, buffer=False,
+            ctx,
+            "console-delta",
+            {"console_id": console_id, "text": chunk},
+            buffer=False,
         )
 
     def on_tool(label: str) -> None:
         _ctx_publish(
-            ctx, "console-tool",
-            {"console_id": console_id, "label": label}, buffer=False,
+            ctx,
+            "console-tool",
+            {"console_id": console_id, "label": label},
+            buffer=False,
         )
 
     # Local import keeps the augment-side schemas off this stdlib-only
@@ -237,25 +253,28 @@ def _run_console_worker(
     from ..augment.console import ConsoleCancelled, ConsoleNotReady
 
     try:
-        answer, new_history = asyncio.run(
-            asker(question, history, on_delta, on_tool, cancel, selection)
-        )
+        answer, new_history = asyncio.run(asker(question, history, on_delta, on_tool, cancel, selection))
     except ConsoleCancelled:
         # Partial turn abandoned: history stays as it was, the frontend
         # keeps whatever streamed, and the conversation remains usable.
         _ctx_publish(
-            ctx, "console-done",
-            {"console_id": console_id, "cancelled": True}, buffer=False,
+            ctx,
+            "console-done",
+            {"console_id": console_id, "cancelled": True},
+            buffer=False,
         )
     except ConsoleNotReady as e:
         _ctx_publish(
-            ctx, "console-error",
-            {"console_id": console_id, "error": str(e)}, buffer=False,
+            ctx,
+            "console-error",
+            {"console_id": console_id, "error": str(e)},
+            buffer=False,
         )
     except Exception as e:
         log.exception("console turn failed for question=%r", question[:120])
         _ctx_publish(
-            ctx, "console-error",
+            ctx,
+            "console-error",
             {"console_id": console_id, "error": f"{type(e).__name__}: {e}"},
             buffer=False,
         )
@@ -263,8 +282,10 @@ def _run_console_worker(
         with ctx.state_lock:
             ctx.console_history = new_history
         _ctx_publish(
-            ctx, "console-done",
-            {"console_id": console_id, "answer": answer}, buffer=False,
+            ctx,
+            "console-done",
+            {"console_id": console_id, "answer": answer},
+            buffer=False,
         )
     finally:
         with ctx.state_lock:
@@ -430,7 +451,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._serve_asset("index.html", "text/html; charset=utf-8")
             return
         if path.startswith("/static/"):
-            self._serve_static(path[len("/static/"):])
+            self._serve_static(path[len("/static/") :])
             return
         if path == "/data.json":
             self._json(200, self.ctx.viewer_json)
@@ -454,13 +475,13 @@ class _Handler(BaseHTTPRequestHandler):
     #: even though _resolve_static guards against path traversal too.
     _STATIC_ASSETS: dict[str, str] = {
         "viewer.css": "text/css; charset=utf-8",
-        "viewer.js":  "application/javascript; charset=utf-8",
-        "vendor/highlight.min.js":   "application/javascript; charset=utf-8",
-        "vendor/github.min.css":     "text/css; charset=utf-8",
+        "viewer.js": "application/javascript; charset=utf-8",
+        "vendor/highlight.min.js": "application/javascript; charset=utf-8",
+        "vendor/github.min.css": "text/css; charset=utf-8",
         "vendor/github-dark.min.css": "text/css; charset=utf-8",
         # Lazy-loaded by the review console the first time an answer
         # completes a mermaid fence; never bundled into viewer.js.
-        "vendor/mermaid.min.js":     "application/javascript; charset=utf-8",
+        "vendor/mermaid.min.js": "application/javascript; charset=utf-8",
     }
 
     def _serve_static(self, rel: str) -> None:
@@ -652,14 +673,24 @@ class _Handler(BaseHTTPRequestHandler):
         # Seed the prompt with the symbol the region snapped to (if any),
         # resolved from the server-computed fold_regions in the viewer JSON.
         qualified_name, kind = _fold_symbol_from_viewer_json(
-            self.ctx.viewer_json, file_idx, context, right_range, left_range,
+            self.ctx.viewer_json,
+            file_idx,
+            context,
+            right_range,
+            left_range,
         )
 
         try:
-            result = asyncio.run(self.ctx.fold_summariser(
-                file_idx, context, right_range, left_range,
-                qualified_name, kind,
-            ))
+            result = asyncio.run(
+                self.ctx.fold_summariser(
+                    file_idx,
+                    context,
+                    right_range,
+                    left_range,
+                    qualified_name,
+                    kind,
+                )
+            )
         except FoldSummaryNotReady as e:
             self._json(409, {"error": str(e)})
             return
@@ -669,7 +700,10 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception as e:
             log.exception(
                 "fold-summary failed for file_idx=%s context=%s right=%s left=%s",
-                file_idx, context, right_range, left_range,
+                file_idx,
+                context,
+                right_range,
+                left_range,
             )
             self._json(500, {"error": f"{type(e).__name__}: {e}"})
             return
@@ -697,7 +731,12 @@ class _Handler(BaseHTTPRequestHandler):
         a concurrent reset/cancel can't tear it out mid-turn.
         """
         if self.ctx.console_asker is None:
-            self._json(409, {"error": "review console not ready yet — it becomes available once analysis finishes (and is disabled for --no-augment runs)"})
+            self._json(
+                409,
+                {
+                    "error": "review console not ready yet — it becomes available once analysis finishes (and is disabled for --no-augment runs)"
+                },
+            )
             return
         question = str(payload.get("question", "")).strip()
         if not question:
@@ -799,14 +838,16 @@ class _Handler(BaseHTTPRequestHandler):
             src = by_id.get(p.source_id or "")
             if src is None:
                 continue
-            rows.append({
-                "id": src.id,
-                "file": src.file,
-                "side": src.side,
-                "line": src.line,
-                "body": p.body,
-                "is_reply": p.is_reply,
-            })
+            rows.append(
+                {
+                    "id": src.id,
+                    "file": src.file,
+                    "side": src.side,
+                    "line": src.line,
+                    "body": p.body,
+                    "is_reply": p.is_reply,
+                }
+            )
         self._json(200, {"comments": rows})
 
     def _handle_post_review(self, payload: dict[str, Any]) -> None:
@@ -854,7 +895,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._touch()
         path = self.path.split("?", 1)[0]
         if path.startswith("/comments/"):
-            comment_id = path[len("/comments/"):]
+            comment_id = path[len("/comments/") :]
             try:
                 existed = self.ctx.store.delete(comment_id)
             except ReadOnlyCommentError as e:
@@ -914,6 +955,7 @@ class ReviewServer:
 
         class _Bound(_Handler):
             pass
+
         _Bound.ctx = ctx  # type: ignore[assignment]
         handler_cls = _Bound
 

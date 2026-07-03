@@ -6,22 +6,11 @@ import pytest
 
 from semantic_code_review.format.parse import ParseError, parse_augmented_diff
 
-MINIMAL_PREAMBLE = (
-    "#scr: scr-version: 1\n"
-    "#scr: scr-pr: x\n"
-    "#scr: scr-base: a\n"
-    "#scr: scr-head: b\n"
-)
+MINIMAL_PREAMBLE = "#scr: scr-version: 1\n#scr: scr-pr: x\n#scr: scr-base: a\n#scr: scr-head: b\n"
 
 
 def _diff(body: str, *, old: int = 1, new: int = 1, trailer: str = "") -> str:
-    return (
-        MINIMAL_PREAMBLE
-        + "diff --git a/f b/f\n--- a/f\n+++ b/f\n"
-        + f"@@ -1,{old} +1,{new} @@\n"
-        + body
-        + trailer
-    )
+    return MINIMAL_PREAMBLE + "diff --git a/f b/f\n--- a/f\n+++ b/f\n" + f"@@ -1,{old} +1,{new} @@\n" + body + trailer
 
 
 def test_parses_minimal_diff() -> None:
@@ -34,6 +23,7 @@ def test_parses_minimal_diff() -> None:
 
 def test_parses_empty_preamble_directive() -> None:
     from semantic_code_review.augment.schemas import SkippedOverview
+
     # scr-pr is required; ensure we can still parse without overview/model.
     d = parse_augmented_diff(_diff("-x\n+y\n"))
     assert isinstance(d.overview, SkippedOverview)
@@ -89,11 +79,7 @@ def test_rejects_hunk_count_mismatch() -> None:
 
 
 def test_rejects_malformed_hunk_header() -> None:
-    text = (
-        MINIMAL_PREAMBLE
-        + "diff --git a/f b/f\n--- a/f\n+++ b/f\n"
-        + "@@ bogus @@\n-x\n+y\n"
-    )
+    text = MINIMAL_PREAMBLE + "diff --git a/f b/f\n--- a/f\n+++ b/f\n" + "@@ bogus @@\n-x\n+y\n"
     with pytest.raises(ParseError, match="malformed hunk header"):
         parse_augmented_diff(text)
 

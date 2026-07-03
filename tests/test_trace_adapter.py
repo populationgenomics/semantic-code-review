@@ -119,12 +119,8 @@ def test_adapter_emits_legacy_shape(tmp_path: Path) -> None:
     assert it0["messages_sent"][0] == {"role": "user", "content": "hello"}
     # The tool call shows up in the response content.
     tool_blocks = [b for b in it0["response"]["content"] if b["type"] == "tool_use"]
-    assert tool_blocks == [
-        {"type": "tool_use", "id": "c1", "name": "grep", "input": {"pattern": "x"}}
-    ]
-    assert it0["tool_results"] == [
-        {"type": "tool_result", "tool_use_id": "c1", "content": "a.py:1: x = 1"}
-    ]
+    assert tool_blocks == [{"type": "tool_use", "id": "c1", "name": "grep", "input": {"pattern": "x"}}]
+    assert it0["tool_results"] == [{"type": "tool_result", "tool_use_id": "c1", "content": "a.py:1: x = 1"}]
     # Token aggregation across responses.
     assert trace["result"]["input_tokens"] == 22
     assert trace["result"]["output_tokens"] == 7
@@ -194,7 +190,9 @@ def test_partial_trace_captures_tool_calls_and_error(tmp_path: Path) -> None:
         ModelRequest(
             parts=[
                 ToolReturnPart(
-                    tool_name="grep", content="a.py:1: foo", tool_call_id="c1",
+                    tool_name="grep",
+                    content="a.py:1: foo",
+                    tool_call_id="c1",
                     timestamp=_ts(),
                 ),
             ],
@@ -221,7 +219,8 @@ def test_partial_trace_captures_tool_calls_and_error(tmp_path: Path) -> None:
     }
     # The user prompt is preserved.
     assert trace["iterations"][0]["messages_sent"][0] == {
-        "role": "user", "content": "annotate this hunk",
+        "role": "user",
+        "content": "annotate this hunk",
     }
     # The grep call is captured even though no submit happened.
     grep_calls = [c for c in trace["result"]["tool_calls"] if c["name"] == "grep"]
@@ -319,8 +318,12 @@ def test_partial_trace_no_error_field_when_no_error(tmp_path: Path) -> None:
     `error` key in that case."""
     trace_path = tmp_path / "ok.json"
     write_partial_trace(
-        [], trace_path=trace_path,
-        model="m", system="s", tool_names=[], submit_tool="submit",
+        [],
+        trace_path=trace_path,
+        model="m",
+        system="s",
+        tool_names=[],
+        submit_tool="submit",
         submit_args={"intent": "ok"},
     )
     trace = json.loads(trace_path.read_text())

@@ -59,11 +59,14 @@ def _handle(req: dict[str, Any], repo_tools: RepoTools) -> dict[str, Any] | None
     is_notification = "id" not in req
 
     if method == "initialize":
-        return _make_result(req_id, {
-            "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-        })
+        return _make_result(
+            req_id,
+            {
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {"tools": {"listChanged": False}},
+                "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+            },
+        )
 
     if method == "notifications/initialized":
         # Notification: no response.
@@ -77,15 +80,21 @@ def _handle(req: dict[str, Any], repo_tools: RepoTools) -> dict[str, Any] | None
         args = params.get("arguments") or {}
         try:
             output = mcp_dispatch(repo_tools, name, args)
-            return _make_result(req_id, {
-                "content": [{"type": "text", "text": output}],
-                "isError": output.startswith("error:"),
-            })
+            return _make_result(
+                req_id,
+                {
+                    "content": [{"type": "text", "text": output}],
+                    "isError": output.startswith("error:"),
+                },
+            )
         except Exception as e:  # noqa: BLE001
-            return _make_result(req_id, {
-                "content": [{"type": "text", "text": f"error: {e}"}],
-                "isError": True,
-            })
+            return _make_result(
+                req_id,
+                {
+                    "content": [{"type": "text", "text": f"error: {e}"}],
+                    "isError": True,
+                },
+            )
 
     if is_notification:
         # Drop unknown notifications silently.
@@ -128,7 +137,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.log_file is not None:
         logging.basicConfig(
-            filename=str(args.log_file), level=logging.INFO,
+            filename=str(args.log_file),
+            level=logging.INFO,
             format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         )
 

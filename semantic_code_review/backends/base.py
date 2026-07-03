@@ -62,9 +62,7 @@ def resolve_api_key(name: str, bdef: BackendDef) -> str:
 
     if bdef.api_key_command:
         cmd_str = " ".join(shlex.quote(p) for p in bdef.api_key_command)
-        fallback_hint = (
-            f" (or set ${bdef.api_key_env} directly)" if bdef.api_key_env else ""
-        )
+        fallback_hint = f" (or set ${bdef.api_key_env} directly)" if bdef.api_key_env else ""
         try:
             proc = subprocess.run(
                 list(bdef.api_key_command),
@@ -75,33 +73,26 @@ def resolve_api_key(name: str, bdef: BackendDef) -> str:
             )
         except FileNotFoundError:
             raise typer.BadParameter(
-                f"--backend={name}: api_key_command not on PATH: "
-                f"{bdef.api_key_command[0]}{fallback_hint}"
+                f"--backend={name}: api_key_command not on PATH: {bdef.api_key_command[0]}{fallback_hint}"
             ) from None
         except subprocess.TimeoutExpired:
-            raise typer.BadParameter(
-                f"--backend={name}: api_key_command timed out: {cmd_str}"
-            ) from None
+            raise typer.BadParameter(f"--backend={name}: api_key_command timed out: {cmd_str}") from None
         if proc.returncode != 0:
             stderr = (proc.stderr or "").strip()
             tail = f"\n{stderr}" if stderr else ""
             raise typer.BadParameter(
-                f"--backend={name}: api_key_command exited "
-                f"{proc.returncode}: {cmd_str}{tail}{fallback_hint}"
+                f"--backend={name}: api_key_command exited {proc.returncode}: {cmd_str}{tail}{fallback_hint}"
             )
         key = (proc.stdout or "").strip()
         if not key:
             raise typer.BadParameter(
-                f"--backend={name}: api_key_command produced empty "
-                f"output: {cmd_str}{fallback_hint}"
+                f"--backend={name}: api_key_command produced empty output: {cmd_str}{fallback_hint}"
             )
         return key
 
     # Reached only when api_key_env was set but the var was empty and
     # there's no api_key_command fallback.
-    raise typer.BadParameter(
-        f"--backend={name} but ${bdef.api_key_env} is not set."
-    )
+    raise typer.BadParameter(f"--backend={name} but ${bdef.api_key_env} is not set.")
 
 
 def _env_get(name: str) -> str | None:

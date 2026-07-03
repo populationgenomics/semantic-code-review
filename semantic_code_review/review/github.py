@@ -33,6 +33,7 @@ class OpenPR:
     """A single PR row returned by `gh pr list`. Fields mirror the
     `--json` keys we ask for; missing keys come back as empty strings.
     """
+
     number: int
     title: str
     author: str
@@ -46,10 +47,8 @@ class OpenPR:
         title = self.title.strip() or "(untitled)"
         head = self.head_ref or "?"
         base = self.base_ref or "?"
-        return (
-            f"#{self.number} {title}\n"
-            f"        {self.author or '?'} · {head} → {base}"
-            + (f" · updated {self.updated_at}" if self.updated_at else "")
+        return f"#{self.number} {title}\n        {self.author or '?'} · {head} → {base}" + (
+            f" · updated {self.updated_at}" if self.updated_at else ""
         )
 
 
@@ -67,6 +66,7 @@ class PostedComment:
     modal in the viewer can map a selected row back to the underlying
     comment. The graphql post path ignores it.
     """
+
     body: str
     path: str | None = None
     line: int | None = None
@@ -85,6 +85,7 @@ class PostResult:
     for the new review object so the caller can offer "view on
     github.com".
     """
+
     review_id: int
     review_url: str
     posted: int
@@ -100,7 +101,13 @@ GhError = git_ops.GhError
 # ---------------------------------------------------------------------------
 
 _LIST_FIELDS = [
-    "number", "title", "author", "headRefName", "baseRefName", "updatedAt", "url",
+    "number",
+    "title",
+    "author",
+    "headRefName",
+    "baseRefName",
+    "updatedAt",
+    "url",
 ]
 
 
@@ -112,10 +119,16 @@ def list_review_requested_prs(repo: str) -> list[OpenPR]:
     keeps the auth/host story inside `gh`.
     """
     rc, stdout, stderr = git_ops.gh_capture(
-        "pr", "list", "--repo", repo,
-        "--search", "is:open review-requested:@me",
-        "--json", ",".join(_LIST_FIELDS),
-        "--limit", "100",
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--search",
+        "is:open review-requested:@me",
+        "--json",
+        ",".join(_LIST_FIELDS),
+        "--limit",
+        "100",
     )
     if rc != 0:
         raise GhError(f"`gh pr list` failed: {stderr.strip() or stdout.strip()}")
@@ -167,6 +180,7 @@ def pick_pr_interactive(
 # ---------------------------------------------------------------------------
 # Posting comments back to GitHub
 # ---------------------------------------------------------------------------
+
 
 def map_side(viewer_side: str) -> str:
     """Translate the viewer's `old`/`new` side label into GitHub's
@@ -226,8 +240,8 @@ def comments_to_github(comments: Iterable[Any]) -> list[PostedComment]:
             parent = by_id.get(str(parent_id))
             if parent is None:
                 log.warning(
-                    "skipping local reply: parent %r not in the comment "
-                    "set — nothing to thread to", parent_id,
+                    "skipping local reply: parent %r not in the comment set — nothing to thread to",
+                    parent_id,
                 )
                 continue
             parent_node = _comment_get(parent, "node_id")
@@ -235,27 +249,32 @@ def comments_to_github(comments: Iterable[Any]) -> list[PostedComment]:
                 log.warning(
                     "skipping local reply: parent %r has no node_id "
                     "(local draft or pre-ingest record) — can't reply "
-                    "in a single submission", parent_id,
+                    "in a single submission",
+                    parent_id,
                 )
                 continue
-            out.append(PostedComment(
-                body=body_str,
-                in_reply_to_node_id=str(parent_node),
-                source_id=str(_comment_get(c, "id") or "") or None,
-            ))
+            out.append(
+                PostedComment(
+                    body=body_str,
+                    in_reply_to_node_id=str(parent_node),
+                    source_id=str(_comment_get(c, "id") or "") or None,
+                )
+            )
             continue
         path = _comment_get(c, "file")
         side = _comment_get(c, "side")
         line = _comment_get(c, "line")
         if not path or side is None or line is None:
             continue
-        out.append(PostedComment(
-            body=body_str,
-            path=str(path),
-            line=int(line),
-            side=map_side(str(side)),
-            source_id=str(_comment_get(c, "id") or "") or None,
-        ))
+        out.append(
+            PostedComment(
+                body=body_str,
+                path=str(path),
+                line=int(line),
+                side=map_side(str(side)),
+                source_id=str(_comment_get(c, "id") or "") or None,
+            )
+        )
     return out
 
 

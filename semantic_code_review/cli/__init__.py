@@ -25,6 +25,7 @@ app = typer.Typer(
 def _version_callback(value: bool) -> None:
     if value:
         from importlib.metadata import version
+
         typer.echo(version("semantic-code-review"))
         raise typer.Exit()
 
@@ -32,7 +33,9 @@ def _version_callback(value: bool) -> None:
 @app.callback()
 def _main(
     version: bool = typer.Option(
-        False, "--version", "-V",
+        False,
+        "--version",
+        "-V",
         callback=_version_callback,
         is_eager=True,
         help="Print version and exit.",

@@ -77,6 +77,7 @@ def test_parse_hunks_skips_non_header_lines() -> None:
 
 def _h(old_start: int, old_count: int, new_start: int, new_count: int):
     from semantic_code_review.fetch.anchor import _HunkHeader
+
     return _HunkHeader(old_start, old_count, new_start, new_count)
 
 
@@ -201,12 +202,15 @@ class _GitMock:
             git_idx = argv.index("git")
         except ValueError:
             git_idx = -1
-        tail = tuple(argv[git_idx + 1:])
+        tail = tuple(argv[git_idx + 1 :])
         for k, v in self.responses.items():
-            if tail[:len(k)] == k or tail[-len(k):] == k:
+            if tail[: len(k)] == k or tail[-len(k) :] == k:
                 rc, stdout, stderr = v
                 return subprocess.CompletedProcess(
-                    args=argv, returncode=rc, stdout=stdout, stderr=stderr,
+                    args=argv,
+                    returncode=rc,
+                    stdout=stdout,
+                    stderr=stderr,
                 )
         raise AssertionError(f"unexpected git call: {tail}")
 
@@ -262,15 +266,12 @@ diff --git a/x.py b/x.py
     with patch("semantic_code_review.git_ops.subprocess.run", side_effect=g):
         # Line 11 was inside the modification but the hunk has two `+`
         # lines paired by position — old 11 → new 11 (same number).
-        assert propagate_anchor(repo_git, "old", "new", "x.py", 11) \
-            == AnchorResult("anchored", 11)
+        assert propagate_anchor(repo_git, "old", "new", "x.py", 11) == AnchorResult("anchored", 11)
         # Old line 12 has no `+` partner (3 removed, 2 added) so it
         # orphans at the first surviving line below the hunk.
-        assert propagate_anchor(repo_git, "old", "new", "x.py", 12) \
-            == AnchorResult("orphaned", 12)
+        assert propagate_anchor(repo_git, "old", "new", "x.py", 12) == AnchorResult("orphaned", 12)
         # Line 100 is well below the hunk; shifted by -1 (3→2 net).
-        assert propagate_anchor(repo_git, "old", "new", "x.py", 100) \
-            == AnchorResult("shifted", 99)
+        assert propagate_anchor(repo_git, "old", "new", "x.py", 100) == AnchorResult("shifted", 99)
 
 
 def test_propagate_anchor_returns_anchored_when_diff_is_empty(repo_git: Path) -> None:
@@ -281,5 +282,4 @@ def test_propagate_anchor_returns_anchored_when_diff_is_empty(repo_git: Path) ->
     g.expect(("cat-file", "-e", "new:x.py"), rc=0)
     g.expect(("diff", "--unified=0"), rc=0, stdout="")
     with patch("semantic_code_review.git_ops.subprocess.run", side_effect=g):
-        assert propagate_anchor(repo_git, "old", "new", "x.py", 42) \
-            == AnchorResult("anchored", 42)
+        assert propagate_anchor(repo_git, "old", "new", "x.py", 42) == AnchorResult("anchored", 42)

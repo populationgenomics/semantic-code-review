@@ -32,7 +32,8 @@ def augment(
         None, help="LLM backend (default from config or 'auto'); see `scr config show` for registered names."
     ),
     extra_prompt: Path = typer.Option(
-        None, "--extra-prompt",
+        None,
+        "--extra-prompt",
         help=(
             "Path to a markdown/text file with an extra review prompt. "
             "Runs as a second per-hunk LLM call alongside the main "

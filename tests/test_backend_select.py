@@ -15,13 +15,15 @@ def _cfg(backends_map: dict[str, BackendDef]) -> ScrConfig:
 
 
 def test_unknown_backend_lists_known_choices() -> None:
-    cfg = _cfg({
-        "groq": BackendDef(
-            type=BackendType.OPENAI_COMPAT,
-            base_url="https://example.com",
-            api_key_env="FAKE",
-        ),
-    })
+    cfg = _cfg(
+        {
+            "groq": BackendDef(
+                type=BackendType.OPENAI_COMPAT,
+                base_url="https://example.com",
+                api_key_env="FAKE",
+            ),
+        }
+    )
     with pytest.raises(typer.BadParameter, match="auto, groq"):
         backends.get("does-not-exist", config=cfg)
 
@@ -53,10 +55,12 @@ def test_auto_picks_first_supporting_backend(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setitem(backends._HANDLERS, BackendType.ANTHROPIC_SDK, _No)
     monkeypatch.setitem(backends._HANDLERS, BackendType.CLAUDE_CLI, _Yes)
 
-    cfg = _cfg({
-        "claude-api": BackendDef(type=BackendType.ANTHROPIC_SDK),
-        "claude-cli": BackendDef(type=BackendType.CLAUDE_CLI),
-    })
+    cfg = _cfg(
+        {
+            "claude-api": BackendDef(type=BackendType.ANTHROPIC_SDK),
+            "claude-cli": BackendDef(type=BackendType.CLAUDE_CLI),
+        }
+    )
     assert backends.resolve_auto(config=cfg) == "claude-cli"
 
 
@@ -81,10 +85,12 @@ def test_auto_prefers_lower_priority(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setitem(backends._HANDLERS, BackendType.ANTHROPIC_SDK, _Always)
     monkeypatch.setitem(backends._HANDLERS, BackendType.CLAUDE_CLI, _AlsoAlways)
-    cfg = _cfg({
-        "claude-cli": BackendDef(type=BackendType.CLAUDE_CLI),
-        "claude-api": BackendDef(type=BackendType.ANTHROPIC_SDK),
-    })
+    cfg = _cfg(
+        {
+            "claude-cli": BackendDef(type=BackendType.CLAUDE_CLI),
+            "claude-api": BackendDef(type=BackendType.ANTHROPIC_SDK),
+        }
+    )
     assert backends.resolve_auto(config=cfg) == "claude-api"
 
 
@@ -102,10 +108,12 @@ def test_auto_raises_when_no_adapter_supports_it(
 
     monkeypatch.setitem(backends._HANDLERS, BackendType.ANTHROPIC_SDK, _Never)
     monkeypatch.setitem(backends._HANDLERS, BackendType.CLAUDE_CLI, _Never)
-    cfg = _cfg({
-        "claude-api": BackendDef(type=BackendType.ANTHROPIC_SDK),
-        "claude-cli": BackendDef(type=BackendType.CLAUDE_CLI),
-    })
+    cfg = _cfg(
+        {
+            "claude-api": BackendDef(type=BackendType.ANTHROPIC_SDK),
+            "claude-cli": BackendDef(type=BackendType.CLAUDE_CLI),
+        }
+    )
     with pytest.raises(typer.BadParameter, match="No Anthropic credentials"):
         backends.resolve_auto(config=cfg)
 
@@ -131,13 +139,15 @@ def test_auto_skips_adapters_with_priority_none(
 
     monkeypatch.setitem(backends._HANDLERS, BackendType.OPENAI_COMPAT, _OptOut)
     monkeypatch.setitem(backends._HANDLERS, BackendType.ANTHROPIC_SDK, _OptIn)
-    cfg = _cfg({
-        "groq": BackendDef(
-            type=BackendType.OPENAI_COMPAT,
-            base_url="https://example.com",
-        ),
-        "claude-api": BackendDef(type=BackendType.ANTHROPIC_SDK),
-    })
+    cfg = _cfg(
+        {
+            "groq": BackendDef(
+                type=BackendType.OPENAI_COMPAT,
+                base_url="https://example.com",
+            ),
+            "claude-api": BackendDef(type=BackendType.ANTHROPIC_SDK),
+        }
+    )
     assert backends.resolve_auto(config=cfg) == "claude-api"
 
 

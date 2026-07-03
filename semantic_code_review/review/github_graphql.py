@@ -89,10 +89,12 @@ def _gh_graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
         # un-threadable reply, etc.), echoing them to stderr — so this
         # branch is where most real posting failures surface.
         log.error(
-            "gh api graphql failed (exit %s)\n  query: %s\n  variables: %s\n"
-            "  stderr: %s\n  stdout: %s",
-            rc, _compact_query(query), _loggable_vars(variables),
-            stderr.strip(), stdout.strip(),
+            "gh api graphql failed (exit %s)\n  query: %s\n  variables: %s\n  stderr: %s\n  stdout: %s",
+            rc,
+            _compact_query(query),
+            _loggable_vars(variables),
+            stderr.strip(),
+            stdout.strip(),
         )
         raise GhError(f"gh api graphql failed: {detail}")
     try:
@@ -100,26 +102,33 @@ def _gh_graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
     except ValueError as e:
         log.error(
             "gh api graphql returned unparseable JSON: %s\n  query: %s\n  stdout: %s",
-            e, _compact_query(query), stdout[:2000],
+            e,
+            _compact_query(query),
+            stdout[:2000],
         )
         raise GhError(f"gh api graphql: unparseable JSON: {e}") from e
     if not isinstance(body, dict):
         log.error(
             "gh api graphql: expected object, got %s\n  query: %s\n  stdout: %s",
-            type(body).__name__, _compact_query(query), stdout[:2000],
+            type(body).__name__,
+            _compact_query(query),
+            stdout[:2000],
         )
         raise GhError(f"gh api graphql: expected object, got {type(body).__name__}")
     if body.get("errors"):
         log.error(
             "gh api graphql returned errors\n  query: %s\n  variables: %s\n  errors: %s",
-            _compact_query(query), _loggable_vars(variables), body["errors"],
+            _compact_query(query),
+            _loggable_vars(variables),
+            body["errors"],
         )
         raise GhError(f"gh api graphql: {body['errors']}")
     data = body.get("data")
     if not isinstance(data, dict):
         log.error(
             "gh api graphql: response missing 'data' envelope\n  query: %s\n  stdout: %s",
-            _compact_query(query), stdout[:2000],
+            _compact_query(query),
+            stdout[:2000],
         )
         raise GhError("gh api graphql: response missing 'data' envelope")
     return data
@@ -155,6 +164,7 @@ class PrReviewState:
     None: when present we append to it instead of creating a new one,
     which is the whole reason we can't just use the REST bulk endpoint.
     """
+
     pr_node_id: str
     viewer_login: str
     pending_review_id: str | None
@@ -165,9 +175,14 @@ def query_pr_review_state(repo: str, number: int) -> PrReviewState:
     owner, _, name = repo.partition("/")
     if not owner or not name:
         raise GhError(f"invalid repo {repo!r}: expected 'owner/name'")
-    data = _gh_graphql(_PR_STATE_QUERY, {
-        "owner": owner, "repo": name, "number": int(number),
-    })
+    data = _gh_graphql(
+        _PR_STATE_QUERY,
+        {
+            "owner": owner,
+            "repo": name,
+            "number": int(number),
+        },
+    )
     viewer_login = ((data.get("viewer") or {}).get("login")) or ""
     pr = (data.get("repository") or {}).get("pullRequest") or {}
     pr_id = pr.get("id")
@@ -204,13 +219,14 @@ mutation($pr: ID!, $body: String) {
 
 
 def create_pending_review(pr_node_id: str, *, body: str = "") -> str:
-    data = _gh_graphql(_CREATE_PENDING_REVIEW, {
-        "pr": pr_node_id, "body": body,
-    })
-    rid = (
-        ((data.get("addPullRequestReview") or {}).get("pullRequestReview") or {})
-        .get("id")
+    data = _gh_graphql(
+        _CREATE_PENDING_REVIEW,
+        {
+            "pr": pr_node_id,
+            "body": body,
+        },
     )
+    rid = ((data.get("addPullRequestReview") or {}).get("pullRequestReview") or {}).get("id")
     if not rid:
         raise GhError("addPullRequestReview returned no review id")
     return str(rid)
@@ -230,17 +246,24 @@ mutation($rid: ID!, $path: String!, $line: Int!, $side: DiffSide!, $body: String
 
 
 def add_review_thread(
-    review_id: str, path: str, line: int, side: str, body: str,
+    review_id: str,
+    path: str,
+    line: int,
+    side: str,
+    body: str,
 ) -> str:
     """Append a new line-anchored thread to a pending review."""
-    data = _gh_graphql(_ADD_REVIEW_THREAD, {
-        "rid": review_id, "path": path,
-        "line": int(line), "side": side, "body": body,
-    })
-    tid = (
-        ((data.get("addPullRequestReviewThread") or {}).get("thread") or {})
-        .get("id")
+    data = _gh_graphql(
+        _ADD_REVIEW_THREAD,
+        {
+            "rid": review_id,
+            "path": path,
+            "line": int(line),
+            "side": side,
+            "body": body,
+        },
     )
+    tid = ((data.get("addPullRequestReviewThread") or {}).get("thread") or {}).get("id")
     if not tid:
         raise GhError("addPullRequestReviewThread returned no thread id")
     return str(tid)
@@ -258,16 +281,20 @@ mutation($rid: ID!, $reply_to: ID!, $body: String!) {
 
 
 def add_review_comment_reply(
-    review_id: str, in_reply_to_node_id: str, body: str,
+    review_id: str,
+    in_reply_to_node_id: str,
+    body: str,
 ) -> str:
     """Append a reply to an existing comment, under a pending review."""
-    data = _gh_graphql(_ADD_REVIEW_COMMENT_REPLY, {
-        "rid": review_id, "reply_to": in_reply_to_node_id, "body": body,
-    })
-    cid = (
-        ((data.get("addPullRequestReviewComment") or {}).get("comment") or {})
-        .get("id")
+    data = _gh_graphql(
+        _ADD_REVIEW_COMMENT_REPLY,
+        {
+            "rid": review_id,
+            "reply_to": in_reply_to_node_id,
+            "body": body,
+        },
     )
+    cid = ((data.get("addPullRequestReviewComment") or {}).get("comment") or {}).get("id")
     if not cid:
         raise GhError("addPullRequestReviewComment returned no comment id")
     return str(cid)
@@ -285,12 +312,20 @@ mutation($rid: ID!, $event: PullRequestReviewEvent!, $body: String) {
 
 
 def submit_review(
-    review_id: str, *, event: str = "COMMENT", body: str = "",
+    review_id: str,
+    *,
+    event: str = "COMMENT",
+    body: str = "",
 ) -> dict[str, Any]:
     """Submit a pending review with the given event verdict."""
-    data = _gh_graphql(_SUBMIT_REVIEW, {
-        "rid": review_id, "event": event, "body": body,
-    })
+    data = _gh_graphql(
+        _SUBMIT_REVIEW,
+        {
+            "rid": review_id,
+            "event": event,
+            "body": body,
+        },
+    )
     r = (data.get("submitPullRequestReview") or {}).get("pullRequestReview") or {}
     if not r:
         raise GhError("submitPullRequestReview returned no review")
@@ -348,7 +383,10 @@ def post_review_via_graphql(
     total = len(posted)
     log.info(
         "posting review to %s#%s: %d comment(s), review %s (%s)",
-        repo, number, total, review_id,
+        repo,
+        number,
+        total,
+        review_id,
         "reused pending" if reused_pending else "newly created",
     )
     for i, c in enumerate(posted, start=1):
@@ -363,14 +401,14 @@ def post_review_via_graphql(
             # _gh_graphql already logged the gh output + variables; add the
             # position so "added 1..i-1, failed on i/total" is explicit —
             # the i-1 successes are left as an unsubmitted draft review.
-            anchor = (
-                f"reply→{c.in_reply_to_node_id}" if c.is_reply
-                else f"{c.path}:{c.line} ({c.side})"
-            )
+            anchor = f"reply→{c.in_reply_to_node_id}" if c.is_reply else f"{c.path}:{c.line} ({c.side})"
             log.error(
-                "posting aborted on comment %d/%d (%s); %d already added to "
-                "draft review %s (left unsubmitted)",
-                i, total, anchor, i - 1, review_id,
+                "posting aborted on comment %d/%d (%s); %d already added to draft review %s (left unsubmitted)",
+                i,
+                total,
+                anchor,
+                i - 1,
+                review_id,
             )
             raise
 

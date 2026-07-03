@@ -83,20 +83,14 @@ def _tsx_support() -> tuple[Language, str]:
 
 _REGISTRY: dict[str, _LangSupport] = {
     "python": _LangSupport(extensions=(".py",), loader=_python_support),
-    "javascript": _LangSupport(
-        extensions=(".js", ".jsx", ".mjs", ".cjs"), loader=_javascript_support
-    ),
+    "javascript": _LangSupport(extensions=(".js", ".jsx", ".mjs", ".cjs"), loader=_javascript_support),
     # `.ts` and `.tsx` need distinct grammars: the `<T>` cast / JSX ambiguity
     # means the tsx grammar mis-parses plain TS and vice versa.
-    "typescript": _LangSupport(
-        extensions=(".ts", ".mts", ".cts"), loader=_typescript_support
-    ),
+    "typescript": _LangSupport(extensions=(".ts", ".mts", ".cts"), loader=_typescript_support),
     "tsx": _LangSupport(extensions=(".tsx",), loader=_tsx_support),
 }
 
-_EXT_TO_LANG: dict[str, str] = {
-    ext: name for name, spec in _REGISTRY.items() for ext in spec.extensions
-}
+_EXT_TO_LANG: dict[str, str] = {ext: name for name, spec in _REGISTRY.items() for ext in spec.extensions}
 
 
 def language_for_path(path: str) -> str | None:
@@ -202,11 +196,7 @@ def enclosing_symbol(symbols: list[Symbol], line: int) -> Symbol | None:
 
 
 def _contains(outer: Node, inner: Node) -> bool:
-    return (
-        outer.start_byte <= inner.start_byte
-        and inner.end_byte <= outer.end_byte
-        and outer.id != inner.id
-    )
+    return outer.start_byte <= inner.start_byte and inner.end_byte <= outer.end_byte and outer.id != inner.id
 
 
 def _range(node: Node) -> SymbolRange:

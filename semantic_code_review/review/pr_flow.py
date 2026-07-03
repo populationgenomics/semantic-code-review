@@ -150,19 +150,13 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
     if posted is None and opts.yes:
         mapped = comments_to_github(result.comments)
         if not mapped:
-            _err(
-                "scr pr: no new local comments to post; "
-                f"comments are in {run_dir / 'comments.json'}."
-            )
+            _err(f"scr pr: no new local comments to post; comments are in {run_dir / 'comments.json'}.")
             return 0 if result.clean else 2
         try:
             posted = post_review_via_graphql(opts.repo, number, mapped)
         except GhError as e:
             _err(f"scr pr: posting failed: {e}")
-            _err(
-                f"comments are still in {run_dir / 'comments.json'} — "
-                "re-run with --no-augment to retry."
-            )
+            _err(f"comments are still in {run_dir / 'comments.json'} — re-run with --no-augment to retry.")
             return 2
 
     if posted is not None:
@@ -214,7 +208,8 @@ def _resolve_pr_number(repo: str) -> tuple[int | None, int | None]:
 
 
 def _build_tasks(
-    opts: PrFlowOptions, run_dir: Path,
+    opts: PrFlowOptions,
+    run_dir: Path,
 ) -> tuple[Callable | None, Callable | None, Callable | None]:
     """Build the augment + fold-summary + console closures, or ``(None,
     None, None)`` when augmentation is skipped (the console grounds its
@@ -229,8 +224,13 @@ def _build_tasks(
     from ..augment.prompts import PROMPT_VERSION
     from ..cache.store import CacheStore
 
-    cache = None if opts.no_cache else CacheStore(
-        root=opts.cache_dir, prompt_version=PROMPT_VERSION,
+    cache = (
+        None
+        if opts.no_cache
+        else CacheStore(
+            root=opts.cache_dir,
+            prompt_version=PROMPT_VERSION,
+        )
     )
 
     async def augment_task(rd: Path, publish: Callable[[str, dict[str, Any]], None]) -> None:
@@ -249,7 +249,10 @@ def _build_tasks(
         )
 
     fold_summary_task = _build_fold_summary_task(
-        client=opts.client, model=opts.model, cache=cache, run_dir=run_dir,
+        client=opts.client,
+        model=opts.model,
+        cache=cache,
+        run_dir=run_dir,
     )
     # Console reuses the augment backend (SDK streams; CLI answers
     # one-shot). When opts.client is None augment defaults to the
@@ -260,7 +263,9 @@ def _build_tasks(
 
 
 def _build_post_callback(
-    repo: str, number: int, run_dir: Path,
+    repo: str,
+    number: int,
+    run_dir: Path,
 ) -> PostCallable:
     """Closure the server fires on /post-review.
 
@@ -271,14 +276,12 @@ def _build_post_callback(
     and posts via GraphQL. Errors propagate; the server returns 500
     to the modal so the reviewer sees the failure and can retry.
     """
+
     def post(selected_ids: list[str]) -> PostResult:
         store = CommentStore(run_dir / "comments.json")
         all_comments = store.all()
         selected = set(selected_ids)
-        filtered = [
-            c for c in all_comments
-            if c.source != "local" or c.id in selected
-        ]
+        filtered = [c for c in all_comments if c.source != "local" or c.id in selected]
         mapped = comments_to_github(filtered)
         return post_review_via_graphql(repo, number, mapped)
 

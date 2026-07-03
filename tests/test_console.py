@@ -69,8 +69,11 @@ def test_console_agent_registers_repo_tools_plus_hunk() -> None:
 def test_hunk_accessor_resolves_bound_diff() -> None:
     diff = parse_augmented_diff(FIXTURE.read_text(encoding="utf-8"))
     rt = RepoTools(
-        head_worktree=Path("/dev/null"), repo_git=Path("/dev/null"),
-        base_sha="", head_sha="", diff=diff,
+        head_worktree=Path("/dev/null"),
+        repo_git=Path("/dev/null"),
+        base_sha="",
+        head_sha="",
+        diff=diff,
     )
     out = rt.hunk("H0_0")
     assert "src/users.py" in out
@@ -79,8 +82,10 @@ def test_hunk_accessor_resolves_bound_diff() -> None:
 
 def test_hunk_accessor_unbound_is_error() -> None:
     rt = RepoTools(
-        head_worktree=Path("/dev/null"), repo_git=Path("/dev/null"),
-        base_sha="", head_sha="",
+        head_worktree=Path("/dev/null"),
+        repo_git=Path("/dev/null"),
+        base_sha="",
+        head_sha="",
     )
     assert rt.hunk("H0_0").startswith("error: no diff bound")
 
@@ -88,8 +93,11 @@ def test_hunk_accessor_unbound_is_error() -> None:
 def test_hunk_accessor_bad_id_and_oob() -> None:
     diff = parse_augmented_diff(FIXTURE.read_text(encoding="utf-8"))
     rt = RepoTools(
-        head_worktree=Path("/dev/null"), repo_git=Path("/dev/null"),
-        base_sha="", head_sha="", diff=diff,
+        head_worktree=Path("/dev/null"),
+        repo_git=Path("/dev/null"),
+        base_sha="",
+        head_sha="",
+        diff=diff,
     )
     assert "malformed" in rt.hunk("nope")
     assert "file index" in rt.hunk("H99_0")
@@ -121,8 +129,11 @@ def test_build_console_seed_omits_delta_when_absent() -> None:
 def _bound_tools() -> RepoTools:
     diff = parse_augmented_diff(FIXTURE.read_text(encoding="utf-8"))
     return RepoTools(
-        head_worktree=Path("/dev/null"), repo_git=Path("/dev/null"),
-        base_sha="", head_sha="", diff=diff,
+        head_worktree=Path("/dev/null"),
+        repo_git=Path("/dev/null"),
+        base_sha="",
+        head_sha="",
+        diff=diff,
     )
 
 
@@ -203,7 +214,8 @@ async def test_run_console_turn_not_ready_without_sidecar(tmp_path: Path) -> Non
 
 
 async def test_run_console_turn_seeds_and_returns_history(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """First turn seeds + answers; the returned history feeds the next
     turn. The agent is overridden with a TestModel so no API is hit."""
@@ -224,14 +236,19 @@ async def test_run_console_turn_seeds_and_returns_history(
     monkeypatch.setattr(console_mod, "make_console_agent", _make)
 
     answer, history = await run_console_turn(
-        client, run_dir=run_dir, question="why pagination?",
+        client,
+        run_dir=run_dir,
+        question="why pagination?",
     )
     assert answer == "grounded answer"
     assert history  # full message_history for the next turn
 
     # Second turn threads the history back in and still answers.
     answer2, history2 = await run_console_turn(
-        client, run_dir=run_dir, question="follow-up", history=history,
+        client,
+        run_dir=run_dir,
+        question="follow-up",
+        history=history,
     )
     assert answer2 == "grounded answer"
     assert len(history2) > len(history)
@@ -241,7 +258,10 @@ async def test_run_console_turn_seeds_and_returns_history(
 
 
 def _patch_test_model(
-    monkeypatch: pytest.MonkeyPatch, *, output_text: str, call_tools: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    output_text: str,
+    call_tools: list[str],
 ) -> None:
     """Force every console agent onto a canned TestModel."""
     import semantic_code_review.augment.console as console_mod
@@ -249,15 +269,14 @@ def _patch_test_model(
     real_make = console_mod.make_console_agent
 
     def _make(_model):
-        return real_make(
-            TestModel(custom_output_text=output_text, call_tools=call_tools)
-        )
+        return real_make(TestModel(custom_output_text=output_text, call_tools=call_tools))
 
     monkeypatch.setattr(console_mod, "make_console_agent", _make)
 
 
 async def test_stream_console_turn_pumps_deltas_and_tool_activity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The streaming driver pushes assistant text through `on_delta`
     chunk-by-chunk and announces each tool call to `on_tool`, and still
@@ -271,8 +290,12 @@ async def test_stream_console_turn_pumps_deltas_and_tool_activity(
     deltas: list[str] = []
     tools: list[str] = []
     answer, history = await stream_console_turn(
-        client, run_dir=run_dir, question="why pagination?",
-        on_delta=deltas.append, on_tool=tools.append, cancel=threading.Event(),
+        client,
+        run_dir=run_dir,
+        question="why pagination?",
+        on_delta=deltas.append,
+        on_tool=tools.append,
+        cancel=threading.Event(),
     )
 
     assert answer == "streamed answer"
@@ -282,7 +305,8 @@ async def test_stream_console_turn_pumps_deltas_and_tool_activity(
 
 
 async def test_stream_console_turn_cancel_raises(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A tripped cancel flag aborts the turn with `ConsoleCancelled`
     rather than returning an answer."""
@@ -294,12 +318,16 @@ async def test_stream_console_turn_cancel_raises(
     cancel.set()  # pre-tripped: caught on the first node, before any output
     with pytest.raises(ConsoleCancelled):
         await stream_console_turn(
-            client, run_dir=run_dir, question="why?", cancel=cancel,
+            client,
+            run_dir=run_dir,
+            question="why?",
+            cancel=cancel,
         )
 
 
 async def test_stream_console_turn_accepts_selection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A pinned selection threads through the driver without disturbing
     the answer (the selection is folded into the turn's user message)."""
@@ -308,7 +336,9 @@ async def test_stream_console_turn_accepts_selection(
     _patch_test_model(monkeypatch, output_text="answer", call_tools=[])
 
     answer, history = await stream_console_turn(
-        client, run_dir=run_dir, question="what does this do?",
+        client,
+        run_dir=run_dir,
+        question="what does this do?",
         selection={
             "selection_text": "def deactivate(user):",
             "selection_kind": "code",
@@ -322,7 +352,8 @@ async def test_stream_console_turn_accepts_selection(
 
 
 async def test_run_console_turn_is_streaming_wrapper(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The blocking shape still works — it's a no-callback wrapper over
     the streaming driver."""
@@ -331,7 +362,9 @@ async def test_run_console_turn_is_streaming_wrapper(
     _patch_test_model(monkeypatch, output_text="wrapped", call_tools=[])
 
     answer, history = await run_console_turn(
-        client, run_dir=run_dir, question="q",
+        client,
+        run_dir=run_dir,
+        question="q",
     )
     assert answer == "wrapped"
     assert history
@@ -370,7 +403,8 @@ class _RecordingCLIModel(Model):
         # Free-form turn: pydantic-ai leaves output_tools empty.
         assert not model_request_parameters.output_tools
         return ModelResponse(
-            parts=[TextPart(content=self._answer)], model_name="recording-cli",
+            parts=[TextPart(content=self._answer)],
+            model_name="recording-cli",
         )
 
 
@@ -387,8 +421,12 @@ async def test_stream_console_turn_cli_backend_runs_oneshot(
     deltas: list[str] = []
     tools: list[str] = []
     answer, history = await stream_console_turn(
-        client, run_dir=run_dir, question="why pagination?",
-        on_delta=deltas.append, on_tool=tools.append, cancel=threading.Event(),
+        client,
+        run_dir=run_dir,
+        question="why pagination?",
+        on_delta=deltas.append,
+        on_tool=tools.append,
+        cancel=threading.Event(),
     )
 
     assert answer == "grounded cli answer"
@@ -414,5 +452,8 @@ async def test_stream_console_turn_cli_backend_honours_cancel(
     cancel.set()
     with pytest.raises(ConsoleCancelled):
         await stream_console_turn(
-            client, run_dir=run_dir, question="why?", cancel=cancel,
+            client,
+            run_dir=run_dir,
+            question="why?",
+            cancel=cancel,
         )

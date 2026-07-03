@@ -61,6 +61,7 @@ class BackendType(str, Enum):
     new backend that reuses an existing family is just a new entry in
     a builtin table or a `[backends.<name>]` block in user config.
     """
+
     ANTHROPIC_SDK = "anthropic-sdk"
     CLAUDE_CLI = "claude-cli"
     GOOGLE_SDK = "google-sdk"
@@ -82,6 +83,7 @@ class BackendDef:
     is how `gh auth token` and `gcloud secrets versions access ...`
     get plugged in.
     """
+
     type: Annotated[
         BackendType,
         "Handler family — selects which dispatch branch in _select_client.",
@@ -181,8 +183,7 @@ BUILTIN_BACKENDS: dict[str, BackendDef] = {
         base_url="https://api.cerebras.ai/v1",
         api_key_env="CEREBRAS_API_KEY",
         description=(
-            "Free tier; very fast inference. Pass --model — Cerebras' "
-            "catalogue rotates so we don't pin a default."
+            "Free tier; very fast inference. Pass --model — Cerebras' catalogue rotates so we don't pin a default."
         ),
     ),
     "openrouter": BackendDef(
@@ -270,9 +271,7 @@ class ScrConfig:
         if isinstance(model, dict):
             for k, v in model.items():
                 if not isinstance(v, str):
-                    raise ConfigError(
-                        f"{source}: model.{k!r} must be a string, got {type(v).__name__}"
-                    )
+                    raise ConfigError(f"{source}: model.{k!r} must be a string, got {type(v).__name__}")
                 if k == "default":
                     self.model_default = v
                     self.sources["model.default"] = source
@@ -284,18 +283,14 @@ class ScrConfig:
         if isinstance(backends, dict):
             for name, body in backends.items():
                 if not isinstance(body, dict):
-                    raise ConfigError(
-                        f"{source}: backends.{name!r} must be a table, got {type(body).__name__}"
-                    )
+                    raise ConfigError(f"{source}: backends.{name!r} must be a table, got {type(body).__name__}")
                 self._merge_backend(name, body, source=source)
 
         env = raw.get("env")
         if isinstance(env, dict):
             for k, v in env.items():
                 if not isinstance(v, str):
-                    raise ConfigError(
-                        f"{source}: env.{k!r} must be a string, got {type(v).__name__}"
-                    )
+                    raise ConfigError(f"{source}: env.{k!r} must be a string, got {type(v).__name__}")
                 self.env[k] = v
                 self.sources[f"env.{k}"] = source
 
@@ -304,10 +299,7 @@ class ScrConfig:
             extra = augment.get("extra_prompt")
             if extra is not None:
                 if not isinstance(extra, str):
-                    raise ConfigError(
-                        f"{source}: augment.extra_prompt must be a string, "
-                        f"got {type(extra).__name__}"
-                    )
+                    raise ConfigError(f"{source}: augment.extra_prompt must be a string, got {type(extra).__name__}")
                 text = extra.strip()
                 if text:
                     self.extra_review_prompt = text
@@ -318,24 +310,17 @@ class ScrConfig:
         type_raw = body.get("type")
         if type_raw is not None:
             if not isinstance(type_raw, str):
-                raise ConfigError(
-                    f"{source}: backends.{name}.type must be a string, "
-                    f"got {type(type_raw).__name__}"
-                )
+                raise ConfigError(f"{source}: backends.{name}.type must be a string, got {type(type_raw).__name__}")
             try:
                 btype = BackendType(type_raw)
             except ValueError:
                 valid = sorted(t.value for t in BackendType)
-                raise ConfigError(
-                    f"{source}: backends.{name}.type = {type_raw!r} "
-                    f"not one of {valid}"
-                ) from None
+                raise ConfigError(f"{source}: backends.{name}.type = {type_raw!r} not one of {valid}") from None
         elif existing is not None:
             btype = existing.type
         else:
             raise ConfigError(
-                f"{source}: backends.{name} is new — `type` is required "
-                f"(one of {sorted(t.value for t in BackendType)})"
+                f"{source}: backends.{name} is new — `type` is required (one of {sorted(t.value for t in BackendType)})"
             )
 
         merged = BackendDef(
@@ -344,11 +329,13 @@ class ScrConfig:
             base_url=_pick_str(body, "base_url", existing.base_url if existing else None),
             api_key_env=_pick_str(body, "api_key_env", existing.api_key_env if existing else None),
             api_key_command=_pick_strs(
-                body, "api_key_command",
+                body,
+                "api_key_command",
                 existing.api_key_command if existing else None,
             ),
             description=_pick_str(
-                body, "description",
+                body,
+                "description",
                 existing.description if existing else None,
             ),
         )
@@ -437,9 +424,7 @@ def _pick_str(body: dict[str, Any], key: str, fallback: str | None) -> str | Non
     return v
 
 
-def _pick_strs(
-    body: dict[str, Any], key: str, fallback: tuple[str, ...] | None
-) -> tuple[str, ...] | None:
+def _pick_strs(body: dict[str, Any], key: str, fallback: tuple[str, ...] | None) -> tuple[str, ...] | None:
     """Read an argv-style field. Accepts either a list of strings or
     a single shell-quoted string (split via `shlex`). Same execution
     semantics either way — `subprocess.run(argv, shell=False)`. The
@@ -456,9 +441,7 @@ def _pick_strs(
         try:
             parts = shlex.split(v)
         except ValueError as e:
-            raise ConfigError(
-                f"backend field {key!r} has unbalanced quotes: {e}"
-            ) from None
+            raise ConfigError(f"backend field {key!r} has unbalanced quotes: {e}") from None
         if not parts:
             raise ConfigError(f"backend field {key!r} must not be empty")
         return tuple(parts)
@@ -467,8 +450,7 @@ def _pick_strs(
             raise ConfigError(f"backend field {key!r} must not be empty")
         return tuple(v)
     raise ConfigError(
-        f"backend field {key!r} must be a list of strings or a "
-        f"shell-quoted string, got {type(v).__name__}"
+        f"backend field {key!r} must be a list of strings or a shell-quoted string, got {type(v).__name__}"
     )
 
 

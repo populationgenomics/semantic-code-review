@@ -168,15 +168,23 @@ def apply_overview_to_diff(diff: AnnotatedDiff, submit_args: dict[str, Any]) -> 
             new_files.append(fp)
             continue
         sym = entry.get("symbols")
-        ann = fp.ann.model_copy(update={
-            "summary": entry.get("summary", ""),
-            **({"lang": entry["lang"]} if entry.get("lang") else {}),
-            **({"symbols": FileSymbols(
-                added=list(sym.get("added", [])),
-                modified=list(sym.get("modified", [])),
-                removed=list(sym.get("removed", [])),
-            )} if isinstance(sym, dict) else {}),
-        })
+        ann = fp.ann.model_copy(
+            update={
+                "summary": entry.get("summary", ""),
+                **({"lang": entry["lang"]} if entry.get("lang") else {}),
+                **(
+                    {
+                        "symbols": FileSymbols(
+                            added=list(sym.get("added", [])),
+                            modified=list(sym.get("modified", [])),
+                            removed=list(sym.get("removed", [])),
+                        )
+                    }
+                    if isinstance(sym, dict)
+                    else {}
+                ),
+            }
+        )
         new_files.append(fp.model_copy(update={"ann": ann}))
     return diff.model_copy(update={"overview": overview, "files": new_files})
 
@@ -211,7 +219,10 @@ def _resolve_groups(diff: AnnotatedDiff, raw_groups: list[dict[str, Any]]) -> li
             if idx < 0 or idx >= n:
                 log.warning(
                     "group %r: hunk_index %d out of range for %s (n=%d) — dropped",
-                    title, idx, path, n,
+                    title,
+                    idx,
+                    path,
+                    n,
                 )
                 continue
             members.append(OverviewGroupMember(path=path, hunk_index=idx))

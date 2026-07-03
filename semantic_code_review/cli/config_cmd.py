@@ -32,18 +32,12 @@ def config_show() -> None:
     user = default_config_path()
     repo = find_repo_config_path()
     typer.echo(f"# user config: {user} ({'present' if user.is_file() else 'absent'})")
-    typer.echo(
-        f"# per-repo config: {repo or '(none found)'}"
-        f"{' (present)' if repo and repo.is_file() else ''}"
-    )
+    typer.echo(f"# per-repo config: {repo or '(none found)'}{' (present)' if repo and repo.is_file() else ''}")
     typer.echo("")
     typer.echo(f"backend = {cfg.backend!r} (from {cfg.sources.get('backend', 'default')})")
     if cfg.model_default is not None:
         typer.echo("[model]")
-        typer.echo(
-            f'  default = {cfg.model_default!r} '
-            f'(from {cfg.sources.get("model.default", "?")})'
-        )
+        typer.echo(f"  default = {cfg.model_default!r} (from {cfg.sources.get('model.default', '?')})")
     typer.echo("[backends]")
     for name in sorted(cfg.backends):
         bdef = cfg.backends[name]
@@ -71,8 +65,8 @@ def config_show() -> None:
         first_line = prompt.split("\n", 1)[0][:80]
         typer.echo("[augment]")
         typer.echo(
-            f'  extra_prompt = <{lines}-line prompt: {first_line!r}…> '
-            f'(from {cfg.sources.get("augment.extra_prompt", "?")})'
+            f"  extra_prompt = <{lines}-line prompt: {first_line!r}…> "
+            f"(from {cfg.sources.get('augment.extra_prompt', '?')})"
         )
 
 
@@ -88,7 +82,8 @@ def config_edit(
         ),
     ),
     scope: str = typer.Option(
-        "user", "--scope",
+        "user",
+        "--scope",
         help=(
             "Which config to edit. 'user' (default) = "
             "~/.config/scr/config.toml. 'repo' = <repo_root>/.scr/config.toml "
@@ -96,7 +91,8 @@ def config_edit(
         ),
     ),
     template: str = typer.Option(
-        None, "--template",
+        None,
+        "--template",
         help=(
             "(config subject only) Append a [backends.<name>] block "
             "before opening. <name> is any builtin (run `scr config show` "
@@ -112,20 +108,14 @@ def config_edit(
     instead of the user-global file.
     """
     if scope not in ("user", "repo"):
-        raise typer.BadParameter(
-            f"--scope must be 'user' or 'repo', got {scope!r}"
-        )
+        raise typer.BadParameter(f"--scope must be 'user' or 'repo', got {scope!r}")
     if subject not in ("config", "prompt"):
-        raise typer.BadParameter(
-            f"subject must be 'config' or 'prompt', got {subject!r}"
-        )
+        raise typer.BadParameter(f"subject must be 'config' or 'prompt', got {subject!r}")
 
     path = _resolve_config_edit_path(scope)
     if subject == "prompt":
         if template is not None:
-            raise typer.BadParameter(
-                "--template only applies to the default 'config' subject"
-            )
+            raise typer.BadParameter("--template only applies to the default 'config' subject")
         _edit_inline_prompt(path)
         return
 
@@ -163,17 +153,13 @@ def _edit_full_config(path: Path, template: str | None) -> None:
     if template is not None:
         valid = sorted([SCAFFOLD_SECTION_NAME, *BUILTIN_BACKENDS])
         if template not in valid:
-            raise typer.BadParameter(
-                f"unknown template {template!r}; expected one of: "
-                + ", ".join(valid)
-            )
+            raise typer.BadParameter(f"unknown template {template!r}; expected one of: " + ", ".join(valid))
         existing = path.read_text(encoding="utf-8")
         # Skip+warn if the section already exists; let the user resolve
         # rather than risk clobbering hand-edited overrides.
         if f"[backends.{template}]" in existing:
             typer.echo(
-                f"scr: [backends.{template}] already in {path}; "
-                "skipping the template append. Edit it directly.",
+                f"scr: [backends.{template}] already in {path}; skipping the template append. Edit it directly.",
                 err=True,
             )
         else:
@@ -224,8 +210,11 @@ def _edit_inline_prompt(path: Path) -> None:
 
     # Tempfile gets a .md suffix so editor markdown plugins activate.
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".md", prefix="scr-extra-prompt-",
-        delete=False, encoding="utf-8",
+        mode="w",
+        suffix=".md",
+        prefix="scr-extra-prompt-",
+        delete=False,
+        encoding="utf-8",
     ) as fh:
         fh.write(initial)
         tmp_path = Path(fh.name)

@@ -72,8 +72,16 @@ DEFAULT_SKIP_GLOBS: tuple[str, ...] = (
     "Pipfile.lock",
     "poetry.lock",
     "uv.lock",
-    "*.png", "*.jpg", "*.jpeg", "*.gif", "*.svg", "*.ico",
-    "*.woff", "*.woff2", "*.ttf", "*.otf",
+    "*.png",
+    "*.jpg",
+    "*.jpeg",
+    "*.gif",
+    "*.svg",
+    "*.ico",
+    "*.woff",
+    "*.woff2",
+    "*.ttf",
+    "*.otf",
     "*.pdf",
 )
 
@@ -143,8 +151,7 @@ async def augment_run_dir(
     diff = AnnotatedDiff(version=parsed.version, pr=pr, files=diff_files)
 
     if skipped_files:
-        log.info("skipping %d generated file(s): %s",
-                 len(skipped_files), ", ".join(sorted(skipped_files)))
+        log.info("skipping %d generated file(s): %s", len(skipped_files), ", ".join(sorted(skipped_files)))
 
     trace_dir = run_dir / "trace"
     trace_dir.mkdir(parents=True, exist_ok=True)
@@ -197,8 +204,13 @@ async def augment_run_dir(
             _safe_emit(on_event, "overview-start", {})
             try:
                 ov = await run_overview_pass(
-                    client, diff=diff, meta=meta, model=model,
-                    delta=symbol_delta, cache=cache, trace_dir=trace_dir,
+                    client,
+                    diff=diff,
+                    meta=meta,
+                    model=model,
+                    delta=symbol_delta,
+                    cache=cache,
+                    trace_dir=trace_dir,
                 )
                 diff = apply_overview_to_diff(diff, ov)
                 meter.finish_overview(ok=True)
@@ -209,12 +221,16 @@ async def augment_run_dir(
                 raise
 
         # --- Per-hunk pass -------------------------------------------------
-        repo_tools = RepoTools(
-            head_worktree=run_dir / "head",
-            repo_git=run_dir / "repo.git",
-            base_sha=diff.pr.base_sha,
-            head_sha=diff.pr.head_sha,
-        ) if not skip_context else None
+        repo_tools = (
+            RepoTools(
+                head_worktree=run_dir / "head",
+                repo_git=run_dir / "repo.git",
+                base_sha=diff.pr.base_sha,
+                head_sha=diff.pr.head_sha,
+            )
+            if not skip_context
+            else None
+        )
 
         # CLI subprocess backends use this to spawn an MCP server bound
         # to the run's worktree. SDK backends are no-ops; the SDK Agent
@@ -249,17 +265,28 @@ async def augment_run_dir(
             tasks = [
                 asyncio.create_task(
                     _augment_one_hunk(
-                        ord_idx, meter, sem, client, diff, fi, hi,
-                        overview_json, repo_tools, model, cache,
-                        trace_dir, stats, results, on_event,
+                        ord_idx,
+                        meter,
+                        sem,
+                        client,
+                        diff,
+                        fi,
+                        hi,
+                        overview_json,
+                        repo_tools,
+                        model,
+                        cache,
+                        trace_dir,
+                        stats,
+                        results,
+                        on_event,
                         file_spans.get(fi, ([], [])),
                     )
                 )
                 for fi, hi, ord_idx in queued
             ]
 
-            log.info("per-hunk pass: %d hunks queued (concurrency=%d)",
-                     len(tasks), concurrency)
+            log.info("per-hunk pass: %d hunks queued (concurrency=%d)", len(tasks), concurrency)
             await asyncio.gather(*tasks)
 
         # Merge per-hunk results back into the diff in one pass.
@@ -272,11 +299,17 @@ async def augment_run_dir(
         # Best-effort: any failure leaves `diff` unchanged and logs.
         if extra_review_prompt:
             from .extra_review import run_pr_level_extra_review
+
             diff_before = diff
             diff = await run_pr_level_extra_review(
-                client, diff=diff, overview_json=overview_json,
-                diff_text=raw, prompt_text=extra_review_prompt,
-                model=model, cache=cache, trace_dir=trace_dir,
+                client,
+                diff=diff,
+                overview_json=overview_json,
+                diff_text=raw,
+                prompt_text=extra_review_prompt,
+                model=model,
+                cache=cache,
+                trace_dir=trace_dir,
             )
             # Re-emit hunk SSE events for hunks whose line_notes grew.
             # The streaming viewer already rendered the per-hunk blocks
@@ -293,29 +326,36 @@ async def augment_run_dir(
                     if len(hunk.ann.line_notes) == len(old_fp.hunks[hi].ann.line_notes):
                         continue
                     block = build_hunk_viewer_block(
-                        hunk, fi, hi, *file_spans.get(fi, ([], [])),
+                        hunk,
+                        fi,
+                        hi,
+                        *file_spans.get(fi, ([], [])),
                     )
-                    _safe_emit(on_event, "hunk", {
-                        "file_idx": fi, "hunk_idx": hi, "ok": True, "block": block,
-                    })
+                    _safe_emit(
+                        on_event,
+                        "hunk",
+                        {
+                            "file_idx": fi,
+                            "hunk_idx": hi,
+                            "ok": True,
+                            "block": block,
+                        },
+                    )
 
         # --- Emit ----------------------------------------------------------
         augmented_text = emit_augmented_diff(diff)
         augmented_path.write_text(augmented_text, encoding="utf-8")
         dump_sidecar(diff, sidecar_path)
-        log.info("wrote %s (%d bytes) + sidecar",
-                 augmented_path.name, len(augmented_text))
+        log.info("wrote %s (%d bytes) + sidecar", augmented_path.name, len(augmented_text))
 
     # After the meter has finished its final repaint and dropped to a
     # fresh line, emit the human-readable summary to stderr so the
     # one-liner doesn't fight the meter's redraw window.
     backend_tag = "subprocess" if client.is_subprocess_backend else "sdk"
-    summary = (
-        f"scr augment: backend={backend_tag} model={model} hunks={len(tasks)} "
-        f"ok={stats.ok} failed={stats.failed}"
-    )
+    summary = f"scr augment: backend={backend_tag} model={model} hunks={len(tasks)} ok={stats.ok} failed={stats.failed}"
     log.info(summary)
     import sys as _sys
+
     _sys.stderr.write(summary + "\n")
     _sys.stderr.flush()
 
@@ -325,7 +365,8 @@ async def augment_run_dir(
             "See per-hunk warnings and trace files under %s. "
             "Common cause in --backend=claude-cli: `claude -p` not logged in or "
             "refused to emit structured JSON within --max-turns.",
-            stats.failed, trace_dir,
+            stats.failed,
+            trace_dir,
         )
     return augmented_path
 
@@ -365,43 +406,74 @@ async def _augment_one_hunk(
         try:
             if repo_tools is None:
                 rt = RepoTools(
-                    head_worktree=Path("/dev/null"), repo_git=Path("/dev/null"),
-                    base_sha="", head_sha="",
+                    head_worktree=Path("/dev/null"),
+                    repo_git=Path("/dev/null"),
+                    base_sha="",
+                    head_sha="",
                 )
             else:
                 rt = repo_tools
             submit = await run_hunk_pass(
-                client, fp=fp, hunk=hunk,
-                overview_json=overview_json, file_summary=file_summary,
-                repo_tools=rt, model=model, cache=cache,
+                client,
+                fp=fp,
+                hunk=hunk,
+                overview_json=overview_json,
+                file_summary=file_summary,
+                repo_tools=rt,
+                model=model,
+                cache=cache,
                 trace_dir=trace_dir,
             )
             ann = build_hunk_annotations(hunk.parsed, submit)
             results[(fi, hi)] = ann
             stats.ok += 1
             meter.finish_hunk(ord_idx, ok=True)
-            log.info("hunk %s @ %s: intent=%r smells=%d segs=%d notes=%d",
-                     fp.path, hunk.parsed.header,
-                     (ann.intent or "")[:80], len(ann.smells), len(ann.segments),
-                     len(ann.line_notes))
-            block = build_hunk_viewer_block(
-                AnnotatedHunk(parsed=hunk.parsed, ann=ann), fi, hi,
-                fold_spans[0], fold_spans[1],
+            log.info(
+                "hunk %s @ %s: intent=%r smells=%d segs=%d notes=%d",
+                fp.path,
+                hunk.parsed.header,
+                (ann.intent or "")[:80],
+                len(ann.smells),
+                len(ann.segments),
+                len(ann.line_notes),
             )
-            _safe_emit(on_event, "hunk", {
-                "file_idx": fi, "hunk_idx": hi, "ok": True, "block": block,
-            })
+            block = build_hunk_viewer_block(
+                AnnotatedHunk(parsed=hunk.parsed, ann=ann),
+                fi,
+                hi,
+                fold_spans[0],
+                fold_spans[1],
+            )
+            _safe_emit(
+                on_event,
+                "hunk",
+                {
+                    "file_idx": fi,
+                    "hunk_idx": hi,
+                    "ok": True,
+                    "block": block,
+                },
+            )
         except Exception as e:  # noqa: BLE001
             stats.failed += 1
             meter.finish_hunk(ord_idx, ok=False)
             log.warning(
                 "hunk %s @ %s failed: %s: %s",
-                fp.path, hunk.parsed.header, type(e).__name__, e,
+                fp.path,
+                hunk.parsed.header,
+                type(e).__name__,
+                e,
             )
-            _safe_emit(on_event, "hunk", {
-                "file_idx": fi, "hunk_idx": hi, "ok": False,
-                "error": f"{type(e).__name__}: {e}",
-            })
+            _safe_emit(
+                on_event,
+                "hunk",
+                {
+                    "file_idx": fi,
+                    "hunk_idx": hi,
+                    "ok": False,
+                    "error": f"{type(e).__name__}: {e}",
+                },
+            )
 
 
 def _overview_event_payload(diff: AnnotatedDiff) -> dict[str, Any]:
@@ -427,10 +499,14 @@ def _overview_event_payload(diff: AnnotatedDiff) -> dict[str, Any]:
                 hunk_ids.append(f"H{fi}_{m.hunk_index}")
             if not hunk_ids:
                 continue
-            groups.append({
-                "id": f"G{gi}", "title": g.title,
-                "rationale": g.rationale, "hunk_ids": hunk_ids,
-            })
+            groups.append(
+                {
+                    "id": f"G{gi}",
+                    "title": g.title,
+                    "rationale": g.rationale,
+                    "hunk_ids": hunk_ids,
+                }
+            )
     file_patches = [
         {
             "file_idx": i,
@@ -438,8 +514,7 @@ def _overview_event_payload(diff: AnnotatedDiff) -> dict[str, Any]:
             "summary": fp.ann.summary,
             "language": fp.ann.lang or "",
             "symbols": (
-                fp.ann.symbols.model_dump() if fp.ann.symbols
-                else {"added": [], "modified": [], "removed": []}
+                fp.ann.symbols.model_dump() if fp.ann.symbols else {"added": [], "modified": [], "removed": []}
             ),
             "status": fp.ann.role.value if fp.ann.role else "modified",
         }
@@ -452,9 +527,7 @@ def _overview_event_payload(diff: AnnotatedDiff) -> dict[str, Any]:
             "symbols_added": [s.model_dump() for s in (ov.symbols_added if ov else [])],
             "symbols_modified": [s.model_dump() for s in (ov.symbols_modified if ov else [])],
             "symbols_removed": [s.model_dump() for s in (ov.symbols_removed if ov else [])],
-            "callgraph_edges": [
-                e.model_dump(by_alias=True) for e in (ov.callgraph_edges if ov else [])
-            ],
+            "callgraph_edges": [e.model_dump(by_alias=True) for e in (ov.callgraph_edges if ov else [])],
         },
         "groups": groups,
         "files": file_patches,

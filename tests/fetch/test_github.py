@@ -58,9 +58,12 @@ def test_rejects_garbage() -> None:
 def _fake_run(stdout: str = "", stderr: str = "", returncode: int = 0):
     def runner(*args, **kwargs):
         return subprocess.CompletedProcess(
-            args=args[0] if args else [], returncode=returncode,
-            stdout=stdout, stderr=stderr,
+            args=args[0] if args else [],
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
         )
+
     return runner
 
 

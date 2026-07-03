@@ -47,7 +47,8 @@ def pr(
         None, help="LLM backend (default from config or 'auto'); see `scr config show` for registered names."
     ),
     extra_prompt: Path = typer.Option(
-        None, "--extra-prompt",
+        None,
+        "--extra-prompt",
         help=(
             "Path to a markdown/text file with an extra review prompt. "
             "Runs as a single PR-level LLM call alongside the main "
@@ -56,7 +57,8 @@ def pr(
         ),
     ),
     yes: bool = typer.Option(
-        False, "--yes",
+        False,
+        "--yes",
         help=(
             "Skip the in-browser confirmation modal — post every local "
             "comment as soon as the reviewer clicks Done. By default Done "

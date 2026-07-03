@@ -109,10 +109,7 @@ def _emit_hunk(h: AnnotatedHunk) -> list[str]:
         elif fd.context == "left":
             body = f'left {fd.left_start}..{fd.left_end} "{fd.summary}"'
         else:  # both
-            body = (
-                f'both R{fd.right_start}..{fd.right_end} '
-                f'L{fd.left_start}..{fd.left_end} "{fd.summary}"'
-            )
+            body = f'both R{fd.right_start}..{fd.right_end} L{fd.left_start}..{fd.left_end} "{fd.summary}"'
         lines.extend(_text("scr-fold", body))
     for ln in ann.line_notes:
         lines.extend(_text("scr-line", f'+{ln.line} "{ln.body}"'))

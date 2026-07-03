@@ -68,9 +68,7 @@ class _CannedModel(Model):
     ) -> ModelResponse:
         self.calls += 1
         if not model_request_parameters.output_tools:
-            raise AssertionError(
-                "_CannedModel expects a ToolOutput-driven Agent — no output_tools present"
-            )
+            raise AssertionError("_CannedModel expects a ToolOutput-driven Agent — no output_tools present")
         tool_name = model_request_parameters.output_tools[0].name
         if tool_name == "submit_overview":
             args = self._overview
@@ -118,15 +116,20 @@ def _make_run_dir(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     # meta.json
-    (run / "meta.json").write_text(json.dumps({
-        "title": "Bump constants",
-        "body": "x and y",
-        "author": {"login": "t"},
-        "url": "https://github.com/a/b/pull/1",
-        "baseRefOid": "b" * 40,
-        "headRefOid": "a" * 40,
-        "files": [{"path": "f.py"}],
-    }), encoding="utf-8")
+    (run / "meta.json").write_text(
+        json.dumps(
+            {
+                "title": "Bump constants",
+                "body": "x and y",
+                "author": {"login": "t"},
+                "url": "https://github.com/a/b/pull/1",
+                "baseRefOid": "b" * 40,
+                "headRefOid": "a" * 40,
+                "files": [{"path": "f.py"}],
+            }
+        ),
+        encoding="utf-8",
+    )
     # Head worktree (so RepoTools can instantiate even if not called)
     head = run / "head"
     head.mkdir()
@@ -145,8 +148,11 @@ async def test_augment_produces_parseable_output(tmp_path: Path) -> None:
             "summary": "Bumps two constants.",
             "themes": ["constants"],
             "files": [
-                {"path": "f.py", "summary": "x and y bumped",
-                 "symbols": {"added": [], "modified": ["x", "y"], "removed": []}},
+                {
+                    "path": "f.py",
+                    "summary": "x and y bumped",
+                    "symbols": {"added": [], "modified": ["x", "y"], "removed": []},
+                },
             ],
         },
         hunk_args_list=[
@@ -162,6 +168,7 @@ async def test_augment_produces_parseable_output(tmp_path: Path) -> None:
     assert sidecar_path.exists()
 
     from semantic_code_review.augment.schemas import Overview
+
     text = augmented_path.read_text(encoding="utf-8")
     reparsed = parse_augmented_diff(text)
     assert isinstance(reparsed.overview, Overview)
@@ -181,7 +188,11 @@ async def test_augment_only_files_filters(tmp_path: Path) -> None:
         hunk_args_list=[{"intent": "ok"}, {"intent": "ok"}],
     )
     await augment_run_dir(
-        run, model="t", concurrency=1, client=backend, cache=None,
+        run,
+        model="t",
+        concurrency=1,
+        client=backend,
+        cache=None,
         only_files=["does-not-exist.py"],
     )
     text = (run / "augmented.diff").read_text(encoding="utf-8")
@@ -196,7 +207,12 @@ async def test_augment_max_hunks_caps_calls(tmp_path: Path) -> None:
         hunk_args_list=[{"intent": "first"}],
     )
     await augment_run_dir(
-        run, model="t", concurrency=1, client=backend, cache=None, max_hunks=1,
+        run,
+        model="t",
+        concurrency=1,
+        client=backend,
+        cache=None,
+        max_hunks=1,
     )
     assert canned.calls == 2  # overview + 1 hunk
 
@@ -218,11 +234,16 @@ async def test_augment_publishes_overview_and_per_hunk_events(tmp_path: Path) ->
     )
 
     events: list[tuple[str, dict]] = []
+
     def collect(event_type: str, payload: dict) -> None:
         events.append((event_type, payload))
 
     await augment_run_dir(
-        run, model="t", concurrency=1, client=backend, cache=None,
+        run,
+        model="t",
+        concurrency=1,
+        client=backend,
+        cache=None,
         on_event=collect,
     )
 
@@ -267,7 +288,11 @@ async def test_augment_event_consumer_failure_does_not_break_pipeline(
         raise RuntimeError("consumer is on fire")
 
     await augment_run_dir(
-        run, model="t", concurrency=1, client=backend, cache=None,
+        run,
+        model="t",
+        concurrency=1,
+        client=backend,
+        cache=None,
         on_event=explode,
     )
     # Run still produced parseable output.
@@ -280,13 +305,13 @@ class _BlowsUpModel(_CannedModel):
     mid-run agent failure for trace-on-failure testing."""
 
     async def request(  # type: ignore[override]
-        self, messages, model_settings, model_request_parameters,
+        self,
+        messages,
+        model_settings,
+        model_request_parameters,
     ):
         self.calls += 1
-        tool_name = (
-            model_request_parameters.output_tools[0].name
-            if model_request_parameters.output_tools else ""
-        )
+        tool_name = model_request_parameters.output_tools[0].name if model_request_parameters.output_tools else ""
         if tool_name == "submit_annotations":
             raise RuntimeError("simulated request_limit of 50 exceeded")
         return await super().request(messages, model_settings, model_request_parameters)
@@ -344,14 +369,20 @@ async def test_augment_extra_review_buckets_notes_into_matching_hunks(tmp_path: 
         ],
         extra_args_list=[
             # One whole-PR call: notes that span both hunks.
-            {"notes": [
-                {"file": "f.py", "line": 1, "body": "extra: be careful"},
-                {"file": "f.py", "line": 10, "body": "extra: same here"},
-            ]},
+            {
+                "notes": [
+                    {"file": "f.py", "line": 1, "body": "extra: be careful"},
+                    {"file": "f.py", "line": 10, "body": "extra: same here"},
+                ]
+            },
         ],
     )
     await augment_run_dir(
-        run, model="t", concurrency=1, client=backend, cache=None,
+        run,
+        model="t",
+        concurrency=1,
+        client=backend,
+        cache=None,
         extra_review_prompt="Reviewer prompt body",
     )
     reparsed = parse_augmented_diff((run / "augmented.diff").read_text())
@@ -378,17 +409,23 @@ async def test_augment_extra_review_drops_notes_outside_any_hunk(tmp_path: Path)
             {"intent": "Bump y", "line_notes": []},
         ],
         extra_args_list=[
-            {"notes": [
-                # Hunk 0 covers line 1; hunk 1 covers line 10.
-                {"file": "f.py", "line": 1, "body": "kept"},
-                {"file": "f.py", "line": 99, "body": "dropped — outside any hunk"},
-                {"file": "other.py", "line": 1, "body": "dropped — unknown file"},
-                {"file": "f.py", "line": 10, "body": "   "},  # empty after strip
-            ]},
+            {
+                "notes": [
+                    # Hunk 0 covers line 1; hunk 1 covers line 10.
+                    {"file": "f.py", "line": 1, "body": "kept"},
+                    {"file": "f.py", "line": 99, "body": "dropped — outside any hunk"},
+                    {"file": "other.py", "line": 1, "body": "dropped — unknown file"},
+                    {"file": "f.py", "line": 10, "body": "   "},  # empty after strip
+                ]
+            },
         ],
     )
     await augment_run_dir(
-        run, model="t", concurrency=1, client=backend, cache=None,
+        run,
+        model="t",
+        concurrency=1,
+        client=backend,
+        cache=None,
         extra_review_prompt="Reviewer prompt body",
     )
     reparsed = parse_augmented_diff((run / "augmented.diff").read_text())
@@ -408,7 +445,11 @@ async def test_augment_no_extra_review_when_prompt_unset(tmp_path: Path) -> None
         extra_args_list=[],  # no payloads — assertion fires if asked
     )
     await augment_run_dir(
-        run, model="t", concurrency=1, client=backend, cache=None,
+        run,
+        model="t",
+        concurrency=1,
+        client=backend,
+        cache=None,
         # no extra_review_prompt
     )
     assert canned.calls == 3  # 1 overview + 2 main hunks; no extras.
@@ -437,7 +478,11 @@ async def test_augment_extra_review_re_emits_sse_for_touched_hunks(tmp_path: Pat
         events.append((kind, payload))
 
     await augment_run_dir(
-        run, model="t", concurrency=1, client=backend, cache=None,
+        run,
+        model="t",
+        concurrency=1,
+        client=backend,
+        cache=None,
         extra_review_prompt="Reviewer prompt body",
         on_event=_capture,
     )

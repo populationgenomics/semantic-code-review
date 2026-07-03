@@ -91,7 +91,9 @@ async def run_pass(
             return entry["response"]
 
     async with agent.iter(
-        user_content, deps=deps, model_settings=model_settings,
+        user_content,
+        deps=deps,
+        model_settings=model_settings,
     ) as agent_run:
         try:
             async for _ in agent_run:
@@ -110,7 +112,9 @@ async def run_pass(
             if meta.swallow_errors:
                 log.warning(
                     "%s pass failed: %s: %s",
-                    meta.name, type(exc).__name__, exc,
+                    meta.name,
+                    type(exc).__name__,
+                    exc,
                 )
                 return None
             raise
@@ -141,7 +145,9 @@ async def run_pass(
 
 
 def _write_cache_hit_marker(
-    path: Path, pass_name: str, entry: dict[str, Any],
+    path: Path,
+    pass_name: str,
+    entry: dict[str, Any],
 ) -> None:
     """Write the cache-hit envelope at ``path``.
 
@@ -152,9 +158,9 @@ def _write_cache_hit_marker(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
-            {"cache_hit": True, "pass": pass_name,
-             "response": entry.get("response")},
-            indent=2, ensure_ascii=False,
+            {"cache_hit": True, "pass": pass_name, "response": entry.get("response")},
+            indent=2,
+            ensure_ascii=False,
         ),
         encoding="utf-8",
     )

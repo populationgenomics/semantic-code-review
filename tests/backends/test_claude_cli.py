@@ -35,9 +35,8 @@ from ._subproc_fakes import FakeProc, claude_envelope, install_fake_subproc
 # Backend adapter
 # ---------------------------------------------------------------------------
 
-def test_resolve_returns_subprocess_client(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+
+def test_resolve_returns_subprocess_client(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake_claude = fake_bin / "claude"
@@ -60,9 +59,7 @@ def test_resolve_raises_when_claude_missing(monkeypatch: pytest.MonkeyPatch, tmp
         ClaudeCliBackend("claude-cli", bdef).resolve(model="claude-opus-4-7")
 
 
-def test_supports_auto_when_claude_on_path(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_supports_auto_when_claude_on_path(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake_claude = fake_bin / "claude"
@@ -74,9 +71,7 @@ def test_supports_auto_when_claude_on_path(
     assert ClaudeCliBackend("claude-cli", bdef).supports_auto() is True
 
 
-def test_supports_auto_false_when_claude_missing(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_supports_auto_false_when_claude_missing(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     empty = tmp_path / "empty-bin"
     empty.mkdir()
     monkeypatch.setenv("PATH", str(empty))
@@ -88,9 +83,11 @@ def test_supports_auto_false_when_claude_missing(
 # CLI driver — fixtures + helpers
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def claude_model(monkeypatch: pytest.MonkeyPatch) -> ClaudeCLIModel:
     import semantic_code_review.backends.claude_cli as mod
+
     monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/true")
     return ClaudeCLIModel(model="claude-opus-4-7")
 
@@ -112,6 +109,7 @@ def _freeform_agent(model) -> Agent:  # type: ignore[no-untyped-def]
 # CLI driver — prompt builder
 # ---------------------------------------------------------------------------
 
+
 def test_build_claude_prompt_appends_task_instruction() -> None:
     out = ClaudeCLIModel._build_prompt("USER TEXT", "submit_annotations")
     assert "USER TEXT" in out
@@ -122,6 +120,7 @@ def test_build_claude_prompt_appends_task_instruction() -> None:
 # ---------------------------------------------------------------------------
 # CLI driver — subprocess invocation
 # ---------------------------------------------------------------------------
+
 
 async def test_claude_model_round_trip_through_agent(
     claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
@@ -149,9 +148,7 @@ async def test_claude_model_round_trip_through_agent(
     assert "SYS" in argv[sys_idx]
 
 
-async def test_claude_nonzero_exit_raises(
-    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_claude_nonzero_exit_raises(claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch) -> None:
     proc = FakeProc(b"", stderr=b"claude: rate limit hit\n", returncode=1)
     install_fake_subproc(monkeypatch, [proc])
     with pytest.raises(ClaudeCLIError, match="rate"):
@@ -184,9 +181,7 @@ async def test_claude_nonzero_exit_with_envelope_surfaces_result(
         await _agent(claude_model).run("USER")
 
 
-async def test_claude_bad_result_json_raises(
-    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_claude_bad_result_json_raises(claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch) -> None:
     """Pre-schema envelope with garbage in result and no structured_output."""
     proc = FakeProc(claude_envelope("not-json-at-all", use_structured_output=False))
     install_fake_subproc(monkeypatch, [proc])
@@ -199,12 +194,19 @@ async def test_claude_missing_structured_output_raises(
 ) -> None:
     """Common failure: model tried to call a tool, produced no JSON."""
     envelope = {
-        "type": "result", "subtype": "success", "is_error": False,
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
         "result": "",
-        "stop_reason": "tool_use", "num_turns": 2,
+        "stop_reason": "tool_use",
+        "num_turns": 2,
         "session_id": "sess",
-        "usage": {"input_tokens": 1, "output_tokens": 1,
-                  "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+        "usage": {
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        },
     }
     proc = FakeProc((json.dumps(envelope) + "\n").encode("utf-8"))
     install_fake_subproc(monkeypatch, [proc])
@@ -215,9 +217,14 @@ async def test_claude_missing_structured_output_raises(
 async def test_claude_mcp_injected_when_repo_tools_set(
     claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    claude_model.set_repo_tools(RepoTools(
-        head_worktree=tmp_path, repo_git=tmp_path, base_sha="b", head_sha="h",
-    ))
+    claude_model.set_repo_tools(
+        RepoTools(
+            head_worktree=tmp_path,
+            repo_git=tmp_path,
+            base_sha="b",
+            head_sha="h",
+        )
+    )
     proc = FakeProc(claude_envelope({"intent": "with mcp"}))
     calls = install_fake_subproc(monkeypatch, [proc])
     await _agent(claude_model).run("USER")
@@ -255,20 +262,28 @@ async def test_set_repo_tools_invalidates_cached_config(
 ) -> None:
     """Re-binding RepoTools must drop the previous temp config so the
     next call materialises a fresh one for the new worktree."""
-    claude_model.set_repo_tools(RepoTools(
-        head_worktree=tmp_path / "a", repo_git=tmp_path / "a",
-        base_sha="x", head_sha="y",
-    ))
+    claude_model.set_repo_tools(
+        RepoTools(
+            head_worktree=tmp_path / "a",
+            repo_git=tmp_path / "a",
+            base_sha="x",
+            head_sha="y",
+        )
+    )
     proc1 = FakeProc(claude_envelope({"intent": "1"}))
     proc2 = FakeProc(claude_envelope({"intent": "2"}))
     calls = install_fake_subproc(monkeypatch, [proc1, proc2])
     await _agent(claude_model).run("USER")
     first_config = calls[0]["argv"][calls[0]["argv"].index("--mcp-config") + 1]
 
-    claude_model.set_repo_tools(RepoTools(
-        head_worktree=tmp_path / "b", repo_git=tmp_path / "b",
-        base_sha="x", head_sha="y",
-    ))
+    claude_model.set_repo_tools(
+        RepoTools(
+            head_worktree=tmp_path / "b",
+            repo_git=tmp_path / "b",
+            base_sha="x",
+            head_sha="y",
+        )
+    )
     await _agent(claude_model).run("USER")
     second_config = calls[1]["argv"][calls[1]["argv"].index("--mcp-config") + 1]
 
@@ -280,15 +295,11 @@ async def test_set_repo_tools_invalidates_cached_config(
 # CLI driver — free-form (review console, ADR 0002 Slice 5)
 # ---------------------------------------------------------------------------
 
-async def test_claude_freeform_round_trip(
-    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
-) -> None:
+
+async def test_claude_freeform_round_trip(claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch) -> None:
     """A no-output_type Agent gets the envelope's `result` text back as
     the agent output, and the spawn omits the structured-output flags."""
-    proc = FakeProc(
-        claude_envelope("The guard handles the empty-list case.",
-                        use_structured_output=False)
-    )
+    proc = FakeProc(claude_envelope("The guard handles the empty-list case.", use_structured_output=False))
     calls = install_fake_subproc(monkeypatch, [proc])
 
     result = await _freeform_agent(claude_model).run("why this guard?")
@@ -306,9 +317,7 @@ async def test_claude_freeform_round_trip(
     assert "single JSON object" not in stdin
 
 
-async def test_claude_freeform_passes_effort(
-    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_claude_freeform_passes_effort(claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch) -> None:
     """The console spawn carries `--effort` (reasoning depth) by default,
     so adaptive-thinking models don't answer at the bare default."""
     proc = FakeProc(claude_envelope("answer", use_structured_output=False))
@@ -320,9 +329,7 @@ async def test_claude_freeform_passes_effort(
     assert argv[argv.index("--effort") + 1] == "high"
 
 
-async def test_claude_freeform_effort_omitted_when_none(
-    monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_claude_freeform_effort_omitted_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
     """console_effort=None drops the flag entirely (CLI default depth)."""
     model = ClaudeCLIModel(model="claude-opus-4-7", console_effort=None)
     proc = FakeProc(claude_envelope("answer", use_structured_output=False))
@@ -347,9 +354,14 @@ async def test_claude_freeform_mcp_injected_when_repo_tools_set(
 ) -> None:
     """The console runs MCP-backed: the worktree server is wired into the
     free-form spawn exactly as for the structured path."""
-    claude_model.set_repo_tools(RepoTools(
-        head_worktree=tmp_path, repo_git=tmp_path, base_sha="b", head_sha="h",
-    ))
+    claude_model.set_repo_tools(
+        RepoTools(
+            head_worktree=tmp_path,
+            repo_git=tmp_path,
+            base_sha="b",
+            head_sha="h",
+        )
+    )
     proc = FakeProc(claude_envelope("answer", use_structured_output=False))
     calls = install_fake_subproc(monkeypatch, [proc])
     await _freeform_agent(claude_model).run("explain")

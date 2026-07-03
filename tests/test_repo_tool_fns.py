@@ -38,6 +38,7 @@ def repo(tmp_path: Path) -> RepoTools:
 # Schema generation: source-of-truth check
 # ---------------------------------------------------------------------------
 
+
 def test_schemas_cover_every_tool_function() -> None:
     schemas = mcp_tool_schemas()
     schema_names = [s["name"] for s in schemas]
@@ -74,9 +75,7 @@ def test_pydantic_ai_and_mcp_surfaces_match() -> None:
         assert {p.name for p in fn_params} == set(schema_props), name
         # Required params on each side must match: positional-with-no-default
         # in the function ↔ listed in `required` in the JSON schema.
-        fn_required = {
-            p.name for p in fn_params if p.default is inspect.Parameter.empty
-        }
+        fn_required = {p.name for p in fn_params if p.default is inspect.Parameter.empty}
         assert fn_required == schema_required, name
 
 
@@ -85,9 +84,7 @@ def test_surface_matches_marked_repo_tools_methods() -> None:
     from semantic_code_review.augment.tools import _TOOL_EXPORT_ATTR
 
     marked = {
-        name
-        for name, attr in vars(RepoTools).items()
-        if callable(attr) and getattr(attr, _TOOL_EXPORT_ATTR, False)
+        name for name, attr in vars(RepoTools).items() if callable(attr) and getattr(attr, _TOOL_EXPORT_ATTR, False)
     }
     assert {fn.__name__ for fn in TOOL_FUNCTIONS} == marked
     assert {s["name"] for s in mcp_tool_schemas()} == marked
@@ -104,6 +101,7 @@ def test_read_file_schema_marks_path_required() -> None:
 # ---------------------------------------------------------------------------
 # mcp_dispatch routes by name
 # ---------------------------------------------------------------------------
+
 
 def test_dispatch_read_file(repo: RepoTools) -> None:
     out = mcp_dispatch(repo, "read_file", {"path": "a.py"})
@@ -167,6 +165,7 @@ def test_outline_schema_marks_sha_optional() -> None:
 # symbol_at
 # ---------------------------------------------------------------------------
 
+
 def test_dispatch_symbol_at_resolves_line(repo: RepoTools) -> None:
     out = json.loads(mcp_dispatch(repo, "symbol_at", {"path": "a.py", "line": 2}))
     assert out["qualified_name"] == "foo"
@@ -193,6 +192,7 @@ def test_symbol_at_schema_marks_line_required_sha_optional() -> None:
 # ---------------------------------------------------------------------------
 # changed_symbols
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def diff_repo(tmp_path: Path) -> RepoTools:

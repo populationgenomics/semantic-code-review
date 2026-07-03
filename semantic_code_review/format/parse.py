@@ -54,15 +54,11 @@ from ..augment.schemas import (
     lift_file,
 )
 
-_HUNK_HEADER_RE = re.compile(
-    r"^@@ -(?P<os>\d+)(?:,(?P<oc>\d+))? \+(?P<ns>\d+)(?:,(?P<nc>\d+))? @@"
-)
+_HUNK_HEADER_RE = re.compile(r"^@@ -(?P<os>\d+)(?:,(?P<oc>\d+))? \+(?P<ns>\d+)(?:,(?P<nc>\d+))? @@")
 _SEGMENT_RANGE_RE = re.compile(r"^\s*\+(\d+)\.\.\+(\d+)\s*$")
 _FOLD_RIGHT_RE = re.compile(r'^\s*right\s+(\d+)\.\.(\d+)\s+(?:"(.*)"|(.+))\s*$')
 _FOLD_LEFT_RE = re.compile(r'^\s*left\s+(\d+)\.\.(\d+)\s+(?:"(.*)"|(.+))\s*$')
-_FOLD_BOTH_RE = re.compile(
-    r'^\s*both\s+R(\d+)\.\.(\d+)\s+L(\d+)\.\.(\d+)\s+(?:"(.*)"|(.+))\s*$'
-)
+_FOLD_BOTH_RE = re.compile(r'^\s*both\s+R(\d+)\.\.(\d+)\s+L(\d+)\.\.(\d+)\s+(?:"(.*)"|(.+))\s*$')
 _LINE_NOTE_RE = re.compile(r'^\s*\+(\d+)\s+(?:"(.*)"|(.+))\s*$')
 _SMELL_RE = re.compile(r'^\s*(\S+)(?:\s+"(.*)")?\s*$')
 _DIFF_GIT_RE = re.compile(r"^diff --git a/(.+?) b/(.+?)\s*$")
@@ -71,9 +67,7 @@ _DIFF_GIT_RE = re.compile(r"^diff --git a/(.+?) b/(.+?)\s*$")
 # Directives that supply PRInfo. They are always allowed by `parse_raw_diff`
 # because the augment pipeline writes them onto the raw diff before the
 # annotation passes run.
-_PR_PREAMBLE_DIRECTIVES = frozenset(
-    {"scr-version", "scr-pr", "scr-base", "scr-head", "scr-model"}
-)
+_PR_PREAMBLE_DIRECTIVES = frozenset({"scr-version", "scr-pr", "scr-base", "scr-head", "scr-model"})
 
 
 class ParseError(ValueError):
@@ -94,6 +88,7 @@ class _ParsedFileWithAnno:
     in lineno order so we can either fold them into annotations or reject
     them (parse_raw_diff).
     """
+
     parsed: ParsedFile
     header_directives: list[_Directive] = field(default_factory=list)
     hunk_directives: list[list[_Directive]] = field(default_factory=list)
@@ -173,32 +168,45 @@ def _parse_fold(value: str, lineno: int) -> FoldDescription:
     """
     m = _FOLD_RIGHT_RE.match(value)
     if m:
-        start = int(m.group(1)); end = int(m.group(2))
+        start = int(m.group(1))
+        end = int(m.group(2))
         summary = m.group(3) if m.group(3) is not None else (m.group(4) or "")
         if end < start:
             raise ParseError(f"line {lineno}: fold end {end} before start {start}")
         return FoldDescription(
-            context="right", right_start=start, right_end=end, summary=summary,
+            context="right",
+            right_start=start,
+            right_end=end,
+            summary=summary,
         )
     m = _FOLD_LEFT_RE.match(value)
     if m:
-        start = int(m.group(1)); end = int(m.group(2))
+        start = int(m.group(1))
+        end = int(m.group(2))
         summary = m.group(3) if m.group(3) is not None else (m.group(4) or "")
         if end < start:
             raise ParseError(f"line {lineno}: fold end {end} before start {start}")
         return FoldDescription(
-            context="left", left_start=start, left_end=end, summary=summary,
+            context="left",
+            left_start=start,
+            left_end=end,
+            summary=summary,
         )
     m = _FOLD_BOTH_RE.match(value)
     if m:
-        rs = int(m.group(1)); re_ = int(m.group(2))
-        ls = int(m.group(3)); le = int(m.group(4))
+        rs = int(m.group(1))
+        re_ = int(m.group(2))
+        ls = int(m.group(3))
+        le = int(m.group(4))
         summary = m.group(5) if m.group(5) is not None else (m.group(6) or "")
         if re_ < rs or le < ls:
             raise ParseError(f"line {lineno}: fold has end before start")
         return FoldDescription(
             context="both",
-            right_start=rs, right_end=re_, left_start=ls, left_end=le,
+            right_start=rs,
+            right_end=re_,
+            left_start=ls,
+            left_end=le,
             summary=summary,
         )
     raise ParseError(f"line {lineno}: malformed scr-fold value {value!r}")
@@ -298,8 +306,13 @@ def _hunk_annotations(parsed_hunk: ParsedHunk, directives: list[_Directive]) -> 
             ann.fold_descriptions.append(_parse_fold(d.value, d.lineno))
         elif d.name == "scr-segment-begin":
             ann.segments.append(_consume_segment(d, it, parsed_hunk))
-        elif d.name in {"scr-segment-intent", "scr-segment-smell", "scr-segment-context",
-                        "scr-segment-refs", "scr-segment-end"}:
+        elif d.name in {
+            "scr-segment-intent",
+            "scr-segment-smell",
+            "scr-segment-context",
+            "scr-segment-refs",
+            "scr-segment-end",
+        }:
             raise ParseError(f"line {d.lineno}: {d.name} outside of a scr-segment-begin/end block")
         else:
             raise ParseError(f"line {d.lineno}: unknown hunk directive {d.name!r}")
@@ -360,6 +373,7 @@ def _parse_hunk_header(line: str, lineno: int) -> tuple[int, int, int, int]:
 @dataclass
 class _RawParse:
     """Output of the line-level scanner, before annotations are interpreted."""
+
     preamble: _PreambleResult
     files: list[_ParsedFileWithAnno]
 
@@ -463,8 +477,7 @@ def _scan_hunk(lines: list[str], i: int) -> tuple[ParsedHunk, list[_Directive], 
             break
         if not _is_body_line(line):
             raise ParseError(
-                f"line {i + 1}: unexpected hunk body line {line!r} "
-                f"(must start with ' ', '+', '-', or '\\')"
+                f"line {i + 1}: unexpected hunk body line {line!r} (must start with ' ', '+', '-', or '\\')"
             )
         body.append(line)
         c = line[:1]
@@ -486,8 +499,10 @@ def _scan_hunk(lines: list[str], i: int) -> tuple[ParsedHunk, list[_Directive], 
 
     parsed_hunk = ParsedHunk(
         header=header,
-        old_start=os, old_count=oc,
-        new_start=ns, new_count=nc,
+        old_start=os,
+        old_count=oc,
+        new_start=ns,
+        new_count=nc,
         body="\n".join(body) + ("\n" if body else ""),
     )
 
@@ -548,14 +563,10 @@ def parse_raw_diff(text: str) -> ParsedDiff:
         raise ParseError("parse_raw_diff: scr-overview directive present (use parse_augmented_diff)")
     for entry in raw.files:
         for d in entry.header_directives:
-            raise ParseError(
-                f"line {d.lineno}: unexpected file-level annotation {d.name!r} in raw diff"
-            )
+            raise ParseError(f"line {d.lineno}: unexpected file-level annotation {d.name!r} in raw diff")
         for hunk_dirs in entry.hunk_directives:
             for d in hunk_dirs:
-                raise ParseError(
-                    f"line {d.lineno}: unexpected hunk-level annotation {d.name!r} in raw diff"
-                )
+                raise ParseError(f"line {d.lineno}: unexpected hunk-level annotation {d.name!r} in raw diff")
     return ParsedDiff(
         version=raw.preamble.version,
         pr=raw.preamble.pr,

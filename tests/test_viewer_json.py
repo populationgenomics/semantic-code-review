@@ -17,12 +17,15 @@ FIXTURE = Path(__file__).parent / "fixtures" / "sample.augmented.diff"
 def _data():
     text = FIXTURE.read_text(encoding="utf-8")
     diff = parse_augmented_diff(text)
-    return build_viewer_json(diff, {
-        "title": "Introduce pagination",
-        "body": "",
-        "author": {"login": "octocat"},
-        "url": "https://github.com/acme/widgets/pull/482",
-    })
+    return build_viewer_json(
+        diff,
+        {
+            "title": "Introduce pagination",
+            "body": "",
+            "author": {"login": "octocat"},
+            "url": "https://github.com/acme/widgets/pull/482",
+        },
+    )
 
 
 def test_viewer_json_shape() -> None:
@@ -88,13 +91,18 @@ def test_build_pending_viewer_json_emits_skeleton_with_pending_flag(tmp_path: Pa
     and is tagged `pending: true` so the viewer JS shows a spinner
     placeholder instead of the failure copy."""
     (tmp_path / "raw.diff").write_text(_RAW_DIFF, encoding="utf-8")
-    (tmp_path / "meta.json").write_text(json.dumps({
-        "title": "Bump return value",
-        "author": {"login": "tester"},
-        "url": "",
-        "baseRefOid": "aaa",
-        "headRefOid": "bbb",
-    }), encoding="utf-8")
+    (tmp_path / "meta.json").write_text(
+        json.dumps(
+            {
+                "title": "Bump return value",
+                "author": {"login": "tester"},
+                "url": "",
+                "baseRefOid": "aaa",
+                "headRefOid": "bbb",
+            }
+        ),
+        encoding="utf-8",
+    )
 
     data = build_pending_viewer_json(tmp_path)
 
@@ -135,17 +143,26 @@ def test_symbol_blocks_map_changed_symbols_to_hunks(tmp_path: Path) -> None:
     """The deterministic Symbols axis: each changed symbol becomes a
     flat block carrying the hunk ids its live-side range overlaps."""
     (tmp_path / "raw.diff").write_text(_SYMBOL_DIFF, encoding="utf-8")
-    (tmp_path / "meta.json").write_text(json.dumps({
-        "title": "Add bar", "author": {"login": "t"}, "url": "",
-        "baseRefOid": "aaa", "headRefOid": "bbb",
-    }), encoding="utf-8")
+    (tmp_path / "meta.json").write_text(
+        json.dumps(
+            {
+                "title": "Add bar",
+                "author": {"login": "t"},
+                "url": "",
+                "baseRefOid": "aaa",
+                "headRefOid": "bbb",
+            }
+        ),
+        encoding="utf-8",
+    )
     base = tmp_path / "base"
     head = tmp_path / "head"
     base.mkdir()
     head.mkdir()
     (base / "a.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
     (head / "a.py").write_text(
-        "def foo():\n    return 1\n\n\ndef bar():\n    return 2\n", encoding="utf-8",
+        "def foo():\n    return 1\n\n\ndef bar():\n    return 2\n",
+        encoding="utf-8",
     )
 
     data = build_pending_viewer_json(tmp_path)
@@ -181,20 +198,29 @@ def test_symbol_blocks_nest_methods_under_their_class(tmp_path: Path) -> None:
     changed node); `baz` hangs off it as a child, and the parent's
     hunk_ids is the subtree union."""
     (tmp_path / "raw.diff").write_text(_NESTED_DIFF, encoding="utf-8")
-    (tmp_path / "meta.json").write_text(json.dumps({
-        "title": "Add Foo.baz", "author": {"login": "t"}, "url": "",
-        "baseRefOid": "aaa", "headRefOid": "bbb",
-    }), encoding="utf-8")
+    (tmp_path / "meta.json").write_text(
+        json.dumps(
+            {
+                "title": "Add Foo.baz",
+                "author": {"login": "t"},
+                "url": "",
+                "baseRefOid": "aaa",
+                "headRefOid": "bbb",
+            }
+        ),
+        encoding="utf-8",
+    )
     base = tmp_path / "base"
     head = tmp_path / "head"
     base.mkdir()
     head.mkdir()
     (base / "a.py").write_text(
-        "class Foo:\n    def bar(self):\n        return 1\n", encoding="utf-8",
+        "class Foo:\n    def bar(self):\n        return 1\n",
+        encoding="utf-8",
     )
     (head / "a.py").write_text(
-        "class Foo:\n    def bar(self):\n        return 1\n\n"
-        "    def baz(self):\n        return 2\n", encoding="utf-8",
+        "class Foo:\n    def bar(self):\n        return 1\n\n    def baz(self):\n        return 2\n",
+        encoding="utf-8",
     )
 
     data = build_pending_viewer_json(tmp_path)
@@ -206,7 +232,7 @@ def test_symbol_blocks_nest_methods_under_their_class(tmp_path: Path) -> None:
     assert foo["id"] == "SY0"
     assert foo["title"] == "Foo"
     assert "modified" in foo["rationale"]
-    assert foo["hunk_ids"] == ["H0_0"]      # subtree union
+    assert foo["hunk_ids"] == ["H0_0"]  # subtree union
     # baz nests under Foo as the only child.
     children = foo["children"]
     assert len(children) == 1
@@ -215,16 +241,24 @@ def test_symbol_blocks_nest_methods_under_their_class(tmp_path: Path) -> None:
     assert baz["title"] == "baz"
     assert "added" in baz["rationale"]
     assert baz["hunk_ids"] == ["H0_0"]
-    assert "children" not in baz           # leaf carries no children key
+    assert "children" not in baz  # leaf carries no children key
 
 
 def test_symbol_blocks_absent_without_worktrees(tmp_path: Path) -> None:
     """No base/head worktree available ⇒ empty Symbols axis, no raise."""
     (tmp_path / "raw.diff").write_text(_SYMBOL_DIFF, encoding="utf-8")
-    (tmp_path / "meta.json").write_text(json.dumps({
-        "title": "Add bar", "author": {"login": "t"}, "url": "",
-        "baseRefOid": "aaa", "headRefOid": "bbb",
-    }), encoding="utf-8")
+    (tmp_path / "meta.json").write_text(
+        json.dumps(
+            {
+                "title": "Add bar",
+                "author": {"login": "t"},
+                "url": "",
+                "baseRefOid": "aaa",
+                "headRefOid": "bbb",
+            }
+        ),
+        encoding="utf-8",
+    )
 
     data = build_pending_viewer_json(tmp_path)
 
@@ -239,20 +273,29 @@ def test_fold_symbols_ship_per_side_definition_spans(tmp_path: Path) -> None:
     as `{start_line, end_line, kind, qualified_name, depth}`, depth-first,
     with nested defs deeper than their enclosing one."""
     (tmp_path / "raw.diff").write_text(_NESTED_DIFF, encoding="utf-8")
-    (tmp_path / "meta.json").write_text(json.dumps({
-        "title": "Add Foo.baz", "author": {"login": "t"}, "url": "",
-        "baseRefOid": "aaa", "headRefOid": "bbb",
-    }), encoding="utf-8")
+    (tmp_path / "meta.json").write_text(
+        json.dumps(
+            {
+                "title": "Add Foo.baz",
+                "author": {"login": "t"},
+                "url": "",
+                "baseRefOid": "aaa",
+                "headRefOid": "bbb",
+            }
+        ),
+        encoding="utf-8",
+    )
     base = tmp_path / "base"
     head = tmp_path / "head"
     base.mkdir()
     head.mkdir()
     (base / "a.py").write_text(
-        "class Foo:\n    def bar(self):\n        return 1\n", encoding="utf-8",
+        "class Foo:\n    def bar(self):\n        return 1\n",
+        encoding="utf-8",
     )
     (head / "a.py").write_text(
-        "class Foo:\n    def bar(self):\n        return 1\n\n"
-        "    def baz(self):\n        return 2\n", encoding="utf-8",
+        "class Foo:\n    def bar(self):\n        return 1\n\n    def baz(self):\n        return 2\n",
+        encoding="utf-8",
     )
 
     data = build_pending_viewer_json(tmp_path)
@@ -278,10 +321,18 @@ def test_fold_symbols_empty_for_unsupported_language(tmp_path: Path) -> None:
         "@@ -1 +1 @@\n-old\n+new\n"
     )
     (tmp_path / "raw.diff").write_text(raw, encoding="utf-8")
-    (tmp_path / "meta.json").write_text(json.dumps({
-        "title": "Edit notes", "author": {"login": "t"}, "url": "",
-        "baseRefOid": "aaa", "headRefOid": "bbb",
-    }), encoding="utf-8")
+    (tmp_path / "meta.json").write_text(
+        json.dumps(
+            {
+                "title": "Edit notes",
+                "author": {"login": "t"},
+                "url": "",
+                "baseRefOid": "aaa",
+                "headRefOid": "bbb",
+            }
+        ),
+        encoding="utf-8",
+    )
     base = tmp_path / "base"
     head = tmp_path / "head"
     base.mkdir()
@@ -300,13 +351,44 @@ def test_fold_symbols_empty_for_unsupported_language(tmp_path: Path) -> None:
 # (semantic_code_review/viewer/assets/vendor/highlight.min.js). Derived by
 # enumerating the build's `grmr_<name>` grammar registrations; re-run that
 # enumeration after vendor/refresh.sh and update this set if it changes.
-_HLJS_BUILD_LANGUAGES = frozenset({
-    "bash", "c", "cpp", "csharp", "css", "diff", "go", "graphql", "ini",
-    "java", "javascript", "json", "kotlin", "less", "lua", "makefile",
-    "markdown", "objectivec", "perl", "php", "plaintext", "python", "r",
-    "ruby", "rust", "scss", "shell", "sql", "swift", "typescript", "vbnet",
-    "wasm", "xml", "yaml",
-})
+_HLJS_BUILD_LANGUAGES = frozenset(
+    {
+        "bash",
+        "c",
+        "cpp",
+        "csharp",
+        "css",
+        "diff",
+        "go",
+        "graphql",
+        "ini",
+        "java",
+        "javascript",
+        "json",
+        "kotlin",
+        "less",
+        "lua",
+        "makefile",
+        "markdown",
+        "objectivec",
+        "perl",
+        "php",
+        "plaintext",
+        "python",
+        "r",
+        "ruby",
+        "rust",
+        "scss",
+        "shell",
+        "sql",
+        "swift",
+        "typescript",
+        "vbnet",
+        "wasm",
+        "xml",
+        "yaml",
+    }
+)
 
 
 def test_lang_map_values_are_in_the_vendored_hljs_build() -> None:
@@ -315,11 +397,7 @@ def test_lang_map_values_are_in_the_vendored_hljs_build() -> None:
     plain text. Guards against typos / unbundled grammars."""
     from semantic_code_review.viewer.build_json import _LANG_BY_EXT
 
-    unknown = {
-        ext: lang
-        for ext, lang in _LANG_BY_EXT.items()
-        if lang not in _HLJS_BUILD_LANGUAGES
-    }
+    unknown = {ext: lang for ext, lang in _LANG_BY_EXT.items() if lang not in _HLJS_BUILD_LANGUAGES}
     assert not unknown, f"languages not in the vendored hljs build: {unknown}"
 
 
@@ -327,10 +405,17 @@ def test_lang_from_path_covers_common_extensions() -> None:
     from semantic_code_review.viewer.build_json import _lang_from_path
 
     cases = {
-        "a.py": "python", "a.ts": "typescript", "a.mts": "typescript",
-        "a.jsx": "javascript", "a.cjs": "javascript",
-        "styles.css": "css", "theme.scss": "scss", "App.swift": "swift",
-        "index.php": "php", "schema.graphql": "graphql", "Config.TOML": "ini",
+        "a.py": "python",
+        "a.ts": "typescript",
+        "a.mts": "typescript",
+        "a.jsx": "javascript",
+        "a.cjs": "javascript",
+        "styles.css": "css",
+        "theme.scss": "scss",
+        "App.swift": "swift",
+        "index.php": "php",
+        "schema.graphql": "graphql",
+        "Config.TOML": "ini",
         "patch.diff": "diff",
     }
     for path, lang in cases.items():

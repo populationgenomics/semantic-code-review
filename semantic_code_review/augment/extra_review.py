@@ -61,6 +61,7 @@ _EXTRA_REVIEW = PassMeta(
 
 class ExtraReviewNote(BaseModel):
     """One line-anchored observation produced by the PR-level extra-review pass."""
+
     file: str = Field(description="Repository-relative path of the file the note applies to.")
     line: int = Field(description="Post-image (new-side) line number this note applies to.")
     body: str = Field(
@@ -84,7 +85,8 @@ class ExtraReviewSubmission(BaseModel):
 
 
 def make_extra_review_agent(
-    model: str | Model, system_prompt: str,
+    model: str | Model,
+    system_prompt: str,
 ) -> Agent[None, ExtraReviewSubmission]:
     """Agent for the PR-level extra-review pass.
 
@@ -102,7 +104,9 @@ def make_extra_review_agent(
 
 
 def _format_pr_level_prompt(
-    *, overview_json: str, diff_text: str,
+    *,
+    overview_json: str,
+    diff_text: str,
 ) -> list[UserContent]:
     return [
         f"# PR overview\n{overview_json}",
@@ -112,7 +116,8 @@ def _format_pr_level_prompt(
 
 
 def _distribute_notes_to_hunks(
-    diff: AnnotatedDiff, notes: list[ExtraReviewNote],
+    diff: AnnotatedDiff,
+    notes: list[ExtraReviewNote],
 ) -> AnnotatedDiff:
     """Bucket each ``(file, line)`` note into the matching hunk's
     ``line_notes``. Notes whose ``file`` doesn't match any AnnotatedFile,
@@ -133,7 +138,8 @@ def _distribute_notes_to_hunks(
         if fp is None:
             log.warning(
                 "extra-review note for unknown path %r — dropped (body=%r)",
-                n.file, body[:80],
+                n.file,
+                body[:80],
             )
             continue
         fi = diff.files.index(fp)
@@ -150,7 +156,9 @@ def _distribute_notes_to_hunks(
         if not landed:
             log.warning(
                 "extra-review note %s:%d outside any hunk's range — dropped (body=%r)",
-                n.file, n.line, body[:80],
+                n.file,
+                n.line,
+                body[:80],
             )
 
     if not appends:
@@ -198,7 +206,8 @@ async def run_pr_level_extra_review(
         client=client,
         agent=make_extra_review_agent(client.model, system_prompt=prompt_text),
         user_content=_format_pr_level_prompt(
-            overview_json=overview_json, diff_text=diff_text,
+            overview_json=overview_json,
+            diff_text=diff_text,
         ),
         # `prompt_text` is the user-supplied system prompt — it varies
         # per call, so it lives on the run_pass arg surface rather than
@@ -215,11 +224,8 @@ async def run_pr_level_extra_review(
     if payload is None:
         return diff
 
-    notes = [
-        ExtraReviewNote.model_validate(n) for n in payload.get("notes") or []
-    ]
-    log.info("extra-review: %d notes emitted across %d files",
-             len(notes), len({n.file for n in notes}))
+    notes = [ExtraReviewNote.model_validate(n) for n in payload.get("notes") or []]
+    log.info("extra-review: %d notes emitted across %d files", len(notes), len({n.file for n in notes}))
     return _distribute_notes_to_hunks(diff, notes)
 
 

@@ -101,9 +101,7 @@ class CommentStore:
             now = time.time()
             existing = self._items.get(payload.get("id", ""))
             if existing is not None and not existing.is_writable:
-                raise ReadOnlyCommentError(
-                    f"comment {existing.id} is from {existing.source}; not editable"
-                )
+                raise ReadOnlyCommentError(f"comment {existing.id} is from {existing.source}; not editable")
             if existing is None:
                 c = Comment.model_validate(payload)
                 c.created_at = payload.get("created_at", now)
@@ -126,9 +124,7 @@ class CommentStore:
             if existing is None:
                 return False
             if not existing.is_writable:
-                raise ReadOnlyCommentError(
-                    f"comment {existing.id} is from {existing.source}; not deletable"
-                )
+                raise ReadOnlyCommentError(f"comment {existing.id} is from {existing.source}; not deletable")
             del self._items[comment_id]
             self._flush_locked()
             return True
@@ -146,9 +142,9 @@ class CommentStore:
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         tmp.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "comments": [c.model_dump() for c in
-                         sorted(self._items.values(),
-                                key=lambda c: (c.file, c.line, c.created_at))],
+            "comments": [
+                c.model_dump() for c in sorted(self._items.values(), key=lambda c: (c.file, c.line, c.created_at))
+            ],
         }
         tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, self.path)

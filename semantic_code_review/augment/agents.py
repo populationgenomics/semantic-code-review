@@ -92,5 +92,3 @@ class Client:
             close = getattr(self.model, "aclose", None)
             if callable(close):
                 await close()
-
-

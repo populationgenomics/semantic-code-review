@@ -43,9 +43,14 @@ _SCAFFOLD_PLACEHOLDERS: dict[str, str] = {
 # Which scaffold fields are "must fill in" (uncommented) vs "optional
 # alternative" (commented). api_key_command is mutually exclusive
 # with api_key_env in practice — uncomment whichever you want.
-_SCAFFOLD_REQUIRED: frozenset[str] = frozenset({
-    "type", "base_url", "api_key_env", "default_model",
-})
+_SCAFFOLD_REQUIRED: frozenset[str] = frozenset(
+    {
+        "type",
+        "base_url",
+        "api_key_env",
+        "default_model",
+    }
+)
 
 
 def render_backend_template(name: str) -> str:
@@ -108,15 +113,9 @@ def _lead_comment(bdef: BackendDef | None) -> list[str]:
 
 def _auth_hint(bdef: BackendDef) -> str:
     if bdef.api_key_env and bdef.api_key_command:
-        return (
-            f"Auth: set ${bdef.api_key_env} (or rely on the "
-            f"configured api_key_command fallback)."
-        )
+        return f"Auth: set ${bdef.api_key_env} (or rely on the configured api_key_command fallback)."
     if bdef.api_key_env:
-        return (
-            f"Auth: set ${bdef.api_key_env} (or use api_key_command "
-            f"to fetch from a secret store)."
-        )
+        return f"Auth: set ${bdef.api_key_env} (or use api_key_command to fetch from a secret store)."
     if bdef.api_key_command:
         return "Auth: configured via api_key_command."
     return ""

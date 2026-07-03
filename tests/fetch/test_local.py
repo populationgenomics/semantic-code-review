@@ -29,16 +29,13 @@ def repo(tmp_path: Path) -> Path:
     root = tmp_path / "r"
     root.mkdir()
     _sh(root, "git", "init", "-q", "-b", "main")
-    _sh(root, "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit",
-        "--allow-empty", "-q", "-m", "root")
+    _sh(root, "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-q", "-m", "root")
     (root / "a.py").write_text("x = 1\n")
     _sh(root, "git", "add", "a.py")
-    _sh(root, "git", "-c", "user.email=t@t", "-c", "user.name=t",
-        "commit", "-q", "-m", "add a")
+    _sh(root, "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "add a")
     (root / "a.py").write_text("x = 2\n")
     _sh(root, "git", "add", "a.py")
-    _sh(root, "git", "-c", "user.email=t@t", "-c", "user.name=t",
-        "commit", "-q", "-m", "bump a")
+    _sh(root, "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "bump a")
     return root
 
 

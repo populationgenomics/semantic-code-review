@@ -41,14 +41,10 @@ def get(name: str, *, config: ScrConfig) -> Backend:
     bdef = config.backends.get(name)
     if bdef is None:
         valid = sorted(["auto", *config.backends.keys()])
-        raise typer.BadParameter(
-            f"unknown backend {name!r}; expected one of: {', '.join(valid)}."
-        )
+        raise typer.BadParameter(f"unknown backend {name!r}; expected one of: {', '.join(valid)}.")
     cls = _HANDLERS.get(bdef.type)
     if cls is None:
-        raise typer.BadParameter(
-            f"backend {name!r} has unknown type {bdef.type!r}"
-        )
+        raise typer.BadParameter(f"backend {name!r} has unknown type {bdef.type!r}")
     return cls(name, bdef)
 
 

@@ -96,7 +96,9 @@ class RepoTools:
             end_line: 1-indexed end line inclusive (optional).
         """
         rc, stdout, stderr = git_ops.git_capture(
-            self.repo_git, "show", f"{sha}:{path}",
+            self.repo_git,
+            "show",
+            f"{sha}:{path}",
         )
         if rc != 0:
             return f"error: git show {sha}:{path} failed: {stderr.strip()}"
@@ -240,9 +242,7 @@ class RepoTools:
         if result.returncode not in (0, 1):  # 1 = no matches
             return f"error: rg failed: {result.stderr.strip()}"
         prefix = str(self.head_worktree) + os.sep
-        out = "\n".join(
-            line.removeprefix(prefix) for line in result.stdout.splitlines()
-        )
+        out = "\n".join(line.removeprefix(prefix) for line in result.stdout.splitlines())
         return _cap(out)
 
     def _grep_git(self, pattern: str, path_glob: str | None, max_hits: int) -> str:
@@ -287,9 +287,16 @@ class RepoTools:
             limit: Maximum commits to return.
         """
         try:
-            return _cap(git_ops.git(
-                self.repo_git, "log", f"-n{limit}", "--oneline", "--", path,
-            ))
+            return _cap(
+                git_ops.git(
+                    self.repo_git,
+                    "log",
+                    f"-n{limit}",
+                    "--oneline",
+                    "--",
+                    path,
+                )
+            )
         except git_ops.GitError as e:
             return f"error: {e}"
 
@@ -414,9 +421,7 @@ def _make_tool_fn(method_name: str, method: Callable) -> Callable:
     fn.__doc__ = method.__doc__
     fn.__signature__ = new_sig  # type: ignore[attr-defined]
     annotations: dict[str, Any] = {
-        p.name: p.annotation
-        for p in (ctx_param, *method_params)
-        if p.annotation is not inspect.Parameter.empty
+        p.name: p.annotation for p in (ctx_param, *method_params) if p.annotation is not inspect.Parameter.empty
     }
     annotations["return"] = str
     fn.__annotations__ = annotations

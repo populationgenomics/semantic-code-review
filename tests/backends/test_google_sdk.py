@@ -12,9 +12,7 @@ from semantic_code_review.backends.google_sdk import GoogleSdkBackend
 from semantic_code_review.config import BackendDef, BackendType
 
 
-def test_resolves_key_via_command(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_resolves_key_via_command(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     """Gemini AI-Studio key fetched from a secret."""
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
@@ -34,9 +32,7 @@ def test_resolves_key_via_command(
     assert "GEMINI_API_KEY" not in os.environ
 
 
-def test_vertex_short_circuits_credential_resolution(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_vertex_short_circuits_credential_resolution(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     """When GOOGLE_CLOUD_PROJECT is set, Vertex/ADC path wins; the
     api_key_command must NOT be invoked (would be wasted work, and
     the user clearly chose Vertex by setting the project)."""

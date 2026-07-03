@@ -55,8 +55,12 @@ AugmentCallable = Callable[
 FoldSummaryCallable = Callable[
     # (file_idx, context, right_range, left_range, qualified_name, kind)
     [
-        int, str, "tuple[int, int] | None", "tuple[int, int] | None",
-        "str | None", "str | None",
+        int,
+        str,
+        "tuple[int, int] | None",
+        "tuple[int, int] | None",
+        "str | None",
+        "str | None",
     ],
     Awaitable[dict],
 ]
@@ -72,7 +76,10 @@ FoldSummaryCallable = Callable[
 #: /console/ask 409s (CLI support is Slice 5).
 ConsoleCallable = Callable[
     [
-        str, "list | None", "Callable[[str], None]", "Callable[[str], None]",
+        str,
+        "list | None",
+        "Callable[[str], None]",
+        "Callable[[str], None]",
         "threading.Event",
     ],
     Awaitable["tuple[str, list]"],
@@ -81,7 +88,7 @@ ConsoleCallable = Callable[
 
 @dataclass
 class ReviewOptions:
-    spec: str                       # git ref or range, user-supplied
+    spec: str  # git ref or range, user-supplied
     spec_markdown: Path | None = None
     runs_root: Path = field(default_factory=_default_runs_root)
     repo_root: Path | None = None
@@ -122,9 +129,7 @@ def run_review(opts: ReviewOptions) -> int:
     if opts.augment:
         from ..augment.pipeline import augment_run_dir  # lazy: anthropic SDK
 
-        cache = None if opts.no_cache else CacheStore(
-            root=opts.cache_dir, prompt_version=PROMPT_VERSION
-        )
+        cache = None if opts.no_cache else CacheStore(root=opts.cache_dir, prompt_version=PROMPT_VERSION)
 
         async def augment_task(rd: Path, publish) -> None:
             await augment_run_dir(
@@ -142,7 +147,10 @@ def run_review(opts: ReviewOptions) -> int:
             )
 
         fold_summary_task = _build_fold_summary_task(
-            client=opts.client, model=opts.model, cache=cache, run_dir=run_dir,
+            client=opts.client,
+            model=opts.model,
+            cache=cache,
+            run_dir=run_dir,
         )
 
         # The console reuses the augment backend — SDK backends stream
@@ -152,7 +160,8 @@ def run_review(opts: ReviewOptions) -> int:
         # the console's client.
         console_client = opts.client or Client(model=f"anthropic:{opts.model}")
         console_task = _build_console_task(
-            client=console_client, run_dir=run_dir,
+            client=console_client,
+            run_dir=run_dir,
         )
     else:
         # When augment is skipped, copy raw.diff to augmented.diff so render
@@ -193,8 +202,9 @@ class ServeResult:
     happened" — cancelled, no postable comments, or the caller wasn't
     in posting mode at all.
     """
+
     comments: list  # list[Comment] — kept loose to avoid an import cycle
-    clean: bool     # True iff the viewer signalled Done within the timeout
+    clean: bool  # True iff the viewer signalled Done within the timeout
     posted: PostResult | None = None
 
 
@@ -302,7 +312,10 @@ def serve_review(
 
 
 def _build_fold_summary_task(
-    *, client: Client | None, model: str, cache: CacheStore | None,
+    *,
+    client: Client | None,
+    model: str,
+    cache: CacheStore | None,
     run_dir: Path,
 ) -> FoldSummaryCallable:
     """Construct the FoldSummaryCallable that ``serve_review`` installs
@@ -335,14 +348,17 @@ def _build_fold_summary_task(
             left_range=left_range,
             qualified_name=qualified_name,
             kind=kind,
-            model=model, cache=cache,
+            model=model,
+            cache=cache,
         )
 
     return task
 
 
 def _build_console_task(
-    *, client: Client, run_dir: Path,
+    *,
+    client: Client,
+    run_dir: Path,
 ) -> ConsoleCallable:
     """Construct the console turn driver ``serve_review`` installs once
     augmentation completes. Captures the LLM backend + run_dir so the
@@ -360,8 +376,13 @@ def _build_console_task(
         selection: Any = None,
     ) -> tuple[str, list]:
         return await stream_console_turn(
-            client, run_dir=run_dir, question=question, history=history,
-            on_delta=on_delta, on_tool=on_tool, cancel=cancel,
+            client,
+            run_dir=run_dir,
+            question=question,
+            history=history,
+            on_delta=on_delta,
+            on_tool=on_tool,
+            cancel=cancel,
             selection=selection,
         )
 
@@ -377,7 +398,8 @@ def _load_viewer_json(run_dir: Path) -> dict:
     head_dir = run_dir / "head"
     base_dir = run_dir / "base"
     return build_viewer_json(
-        diff, meta,
+        diff,
+        meta,
         head_dir=head_dir if head_dir.exists() else None,
         base_dir=base_dir if base_dir.exists() else None,
     )

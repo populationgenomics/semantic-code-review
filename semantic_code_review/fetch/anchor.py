@@ -36,7 +36,11 @@ from typing import Literal
 from .. import git_ops
 
 AnchorStatus = Literal[
-    "anchored", "shifted", "orphaned", "file_gone", "commit_unavailable",
+    "anchored",
+    "shifted",
+    "orphaned",
+    "file_gone",
+    "commit_unavailable",
 ]
 
 
@@ -71,12 +75,14 @@ def _parse_hunk_headers(diff: str) -> list[_HunkHeader]:
         if not m:
             continue
         os, oc, ns, nc = m.groups()
-        out.append(_HunkHeader(
-            old_start=int(os),
-            old_count=int(oc) if oc is not None else 1,
-            new_start=int(ns),
-            new_count=int(nc) if nc is not None else 1,
-        ))
+        out.append(
+            _HunkHeader(
+                old_start=int(os),
+                old_count=int(oc) if oc is not None else 1,
+                new_start=int(ns),
+                new_count=int(nc) if nc is not None else 1,
+            )
+        )
     return out
 
 
@@ -158,12 +164,16 @@ class _PathDiff:
     versa. A successful diff with no hunks is just an empty list — the
     file is unchanged between the two commits.
     """
+
     hunks: list[_HunkHeader] | None
     sentinel: AnchorStatus | None
 
 
 def load_path_diff(
-    repo_git: Path, commit_id: str, head_sha: str, path: str,
+    repo_git: Path,
+    commit_id: str,
+    head_sha: str,
+    path: str,
 ) -> _PathDiff:
     """Run ``git diff`` for one ``(commit_id, path)`` and return parsed
     hunks (or the sentinel that explains why we can't).
@@ -179,8 +189,12 @@ def load_path_diff(
         return _PathDiff(None, "file_gone")
     rc, diff_out, _ = git_ops.git_capture(
         repo_git,
-        "diff", "--unified=0", "--no-color",
-        f"{commit_id}..{head_sha}", "--", path,
+        "diff",
+        "--unified=0",
+        "--no-color",
+        f"{commit_id}..{head_sha}",
+        "--",
+        path,
     )
     if rc != 0:
         # Both endpoints exist locally but the diff still failed — treat
