@@ -331,6 +331,9 @@ async def test_claude_freeform_passes_effort(claude_model: ClaudeCLIModel, monke
 
 async def test_claude_freeform_effort_omitted_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
     """console_effort=None drops the flag entirely (CLI default depth)."""
+    import semantic_code_review.backends.claude_cli as mod
+
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/true")
     model = ClaudeCLIModel(model="claude-opus-4-7", console_effort=None)
     proc = FakeProc(claude_envelope("answer", use_structured_output=False))
     calls = install_fake_subproc(monkeypatch, [proc])

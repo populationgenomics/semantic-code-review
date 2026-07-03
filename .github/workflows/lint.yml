@@ -41,5 +41,7 @@ jobs:
           node-version: "20"
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm run typecheck
+      # `build` = typecheck + esbuild bundle; the bundle is required because
+      # tests/js/viewer.test.ts loads the built viewer.js.
+      - run: npm run build
       - run: npm run test:js
