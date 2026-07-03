@@ -15,7 +15,7 @@ import logging
 import sys
 import threading
 import webbrowser
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -40,7 +40,7 @@ log = logging.getLogger(__name__)
 #: the pipeline can stream overview / per-hunk events to the page.
 AugmentCallable = Callable[
     [Path, Callable[[str, dict], None]],
-    Awaitable[None],
+    Coroutine[Any, Any, None],
 ]
 
 
@@ -62,7 +62,7 @@ FoldSummaryCallable = Callable[
         "str | None",
         "str | None",
     ],
-    Awaitable[dict],
+    Coroutine[Any, Any, dict],
 ]
 
 
@@ -82,7 +82,7 @@ ConsoleCallable = Callable[
         "Callable[[str], None]",
         "threading.Event",
     ],
-    Awaitable["tuple[str, list]"],
+    Coroutine[Any, Any, "tuple[str, list]"],
 ]
 
 
@@ -131,7 +131,7 @@ def run_review(opts: ReviewOptions) -> int:
 
         cache = None if opts.no_cache else CacheStore(root=opts.cache_dir, prompt_version=PROMPT_VERSION)
 
-        async def augment_task(rd: Path, publish: Callable[..., None]) -> None:
+        async def _run_augment(rd: Path, publish: Callable[..., None]) -> None:
             await augment_run_dir(
                 rd,
                 model=opts.model,
@@ -145,6 +145,8 @@ def run_review(opts: ReviewOptions) -> int:
                 show_progress=False,
                 on_event=publish,
             )
+
+        augment_task = _run_augment
 
         fold_summary_task = _build_fold_summary_task(
             client=opts.client,

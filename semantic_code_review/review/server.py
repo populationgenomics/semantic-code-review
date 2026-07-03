@@ -19,7 +19,7 @@ import os
 import queue
 import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -320,7 +320,7 @@ class _BufferedEvent:
 #: the server stays diff-source-agnostic. Stored as ``Any`` here to
 #: avoid pulling the augment-side schemas into the stdlib-only server
 #: module — the actual signature is in `review/runner.py`.
-FoldSummariser = Callable[..., Awaitable[str]]
+FoldSummariser = Callable[..., Coroutine[Any, Any, dict]]
 
 
 #: Signature of the streaming console turn driver wired by
@@ -336,7 +336,7 @@ FoldSummariser = Callable[..., Awaitable[str]]
 #: never inspects it. Stored as ``Any`` to keep the pydantic-ai message
 #: types out of this stdlib-only module — the concrete signature lives
 #: in ``augment/console.py``.
-ConsoleAsker = Callable[..., Awaitable[Any]]
+ConsoleAsker = Callable[..., Coroutine[Any, Any, Any]]
 
 
 #: Signature of the post callback accepted by ``serve_review`` when the
@@ -648,7 +648,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": "context must be 'right', 'left', or 'both'"})
             return
         try:
-            file_idx = int(payload.get("file_idx"))
+            # A missing/None file_idx raises TypeError, caught just below.
+            file_idx = int(payload.get("file_idx"))  # pyright: ignore[reportArgumentType]
         except (TypeError, ValueError):
             self._json(400, {"error": "file_idx must be an integer"})
             return

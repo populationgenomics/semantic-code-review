@@ -57,7 +57,7 @@ async def run_pass(
     meta: PassMeta,
     *,
     client: Client,
-    agent: Agent,
+    agent: Agent[Any, Any],
     user_content: Any,
     system: str,
     model: str,
@@ -119,6 +119,8 @@ async def run_pass(
                 return None
             raise
         run_result = agent_run.result
+
+    assert run_result is not None  # the agent run completed without an early return
 
     if trace_path is not None:
         write_pydantic_ai_trace(

@@ -214,7 +214,7 @@ def build_hunk_annotations(parsed: ParsedHunk, submit_args: dict[str, Any]) -> H
         summary = (fd.get("summary") or "").strip()
         if not summary:
             continue
-        fold_descriptions.append(FoldDescription(new_start=start, new_count=count, summary=summary))
+        fold_descriptions.append(FoldDescription(right_start=start, right_end=end, summary=summary))
 
     line_notes = [
         LineNote(**ln) for ln in submit_args.get("line_notes") or [] if _line_in_hunk(int(ln["line"]), parsed)

@@ -127,7 +127,7 @@ def serve(repo_tools: RepoTools, stdin: Any = None, stdout: Any = None) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("--head-worktree", required=True, type=Path)
     parser.add_argument("--repo-git", required=True, type=Path)
     parser.add_argument("--base-sha", default="")

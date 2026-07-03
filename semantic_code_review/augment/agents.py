@@ -91,4 +91,5 @@ class Client:
         if isinstance(self.model, Model):
             close = getattr(self.model, "aclose", None)
             if callable(close):
-                await close()
+                # Dynamic probe: getattr erases the type, so pyright can't see the coroutine.
+                await close()  # pyright: ignore[reportGeneralTypeIssues]

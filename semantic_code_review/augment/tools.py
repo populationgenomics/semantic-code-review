@@ -25,7 +25,7 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pydantic_ai import RunContext
 from pydantic_ai.tools import Tool
@@ -469,6 +469,7 @@ def mcp_dispatch(repo_tools: RepoTools, name: str, args: dict[str, Any]) -> str:
     if not callable(method) or not getattr(method, _TOOL_EXPORT_ATTR, False):
         return f"error: unknown tool {name!r}"
     try:
-        return method(**args)
+        # Exported tool methods return str; getattr erases that to object.
+        return cast("str", method(**args))
     except TypeError as e:
         return f"error: bad args for {name}: {e}"
