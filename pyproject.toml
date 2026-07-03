@@ -48,6 +48,14 @@ dev = [
   "pytest-asyncio==1.3.0",
 ]
 
+# Dev tooling (PEP 735 groups): not shipped, so it lives here rather than in
+# project.optional-dependencies. lint carries the whole static-check gate that
+# `pre-commit run --all-files` drives; pyright resolves against the project's
+# own deps (installed by `uv sync --group lint`).
+[dependency-groups]
+test = ["pytest==9.0.3", "pytest-asyncio==1.3.0"]
+lint = ["ruff", "pyright", "pre-commit"]
+
 [project.urls]
 Homepage = "https://github.com/populationgenomics/semantic-code-review"
 Repository = "https://github.com/populationgenomics/semantic-code-review"
@@ -62,6 +70,67 @@ include = ["semantic_code_review*"]
 
 [tool.setuptools.package-data]
 "semantic_code_review.viewer" = ["assets/*", "assets/vendor/*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "A", "B", "C", "D", "E", "F", "G", "I", "N", "Q", "W",
+    "ANN", "ARG", "BLE", "COM", "DTZ", "ERA", "EXE", "ICN", "ISC",
+    "PGH", "PIE", "PL", "PT", "PYI", "RET", "RSE", "RUF",
+    "SIM", "SLF", "T10", "TID", "UP", "YTT",
+]
+
+fixable = ["ALL"]
+
+ignore = [
+    "COM812",  # trailing comma conflicts with the formatter
+    "ISC001",  # implicit-string-concat conflicts with the formatter
+    # D1xx — docstring *presence*. Format is enforced when a docstring exists,
+    # but one isn't required on every public symbol.
+    "D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107",
+    # D205/D401 are docstring *prose* rules (summary line, imperative mood) —
+    # not worth churning ~70 existing docstrings; format rules that autofix stay on.
+    "D205", "D401",
+    # Typer's `x: T = typer.Option(...)` / `typer.Argument(...)` is the
+    # framework's declaration idiom, not an accidental mutable default.
+    "B008",
+    # Complexity metrics fire on genuinely sprawling code but also on everyday
+    # parsers/dispatchers; not churning structure in this pass.
+    "C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR2004",
+    # Interface-conformance signatures (backend/handler protocols) carry args
+    # a given implementation doesn't use.
+    "ARG001", "ARG002",
+    # Renaming exception classes / params that shadow builtins is an API change,
+    # not a mechanical cleanup.
+    "N818", "A002",
+    # A few deliberate module-level singletons are mutated through globals.
+    "PLW0603",
+    # DEFERRED (tracked with the module-import refactor): TID252 bans relative
+    # imports and ANN401 bans `Any` — both are large, review-gated changes, and
+    # TID252 overlaps the "import modules, not symbols" refactor in docs/style.
+    "TID252", "ANN401",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # re-exports: names imported for the package surface
+"tests/**" = [
+    "ANN",    # type annotations not required on tests
+    "D",      # docstrings not required on tests
+    "SLF001", # tests legitimately reach into module privates
+    "PT018",  # multi-part asserts are fine in tests
+    "BLE001", # best-effort helpers in tests: log/continue
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.pyright]
+pythonVersion = "3.11"
+include = ["semantic_code_review"]
+typeCheckingMode = "standard"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
