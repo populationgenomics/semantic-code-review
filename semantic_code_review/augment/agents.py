@@ -6,9 +6,9 @@ the per-run `RepoTools` is supplied via `deps=` to `Agent.run`.
 
 `model` accepts either a fully-qualified pydantic-ai model id string
 (e.g. `anthropic:claude-opus-4-7` or `google-vertex:gemini-2.5-pro`)
-*or* a `pydantic_ai.models.Model` instance — the CLI drivers in
-`backends/claude_cli.py` and `backends/gemini_cli.py` are Model
-subclasses that wrap the `claude -p` / `gemini -p` clients.
+*or* a `pydantic_ai.models.Model` instance — the CLI driver in
+`backends/claude_cli.py` is a Model subclass that wraps the
+`claude -p` client.
 `cli._select_client` is the single place that decides which form an
 unqualified model name maps to.
 """

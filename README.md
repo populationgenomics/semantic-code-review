@@ -96,19 +96,6 @@ Both Gemini backends are opt-in only — never picked by `auto`.
   tool use, Gemini's implicit prompt caching surfaces as
   `cache_read_input_tokens` in our usage stats. Best Gemini path
   for production work.
-- `--backend=gemini-cli` shells out to `gemini -p` (Google's CLI,
-  install via `npm install -g @google/gemini-cli`) with our MCP
-  server injected via a temp system-settings file
-  (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`) and
-  `--allowed-mcp-server-names scr` to suppress whatever else the
-  user has configured. The CLI doesn't expose
-  `--json-schema`/`responseSchema`, so we embed the schema in the
-  prompt and validate client-side; one retry on validation failure
-  with the error fed back, then we fail the call. Auth: either
-  `GEMINI_API_KEY` / `GOOGLE_API_KEY` in the environment, or a
-  previously-completed interactive `gemini` OAuth login (creds at
-  `~/.gemini/`). Useful when you want to drive Gemini through the
-  same subprocess shape as `claude -p`.
 
 ### Trying it without paid API access
 
@@ -118,8 +105,7 @@ env var, pass `--backend <name>`:
 
 | `--backend` | Auth | Notes |
 |---|---|---|
-| `gemini-cli` | `gemini auth login` (Google account, no API key) | Generous daily quota; needs the `gemini` CLI on `PATH` (`npm i -g @google/gemini-cli`). |
-| `gemini-api` | `GEMINI_API_KEY` from [aistudio.google.com](https://aistudio.google.com) | Free tier with rate limits; faster than `gemini-cli` because we hit the SDK directly. |
+| `gemini-api` | `GEMINI_API_KEY` from [aistudio.google.com](https://aistudio.google.com) | Free tier with rate limits; hits the Google SDK directly. |
 | `groq` | `GROQ_API_KEY` from [console.groq.com](https://console.groq.com) | Free tier, very fast inference, Llama 3.3 70B by default. |
 | `github` | `GITHUB_TOKEN` (any GitHub account) | Free quota across multiple model families; default is `openai/gpt-4o-mini`. |
 | `cerebras` | `CEREBRAS_API_KEY` from [cloud.cerebras.ai](https://cloud.cerebras.ai) | Free tier; pass `--model` (catalogue rotates). |

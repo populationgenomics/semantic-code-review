@@ -6,7 +6,7 @@ pipeline. `resolve_auto(config=...)` picks a backend when the user
 did not pass `--backend`.
 
 The registry maps `BackendType` to a `Backend` subclass. Builtins
-(`claude-api`, `claude-cli`, `gemini-api`, `gemini-cli`, plus the
+(`claude-api`, `claude-cli`, `gemini-api`, plus the
 openai-compat presets) auto-register at import time; user-defined
 `[backends.<name>]` entries reuse the same dispatch by virtue of
 sharing a `BackendType`.
@@ -16,11 +16,10 @@ from __future__ import annotations
 
 import typer
 
-from ..config import BackendDef, BackendType, ScrConfig
+from ..config import BackendType, ScrConfig
 from .anthropic_sdk import AnthropicSdkBackend
 from .base import Backend
 from .claude_cli import ClaudeCliBackend
-from .gemini_cli import GeminiCliBackend
 from .google_sdk import GoogleSdkBackend
 from .openai_compat import OpenAICompatBackend
 
@@ -29,7 +28,6 @@ _HANDLERS: dict[BackendType, type[Backend]] = {
     BackendType.ANTHROPIC_SDK: AnthropicSdkBackend,
     BackendType.CLAUDE_CLI: ClaudeCliBackend,
     BackendType.GOOGLE_SDK: GoogleSdkBackend,
-    BackendType.GEMINI_CLI: GeminiCliBackend,
     BackendType.OPENAI_COMPAT: OpenAICompatBackend,
 }
 
@@ -77,9 +75,8 @@ def resolve_auto(*, config: ScrConfig) -> str:
         raise typer.BadParameter(
             "No Anthropic credentials available: set ANTHROPIC_API_KEY "
             "(or ANTHROPIC_API_TOKEN in .env), install the `claude` CLI "
-            "for subscription-based fallback, or pass --backend=gemini-cli "
-            "(CLI subprocess) / --backend=gemini-api (Google SDK) to opt "
-            "into a Gemini backend."
+            "for subscription-based fallback, or pass --backend=gemini-api "
+            "(Google SDK) to opt into a Gemini backend."
         )
     candidates.sort()
     return candidates[0][1]

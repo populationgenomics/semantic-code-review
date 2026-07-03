@@ -147,8 +147,8 @@ instance (for CLI subprocess backends). Constructed by
 
 **CLI driver**
 A concrete `pydantic_ai.Model` subclass we author to wrap a specific
-third-party LLM CLI. Two today: `ClaudeCLIModel` (wraps `claude -p`)
-and `GeminiCLIModel` (wraps `gemini -p`). Each spawns the CLI on every
+third-party LLM CLI. One today: `ClaudeCLIModel` (wraps `claude -p`).
+It spawns the CLI on every
 `request()`, parses its envelope, and returns a synthetic
 `ModelResponse`; the multi-turn tool-call loop runs inside the
 subprocess via MCP, not in pydantic-ai.
