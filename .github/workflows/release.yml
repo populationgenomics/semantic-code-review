@@ -1,102 +1,77 @@
 name: release
 
-# Triggers on fork-side tag push (cpg-vX.Y.Z). Builds the wheel +
-# sdist (with the TypeScript annotations module compiled into the
-# package) and uploads them to CPG's Artifact Registry Python
-# repository, where end users can install via:
+# Publishes to PyPI via Trusted Publishing (OIDC) — no API token, no cloud
+# credentials. The PyPI project's trusted publisher must reference this repo,
+# this workflow filename (release.yml), and the `pypi` environment. Triggered
+# on a published GitHub Release; the tag (vX.Y.Z) must match pyproject's
+# version (guarded below).
 #
-#   curl -fsSL https://raw.githubusercontent.com/populationgenomics/semantic-code-review/<tag>/install.sh | bash
-#
-# Why cpg-v* and not v*: upstream owns the v* tag namespace. Mirroring
-# upstream tags onto fork-side merge commits caused the same tag name
-# to diverge between remotes and made `git fetch --tags` refuse the
-# conflict. The fork keeps its own cpg-v* namespace, anchored at the
-# merge commit so this workflow file is present at checkout.
-#
-# Auth: Workload Identity Federation. No long-lived SA keys live in
-# GitHub secrets; the workflow exchanges its OIDC token for a GCP
-# access token at run time.
+# The viewer ships a compiled TypeScript bundle (boot.ts -> viewer.js) as
+# package data, so the build job runs `npm run build` before `uv build`. A
+# wheel install therefore needs no Node at runtime.
 
 on:
-  push:
-    tags: ["cpg-v*"]
-  workflow_dispatch:
-
-permissions:
-  contents: write   # required by softprops/action-gh-release to attach dist/* to the GitHub release
-  id-token: write   # required by google-github-actions/auth for OIDC
-
-env:
-  AR_LOCATION: australia-southeast1
-  AR_PROJECT: aasgard-dev
-  AR_REPO: scr-python
-  WIF_PROVIDER: projects/244378007039/locations/global/workloadIdentityPools/github-actions/providers/github
-  WIF_SERVICE_ACCOUNT: scr-publisher@aasgard-dev.iam.gserviceaccount.com
+  release:
+    types: [published]
 
 jobs:
-  build-and-publish:
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v8.2.0
         with:
-          python-version: "3.11"
+          enable-cache: true
 
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: npm
 
-      - name: Verify tag matches pyproject version
+      # Publishing a version is irreversible, so fail loudly if the release tag
+      # (vX.Y.Z) doesn't match the version in pyproject.toml.
+      - name: Check tag matches package version
         run: |
-          # Strip the cpg-v prefix; we re-publish upstream's semver
-          # under the fork tag namespace, so the trailing X.Y.Z must
-          # equal pyproject.toml's project.version.
-          tag="${GITHUB_REF_NAME#cpg-v}"
-          pkg=$(python - <<'PY'
-          import tomllib, pathlib
-          print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])
-          PY
-          )
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(uv version --short)"
           if [ "$tag" != "$pkg" ]; then
-              echo "::error::tag $GITHUB_REF_NAME does not match pyproject version $pkg"
-              exit 1
+            echo "::error::release tag '$GITHUB_REF_NAME' does not match pyproject version '$pkg'"
+            exit 1
           fi
 
-      - name: Compile TS sources → bundled viewer.js
+      # Upstream 0.17.0 switched the viewer toolchain to an esbuild bundle
+      # (boot.ts -> viewer.js) pulling every TS module under assets/. The wheel
+      # ships the built bundle as package_data; the test confirms it landed
+      # before we hand off to the build backend.
+      - name: Compile TypeScript viewer bundle
         run: |
-          # Upstream 0.17.0 switched the viewer toolchain from a single
-          # annotations.ts emit to an esbuild bundle (boot.ts → viewer.js)
-          # that pulls every TS module under assets/. The wheel ships the
-          # built bundle as package_data; the post-build check confirms
-          # the bundle landed before we hand off to `python -m build`.
           npm ci --ignore-scripts
           npm run build
           test -f semantic_code_review/viewer/assets/viewer.js
 
       - name: Build wheel + sdist
         run: |
-          python -m pip install --upgrade build
-          python -m build
+          uv build
           ls -lh dist/
 
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+      - uses: actions/upload-artifact@v4
         with:
-          workload_identity_provider: ${{ env.WIF_PROVIDER }}
-          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+          name: dist
+          path: dist/
 
-      - name: Publish to Artifact Registry
-        run: |
-          python -m pip install twine keyring keyrings.google-artifactregistry-auth
-          python -m twine upload \
-              --repository-url https://${AR_LOCATION}-python.pkg.dev/${AR_PROJECT}/${AR_REPO}/ \
-              --non-interactive \
-              dist/*
-
-      - name: Attach artifacts to the GitHub release
-        uses: softprops/action-gh-release@v2
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # The trusted-publisher and OIDC scope both key off this environment name.
+    environment: pypi
+    permissions:
+      id-token: write # mint the OIDC token PyPI exchanges for an upload token
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          files: dist/*
-          generate_release_notes: true
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
