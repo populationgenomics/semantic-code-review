@@ -141,8 +141,16 @@ viewer bundle, so no Node is needed at runtime:
 ```
 uv tool install semantic-code-review
 # or: pipx install semantic-code-review   /   pip install semantic-code-review
+scr init                                  # interactive first-run setup
 scr review HEAD~1..HEAD --spec SPEC.md
 ```
+
+`scr init` is the quickest way to get configured: it detects which
+backends are usable in your environment, lets you pick a default, writes
+the (non-secret) choice to your config, and — for backends that need a
+key — offers to set an env var, run a command to fetch the key
+(`api_key_command`), or write it to a gitignored `.env`. It never puts a
+key in the config file.
 
 From a source checkout (for development, or to pin the exact hashed
 dependency set), build the viewer bundle yourself:
@@ -156,6 +164,8 @@ scr review HEAD~1..HEAD --spec SPEC.md
 
 Subcommands:
 
+- `scr init` — interactive setup: detect usable backends, pick a
+  default + model, guide credential setup, write the config.
 - `scr review <ref-or-range> [--spec SPEC.md]` — local git diff,
   runs LLM augment, opens viewer, prints reviewer comments as
   markdown when you click Done.

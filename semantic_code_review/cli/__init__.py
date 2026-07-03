@@ -55,6 +55,7 @@ from . import (  # noqa: E402  # side-effect imports must follow the `app` defin
     augment,
     config_cmd,
     fetch,
+    init_cmd,
     lint,
     pr,
     review,
