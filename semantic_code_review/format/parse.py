@@ -129,7 +129,7 @@ def _directives(annotation_lines: list[tuple[int, str]]) -> list[_Directive]:
 
 
 def _is_annotation(line: str) -> bool:
-    return line.startswith("#scr:") or line.startswith("#scr>")
+    return line.startswith(("#scr:", "#scr>"))
 
 
 def _is_body_line(line: str) -> bool:
@@ -471,7 +471,7 @@ def _scan_hunk(lines: list[str], i: int) -> tuple[ParsedHunk, list[_Directive], 
     new_consumed = 0
     while i < n:
         line = lines[i]
-        if line.startswith("@@ ") or line.startswith("diff --git "):
+        if line.startswith(("@@ ", "diff --git ")):
             break
         if _is_annotation(line):
             break
@@ -509,7 +509,7 @@ def _scan_hunk(lines: list[str], i: int) -> tuple[ParsedHunk, list[_Directive], 
     trailer_annos: list[tuple[int, str]] = []
     while i < n:
         line = lines[i]
-        if line.startswith("@@ ") or line.startswith("diff --git "):
+        if line.startswith(("@@ ", "diff --git ")):
             break
         if _is_annotation(line):
             trailer_annos.append((i + 1, line))

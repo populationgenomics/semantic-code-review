@@ -13,6 +13,7 @@ constructs the driver; the driver (`ClaudeCLIModel`) is the
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -162,10 +163,8 @@ class ClaudeCLIModel(SubprocessModel):
 
     def _invalidate_mcp_artifacts(self) -> None:
         if self._mcp_config_path is not None:
-            try:
+            with contextlib.suppress(OSError):
                 self._mcp_config_path.unlink()
-            except OSError:
-                pass
             self._mcp_config_path = None
 
     # ---- prompt + argv ---------------------------------------------------

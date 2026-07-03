@@ -36,6 +36,7 @@ log = logging.getLogger(__name__)
 # to live in the build dir; everything else (CSS, vendor, index.html)
 # is always read from the in-tree assets/.
 
+import contextlib
 import os
 
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "viewer" / "assets"
@@ -551,10 +552,8 @@ class _Handler(BaseHTTPRequestHandler):
                     return
         finally:
             with self.ctx.state_lock:
-                try:
+                with contextlib.suppress(ValueError):
                     self.ctx.subscribers.remove(q)
-                except ValueError:
-                    pass
 
     def _write_event(self, ev: _BufferedEvent) -> bool:
         body = json.dumps(ev.payload, ensure_ascii=False)

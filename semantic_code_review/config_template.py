@@ -96,12 +96,11 @@ def render_backend_template(name: str) -> str:
 
 def _lead_comment(bdef: BackendDef | None) -> list[str]:
     if bdef is None:
-        lines = _wrap_comment(
+        return _wrap_comment(
             "Generic OpenAI-compatible endpoint scaffold. Rename the "
             "section heading, then fill in base_url, an auth field "
             "(api_key_env or api_key_command), and a model id."
         )
-        return lines
     lines: list[str] = []
     if bdef.description:
         lines.extend(_wrap_comment(bdef.description))

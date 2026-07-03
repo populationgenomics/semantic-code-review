@@ -126,7 +126,7 @@ def _distribute_notes_to_hunks(
     Returns a new AnnotatedDiff; the input is not mutated.
     """
     by_path = {fp.path: fp for fp in diff.files}
-    updated_files = list(diff.files)
+    list(diff.files)
     # Per-hunk new_notes accumulators keyed by (file_idx, hunk_idx).
     appends: dict[tuple[int, int], list[LineNote]] = {}
 

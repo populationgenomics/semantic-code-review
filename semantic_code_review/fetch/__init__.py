@@ -38,24 +38,24 @@ from .local import (
 from .run_source import RunSpec, materialize_run_metadata
 
 __all__ = [
-    # Shared shape
-    "RunSpec",
-    "materialize_run_metadata",
+    # Local-diff source
+    "EmptyDiff",
     # GitHub-PR source
     "GhFetchError",
     "GhMissingError",
     "GithubResolved",
+    "LocalDiffError",
+    "LocalResolved",
     "PRRef",
+    # Shared shape
+    "RunSpec",
     "materialize_github_pr_run",
+    "materialize_local_diff_run",
+    "materialize_run_metadata",
     "parse_pr_url",
     "preflight_gh",
     "resolve_github_pr",
-    "setup_github_worktrees",
-    # Local-diff source
-    "EmptyDiff",
-    "LocalDiffError",
-    "LocalResolved",
-    "materialize_local_diff_run",
     "resolve_local_diff",
+    "setup_github_worktrees",
     "setup_local_worktrees",
 ]

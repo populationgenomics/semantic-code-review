@@ -27,7 +27,7 @@ def _version_callback(value: bool) -> None:
         from importlib.metadata import version
 
         typer.echo(version("semantic-code-review"))
-        raise typer.Exit()
+        raise typer.Exit
 
 
 @app.callback()

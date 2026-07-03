@@ -225,22 +225,22 @@ def test_submit_review_returns_url_and_databaseId(monkeypatch) -> None:
 
 
 def _local(**kw) -> Comment:
-    base = dict(id="local-1", file="a.py", side="new", line=10, body="hi", source="local")
+    base = {"id": "local-1", "file": "a.py", "side": "new", "line": 10, "body": "hi", "source": "local"}
     base.update(kw)
     return Comment(**base)
 
 
 def _ingested(**kw) -> Comment:
-    base = dict(
-        id="gh-1",
-        file="a.py",
-        side="new",
-        line=1,
-        body="upstream",
-        source="github",
-        author="alice",
-        node_id="PRRC_parent",
-    )
+    base = {
+        "id": "gh-1",
+        "file": "a.py",
+        "side": "new",
+        "line": 1,
+        "body": "upstream",
+        "source": "github",
+        "author": "alice",
+        "node_id": "PRRC_parent",
+    }
     base.update(kw)
     return Comment(**base)
 

@@ -22,11 +22,12 @@ stream).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import sys
 import time
 from dataclasses import dataclass
-from typing import TextIO
+from typing import Self, TextIO
 
 # ANSI helpers ---------------------------------------------------------------
 
@@ -121,7 +122,7 @@ class ProgressMeter:
 
     # ---- lifecycle -------------------------------------------------------
 
-    async def __aenter__(self) -> ProgressMeter:
+    async def __aenter__(self) -> Self:
         if self.enabled:
             self.stream.write(HIDE_CURSOR)
             self.stream.flush()
@@ -131,10 +132,8 @@ class ProgressMeter:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         if self._task is not None:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
         if self.enabled:
             # One final paint with current state, then advance to the
             # next line so any subsequent stderr writes don't overwrite.

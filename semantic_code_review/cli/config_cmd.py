@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 
@@ -233,10 +234,8 @@ def _edit_inline_prompt(path: Path) -> None:
         else:
             typer.echo(f"scr: cleared [augment].extra_prompt in {path}.")
     finally:
-        try:
+        with contextlib.suppress(OSError):
             tmp_path.unlink()
-        except OSError:
-            pass
 
 
 _CONFIG_TEMPLATE = """\

@@ -11,7 +11,7 @@ def strip_annotations(text: str) -> str:
     """Return `text` with every `#scr:` / `#scr>` line removed."""
     out: list[str] = []
     for line in text.split("\n"):
-        if line.startswith("#scr:") or line.startswith("#scr>"):
+        if line.startswith(("#scr:", "#scr>")):
             continue
         out.append(line)
     result = "\n".join(out)

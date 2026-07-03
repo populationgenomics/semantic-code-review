@@ -395,7 +395,9 @@ def post_review_via_graphql(
                 assert c.in_reply_to_node_id is not None  # narrow for type-checker
                 add_review_comment_reply(review_id, c.in_reply_to_node_id, c.body)
             else:
-                assert c.path is not None and c.line is not None and c.side is not None
+                assert c.path is not None
+                assert c.line is not None
+                assert c.side is not None
                 add_review_thread(review_id, c.path, c.line, c.side, c.body)
         except GhError:
             # _gh_graphql already logged the gh output + variables; add the

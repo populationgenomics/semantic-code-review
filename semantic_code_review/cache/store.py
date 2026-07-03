@@ -7,6 +7,7 @@ yields a cache miss. See plan §3.6.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -82,7 +83,5 @@ class CacheStore:
         for dirpath, _, files in os.walk(self.root, topdown=False):
             for name in files:
                 (Path(dirpath) / name).unlink()
-            try:
+            with contextlib.suppress(OSError):
                 Path(dirpath).rmdir()
-            except OSError:
-                pass

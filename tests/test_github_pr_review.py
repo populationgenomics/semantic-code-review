@@ -35,7 +35,7 @@ def test_map_side_rejects_unknown() -> None:
 
 
 def _comment(**kw) -> Comment:
-    base = dict(id="c1", file="a.py", side="new", line=10, body="hi")
+    base = {"id": "c1", "file": "a.py", "side": "new", "line": 10, "body": "hi"}
     base.update(kw)
     return Comment(**base)
 
