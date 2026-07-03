@@ -29,7 +29,7 @@ Optional:
 Install:
 
 ```
-/plugin marketplace add folded/semantic-code-review
+/plugin marketplace add populationgenomics/semantic-code-review
 /plugin install scr
 ```
 
@@ -142,6 +142,18 @@ Gemini Pro replacement.
 
 ## Usage as a standalone CLI
 
+Install from PyPI. The published wheel already contains the compiled
+viewer bundle, so no Node is needed at runtime:
+
+```
+uv tool install semantic-code-review
+# or: pipx install semantic-code-review   /   pip install semantic-code-review
+scr review HEAD~1..HEAD --spec SPEC.md
+```
+
+From a source checkout (for development, or to pin the exact hashed
+dependency set), build the viewer bundle yourself:
+
 ```
 pip install --require-hashes -r requirements.lock
 pip install --no-deps --no-build-isolation .
@@ -212,6 +224,26 @@ npm run test:js         # vitest
 `tests/conftest.py` autobuilds the TypeScript module if it's missing
 when pytest starts, so `python -m pytest` Just Works on a fresh
 checkout (provided Node is available).
+
+## Releasing
+
+Releases publish to [PyPI](https://pypi.org/project/semantic-code-review/)
+from GitHub Actions via Trusted Publishing (OIDC) — no API tokens, no
+cloud credentials. To cut a release:
+
+1. Bump `version` in `pyproject.toml` (and `.claude-plugin/plugin.json`
+   to match).
+2. Commit, then publish a GitHub Release whose tag is `vX.Y.Z` matching
+   that version. `.github/workflows/release.yml` fires on the published
+   release: it compiles the viewer bundle, builds the wheel + sdist with
+   `uv build`, and uploads to PyPI. A guard fails the run loudly if the
+   tag and `pyproject.toml` version disagree.
+
+One-time setup (recorded here for a fresh fork): register a
+[Trusted Publisher](https://docs.pypi.org/trusted-publishers/) on the
+PyPI project pointing at this repository, workflow filename
+`release.yml`, and environment `pypi`; and create a `pypi` environment
+in the repo's GitHub settings.
 
 ## What's where
 

@@ -60,11 +60,10 @@ scr review <the args you inferred>
 
 ### How `scr` ends up on PATH
 
-`scr` may be installed three different ways; the slash command works with all of them as long as it's on PATH:
+`scr` may be installed two ways; the slash command works with both as long as it's on PATH:
 
-- **Claude Code plugin** (`/plugin install scr` from `folded/semantic-code-review`) — ships a `bin/scr` bootstrap wrapper; the plugin runner prepends it to PATH when `/scr:review` runs.
-- **CPG install.sh** (`curl …/install.sh | bash` from `populationgenomics/semantic-code-review`) — drops a `~/.local/bin/scr` wrapper that runs the wheel published to CPG's Artifact Registry.
-- **Direct uv** (`uv tool install semantic-code-review`) — installs the wheel from PyPI/wherever; `scr` lands on PATH wherever uv keeps tool bins.
+- **Claude Code plugin** (`/plugin install scr` from `populationgenomics/semantic-code-review`) — ships a `bin/scr` bootstrap wrapper; the plugin runner prepends it to PATH when `/scr:review` runs.
+- **PyPI** (`uv tool install semantic-code-review`, or `pipx`/`pip`) — installs the published wheel; `scr` lands on PATH wherever uv keeps tool bins.
 
 Don't try to discover or call `scr` via an absolute path — `scr` on PATH is the contract. If `scr review` fails with command-not-found (and only then), surface the install options to the user verbatim; don't guess between them.
 
