@@ -1,6 +1,6 @@
 {
   "name": "scr",
-  "version": "0.24.1",
+  "version": "0.24.2",
   "description": "LLM-augmented local-diff reviewer. /scr:review opens an interactive side-by-side viewer with fold annotations, semantic-group sidebar, and round-trips inline comments back into the session.",
   "author": {
     "name": "Toby Sargeant",
