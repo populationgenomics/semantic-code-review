@@ -117,10 +117,17 @@ ignore = [
     "SIM108", "SIM117",
     # En-dashes and similar typography are intentional in user-facing strings.
     "RUF001", "RUF002", "RUF003",
-    "UP038",  # deprecated rule; `isinstance(x, (A, B))` stays
     # False-positives on prose/section comments that look code-like
     # (`# scope == "repo"`, sphinx `#:` type comments, section headers).
     "ERA001",
+    # scr uses deliberate lazy/function-level imports to keep CLI startup light
+    # and keep heavy deps (pydantic_ai, anthropic) out of the --no-augment path.
+    "PLC0415",
+    # `class X(str, Enum)` vs StrEnum differ in str()/serialization output;
+    # not changing enum bases mechanically.
+    "UP042",
+    # Unpacked names document the tuple shape even when one half is unused.
+    "RUF059",
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -136,6 +143,7 @@ ignore = [
     "N802",   # test names may echo camelCase API fields (databaseId, …)
     "DTZ001", # naive datetimes are fine in fixture data
     "SIM115", # tests may open files without a context manager
+    "RUF043", # regex metacharacters in pytest.raises match= are fine in tests
 ]
 
 [tool.ruff.lint.pydocstyle]

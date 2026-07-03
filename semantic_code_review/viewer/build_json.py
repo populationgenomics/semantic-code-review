@@ -527,7 +527,7 @@ def _lang_from_path(path: str) -> str:
 
 def _number_from_url(url: str) -> str:
     if "/pull/" in url:
-        return url.rsplit("/pull/", 1)[1].split("/")[0]
+        return url.rsplit("/pull/", 1)[1].split("/", maxsplit=1)[0]
     return ""
 
 

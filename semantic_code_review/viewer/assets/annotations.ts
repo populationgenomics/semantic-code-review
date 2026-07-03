@@ -545,4 +545,3 @@ export const Annotations = {
 };
 
 export type { AnnotationHandle, AttachOptions };
-

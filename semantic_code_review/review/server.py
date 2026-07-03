@@ -444,7 +444,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     # --- routes ---------------------------------------------------------
 
-    def do_GET(self) -> None:  # noqa: N802 — stdlib naming
+    def do_GET(self) -> None:
         self._touch()
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
@@ -568,7 +568,7 @@ class _Handler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         self._touch()
         path = self.path.split("?", 1)[0]
         if path == "/comments":
@@ -893,7 +893,7 @@ class _Handler(BaseHTTPRequestHandler):
         _ctx_publish(self.ctx, "posted", response)
         self._json(200, response)
 
-    def do_DELETE(self) -> None:  # noqa: N802
+    def do_DELETE(self) -> None:
         self._touch()
         path = self.path.split("?", 1)[0]
         if path.startswith("/comments/"):
