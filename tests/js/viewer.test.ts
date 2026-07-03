@@ -221,6 +221,14 @@ beforeEach(() => {
   eventSourceInstances.length = 0;
   fetchResponses.length = 0;
   fetchCalls.length = 0;
+  // Reset persisted viewer state between tests. The viewer restores the
+  // focused sidebar pill from localStorage (sidebar.ts) and fold/focus from
+  // location.hash (render.ts _restoreHash) on boot; neither is cleared by
+  // wiping the DOM. Without this, a prior test's focused symbol re-applies on
+  // the next boot — highlighting before the test acts and leaking symbol-hit
+  // spans. node 25's timing masked it; node 20's exposed it.
+  localStorage.clear();
+  window.history.replaceState(null, "", window.location.pathname + window.location.search);
   (globalThis as unknown as { EventSource: typeof EventSource }).EventSource =
     EventSourceStub as unknown as typeof EventSource;
   vi.spyOn(globalThis, "fetch").mockImplementation(((url: string, init?: RequestInit) => {
