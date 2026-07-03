@@ -31,12 +31,12 @@ log = logging.getLogger(__name__)
 
 
 # --- Static asset resolution --------------------------------------------
-# Mirrors the build-dir-aware lookup that render_html.py used to do for
-# viewer.js: a SCR_VIEWER_BUILD_DIR override (set by the bin/scr
-# bootstrap) wins over the in-tree assets/ directory. Falls back to the
-# packaged assets when no override is set. Only viewer.js is expected
-# to live in the build dir; everything else (CSS, vendor, index.html)
-# is always read from the in-tree assets/.
+# Normally every asset is read from the packaged assets/ directory: the
+# viewer.js bundle ships as package_data (built into the wheel by
+# release.yml), so wheel and plugin installs both serve it from there. A
+# SCR_VIEWER_BUILD_DIR override (set by the test harness, which bundles a
+# fresh viewer.js out-of-tree) wins for viewer.js only; everything else
+# (CSS, vendor, index.html) is always read from the in-tree assets/.
 
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "viewer" / "assets"
 

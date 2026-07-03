@@ -134,10 +134,12 @@ ordering. Summarised here so they appear in the same backlog.
     subgrid-style episodes) but costs ~100 MB of browser binary plus CI
     work. Explicitly deferred.
 
-21. **Wheel build with a tsc-via-PEP-517 hook.** Today the bootstrap
-    runs `tsc`. Once wheels are published, a `build_py` hook can bake
-    `annotations.js` into `package_data` so pip-only users don't need
-    Node installed.
+21. **Wheel build with an esbuild-via-PEP-517 hook.** The release
+    workflow already bundles `viewer.js` with `npm run build` before
+    `uv build`, so the published wheel ships it as `package_data` and
+    pip-only users need no Node. A `build_py` hook would fold that step
+    into the build backend itself, so a plain `uv build` (not just the
+    CI job) produces a complete wheel. Deferred.
 
 22. **GC for run artefacts under `~/.cache/scr/runs/`.** When the runs
     root was moved out of the repo, garbage collection was noted as

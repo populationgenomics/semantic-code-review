@@ -2,7 +2,7 @@
   "name": "semantic-code-review-frontend",
   "version": "0.4.0",
   "private": true,
-  "description": "Frontend assets for the scr diff viewer. Compiled to viewer/assets/annotations.js and inlined into the HTML by render_html.py.",
+  "description": "Frontend assets for the scr diff viewer. Bundled by esbuild (boot.ts -> viewer/assets/viewer.js) and served as a static asset by review/server.py.",
   "scripts": {
     "build": "npm run typecheck && npm run bundle",
     "bundle": "esbuild semantic_code_review/viewer/assets/boot.ts --bundle --format=iife --target=es2020 --outfile=semantic_code_review/viewer/assets/viewer.js",
