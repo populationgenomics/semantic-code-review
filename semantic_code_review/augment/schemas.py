@@ -193,7 +193,6 @@ class SkippedOverview(BaseModel):
     the viewer can render "no overview was generated" differently from
     "the overview is intentionally empty".
     """
-    pass
 
 
 class PRInfo(BaseModel):
@@ -250,7 +249,8 @@ class ParsedDiff(BaseModel):
 
 class HunkAnnotations(BaseModel):
     """Wire format of `submit_annotations` and the per-hunk annotation
-    block carried on `AnnotatedHunk.ann`."""
+    block carried on `AnnotatedHunk.ann`.
+    """
 
     intent: str = Field(description="1-2 sentences of MOTIVE, not mechanics.")
     segments: list[Segment] = Field(

@@ -31,7 +31,6 @@ from semantic_code_review.config import BackendDef, BackendType
 
 from ._subproc_fakes import FakeProc, claude_envelope, install_fake_subproc
 
-
 # ---------------------------------------------------------------------------
 # Backend adapter
 # ---------------------------------------------------------------------------

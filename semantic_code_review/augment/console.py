@@ -29,8 +29,9 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from pydantic_ai import Agent
 from pydantic_ai.messages import (
@@ -45,7 +46,6 @@ from pydantic_ai.models import Model
 from .agents import Client
 from .hunks import overview_to_prompt_json
 from .tools import RepoTools, console_tool_functions
-
 
 log = logging.getLogger(__name__)
 

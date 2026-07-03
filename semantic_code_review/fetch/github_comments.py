@@ -34,7 +34,8 @@ log = logging.getLogger(__name__)
 def _parse_iso8601(s: str) -> float:
     """GitHub timestamps are ISO 8601 with a trailing 'Z'. Convert to
     a Unix epoch float so it lines up with `time.time()` values used
-    by the local comment path."""
+    by the local comment path.
+    """
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
     return _dt.datetime.fromisoformat(s).timestamp()
@@ -53,7 +54,8 @@ def _comment_from_payload(payload: dict[str, Any]) -> Comment | None:
 
     Returns None when the comment is not line-anchored in a way SCR
     can pin (e.g. a multi-line comment that was outdated and lost its
-    `line` even on the original revision)."""
+    `line` even on the original revision).
+    """
     gh_id = payload.get("id")
     path = payload.get("path")
     side = _side_from_github(payload.get("side"))
@@ -204,7 +206,8 @@ def fetch_review_thread_metadata(ref: PRRef) -> dict[int, _ReviewCommentMeta]:
 def fetch_review_thread_resolution(ref: PRRef) -> dict[int, bool]:
     """Resolution flag per ``databaseId``. Thin wrapper over
     :func:`fetch_review_thread_metadata` kept so existing imports keep
-    working — new code should use the richer function."""
+    working — new code should use the richer function.
+    """
     return {dbid: meta.thread_resolved for dbid, meta in fetch_review_thread_metadata(ref).items()}
 
 

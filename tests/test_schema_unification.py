@@ -11,10 +11,9 @@ keys our existing apply functions read.
 from __future__ import annotations
 
 from semantic_code_review.augment.schemas import (
+    SMELL_TAGS_TEXT,
     HunkAnnotations,
     OverviewSubmission,
-    SMELL_TAGS_TEXT,
-    Smell,
 )
 
 

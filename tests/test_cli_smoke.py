@@ -8,7 +8,6 @@ from typer.testing import CliRunner
 
 from semantic_code_review.cli import app
 
-
 FIXTURE = Path(__file__).parent / "fixtures" / "sample.augmented.diff"
 
 

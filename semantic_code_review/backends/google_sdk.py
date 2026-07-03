@@ -19,7 +19,6 @@ import typer
 from ..augment.agents import Client
 from .base import Backend, resolve_api_key
 
-
 _DEFAULT_GEMINI_API_MODEL = "gemini-2.5-pro"
 
 

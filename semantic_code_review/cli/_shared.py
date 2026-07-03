@@ -16,7 +16,6 @@ import typer
 
 from ..config import ConfigError, ScrConfig
 
-
 # Lazily-loaded user/per-repo config. Loading is deferred to the first
 # `get_config()` call so a malformed config doesn't brick commands that
 # never touch it — most importantly `scr config edit`, which is the
@@ -143,10 +142,10 @@ def resolve_extra_review_prompt(cli_path: Path | None) -> str | None:
 
 
 __all__ = [
+    "_reset_config_cache",
     "configure_logging",
     "get_config",
     "load_dotenv",
     "resolve_extra_review_prompt",
     "select_client",
-    "_reset_config_cache",
 ]

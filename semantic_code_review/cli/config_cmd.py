@@ -11,7 +11,6 @@ from .. import git_ops
 from . import app
 from ._shared import get_config
 
-
 config_app = typer.Typer(help="Inspect or edit scr's user/per-repo config.")
 app.add_typer(config_app, name="config")
 
@@ -150,7 +149,8 @@ def _resolve_config_edit_path(scope: str) -> Path:
 
 def _edit_full_config(path: Path, template: str | None) -> None:
     """Open the whole config file in ``$EDITOR``, with the optional
-    backend-template append from the legacy ``--template`` flag."""
+    backend-template append from the legacy ``--template`` flag.
+    """
     import subprocess as _sp
 
     from ..config import BUILTIN_BACKENDS

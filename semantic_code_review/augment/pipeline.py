@@ -9,14 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fnmatch
 import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-import fnmatch
 
 from ..cache.store import CacheStore
 from ..format.emit import emit_augmented_diff
@@ -26,18 +25,24 @@ from ..viewer.build_json import file_fold_spans
 from ..viewer.hunk_layout import build_hunk_viewer_block
 from .agents import Client
 from .hunks import (
-    apply_hunk_annotations, build_hunk_annotations, overview_to_prompt_json,
+    build_hunk_annotations,
+    overview_to_prompt_json,
     run_hunk_pass,
 )
 from .overview import apply_overview_to_diff, run_overview_pass
 from .progress import ProgressMeter
-from .prompts import PROMPT_VERSION
 from .schemas import (
-    AnnotatedDiff, AnnotatedFile, AnnotatedHunk, FileAnnotations, FileRole,
-    HunkAnnotations, Overview, PRInfo, ParsedDiff, lift_file,
+    AnnotatedDiff,
+    AnnotatedFile,
+    AnnotatedHunk,
+    FileAnnotations,
+    FileRole,
+    HunkAnnotations,
+    Overview,
+    PRInfo,
+    lift_file,
 )
 from .tools import RepoTools
-
 
 # Callable signature for streaming progress events. Wired up to the
 # review server's SSE channel by `serve_review`; unset elsewhere
@@ -51,7 +56,7 @@ def _safe_emit(on_event: OnEvent | None, event_type: str, payload: dict[str, Any
         return
     try:
         on_event(event_type, payload)
-    except Exception:  # noqa: BLE001 — pipeline progresses regardless of consumer health
+    except Exception:
         log.exception("on_event consumer raised for %s; continuing", event_type)
 
 

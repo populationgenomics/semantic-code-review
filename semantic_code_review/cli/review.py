@@ -11,7 +11,10 @@ from ..paths import default_runs_root
 from ..review.runner import ReviewOptions, run_review
 from . import app
 from ._shared import (
-    configure_logging, get_config, resolve_extra_review_prompt, select_client,
+    configure_logging,
+    get_config,
+    resolve_extra_review_prompt,
+    select_client,
 )
 
 

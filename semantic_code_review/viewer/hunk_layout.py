@@ -28,7 +28,6 @@ from typing import Any, Literal
 
 from ..augment.schemas import AnnotatedHunk, ParsedHunk, Segment
 
-
 _RowKind = Literal["ctx", "ins", "del", "pair"]
 
 
@@ -344,7 +343,8 @@ def compute_fold_regions(
 
 def _first_side_line(rows: list[_Row], start: int, end: int, side: str) -> int | None:
     """First non-None line number on the named side within the row
-    span. `side` is "right" (post-image) or "left" (pre-image)."""
+    span. `side` is "right" (post-image) or "left" (pre-image).
+    """
     attr = "new_line" if side == "right" else "old_line"
     for i in range(start, end + 1):
         v = getattr(rows[i], attr)

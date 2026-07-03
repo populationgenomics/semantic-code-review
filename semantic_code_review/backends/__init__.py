@@ -23,7 +23,6 @@ from .claude_cli import ClaudeCliBackend
 from .google_sdk import GoogleSdkBackend
 from .openai_compat import OpenAICompatBackend
 
-
 _HANDLERS: dict[BackendType, type[Backend]] = {
     BackendType.ANTHROPIC_SDK: AnthropicSdkBackend,
     BackendType.CLAUDE_CLI: ClaudeCliBackend,

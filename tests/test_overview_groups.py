@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from semantic_code_review.augment.overview import apply_overview_to_diff
 from semantic_code_review.augment.schemas import (
-    AnnotatedDiff, AnnotatedFile, AnnotatedHunk, Overview, ParsedHunk, PRInfo,
+    AnnotatedDiff,
+    AnnotatedFile,
+    AnnotatedHunk,
+    Overview,
+    ParsedHunk,
+    PRInfo,
 )
 from semantic_code_review.viewer.build_json import build_viewer_json
 

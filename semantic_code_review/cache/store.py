@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_ROOT = Path(os.environ.get("SCR_CACHE_DIR", str(Path.home() / ".cache" / "scr" / "v1")))
 
 

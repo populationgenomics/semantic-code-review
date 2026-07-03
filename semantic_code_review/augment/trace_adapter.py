@@ -53,7 +53,6 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-
 #: Cap for the fallback `repr` on unrecognised parts. Long thinking
 #: blocks can be tens of KB; trimming keeps traces inspectable.
 _FALLBACK_REPR_CAP = 5000

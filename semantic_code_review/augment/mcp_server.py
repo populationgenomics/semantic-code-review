@@ -35,7 +35,6 @@ from typing import Any
 
 from .tools import RepoTools, mcp_dispatch, mcp_tool_schemas
 
-
 log = logging.getLogger("scr.mcp_server")
 
 
@@ -110,7 +109,7 @@ def serve(repo_tools: RepoTools, stdin: Any = None, stdout: Any = None) -> None:
             continue
         try:
             response = _handle(req, repo_tools)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log.exception("handler crashed on request %s", req.get("method"))
             response = _make_error(req.get("id"), -32603, f"internal error: {e}")
         if response is not None:

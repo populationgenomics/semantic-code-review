@@ -12,7 +12,6 @@ from semantic_code_review.review import github as gh_rest
 from semantic_code_review.review import github_graphql as gh_gql
 from semantic_code_review.review.comments import Comment
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

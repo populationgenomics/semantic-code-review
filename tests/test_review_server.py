@@ -482,7 +482,8 @@ def test_fold_summary_for_left_context_passes_ranges_through(tmp_path: Path) -> 
 def test_fold_summary_typed_errors_map_to_http_codes(tmp_path: Path) -> None:
     """`FoldSummaryNotReady` → 409; `FoldSummaryFileIndexError` → 404."""
     from semantic_code_review.augment.fold_summary import (
-        FoldSummaryFileIndexError, FoldSummaryNotReady,
+        FoldSummaryFileIndexError,
+        FoldSummaryNotReady,
     )
     from semantic_code_review.review.server import ReviewServer
 

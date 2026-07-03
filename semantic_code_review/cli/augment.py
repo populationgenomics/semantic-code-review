@@ -10,7 +10,10 @@ import typer
 from ..cache.store import CacheStore
 from . import app
 from ._shared import (
-    configure_logging, get_config, resolve_extra_review_prompt, select_client,
+    configure_logging,
+    get_config,
+    resolve_extra_review_prompt,
+    select_client,
 )
 
 

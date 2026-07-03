@@ -22,11 +22,12 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 from .. import git_ops
-from .github import GhError, PostResult, PostedComment, comments_to_github
+from .github import GhError, PostedComment, PostResult, comments_to_github
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +45,8 @@ def _compact_query(query: str) -> str:
 def _loggable_vars(variables: dict[str, Any], *, limit: int = 300) -> dict[str, Any]:
     """Render variables for a diagnostic log line, truncating long string
     values so a multi-KB comment body doesn't bloat the record (we still
-    want the path/line/side anchors, which are short)."""
+    want the path/line/side anchors, which are short).
+    """
     out: dict[str, Any] = {}
     for k, v in variables.items():
         if isinstance(v, str) and len(v) > limit:

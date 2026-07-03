@@ -6,7 +6,6 @@ import os
 
 import pytest
 import typer
-
 from pydantic_ai.models.openai import OpenAIChatModel
 
 from semantic_code_review.backends.openai_compat import OpenAICompatBackend

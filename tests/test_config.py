@@ -110,10 +110,10 @@ Look for bugs, perf, security.
 def test_augment_extra_prompt_empty_string_is_ignored(tmp_path: Path) -> None:
     """An all-whitespace value is treated as 'unset' rather than
     spinning up an extra pass with an empty system prompt."""
-    user = _write(tmp_path / "user.toml", '''
+    user = _write(tmp_path / "user.toml", """
 [augment]
 extra_prompt = "   \\n   "
-''')
+""")
     cfg = ScrConfig.load(user_path=user, repo_path=None)
     assert cfg.extra_review_prompt is None
     assert "augment.extra_prompt" not in cfg.sources
@@ -123,16 +123,16 @@ def test_augment_extra_prompt_repo_overrides_user(tmp_path: Path) -> None:
     """Standard config layering: per-repo `[augment].extra_prompt`
     wins over the user-global value, but inherits when the per-repo
     config doesn't set it."""
-    user = _write(tmp_path / "user.toml", '''
+    user = _write(tmp_path / "user.toml", """
 [augment]
 extra_prompt = "team-wide review checklist"
-''')
+""")
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
-    repo = _write(repo_dir / "repo.toml", '''
+    repo = _write(repo_dir / "repo.toml", """
 [augment]
 extra_prompt = "this repo wants a different lens"
-''')
+""")
     cfg = ScrConfig.load(user_path=user, repo_path=repo)
     assert cfg.extra_review_prompt == "this repo wants a different lens"
     assert cfg.sources["augment.extra_prompt"] == str(repo)
@@ -143,16 +143,16 @@ extra_prompt = "this repo wants a different lens"
 
 
 def test_augment_extra_prompt_rejects_non_string(tmp_path: Path) -> None:
-    user = _write(tmp_path / "user.toml", '''
+    user = _write(tmp_path / "user.toml", """
 [augment]
 extra_prompt = 42
-''')
+""")
     with pytest.raises(ConfigError, match="must be a string"):
         ScrConfig.load(user_path=user, repo_path=None)
 
 
 def test_load_user_only(tmp_path: Path) -> None:
-    user = _write(tmp_path / "user.toml", '''
+    user = _write(tmp_path / "user.toml", """
 backend = "gemini-api"
 
 [model]
@@ -163,7 +163,7 @@ model = "gemini-2.5-pro"
 
 [env]
 GOOGLE_CLOUD_PROJECT = "aasgard-dev"
-''')
+""")
     cfg = ScrConfig.load(user_path=user, repo_path=None)
     assert cfg.backend == "gemini-api"
     assert cfg.model_default == "claude-opus-4-7"
@@ -173,10 +173,10 @@ GOOGLE_CLOUD_PROJECT = "aasgard-dev"
 
 def test_legacy_model_table_folds_into_backend(tmp_path: Path) -> None:
     """`[model] "claude-api" = ...` is sugar for `[backends.claude-api] model = ...`."""
-    user = _write(tmp_path / "user.toml", '''
+    user = _write(tmp_path / "user.toml", """
 [model]
 "claude-api" = "claude-sonnet-4-7"
-''')
+""")
     cfg = ScrConfig.load(user_path=user, repo_path=None)
     assert cfg.backends["claude-api"].default_model == "claude-sonnet-4-7"
     # Builtin type preserved.
@@ -185,21 +185,21 @@ def test_legacy_model_table_folds_into_backend(tmp_path: Path) -> None:
 
 def test_repo_overrides_user(tmp_path: Path) -> None:
     """Per-repo config takes precedence on conflicting keys."""
-    user = _write(tmp_path / "user.toml", '''
+    user = _write(tmp_path / "user.toml", """
 backend = "claude-api"
 [model]
 default = "user-model"
 [env]
 GOOGLE_CLOUD_PROJECT = "user-project"
 GOOGLE_CLOUD_LOCATION = "us-central1"
-''')
-    repo = _write(tmp_path / "repo.toml", '''
+""")
+    repo = _write(tmp_path / "repo.toml", """
 backend = "gemini-api"
 [model]
 default = "repo-model"
 [env]
 GOOGLE_CLOUD_PROJECT = "repo-project"
-''')
+""")
     cfg = ScrConfig.load(user_path=user, repo_path=repo)
     assert cfg.backend == "gemini-api"
     assert cfg.model_default == "repo-model"
@@ -212,12 +212,12 @@ GOOGLE_CLOUD_PROJECT = "repo-project"
 
 
 def test_backends_table_can_add_a_new_entry(tmp_path: Path) -> None:
-    user = _write(tmp_path / "user.toml", '''
+    user = _write(tmp_path / "user.toml", """
 [backends.localollama]
 type = "openai-compat"
 base_url = "http://localhost:11434/v1"
 model = "qwen2.5-coder:32b"
-''')
+""")
     cfg = ScrConfig.load(user_path=user, repo_path=None)
     assert "localollama" in cfg.backends
     bdef = cfg.backends["localollama"]
@@ -228,12 +228,12 @@ model = "qwen2.5-coder:32b"
 
 
 def test_api_key_command_parses_from_toml(tmp_path: Path) -> None:
-    user = _write(tmp_path / "user.toml", '''
+    user = _write(tmp_path / "user.toml", """
 [backends.gcloud-secret]
 type = "openai-compat"
 base_url = "https://example.com/v1"
 api_key_command = ["gcloud", "secrets", "versions", "access", "latest", "--secret=anth"]
-''')
+""")
     cfg = ScrConfig.load(user_path=user, repo_path=None)
     bdef = cfg.backends["gcloud-secret"]
     assert bdef.api_key_command == (
@@ -242,12 +242,12 @@ api_key_command = ["gcloud", "secrets", "versions", "access", "latest", "--secre
 
 
 def test_api_key_command_accepts_shell_quoted_string(tmp_path: Path) -> None:
-    user = _write(tmp_path / "user.toml", '''
+    user = _write(tmp_path / "user.toml", """
 [backends.shell-string]
 type = "openai-compat"
 base_url = "https://example.com/v1"
 api_key_command = "gcloud secrets versions access latest --secret=anth"
-''')
+""")
     cfg = ScrConfig.load(user_path=user, repo_path=None)
     bdef = cfg.backends["shell-string"]
     assert bdef.api_key_command == (
@@ -257,12 +257,12 @@ api_key_command = "gcloud secrets versions access latest --secret=anth"
 
 def test_api_key_command_string_handles_quoting(tmp_path: Path) -> None:
     """Embedded whitespace in args via shell-style quoting."""
-    user = _write(tmp_path / "user.toml", r'''
+    user = _write(tmp_path / "user.toml", r"""
 [backends.quoting]
 type = "openai-compat"
 base_url = "https://example.com/v1"
 api_key_command = "fetch --header 'Auth: Bearer xyz' /path"
-''')
+""")
     cfg = ScrConfig.load(user_path=user, repo_path=None)
     assert cfg.backends["quoting"].api_key_command == (
         "fetch", "--header", "Auth: Bearer xyz", "/path",
@@ -271,12 +271,12 @@ api_key_command = "fetch --header 'Auth: Bearer xyz' /path"
 
 def test_api_key_command_list_still_works(tmp_path: Path) -> None:
     """The list form remains the escape hatch for fiddly quoting."""
-    user = _write(tmp_path / "user.toml", '''
+    user = _write(tmp_path / "user.toml", """
 [backends.list-form]
 type = "openai-compat"
 base_url = "https://example.com/v1"
 api_key_command = ["bash", "-c", "cat /tmp/key"]
-''')
+""")
     cfg = ScrConfig.load(user_path=user, repo_path=None)
     assert cfg.backends["list-form"].api_key_command == (
         "bash", "-c", "cat /tmp/key",
@@ -284,54 +284,54 @@ api_key_command = ["bash", "-c", "cat /tmp/key"]
 
 
 def test_api_key_command_unbalanced_quotes_raises(tmp_path: Path) -> None:
-    user = _write(tmp_path / "user.toml", '''
+    user = _write(tmp_path / "user.toml", """
 [backends.bad]
 type = "openai-compat"
 base_url = "https://example.com/v1"
 api_key_command = "echo 'unterminated"
-''')
+""")
     with pytest.raises(ConfigError, match="unbalanced quotes"):
         ScrConfig.load(user_path=user, repo_path=None)
 
 
 def test_api_key_command_wrong_type_raises(tmp_path: Path) -> None:
-    user = _write(tmp_path / "user.toml", '''
+    user = _write(tmp_path / "user.toml", """
 [backends.bad]
 type = "openai-compat"
 base_url = "https://example.com/v1"
 api_key_command = 42
-''')
+""")
     with pytest.raises(ConfigError, match="must be a list of strings or a"):
         ScrConfig.load(user_path=user, repo_path=None)
 
 
 def test_api_key_command_must_not_be_empty(tmp_path: Path) -> None:
-    user = _write(tmp_path / "user.toml", '''
+    user = _write(tmp_path / "user.toml", """
 [backends.bad]
 type = "openai-compat"
 base_url = "https://example.com/v1"
 api_key_command = []
-''')
+""")
     with pytest.raises(ConfigError, match="must not be empty"):
         ScrConfig.load(user_path=user, repo_path=None)
 
 
 def test_api_key_command_empty_string_raises(tmp_path: Path) -> None:
-    user = _write(tmp_path / "user.toml", '''
+    user = _write(tmp_path / "user.toml", """
 [backends.bad]
 type = "openai-compat"
 base_url = "https://example.com/v1"
 api_key_command = ""
-''')
+""")
     with pytest.raises(ConfigError, match="must not be empty"):
         ScrConfig.load(user_path=user, repo_path=None)
 
 
 def test_backends_table_overrides_builtin_field_by_field(tmp_path: Path) -> None:
-    user = _write(tmp_path / "user.toml", '''
+    user = _write(tmp_path / "user.toml", """
 [backends.claude-api]
 model = "claude-sonnet-4-7"
-''')
+""")
     cfg = ScrConfig.load(user_path=user, repo_path=None)
     bdef = cfg.backends["claude-api"]
     # type unchanged from builtin
@@ -353,34 +353,34 @@ def test_unknown_backend_name_raises(tmp_path: Path) -> None:
 
 
 def test_unknown_backend_type_raises(tmp_path: Path) -> None:
-    user = _write(tmp_path / "user.toml", '''
+    user = _write(tmp_path / "user.toml", """
 [backends.weird]
 type = "carrier-pigeon"
-''')
+""")
     with pytest.raises(ConfigError, match="carrier-pigeon"):
         ScrConfig.load(user_path=user, repo_path=None)
 
 
 def test_new_backend_without_type_raises(tmp_path: Path) -> None:
-    user = _write(tmp_path / "user.toml", '''
+    user = _write(tmp_path / "user.toml", """
 [backends.brand-new]
 model = "x"
-''')
+""")
     with pytest.raises(ConfigError, match="`type` is required"):
         ScrConfig.load(user_path=user, repo_path=None)
 
 
 def test_legacy_model_referencing_unknown_backend_raises(tmp_path: Path) -> None:
-    user = _write(tmp_path / "user.toml", '''
+    user = _write(tmp_path / "user.toml", """
 [model]
 "made-up" = "x"
-''')
+""")
     with pytest.raises(ConfigError, match="unknown backend"):
         ScrConfig.load(user_path=user, repo_path=None)
 
 
 def test_non_string_model_value_raises(tmp_path: Path) -> None:
-    user = _write(tmp_path / "user.toml", '[model]\ndefault = 42')
+    user = _write(tmp_path / "user.toml", "[model]\ndefault = 42")
     with pytest.raises(ConfigError, match="must be a string"):
         ScrConfig.load(user_path=user, repo_path=None)
 
@@ -461,7 +461,7 @@ def test_write_inline_prompt_appends_section_when_absent(tmp_path: Path) -> None
     cfg_path.write_text('backend = "claude-api"\n', encoding="utf-8")
     write_inline_extra_prompt(cfg_path, "Look for race conditions.\nAlso typos.")
     text = cfg_path.read_text(encoding="utf-8")
-    assert "backend = \"claude-api\"" in text   # other sections preserved
+    assert 'backend = "claude-api"' in text   # other sections preserved
     assert "[augment]" in text
     # Body landed inside a triple-quoted block.
     cfg = ScrConfig.load(user_path=cfg_path, repo_path=None)
@@ -476,11 +476,11 @@ def test_write_inline_prompt_replaces_existing_assignment(tmp_path: Path) -> Non
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
         "# user-added comment\n"
-        "backend = \"claude-api\"\n\n"
+        'backend = "claude-api"\n\n'
         "[augment]\n"
-        "extra_prompt = \"old prompt\"\n\n"
+        'extra_prompt = "old prompt"\n\n'
         "[env]\n"
-        "MY_VAR = \"x\"\n",
+        'MY_VAR = "x"\n',
         encoding="utf-8",
     )
     write_inline_extra_prompt(cfg_path, "new prompt")
@@ -501,7 +501,7 @@ def test_write_inline_prompt_empty_body_removes_assignment(tmp_path: Path) -> No
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
         "[augment]\n"
-        "extra_prompt = \"\"\"\nsome prompt\n\"\"\"\n",
+        'extra_prompt = """\nsome prompt\n"""\n',
         encoding="utf-8",
     )
     write_inline_extra_prompt(cfg_path, "")

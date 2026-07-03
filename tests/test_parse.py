@@ -6,7 +6,6 @@ import pytest
 
 from semantic_code_review.format.parse import ParseError, parse_augmented_diff
 
-
 MINIMAL_PREAMBLE = (
     "#scr: scr-version: 1\n"
     "#scr: scr-pr: x\n"

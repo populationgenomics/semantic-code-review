@@ -22,20 +22,26 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from ..augment.agents import Client
 from ..fetch import GhFetchError, materialize_github_pr_run, preflight_gh
 from .comments import CommentStore, format_markdown
 from .github import (
-    GhError, PostResult, comments_to_github, list_review_requested_prs,
+    GhError,
+    PostResult,
+    comments_to_github,
+    list_review_requested_prs,
     pick_pr_interactive,
 )
 from .github_graphql import post_review_via_graphql
 from .runner import (
-    _build_console_task, _build_fold_summary_task, serve_review,
+    _build_console_task,
+    _build_fold_summary_task,
+    serve_review,
 )
 from .server import PostCallable
 
@@ -212,7 +218,8 @@ def _build_tasks(
 ) -> tuple[Callable | None, Callable | None, Callable | None]:
     """Build the augment + fold-summary + console closures, or ``(None,
     None, None)`` when augmentation is skipped (the console grounds its
-    answers in the augment sidecar, so it's unavailable without it)."""
+    answers in the augment sidecar, so it's unavailable without it).
+    """
     if not opts.augment:
         return None, None, None
 

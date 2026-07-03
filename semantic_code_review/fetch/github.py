@@ -31,7 +31,6 @@ from .. import git_ops
 from ..git_ops import GhError, GhMissingError
 from .run_source import RunSpec, materialize_run_metadata
 
-
 _PR_URL_RE = re.compile(r"https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)/?")
 
 
@@ -130,7 +129,8 @@ def _fetch_pr_diff(ref: PRRef) -> str:
 @dataclass(frozen=True)
 class GithubResolved:
     """`RunSpec` + GH-specific extras carried between resolve and the
-    per-source worktree setup."""
+    per-source worktree setup.
+    """
 
     spec: RunSpec
     ref: PRRef

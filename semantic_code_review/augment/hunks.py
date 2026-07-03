@@ -11,23 +11,29 @@ import logging
 from pathlib import Path
 from typing import Any
 
-
 log = logging.getLogger(__name__)
 
 from pydantic_ai import CachePoint
 from pydantic_ai.messages import UserContent
 
 from ..augment.schemas import (
-    AnnotatedDiff, AnnotatedFile, AnnotatedHunk, FoldDescription,
-    HunkAnnotations, LineNote, Overview, ParsedHunk, Ref, Segment, Smell,
-    SkippedOverview,
+    AnnotatedDiff,
+    AnnotatedFile,
+    AnnotatedHunk,
+    FoldDescription,
+    HunkAnnotations,
+    LineNote,
+    Overview,
+    ParsedHunk,
+    Ref,
+    Segment,
+    Smell,
 )
 from ..cache.store import CacheStore
 from .agents import Client, make_hunk_agent
 from .pass_ import PassMeta, run_pass
-from .prompts import HUNK_SYSTEM, PROMPT_VERSION
+from .prompts import HUNK_SYSTEM
 from .tools import TOOL_FUNCTIONS, RepoTools
-
 
 _HUNK = PassMeta(
     name="hunk",

@@ -54,7 +54,8 @@ class GhMissingError(GhError):
 
 def git(cwd: Path | None, *args: str) -> str:
     """Run ``git <args>``. Return stdout. Raise :class:`GitError` on
-    non-zero exit. ``cwd=None`` runs in the current process's cwd."""
+    non-zero exit. ``cwd=None`` runs in the current process's cwd.
+    """
     proc = subprocess.run(
         ["git", *args], cwd=cwd, capture_output=True, text=True, check=False,
     )
@@ -78,7 +79,8 @@ def git_capture(cwd: Path | None, *args: str) -> tuple[int, str, str]:
 
 def gh(*args: str, input: str | None = None) -> str:
     """Run ``gh <args>``. Return stdout. Raise :class:`GhError` on
-    non-zero exit. ``input`` is forwarded as stdin."""
+    non-zero exit. ``input`` is forwarded as stdin.
+    """
     proc = subprocess.run(
         ["gh", *args],
         input=input, capture_output=True, text=True, check=False,
@@ -118,7 +120,8 @@ def rev_parse(cwd: Path, ref: str) -> str:
 
 def grep(cwd: Path, pattern: str, path_glob: str | None, max_hits: int) -> str:
     """Tracked-files grep via ``git grep``. Treats rc=1 (no matches) as
-    success and returns an empty string. Other non-zero exits raise."""
+    success and returns an empty string. Other non-zero exits raise.
+    """
     args = ["grep", "-n", "-I", "--max-count", str(max_hits), "-e", pattern]
     if path_glob:
         args += ["--", path_glob]
@@ -139,7 +142,8 @@ def init_dir(target: Path) -> None:
 
 def fetch_depth1(cwd: Path, *refs: str, remote: str = "origin") -> None:
     """Shallow-fetch one or more refs/SHAs. GitHub allows fetching
-    arbitrary reachable SHAs; we don't pull history."""
+    arbitrary reachable SHAs; we don't pull history.
+    """
     git(cwd, "fetch", "--depth", "1", remote, *refs)
 
 

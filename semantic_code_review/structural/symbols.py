@@ -40,4 +40,4 @@ class Symbol(BaseModel):
     qualified_name: str
     range: SymbolRange
     signature: str | None = None
-    children: list["Symbol"] = Field(default_factory=list)
+    children: list[Symbol] = Field(default_factory=list)

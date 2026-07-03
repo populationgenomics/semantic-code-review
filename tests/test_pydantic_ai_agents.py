@@ -8,8 +8,6 @@ behaviour to the real-API smokes documented in the migration plan.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 from pydantic_ai.models.test import TestModel
 

@@ -9,7 +9,9 @@ import pytest
 
 from semantic_code_review.augment.schemas import ParsedHunk
 from semantic_code_review.viewer.hunk_layout import (
-    _Row, build_rows, compute_fold_regions,
+    _Row,
+    build_rows,
+    compute_fold_regions,
 )
 
 # Shared cross-language lockstep fixture: the same (rows, spans) input

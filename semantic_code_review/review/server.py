@@ -17,14 +17,13 @@ import logging
 import queue
 import threading
 import time
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .comments import CommentStore, ReadOnlyCommentError
-
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +37,7 @@ log = logging.getLogger(__name__)
 # is always read from the in-tree assets/.
 
 import os
+
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "viewer" / "assets"
 
 
@@ -72,7 +72,8 @@ _CLOSE = object()
 
 def _parse_last_event_id(raw: str | None) -> int:
     """Coerce the `Last-Event-ID` header to an int, treating anything
-    non-numeric (or missing) as 0 — i.e. "give me everything"."""
+    non-numeric (or missing) as 0 — i.e. "give me everything".
+    """
     if not raw:
         return 0
     try:
@@ -157,7 +158,8 @@ def _fold_symbol_from_viewer_json(
 
 def _range_from_payload(payload: dict[str, Any], side: str) -> tuple[int, int] | None:
     """Pull (start, end) for a side out of the request payload, or None
-    if the keys aren't both present + parsable."""
+    if the keys aren't both present + parsable.
+    """
     try:
         s = int(payload[f"{side}_start"])
         e = int(payload[f"{side}_end"])
@@ -200,8 +202,8 @@ def _ctx_publish(
 
 
 def _run_console_worker(
-    ctx: "ServerContext",
-    asker: "ConsoleAsker",
+    ctx: ServerContext,
+    asker: ConsoleAsker,
     question: str,
     history: Any,
     console_id: str,
@@ -250,7 +252,7 @@ def _run_console_worker(
             ctx, "console-error",
             {"console_id": console_id, "error": str(e)}, buffer=False,
         )
-    except Exception as e:  # noqa: BLE001 — surface every failure to the tab
+    except Exception as e:
         log.exception("console turn failed for question=%r", question[:120])
         _ctx_publish(
             ctx, "console-error",
@@ -282,7 +284,8 @@ _BUFFER_CAP = 2000
 class _BufferedEvent:
     """One SSE frame. ``id`` is None for unbuffered live-only frames
     (the console stream), which carry no ``id:`` line and so never
-    advance a client's `Last-Event-ID` reconnect cursor."""
+    advance a client's `Last-Event-ID` reconnect cursor.
+    """
 
     id: int | None
     event_type: str
@@ -386,7 +389,7 @@ class _Handler(BaseHTTPRequestHandler):
     # instance; we stash the context on it at construction time.
     ctx: ServerContext  # type: ignore[assignment]
 
-    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 — stdlib sig
+    def log_message(self, format: str, *args: Any) -> None:
         log.debug("%s - %s", self.address_string(), format % args)
 
     # --- dispatch helpers -----------------------------------------------
@@ -532,13 +535,13 @@ class _Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     pass
 
-    def _write_event(self, ev: "_BufferedEvent") -> bool:
+    def _write_event(self, ev: _BufferedEvent) -> bool:
         body = json.dumps(ev.payload, ensure_ascii=False)
         # Unbuffered (console) frames carry no id, so they don't move the
         # browser's Last-Event-ID cursor — a reload won't try to replay
         # them (they aren't in the buffer anyway).
         id_line = "" if ev.id is None else f"id: {ev.id}\n"
-        frame = f"{id_line}event: {ev.event_type}\ndata: {body}\n\n".encode("utf-8")
+        frame = f"{id_line}event: {ev.event_type}\ndata: {body}\n\n".encode()
         try:
             self.wfile.write(frame)
             self.wfile.flush()
@@ -642,7 +645,8 @@ class _Handler(BaseHTTPRequestHandler):
 
         # Map typed errors from the apply step to HTTP statuses.
         from ..augment.fold_summary import (
-            FoldSummaryFileIndexError, FoldSummaryNotReady,
+            FoldSummaryFileIndexError,
+            FoldSummaryNotReady,
         )
 
         # Seed the prompt with the symbol the region snapped to (if any),
@@ -662,7 +666,7 @@ class _Handler(BaseHTTPRequestHandler):
         except FoldSummaryFileIndexError as e:
             self._json(404, {"error": str(e)})
             return
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log.exception(
                 "fold-summary failed for file_idx=%s context=%s right=%s left=%s",
                 file_idx, context, right_range, left_range,
@@ -830,7 +834,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         try:
             result = self.ctx.post_callback(ids)
-        except Exception as e:  # noqa: BLE001 — surface every failure to the modal
+        except Exception as e:
             log.exception("post callback raised")
             self._json(500, {"error": f"{type(e).__name__}: {e}"})
             return

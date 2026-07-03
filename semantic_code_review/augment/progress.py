@@ -28,7 +28,6 @@ import time
 from dataclasses import dataclass
 from typing import TextIO
 
-
 # ANSI helpers ---------------------------------------------------------------
 
 ESC = "\x1b["
@@ -67,7 +66,7 @@ DONE_FADE_SECONDS = 4.0     # how long a closed square stays prominent.
 
 
 def _heat_color(heat: float) -> tuple[int, int, int]:
-    """heat ∈ [0,1] → RGB along COOL → WARM → HOT."""
+    """Heat ∈ [0,1] → RGB along COOL → WARM → HOT."""
     h = max(0.0, min(1.0, heat))
     if h < 0.5:
         return _lerp(COOL, WARM, h * 2)
@@ -102,7 +101,8 @@ class _HunkState:
 
 class ProgressMeter:
     """Live per-hunk progress meter. Render-only; safe to drive from
-    one asyncio loop."""
+    one asyncio loop.
+    """
 
     def __init__(
         self,
@@ -125,7 +125,7 @@ class ProgressMeter:
 
     # ---- lifecycle -------------------------------------------------------
 
-    async def __aenter__(self) -> "ProgressMeter":
+    async def __aenter__(self) -> ProgressMeter:
         if self.enabled:
             self.stream.write(HIDE_CURSOR)
             self.stream.flush()

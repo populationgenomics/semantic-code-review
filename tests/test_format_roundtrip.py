@@ -6,14 +6,11 @@ import json
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from semantic_code_review.format.emit import emit_augmented_diff
 from semantic_code_review.format.lint import lint_text
 from semantic_code_review.format.parse import parse_augmented_diff
 from semantic_code_review.format.sidecar import dump_sidecar, load_sidecar
 from semantic_code_review.format.strip import strip_annotations
-
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample.augmented.diff"
 
@@ -106,9 +103,21 @@ def test_handwritten_annotated_diff_round_trips() -> None:
     assert the model_dump matches. Locks in `parse(emit(x)) == x` for
     the typed form, complementing the canonical-fixture round-trip."""
     from semantic_code_review.augment.schemas import (
-        AnnotatedDiff, AnnotatedFile, AnnotatedHunk, FileAnnotations,
-        FileRole, FileSymbols, HunkAnnotations, LineNote, Overview,
-        OverviewSymbol, ParsedHunk, PRInfo, Ref, Segment, Smell,
+        AnnotatedDiff,
+        AnnotatedFile,
+        AnnotatedHunk,
+        FileAnnotations,
+        FileRole,
+        FileSymbols,
+        HunkAnnotations,
+        LineNote,
+        Overview,
+        OverviewSymbol,
+        ParsedHunk,
+        PRInfo,
+        Ref,
+        Segment,
+        Smell,
     )
 
     diff = AnnotatedDiff(

@@ -5,8 +5,15 @@ from __future__ import annotations
 import pytest
 
 from semantic_code_review.augment.schemas import (
-    AnnotatedDiff, AnnotatedFile, AnnotatedHunk, FoldDescription,
-    HunkAnnotations, ParsedHunk, PRInfo, Segment, Smell,
+    AnnotatedDiff,
+    AnnotatedFile,
+    AnnotatedHunk,
+    FoldDescription,
+    HunkAnnotations,
+    ParsedHunk,
+    PRInfo,
+    Segment,
+    Smell,
 )
 from semantic_code_review.format.emit import emit_augmented_diff
 from semantic_code_review.format.parse import ParseError, parse_augmented_diff

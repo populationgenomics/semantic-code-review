@@ -6,7 +6,6 @@ import os
 
 import pytest
 import typer
-
 from pydantic_ai.models.anthropic import AnthropicModel
 
 from semantic_code_review.backends.anthropic_sdk import AnthropicSdkBackend

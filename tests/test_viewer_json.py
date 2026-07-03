@@ -7,9 +7,9 @@ from pathlib import Path
 
 from semantic_code_review.format.parse import parse_augmented_diff
 from semantic_code_review.viewer.build_json import (
-    build_pending_viewer_json, build_viewer_json,
+    build_pending_viewer_json,
+    build_viewer_json,
 )
-
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample.augmented.diff"
 

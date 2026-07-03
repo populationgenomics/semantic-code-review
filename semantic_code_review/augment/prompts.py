@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from .schemas import SMELL_TAGS_TEXT
 
-
 PROMPT_VERSION = "p11"
 
 

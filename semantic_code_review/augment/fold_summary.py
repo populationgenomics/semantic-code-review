@@ -33,7 +33,6 @@ from .agents import Client
 from .pass_ import PassMeta, run_pass
 from .schemas import AnnotatedDiff, FoldDescription
 
-
 log = logging.getLogger(__name__)
 
 
@@ -68,7 +67,8 @@ FOLD_SYSTEM = (
 
 class FoldSummarySubmission(BaseModel):
     """Wire format for the `submit_fold_summary` tool. Single field, kept
-    structured so trace + cache plumbing matches the other passes."""
+    structured so trace + cache plumbing matches the other passes.
+    """
 
     summary: str = Field(description="One sentence describing the folded region's effect.")
 

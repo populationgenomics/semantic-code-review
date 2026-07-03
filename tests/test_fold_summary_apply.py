@@ -21,7 +21,6 @@ from semantic_code_review.augment.fold_summary import (
 from semantic_code_review.format.parse import parse_augmented_diff
 from semantic_code_review.format.sidecar import dump_sidecar, load_sidecar
 
-
 FIXTURE = Path(__file__).parent / "fixtures" / "sample.augmented.diff"
 
 
@@ -52,7 +51,7 @@ def stub_summarise(monkeypatch: pytest.MonkeyPatch) -> dict:
     """
     seen: dict = {}
 
-    async def _stub(  # noqa: PLR0913 — matches summarise_fold's keyword surface
+    async def _stub(
         client, *,
         run_dir, file_path, file_summary, overview_json,
         context, right_range, left_range,

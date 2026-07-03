@@ -19,8 +19,9 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 from .. import git_ops
 
@@ -82,7 +83,8 @@ class PostedComment:
 class PostResult:
     """Outcome of posting a review. `review_url` is GitHub's permalink
     for the new review object so the caller can offer "view on
-    github.com"."""
+    github.com".
+    """
     review_id: int
     review_url: str
     posted: int

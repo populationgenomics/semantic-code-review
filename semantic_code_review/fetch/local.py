@@ -34,7 +34,6 @@ from pathlib import Path
 from .. import git_ops
 from .run_source import RunSpec, materialize_run_metadata
 
-
 _RANGE_RE = re.compile(r"^(?P<a>[^.]+)\.\.\.?(?P<b>.+)$")
 
 
@@ -185,11 +184,10 @@ def setup_local_worktrees(run_dir: Path, resolved: LocalResolved) -> None:
     if resolved.head_is_working:
         if not head_link.exists():
             _symlink(head_link, resolved.head_worktree)
-    else:
-        if not head_link.exists():
-            git_ops.worktree_add(
-                resolved.repo_git.parent, head_link.resolve(), resolved.head_sha,
-            )
+    elif not head_link.exists():
+        git_ops.worktree_add(
+            resolved.repo_git.parent, head_link.resolve(), resolved.head_sha,
+        )
 
     if not base_dir.exists():
         git_ops.worktree_add(

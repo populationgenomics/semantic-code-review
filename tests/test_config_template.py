@@ -55,7 +55,7 @@ def test_render_scaffold_uses_uncommented_required_fields() -> None:
     assert 'api_key_env = "EXAMPLE_API_KEY"' in block
     assert 'model = "<model-id>"' in block
     # api_key_command is the alternative — kept commented.
-    assert '# api_key_command =' in block
+    assert "# api_key_command =" in block
 
 
 def test_render_unknown_template_raises() -> None:

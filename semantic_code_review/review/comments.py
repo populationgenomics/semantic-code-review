@@ -6,19 +6,18 @@ import json
 import os
 import threading
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
-
 
 CommentSource = Literal["local", "github"]
 
 
 class ReadOnlyCommentError(Exception):
     """Raised by CommentStore when the caller tries to mutate a comment
-    that wasn't authored in this run (e.g. an ingested PR comment)."""
+    that wasn't authored in this run (e.g. an ingested PR comment).
+    """
 
 
 class Comment(BaseModel):
@@ -71,7 +70,8 @@ class Comment(BaseModel):
     @property
     def is_writable(self) -> bool:
         """True iff this run owns the comment — i.e. the server may
-        mutate or delete it. Ingested comments stay read-only."""
+        mutate or delete it. Ingested comments stay read-only.
+        """
         return self.source == "local"
 
 

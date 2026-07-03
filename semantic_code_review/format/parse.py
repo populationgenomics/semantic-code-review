@@ -27,8 +27,8 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Iterator
 
 from ..augment.schemas import (
     AnnotatedDiff,
@@ -43,18 +43,16 @@ from ..augment.schemas import (
     Overview,
     OverviewEdge,
     OverviewSymbol,
-    PRInfo,
     ParsedDiff,
     ParsedFile,
     ParsedHunk,
+    PRInfo,
     Ref,
     Segment,
     SkippedOverview,
     Smell,
     lift_file,
-    lift_hunk,
 )
-
 
 _HUNK_HEADER_RE = re.compile(
     r"^@@ -(?P<os>\d+)(?:,(?P<oc>\d+))? \+(?P<ns>\d+)(?:,(?P<nc>\d+))? @@"
@@ -94,7 +92,8 @@ class _ParsedFileWithAnno:
     """Raw parser output for one file: the structural ParsedFile plus the
     raw directives observed in its header and per-hunk trailers, retained
     in lineno order so we can either fold them into annotations or reject
-    them (parse_raw_diff)."""
+    them (parse_raw_diff).
+    """
     parsed: ParsedFile
     header_directives: list[_Directive] = field(default_factory=list)
     hunk_directives: list[list[_Directive]] = field(default_factory=list)

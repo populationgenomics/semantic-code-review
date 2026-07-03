@@ -15,7 +15,7 @@ from semantic_code_review.structural import (
     symbols_to_json,
 )
 
-SAMPLE = '''import os
+SAMPLE = """import os
 
 X = 1
 Y: int = 2
@@ -31,7 +31,7 @@ class Bar(Base):
         def inner():
             pass
         return q
-'''
+"""
 
 
 def _by_name(symbols: list[Symbol]) -> dict[str, Symbol]:
@@ -165,7 +165,7 @@ def test_symbol_to_json_serializes_one_symbol() -> None:
 
 # --- diff_file / merge -----------------------------------------------------
 
-_BASE = '''X = 1
+_BASE = """X = 1
 
 def keep():
     return 1
@@ -176,9 +176,9 @@ def gone():
 class C:
     def m(self):
         return 1
-'''
+"""
 
-_HEAD = '''X = 1
+_HEAD = """X = 1
 
 def keep():
     return 1
@@ -190,7 +190,7 @@ class C:
     def m(self):
         # one more line shifts the range
         return 1
-'''
+"""
 
 
 def test_diff_added_removed_by_qualified_name() -> None:
@@ -236,7 +236,7 @@ def test_merge_concatenates_per_file_deltas() -> None:
 
 # --- TypeScript / TSX / JavaScript (Slice 6) -------------------------------
 
-_TS_SAMPLE = '''interface Foo {
+_TS_SAMPLE = """interface Foo {
   a: number;
 }
 
@@ -257,7 +257,7 @@ class Widget extends Base {
 function freestanding(a: number): void {}
 
 const arrow = (n: number): number => n + 1;
-'''
+"""
 
 
 def test_ts_extension_detection() -> None:

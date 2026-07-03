@@ -21,7 +21,6 @@ from semantic_code_review.fetch.github_comments import (
 from semantic_code_review.git_ops import GhError
 from semantic_code_review.review.comments import Comment
 
-
 # A representative payload covering the cases we map: live anchor,
 # outdated (line=null), threaded reply, and a record we discard
 # (missing required fields).
@@ -343,7 +342,7 @@ def test_fetch_comment_commits_falls_back_per_sha_on_failure(tmp_path: Path) -> 
         if argv[-3:] == ["bad", "good1", "good2"] or \
            argv[-3:] == ["good1", "bad", "good2"] or \
            argv[-3:] == ["good1", "good2", "bad"] or \
-           "bad" in argv and "good1" in argv and "good2" in argv:
+           ("bad" in argv and "good1" in argv and "good2" in argv):
             raise subprocess.CalledProcessError(1, argv, stderr="HTTP 404")
         # Per-SHA retry: fail only the bad one.
         if argv[-1] == "bad":

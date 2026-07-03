@@ -10,7 +10,11 @@ from __future__ import annotations
 
 from semantic_code_review.augment.overview import format_overview_prompt
 from semantic_code_review.augment.schemas import (
-    AnnotatedDiff, AnnotatedFile, AnnotatedHunk, ParsedHunk, PRInfo,
+    AnnotatedDiff,
+    AnnotatedFile,
+    AnnotatedHunk,
+    ParsedHunk,
+    PRInfo,
 )
 from semantic_code_review.structural import ChangedSymbol, SymbolDelta, SymbolRange
 

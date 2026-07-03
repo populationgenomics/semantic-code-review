@@ -7,7 +7,6 @@ import typer
 from ..paths import default_runs_root
 from . import app
 
-
 runs_app = typer.Typer(help="Inspect or manage scr's per-repo run-artefact directory.")
 app.add_typer(runs_app, name="runs")
 

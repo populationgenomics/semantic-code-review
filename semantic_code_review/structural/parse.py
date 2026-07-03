@@ -17,15 +17,14 @@ unsupported language, parse failure, or a malformed query all yield
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
-from typing import Callable
 
 from tree_sitter import Language, Node, Parser, Query, QueryCursor
 
 from .symbols import Symbol, SymbolRange
-
 
 # ---------------------------------------------------------------------------
 # Language registry
@@ -105,7 +104,7 @@ def language_for_path(path: str) -> str | None:
     return _EXT_TO_LANG.get(Path(path).suffix)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _load(lang_name: str) -> tuple[Language, Query]:
     """Compile and cache the `(Language, Query)` for a language."""
     language, tags_query = _REGISTRY[lang_name].loader()

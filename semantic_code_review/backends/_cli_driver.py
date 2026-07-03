@@ -43,7 +43,6 @@ from pydantic_ai.usage import RequestUsage
 
 from ..augment.tools import RepoTools
 
-
 log = logging.getLogger(__name__)
 
 
@@ -238,7 +237,8 @@ class _SchemaValidationError(ValueError):
 class _ValidationFailure(Exception):
     """Internal: a parse / schema-validation error that the request loop
     should retry rather than surface. Subclasses raise this from
-    `_envelope_to_structured` for retry-eligible failures."""
+    `_envelope_to_structured` for retry-eligible failures.
+    """
 
     def __init__(self, reason: str, *, detail: str = "") -> None:
         super().__init__(reason)

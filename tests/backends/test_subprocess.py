@@ -26,7 +26,6 @@ from semantic_code_review.backends._cli_driver import (
 
 from ._subproc_fakes import FakeProc, install_fake_subproc
 
-
 # ---------------------------------------------------------------------------
 # Pure helpers
 # ---------------------------------------------------------------------------

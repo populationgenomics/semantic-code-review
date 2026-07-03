@@ -11,7 +11,6 @@ import pytest
 from semantic_code_review.review import github as gh
 from semantic_code_review.review.comments import Comment
 
-
 # ---------------------------------------------------------------------------
 # side mapping
 # ---------------------------------------------------------------------------

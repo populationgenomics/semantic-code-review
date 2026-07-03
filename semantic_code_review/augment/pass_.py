@@ -26,9 +26,10 @@ from pydantic_ai import Agent
 from ..cache.store import CacheStore
 from .agents import Client
 from .trace_adapter import (
-    submit_args_from_result, write_partial_trace, write_pydantic_ai_trace,
+    submit_args_from_result,
+    write_partial_trace,
+    write_pydantic_ai_trace,
 )
-
 
 log = logging.getLogger(__name__)
 

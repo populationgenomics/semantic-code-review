@@ -28,7 +28,6 @@ import textwrap
 
 from .config import BUILTIN_BACKENDS, BackendDef, BackendType, field_doc
 
-
 SCAFFOLD_SECTION_NAME = "openai-compat"
 
 # Placeholder values for the openai-compat scaffold. The user
@@ -126,7 +125,8 @@ def _auth_hint(bdef: BackendDef) -> str:
 def _is_commented(field_name: str, bdef: BackendDef | None, is_scaffold: bool) -> bool:
     """Builtin lines are always commented (override hint). Scaffold
     lines for required fields are uncommented; optional ones (the
-    api_key_command alternative) stay commented."""
+    api_key_command alternative) stay commented.
+    """
     if is_scaffold:
         return field_name not in _SCAFFOLD_REQUIRED
     return True

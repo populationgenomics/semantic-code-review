@@ -8,7 +8,10 @@ from unittest.mock import patch
 import pytest
 
 from semantic_code_review.fetch import (
-    GhFetchError, PRRef, parse_pr_url, preflight_gh, resolve_github_pr,
+    GhFetchError,
+    parse_pr_url,
+    preflight_gh,
+    resolve_github_pr,
 )
 
 

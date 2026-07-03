@@ -6,7 +6,6 @@ import os
 
 import pytest
 import typer
-
 from pydantic_ai.models.google import GoogleModel
 
 from semantic_code_review.backends.google_sdk import GoogleSdkBackend

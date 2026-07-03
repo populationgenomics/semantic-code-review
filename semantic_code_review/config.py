@@ -237,7 +237,7 @@ class ScrConfig:
         user_path: Path | None = None,
         repo_path: Path | None = None,
         cwd: Path | None = None,
-    ) -> "ScrConfig":
+    ) -> ScrConfig:
         """Load and merge config files. Either path can be overridden for tests."""
         cfg = cls(backends=dict(BUILTIN_BACKENDS))
 

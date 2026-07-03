@@ -29,7 +29,6 @@ from semantic_code_review.augment.tools import RepoTools, console_tool_functions
 from semantic_code_review.format.parse import parse_augmented_diff
 from semantic_code_review.format.sidecar import dump_sidecar
 
-
 FIXTURE = Path(__file__).parent / "fixtures" / "sample.augmented.diff"
 
 
@@ -219,7 +218,7 @@ async def test_run_console_turn_seeds_and_returns_history(
 
     real_make = console_mod.make_console_agent
 
-    def _make(_model):  # noqa: ANN001 — ignore the resolved string model
+    def _make(_model):
         return real_make(TestModel(custom_output_text="grounded answer", call_tools=[]))
 
     monkeypatch.setattr(console_mod, "make_console_agent", _make)
@@ -249,7 +248,7 @@ def _patch_test_model(
 
     real_make = console_mod.make_console_agent
 
-    def _make(_model):  # noqa: ANN001 — ignore the resolved string model
+    def _make(_model):
         return real_make(
             TestModel(custom_output_text=output_text, call_tools=call_tools)
         )
@@ -362,10 +361,10 @@ class _RecordingCLIModel(Model):
     def system(self) -> str:
         return "recording-cli"
 
-    def set_repo_tools(self, repo_tools) -> None:  # noqa: ANN001
+    def set_repo_tools(self, repo_tools) -> None:
         self.repo_tools_calls.append(repo_tools)
 
-    async def request(self, messages, model_settings, model_request_parameters):  # noqa: ANN001
+    async def request(self, messages, model_settings, model_request_parameters):
         from pydantic_ai.messages import ModelResponse, TextPart
 
         # Free-form turn: pydantic-ai leaves output_tools empty.

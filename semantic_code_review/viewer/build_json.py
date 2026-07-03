@@ -16,12 +16,16 @@ from typing import Any
 
 from .. import structural
 from ..augment.schemas import (
-    SMELL_CATALOGUE, AnnotatedDiff, AnnotatedFile, FileAnnotations, Overview,
-    PRInfo, lift_file,
+    SMELL_CATALOGUE,
+    AnnotatedDiff,
+    AnnotatedFile,
+    FileAnnotations,
+    Overview,
+    PRInfo,
+    lift_file,
 )
 from ..format.parse import parse_raw_diff
 from .hunk_layout import build_hunk_viewer_block
-
 
 #: cap — files with more than this many lines don't bundle head_lines.
 _HEAD_LINES_CAP = 5000
@@ -226,7 +230,7 @@ def _symbol_blocks(
     """
     out: list[dict[str, Any]] = []
     counter = [0]
-    for fi, (f, syms) in enumerate(zip(diff.files, file_syms)):
+    for fi, (f, syms) in enumerate(zip(diff.files, file_syms, strict=False)):
         base_syms, head_syms = syms.base, syms.head
         if not base_syms and not head_syms:
             continue

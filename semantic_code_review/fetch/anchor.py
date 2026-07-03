@@ -29,13 +29,11 @@ survives at ``head_sha`` with a constant offset.
 from __future__ import annotations
 
 import re
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from .. import git_ops
-
 
 AnchorStatus = Literal[
     "anchored", "shifted", "orphaned", "file_gone", "commit_unavailable",

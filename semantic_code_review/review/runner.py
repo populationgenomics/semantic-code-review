@@ -31,7 +31,6 @@ from .comments import CommentStore, format_markdown
 from .github import PostResult
 from .server import PostCallable, ReviewServer
 
-
 log = logging.getLogger(__name__)
 
 
@@ -127,7 +126,7 @@ def run_review(opts: ReviewOptions) -> int:
             root=opts.cache_dir, prompt_version=PROMPT_VERSION
         )
 
-        async def augment_task(rd: Path, publish) -> None:  # noqa: F811 — closes over opts
+        async def augment_task(rd: Path, publish) -> None:
             await augment_run_dir(
                 rd,
                 model=opts.model,
@@ -200,7 +199,7 @@ class ServeResult:
 
 
 def serve_review(
-    run_dir: "Path",
+    run_dir: Path,
     *,
     augment: AugmentCallable | None = None,
     fold_summary: FoldSummaryCallable | None = None,
@@ -265,7 +264,7 @@ def serve_review(
             augment_error: BaseException | None = None
             try:
                 asyncio.run(augment(run_dir, srv.publish))
-            except BaseException as e:  # noqa: BLE001
+            except BaseException as e:
                 augment_error = e
                 log.exception("augmentation failed; page stays on pending view")
                 sys.stderr.write(f"scr review: augment failed: {e}\n")
@@ -318,10 +317,10 @@ def _build_fold_summary_task(
     async def task(
         file_idx: int,
         context: str,
-        right_range: "tuple[int, int] | None",
-        left_range: "tuple[int, int] | None",
-        qualified_name: "str | None" = None,
-        kind: "str | None" = None,
+        right_range: tuple[int, int] | None,
+        left_range: tuple[int, int] | None,
+        qualified_name: str | None = None,
+        kind: str | None = None,
     ) -> dict:
         # client is None only when augment is False; in that path
         # serve_review never wires this task up, so a None here would
@@ -354,12 +353,12 @@ def _build_console_task(
 
     async def task(
         question: str,
-        history: "list | None",
-        on_delta: "Callable[[str], None]",
-        on_tool: "Callable[[str], None]",
-        cancel: "threading.Event",
-        selection: "Any" = None,
-    ) -> "tuple[str, list]":
+        history: list | None,
+        on_delta: Callable[[str], None],
+        on_tool: Callable[[str], None],
+        cancel: threading.Event,
+        selection: Any = None,
+    ) -> tuple[str, list]:
         return await stream_console_turn(
             client, run_dir=run_dir, question=question, history=history,
             on_delta=on_delta, on_tool=on_tool, cancel=cancel,

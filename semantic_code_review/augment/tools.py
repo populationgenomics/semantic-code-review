@@ -22,15 +22,15 @@ import inspect
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from pydantic_ai import RunContext
 from pydantic_ai.tools import Tool
 
 from .. import git_ops, structural
-
 
 TOOL_RESULT_CAP_BYTES = 20 * 1024
 
@@ -129,7 +129,8 @@ class RepoTools:
 
     def _read_source(self, path: str, sha: str | None) -> str | None:
         """Raw file text from the head worktree (``sha is None``) or at a
-        revision via ``git show``. ``None`` if it can't be read."""
+        revision via ``git show``. ``None`` if it can't be read.
+        """
         if sha is None:
             full = (self.head_worktree / path).resolve()
             if not _is_inside(full, self.head_worktree) or not full.is_file():
@@ -246,7 +247,8 @@ class RepoTools:
 
     def _grep_git(self, pattern: str, path_glob: str | None, max_hits: int) -> str:
         """Fallback search via ``git grep`` — always available since git is a
-        hard requirement. Respects .gitignore; only searches tracked files."""
+        hard requirement. Respects .gitignore; only searches tracked files.
+        """
         try:
             return _cap(git_ops.grep(self.head_worktree, pattern, path_glob, max_hits))
         except git_ops.GitError as e:

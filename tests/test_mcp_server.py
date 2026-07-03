@@ -6,8 +6,6 @@ import io
 import json
 from pathlib import Path
 
-import pytest
-
 from semantic_code_review.augment.mcp_server import serve
 from semantic_code_review.augment.tools import RepoTools
 

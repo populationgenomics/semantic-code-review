@@ -12,15 +12,20 @@ from pathlib import Path
 from typing import Any
 
 from ..augment.schemas import (
-    AnnotatedDiff, AnnotatedFile, FileAnnotations, FileSymbols, Overview,
-    OverviewEdge, OverviewGroup, OverviewGroupMember, OverviewSymbol,
+    AnnotatedDiff,
+    AnnotatedFile,
+    FileSymbols,
+    Overview,
+    OverviewEdge,
+    OverviewGroup,
+    OverviewGroupMember,
+    OverviewSymbol,
 )
 from ..cache.store import CacheStore
 from ..structural import SymbolDelta
 from .agents import Client, make_overview_agent
 from .pass_ import PassMeta, run_pass
 from .prompts import OVERVIEW_SYSTEM
-
 
 log = logging.getLogger(__name__)
 

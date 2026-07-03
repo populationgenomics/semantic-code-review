@@ -23,10 +23,8 @@ from ..augment.schemas import (
     AnnotatedHunk,
     Overview,
     Segment,
-    SkippedOverview,
     Smell,
 )
-
 
 _MAX_WIDTH = 100  # total characters per emitted line
 _WRAP_WIDTH = 92  # body width for wrapped text directives

@@ -20,13 +20,10 @@ import pytest
 
 from semantic_code_review.fetch.anchor import (
     AnchorResult,
-    propagate_anchor,
-)
-from semantic_code_review.fetch.anchor import (
     _parse_hunk_headers,
     _propagate_through_hunks,
+    propagate_anchor,
 )
-
 
 # ---------------------------------------------------------------------------
 # Hunk header parsing
