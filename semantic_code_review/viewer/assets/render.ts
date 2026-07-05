@@ -274,10 +274,15 @@ function _renderPRPanel(pr: PRBlock): HTMLElement {
   return panel;
 }
 
+/** Render one file. Returns null only in the focused view for a file no
+ *  surviving hunk touches (the caller drops it). A file body is an
+ *  alternating sequence of live hunks and collapsible regions; which
+ *  hunks are live depends on the active filter (see _renderFileBody). */
 function _renderFile(f: FileBlock): HTMLElement | null {
-  const activeIds = Sidebar.activeHunkIds();
-  if (activeIds !== null) return _renderFileFocused(f, activeIds);
+  const liveIds = Sidebar.activeHunkIds();   // null → every hunk is live
+  if (liveIds !== null && !f.hunks.some((h) => liveIds.has(h.id))) return null;
   const div = _el("div", "file");
+  if (liveIds !== null) div.classList.add("filtered");
   div.dataset.id = f.id;
   const folded = _isFolded(f.id, _defaultFileFolded());
   div.classList.toggle("folded", folded);
@@ -286,13 +291,7 @@ function _renderFile(f: FileBlock): HTMLElement | null {
     const body = _el("div", "file-body");
     const overview = _renderFileOverview(f);
     if (overview) body.appendChild(overview);
-    const top = _gapBeforeFirstHunk(f);
-    if (top) body.appendChild(_renderGapChip(f, top));
-    for (let i = 0; i < f.hunks.length; i++) {
-      body.appendChild(_renderHunk(f.hunks[i], f));
-      const mid = _gapAfterHunk(f, i);
-      if (mid) body.appendChild(_renderGapChip(f, mid));
-    }
+    _renderFileBody(body, f, liveIds);
     div.appendChild(body);
     // Run a file-level fold pass once the body is assembled.
     Folds.attachFileFolds(div, f);
@@ -300,37 +299,42 @@ function _renderFile(f: FileBlock): HTMLElement | null {
   return div;
 }
 
-/** Focused (filtered) render of one file: the surviving hunks' diffs
- *  concatenated into a single section, no per-hunk headers and no context
- *  gaps, so a symbol/file filter reads as one continuous diff of just the
- *  matching changes. Returns null when no hunk survives (the caller drops
- *  the file). Line-note annotations still attach — they live on the diff
- *  rows _renderHunkDiff builds — but hunk-level intent/smells don't
- *  render here. The file fold override is still honoured. */
-function _renderFileFocused(f: FileBlock, activeIds: Set<string>): HTMLElement | null {
-  const visible = f.hunks.filter((h) => activeIds.has(h.id));
-  if (visible.length === 0) return null;
-  const div = _el("div", "file filtered");
-  div.dataset.id = f.id;
-  const folded = _isFolded(f.id, _defaultFileFolded());
-  div.classList.toggle("folded", folded);
-  div.appendChild(_renderFileHeader(f, folded));
-  if (folded) return div;
-  const body = _el("div", "file-body");
-  const overview = _renderFileOverview(f);
-  if (overview) body.appendChild(overview);
-  const group = _el("div", "diff-group");
-  for (const h of visible) {
-    // A minimal .hunk[data-id] wrapper (no header) keeps the diff
-    // addressable for comment anchoring; .diff-group merges the borders.
-    const wrap = _el("div", "hunk hunk-focused");
-    wrap.dataset.id = h.id;
-    wrap.appendChild(_renderHunkDiff(h, f));
-    group.appendChild(wrap);
+/** Lay out a file body as live hunks separated by collapsible regions.
+ *  `liveIds` is the set of hunks rendered as full hunks (header + diff);
+ *  null means every hunk is live (the normal, unfiltered view). Each
+ *  region — before, between, and after the live hunks — folds its
+ *  unchanged context and, under a filter, the demoted (non-live) hunks
+ *  into one "expand" chip that opens to a continuous diff. A hunk and a
+ *  demoted region are the same diff-row stream; the only difference is
+ *  the chrome around it (an explanatory header vs. a bare collapse). */
+function _renderFileBody(
+  body: HTMLElement, f: FileBlock, liveIds: Set<string> | null,
+): void {
+  const isLive = (h: HunkBlock): boolean => liveIds === null || liveIds.has(h.id);
+  const total = f.head_lines ? f.head_lines.length : null;
+  let curNew = 1;
+  let curOld = 1;
+  let emittedLive = false;
+
+  const flush = (endNew: number | null, position: "top" | "between" | "bottom"): void => {
+    const demoted = f.hunks.filter(
+      (h) => !isLive(h) && h.new_start >= curNew && (endNew === null || h.new_start <= endNew),
+    );
+    const { rows, marks } = _regionRows(f, curNew, endNew, curOld, demoted);
+    if (rows.length === 0) return;
+    body.appendChild(_renderRegionChip(f, { position, rows, marks }));
+  };
+
+  for (const h of f.hunks.filter(isLive)) {
+    flush(h.new_start - 1, emittedLive ? "between" : "top");
+    // Focused hunks open by default — you filtered to see them — but an
+    // explicit fold override still wins.
+    body.appendChild(_renderHunk(h, f, liveIds !== null ? false : undefined));
+    emittedLive = true;
+    curNew = h.new_start + h.new_count;
+    curOld = h.old_start + h.old_count;
   }
-  body.appendChild(group);
-  div.appendChild(body);
-  return div;
+  flush(total, "bottom");
 }
 
 function _renderFileHeader(f: FileBlock, folded: boolean): HTMLElement {
@@ -373,114 +377,109 @@ function _renderFileOverview(f: FileBlock): HTMLElement | null {
   return div;
 }
 
-// --- Inter-hunk context expansion ---------------------------------------
+// --- Collapsible diff regions -------------------------------------------
+//
+// A region is the folded counterpart of a hunk: the same diff-row stream,
+// shown behind an "expand" chip instead of a hunk header. In the normal
+// view a region holds only unchanged context between hunks; under a
+// filter it also swallows the demoted (non-live) hunks, so their changes
+// render inline when expanded.
 
-interface GapDescriptor {
+interface DiffRegion {
   position: "top" | "between" | "bottom";
-  new_start: number;
-  new_end: number;
-  old_start: number;
-  old_end: number;
+  rows: RowBlock[];
+  marks: (_RowMarks | undefined)[];
 }
 
-function _gapBeforeFirstHunk(f: FileBlock): GapDescriptor | null {
-  if (!f.head_lines || f.hunks.length === 0) return null;
-  const h = f.hunks[0];
-  const newStart = 1, newEnd = h.new_start - 1;
-  if (newEnd < newStart) return null;
-  return {
-    position: "top",
-    new_start: newStart, new_end: newEnd,
-    old_start: 1, old_end: h.old_start - 1,
+/** The row stream for a region: unchanged context (from head_lines)
+ *  interleaved with the demoted hunks' own rows, in file order. `newEnd`
+ *  bounds the trailing context; null (no head_lines) skips context
+ *  entirely, leaving just the hunk rows. */
+function _regionRows(
+  f: FileBlock, newStart: number, newEnd: number | null, oldStart: number, hunks: HunkBlock[],
+): { rows: RowBlock[]; marks: (_RowMarks | undefined)[] } {
+  const rows: RowBlock[] = [];
+  const marks: (_RowMarks | undefined)[] = [];
+  const hl = f.head_lines;
+  let cn = newStart;
+  let co = oldStart;
+  const ctxTo = (upTo: number): void => {
+    if (!hl) return;
+    while (cn < upTo) {
+      const t = hl[cn - 1] ?? "";
+      rows.push({ kind: "ctx", old_line: co, new_line: cn, old_text: t, new_text: t });
+      marks.push(undefined);
+      co++; cn++;
+    }
   };
-}
-
-function _gapAfterHunk(f: FileBlock, i: number): GapDescriptor | null {
-  if (!f.head_lines) return null;
-  const h = f.hunks[i];
-  const newStart = h.new_start + h.new_count;
-  const oldStart = h.old_start + h.old_count;
-  if (i + 1 < f.hunks.length) {
-    const n = f.hunks[i + 1];
-    const newEnd = n.new_start - 1;
-    if (newEnd < newStart) return null;
-    return {
-      position: "between",
-      new_start: newStart, new_end: newEnd,
-      old_start: oldStart, old_end: n.old_start - 1,
-    };
+  for (const h of hunks) {
+    ctxTo(h.new_start);
+    const hm = _blockMarks(h.rows || []);
+    const hr = h.rows || [];
+    for (let i = 0; i < hr.length; i++) { rows.push(hr[i]); marks.push(hm[i]); }
+    cn = h.new_start + h.new_count;
+    co = h.old_start + h.old_count;
   }
-  const total = f.head_lines.length;
-  if (newStart > total) return null;
-  return {
-    position: "bottom",
-    new_start: newStart, new_end: total,
-    old_start: oldStart, old_end: oldStart + (total - newStart),
-  };
+  if (hl && newEnd !== null) ctxTo(newEnd + 1);
+  return { rows, marks };
 }
 
-function _renderGapChip(f: FileBlock, gap: GapDescriptor): HTMLElement {
+function _renderRegionChip(f: FileBlock, region: DiffRegion): HTMLElement {
   const chip = _el("div", "gap-chip");
-  const count = gap.new_end - gap.new_start + 1;
-  const icon = gap.position === "top" ? "⬆" : gap.position === "bottom" ? "⬇" : "⋯";
+  const count = region.rows.length;
+  const icon = region.position === "top" ? "⬆" : region.position === "bottom" ? "⬇" : "⋯";
   const word = count === 1 ? "line" : "lines";
-  const label = gap.position === "top" ? `expand ${count} ${word} above`
-              : gap.position === "bottom" ? `expand ${count} ${word} below`
+  const label = region.position === "top" ? `expand ${count} ${word} above`
+              : region.position === "bottom" ? `expand ${count} ${word} below`
               : `expand ${count} hidden ${word}`;
   chip.innerHTML = `<span class="gap-icon">${icon}</span> <span class="gap-label">${label}</span>`;
-  chip.title = `lines ${gap.new_start}–${gap.new_end}`;
   chip.addEventListener("click", () => {
-    chip.replaceWith(_renderGapExpansion(f, gap));
+    chip.replaceWith(_renderRegionExpansion(f, region));
     _refreshFileFolds(f);
   });
   return chip;
 }
 
-function _renderGapExpansion(f: FileBlock, gap: GapDescriptor): HTMLElement {
+function _renderRegionExpansion(f: FileBlock, region: DiffRegion): HTMLElement {
   const container = _el("div", "gap-expansion");
   const collapse = _el("button", "gap-collapse", "× collapse");
   collapse.title = "Hide these lines again";
   collapse.addEventListener("click", () => {
-    container.replaceWith(_renderGapChip(f, gap));
+    container.replaceWith(_renderRegionChip(f, region));
     _refreshFileFolds(f);
   });
   container.appendChild(collapse);
+  const { diff, oldEls, newEls } = _renderDiffRows(f, region.rows, region.marks);
+  // The file-level fold walker (folds.ts) recovers the row stream + DOM
+  // elements from the container.
+  FileRows.record(container, { rows: region.rows, oldEls, newEls });
+  container.appendChild(diff);
+  return container;
+}
 
+/** Render a diff-row stream into a `.diff` grid, pairing old/new rows.
+ *  The single primitive behind both hunk bodies and region expansions —
+ *  what differs between them is only the surrounding chrome. */
+function _renderDiffRows(
+  f: FileBlock, rows: RowBlock[], marks: (_RowMarks | undefined)[],
+): { diff: HTMLElement; oldEls: HTMLElement[]; newEls: HTMLElement[] } {
   const diff = _el("div", "diff");
   const halfOld = _el("div", "half half-old");
   const halfNew = _el("div", "half half-new");
   diff.appendChild(halfOld);
   diff.appendChild(halfNew);
-
-  const rows: RowBlock[] = [];
-  const rowElsOld: HTMLElement[] = [];
-  const rowElsNew: HTMLElement[] = [];
-  const count = gap.new_end - gap.new_start + 1;
-  const headLines = f.head_lines || [];
-  for (let i = 0; i < count; i++) {
-    const ol = gap.old_start + i;
-    const nl = gap.new_start + i;
-    const text = headLines[nl - 1] ?? "";
-    const rowRecord: RowBlock = {
-      kind: "ctx", old_line: ol, new_line: nl,
-      old_text: text, new_text: text,
-    };
-    rows.push(rowRecord);
-    const pair = _renderRow(rowRecord, f);
+  const oldEls: HTMLElement[] = [];
+  const newEls: HTMLElement[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const pair = _renderRow(rows[i], f, marks[i]?.old, marks[i]?.new);
     (pair.old as { _scrPair?: HTMLElement })._scrPair = pair.new;
     (pair.new as { _scrPair?: HTMLElement })._scrPair = pair.old;
     halfOld.appendChild(pair.old);
     halfNew.appendChild(pair.new);
-    rowElsOld.push(pair.old);
-    rowElsNew.push(pair.new);
+    oldEls.push(pair.old);
+    newEls.push(pair.new);
   }
-
-  // The file-level fold walker (folds.ts) needs to recover the row
-  // stream + per-side DOM elements; hand them off through FileRows.
-  FileRows.record(container, { rows, oldEls: rowElsOld, newEls: rowElsNew });
-
-  container.appendChild(diff);
-  return container;
+  return { diff, oldEls, newEls };
 }
 
 function _refreshFileFolds(f: FileBlock): void {
@@ -492,10 +491,10 @@ function _refreshFileFolds(f: FileBlock): void {
 
 // --- Hunk + diff body ---------------------------------------------------
 
-function _renderHunk(h: HunkBlock, f: FileBlock): HTMLElement {
+function _renderHunk(h: HunkBlock, f: FileBlock, defaultFolded = _defaultHunkFolded()): HTMLElement {
   const div = _el("div", "hunk");
   div.dataset.id = h.id;
-  const folded = _isFolded(h.id, _defaultHunkFolded());
+  const folded = _isFolded(h.id, defaultFolded);
   div.classList.toggle("folded", folded);
   div.style.borderLeftColor = _maxSeverityColor(h);
   div.appendChild(_renderHunkHeader(h, folded, f));
@@ -618,33 +617,15 @@ function _renderSegmentFolded(s: SegmentBlock, f: FileBlock): HTMLElement {
 function _renderHunkDiff(h: HunkBlock, file: FileBlock): HTMLElement {
   const cached = _state.renderedDiffs[h.id];
   if (cached) return cached;
-  const container = _el("div", "diff");
-  const halfOld = _el("div", "half half-old");
-  const halfNew = _el("div", "half half-new");
-  container.appendChild(halfOld);
-  container.appendChild(halfNew);
-
-  const rowElsOld: HTMLElement[] = [];
-  const rowElsNew: HTMLElement[] = [];
   const rows = h.rows || [];
   const marks = _blockMarks(rows);
-  for (let idx = 0; idx < rows.length; idx++) {
-    const pair = _renderRow(rows[idx], file, marks[idx]?.old, marks[idx]?.new);
-    (pair.old as { _scrPair?: HTMLElement })._scrPair = pair.new;
-    (pair.new as { _scrPair?: HTMLElement })._scrPair = pair.old;
-    halfOld.appendChild(pair.old);
-    halfNew.appendChild(pair.new);
-    rowElsOld.push(pair.old);
-    rowElsNew.push(pair.new);
-  }
-  _attachLineNotes(rowElsOld, rowElsNew, h.rows || [], h.line_notes || [], h.id, file.path);
+  const { diff, oldEls, newEls } = _renderDiffRows(file, rows, marks);
+  _attachLineNotes(oldEls, newEls, rows, h.line_notes || [], h.id, file.path);
   // Record this hunk's rows so folds.ts can build a unified row stream
   // across the hunk and adjacent expanded context.
-  FileRows.record(container, {
-    rows: h.rows || [], oldEls: rowElsOld, newEls: rowElsNew,
-  });
-  _state.renderedDiffs[h.id] = container;
-  return container;
+  FileRows.record(diff, { rows, oldEls, newEls });
+  _state.renderedDiffs[h.id] = diff;
+  return diff;
 }
 
 function _attachLineNotes(

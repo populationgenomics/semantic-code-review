@@ -409,14 +409,14 @@ describe("streaming events", () => {
     expect(pills[1].textContent).toContain("b.py");
     expect(pills[1].querySelector(".group-btn-count")!.textContent).toBe("1");
 
-    // Click the a.py pill — the view re-renders focused on a.py: its
-    // hunks are present in a merged diff-group, and b.py drops out
-    // entirely (no surviving hunk).
+    // Click the a.py pill — the view re-renders focused on a.py: both its
+    // hunks stay live, and b.py drops out entirely (no surviving hunk).
     (pills[0] as HTMLElement).click();
     expect(document.querySelector('.hunk[data-id="H0_0"]')).not.toBeNull();
+    expect(document.querySelector('.hunk[data-id="H0_1"]')).not.toBeNull();
     expect(document.querySelector('.hunk[data-id="H1_0"]')).toBeNull();
     expect(document.querySelector('.file[data-id="F1"]')).toBeNull();
-    expect(document.querySelector(".file.filtered .diff-group")).not.toBeNull();
+    expect(document.querySelector(".file.filtered")).not.toBeNull();
     // The pill state survives the re-render.
     expect(
       document.querySelector('.group-btn[data-axis="files"][data-pill-id="BF0"]')!
@@ -485,21 +485,21 @@ describe("streaming events", () => {
     expect(document.querySelector('.hunk[data-id="Hi"]')).toBeNull();
   });
 
-  test("filtering merges surviving hunks into one headerless diff, dropping gaps", async () => {
-    const hunkAt = (id: string, line: number): Record<string, unknown> =>
+  test("filtering keeps focused hunks live and folds the rest into expand chips", async () => {
+    const hunkAt = (id: string, line: number, oldText: string, newText: string): Record<string, unknown> =>
       makeHunkBlock(id, "renamed", {
         old_start: line, old_count: 1, new_start: line, new_count: 1,
-        rows: [{ kind: "pair", old_line: line, new_line: line, old_text: "a", new_text: "A" }],
+        rows: [{ kind: "pair", old_line: line, new_line: line, old_text: oldText, new_text: newText }],
       });
     await bootViewer(makeData({
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
         adds: 3, dels: 3, summary: "",
-        // 9 lines with changed lines at 2, 5, 8 → gaps at 1, 3-4, 6-7, 9.
+        // 9 lines with changed lines at 2, 5, 8 → context at 1, 3-4, 6-7, 9.
         head_lines: ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9"],
         symbols: { added: [], modified: [], removed: [] },
-        hunks: [hunkAt("H0", 2), hunkAt("H1", 5), hunkAt("H2", 8)],
+        hunks: [hunkAt("H0", 2, "a", "A"), hunkAt("H1", 5, "sdf", "fgh"), hunkAt("H2", 8, "e", "E")],
       }],
       symbols: [
         { id: "SY0", title: "first", rationale: "", hunk_ids: ["H0"] },
@@ -510,34 +510,40 @@ describe("streaming events", () => {
     const clickPill = (id: string): void =>
       (document.querySelector(`[data-axis="symbols"] .group-btn[data-pill-id="${id}"]`) as HTMLElement).click();
 
-    // Unfiltered: gap chips and per-hunk headers render.
-    expect(document.querySelectorAll(".gap-chip").length).toBeGreaterThan(0);
+    // Unfiltered: three hunk headers render.
     expect(document.querySelectorAll(".hunk-header").length).toBe(3);
 
-    // Filter to two non-adjacent hunks (H0, H2). They merge into one
-    // diff-group with no context gaps and no per-hunk headers; H1 is gone.
+    // Focus H0 + H2. Both stay live (full hunk, with header). H1 is
+    // demoted — collapsed into an expand chip between them, not rendered
+    // as a hunk.
     clickPill("SY1");
-    const group = document.querySelector(".file.filtered .diff-group");
-    expect(group).not.toBeNull();
-    expect(group!.querySelectorAll(".hunk-focused").length).toBe(2);
-    expect(document.querySelector('.hunk[data-id="H0"]')).not.toBeNull();
-    expect(document.querySelector('.hunk[data-id="H2"]')).not.toBeNull();
+    expect(document.querySelector('.hunk[data-id="H0"] .hunk-header')).not.toBeNull();
+    expect(document.querySelector('.hunk[data-id="H2"] .hunk-header')).not.toBeNull();
     expect(document.querySelector('.hunk[data-id="H1"]')).toBeNull();
-    expect(document.querySelectorAll(".gap-chip")).toHaveLength(0);
-    expect(document.querySelectorAll(".hunk-header")).toHaveLength(0);
-    // The merged section carries both hunks' diff rows in document order.
-    const rows = group!.querySelectorAll(".half-new .row:not(.row-annotation)");
-    expect(rows).toHaveLength(2);
+    // The two live hunks are the only hunks; the demoted region is a chip.
+    expect(document.querySelectorAll(".file.filtered .hunk")).toHaveLength(2);
+    expect(document.querySelectorAll(".file.filtered .gap-chip").length).toBeGreaterThan(0);
+    // H1's change is hidden until its chip is expanded.
+    expect(document.body.textContent).not.toContain("fgh");
 
-    // Narrow to a single hunk — one hunk in the group, still headerless.
+    // Expand the chip that swallowed H1 → its +/- lines render inline
+    // (continuous diff, no hunk header), alongside the surrounding context.
+    const between = Array.from(document.querySelectorAll<HTMLElement>(".file.filtered .gap-chip"))
+      .find((c) => (c.textContent || "").includes("hidden"))!;
+    between.click();
+    const expansion = document.querySelector(".gap-expansion")!;
+    expect(expansion.textContent).toContain("fgh");   // H1's demoted change
+    expect(expansion.textContent).toContain("l3");     // surrounding context
+    expect(expansion.querySelector(".hunk-header")).toBeNull();
+
+    // Narrow to a single hunk — H2 now demotes too.
     clickPill("SY0");
-    const single = document.querySelector(".file.filtered .diff-group")!;
-    expect(single.querySelectorAll(".hunk-focused")).toHaveLength(1);
+    expect(document.querySelector('.hunk[data-id="H0"] .hunk-header')).not.toBeNull();
     expect(document.querySelector('.hunk[data-id="H2"]')).toBeNull();
 
-    // Show all restores the normal structure: gaps and headers return.
+    // Show all restores the normal structure: three hunk headers, gaps.
     (document.querySelector(".group-btn-all") as HTMLElement).click();
-    expect(document.querySelector(".diff-group")).toBeNull();
+    expect(document.querySelector(".file.filtered")).toBeNull();
     expect(document.querySelectorAll(".hunk-header")).toHaveLength(3);
     expect(document.querySelectorAll(".gap-chip").length).toBeGreaterThan(0);
   });
@@ -656,14 +662,14 @@ describe("streaming events", () => {
     expect(Array.from(methodPills).map((p) => p.querySelector(".group-btn-label")!.textContent))
       .toEqual(["bar", "baz"]);
 
-    // Click the class → both its methods' hunks survive in the focused
-    // merged diff; the unrelated H0_2 drops out. (Filtering re-renders,
-    // so hunk elements are re-queried after each click.)
+    // Click the class → both its methods' hunks stay live; the unrelated
+    // H0_2 demotes into a fold. (Filtering re-renders, so hunk elements
+    // are re-queried after each click.)
     classPill.click();
     expect(document.querySelector('.hunk[data-id="H0_0"]')).not.toBeNull();
     expect(document.querySelector('.hunk[data-id="H0_1"]')).not.toBeNull();
     expect(document.querySelector('.hunk[data-id="H0_2"]')).toBeNull();
-    expect(document.querySelectorAll(".file.filtered .diff-group .hunk-focused")).toHaveLength(2);
+    expect(document.querySelectorAll(".file.filtered .hunk")).toHaveLength(2);
 
     // Click the method → only its own hunk remains.
     document.querySelector<HTMLElement>('.group-btn[data-axis="symbols"][data-pill-id="SY1"]')!.click();

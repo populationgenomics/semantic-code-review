@@ -9,9 +9,9 @@
 //
 // Filter semantics: one active pill at a time across all axes.
 // Clicking a pill sets the active pill and fires onFilterChange (a full
-// re-render); render.ts reads activeHunkIds() and, per file, swaps the
-// normal body for a focused merged diff of just the pill's hunks (no
-// headers, no context gaps), dropping files with no surviving hunk. The
+// re-render); render.ts reads activeHunkIds() and renders the pill's
+// hunks as live hunks while the rest of each file demotes into
+// collapsible "expand" regions (a file no hunk touches is dropped). The
 // "ungrouped" visual tell (applyFilter) is anchored to the themes axis
 // and only shows in the unfiltered view. Active pill is persisted in
 // localStorage as `<axis>:<id>`.
@@ -383,9 +383,8 @@ function _emitActivePill(): void {
 }
 
 /** The active pill's hunk-id set, or null when no pill is active.
- *  render.ts reads this to decide, per file, between the normal body and
- *  the focused merged-diff body (only the hunks in this set, no headers,
- *  no context gaps). */
+ *  render.ts reads this to decide which hunks render live; the rest of
+ *  each file demotes into collapsible regions. */
 function activeHunkIds(): Set<string> | null {
   if (_activePill === null) return null;
   const axis = AXES.find((a) => a.id === _activePill!.axis);
