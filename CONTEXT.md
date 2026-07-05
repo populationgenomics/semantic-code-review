@@ -7,8 +7,8 @@ without re-inventing vocabulary.
 This file grows incrementally — add an entry when a refactor needs a
 term, not all at once. Terms not yet listed but recurring in code
 include: **pass** (overview / hunk / fold-summary), **annotation**,
-**row**, **segment**, **smell**, **theme**. Pin these the next time a
-refactor brushes against them.
+**row**, **smell**, **theme**. Pin these the next time a refactor
+brushes against them.
 
 ## Terms
 
@@ -98,6 +98,42 @@ time a region is collapsed, then persisted in the
 `augmented.scr.json` sidecar as a `FoldDescription` on the file's
 first hunk — a stable home pending a schema migration that lifts
 fold descriptions up to `AnnotatedFile`.
+
+**Segment**
+An LLM-produced semantic sub-slice of a [[hunk]]: a contiguous run of
+the hunk's changed lines the per-hunk pass groups by intent.
+`SegmentBlock` carries `new_start`/`new_count` (its head-side line
+range) plus its own `intent`, `smells`, `context`, `refs`, and a
+stable `id`. When a hunk has segments and segment-fold is on (viewer
+fold mode ≠ `"off"`), the viewer renders the hunk body as a `seg-list`
+— one collapsed summary row per segment, each independently foldable —
+instead of the raw diff; toggling any segment (or fold=off) drops back
+to the raw hunk diff.
+
+Segments are semantic and fallible, *not* the deterministic structural
+[[symbol]] ranges: a segment need not line up with one symbol, and the
+two layers are computed independently.
+
+**Collapsible region**
+The viewer renders a file body from one model (`render._renderFileBody`):
+an ordered run of *live hunks* and *collapsible regions*. Both are the
+same diff-row stream (`_renderDiffRows`); the difference is only the
+chrome — a live hunk shows the full [[hunk]] (header, intent, segments),
+a region shows a bare "expand N lines" chip that opens to a continuous
+diff.
+
+Which hunks are live is set by the active sidebar filter (the pill's
+`activeHunkIds`): with no filter every hunk is live and regions hold only
+unchanged context (the between-hunk expand gaps). With a filter, only the
+pill's hunks are live (and open by default) — every other hunk *demotes*,
+folded together with its surrounding context into one region whose
+expansion shows those changes inline with no header. A file no live hunk
+touches is dropped from the render.
+
+Distinct from [[fold-region]]: a fold region is an indent-based collapse
+*within* a rendered hunk (chevrons + the fold-summary pass); a
+collapsible region is the between-/around-hunk expand chip that stands in
+for context and, under a filter, demoted hunks.
 
 **Viewer data**
 The in-memory runtime data structure served as `/data.json` by the
@@ -232,3 +268,10 @@ whose whole subtree touches no hunk yields no block. The viewer's
 the existing pill machinery (`applyFilter`, localStorage `<axis>:<id>`,
 count badges). Like the Files axis it's structural — present from boot,
 never refreshed by an SSE pass (ADR 0001 Slice 5).
+
+Filtering is hunk-granular, not symbol-precise: a pill resolves to the
+*hunks* its symbols overlap, and focus renders those whole hunks live
+(see [[collapsible-region]]). Two symbols in one hunk — adjacent edits
+with no unchanged gap between them — share that hunk id, so focusing
+either surfaces both. Sub-hunk narrowing would key on [[segment]] ranges
+(which carry line coordinates) but isn't done today.
