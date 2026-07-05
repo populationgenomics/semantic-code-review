@@ -390,7 +390,8 @@ function _activePillHunkIds(): Set<string> | null {
 /** Walk every .hunk in the file body, tag `.ungrouped` for hunks no
  *  themes-axis group claims, and toggle visibility based on the
  *  active pill. Files with no visible hunks hide too — keeps the
- *  filtered view tidy. */
+ *  filtered view tidy. Then collapse the filtered-out hunks and the
+ *  context gaps around them into a single fold per run. */
 function applyFilter(): void {
   const activeIds = _activePillHunkIds();
   document.querySelectorAll(".file").forEach((fileEl) => {
@@ -403,9 +404,69 @@ function applyFilter(): void {
       (hunkEl as HTMLElement).style.display = show ? "" : "none";
       if (show) visible++;
     });
+    _refreshInterstitialFolds(fileEl as HTMLElement, activeIds);
     (fileEl as HTMLElement).style.display =
       visible === 0 && activeIds !== null ? "none" : "";
   });
+}
+
+/** Collapse each run of filtered-out hunks together with the context
+ *  gaps around them into one fold placeholder, so a symbol/file filter
+ *  shows the surviving hunks separated by a single "N hidden hunks"
+ *  fold rather than a scatter of orphaned "expand context" chips.
+ *
+ *  Rebuilt from scratch each call: prior placeholders are dropped and
+ *  every gap restored first, so a null filter (Show all) just tears the
+ *  collapse down. Runs of pure context gaps (no hidden hunk between two
+ *  survivors) are left alone — those are ordinary between-hunk chips.
+ *  Hunk display itself is owned by applyFilter; this only reads it. */
+function _refreshInterstitialFolds(fileEl: HTMLElement, activeIds: Set<string> | null): void {
+  fileEl.querySelectorAll(".filter-fold").forEach((el) => el.remove());
+  fileEl.querySelectorAll<HTMLElement>(".gap-chip, .gap-expansion").forEach((el) => {
+    el.style.display = "";
+  });
+  if (activeIds === null) return;
+  const body = fileEl.querySelector(".file-body");
+  if (!body) return;
+
+  const isGap = (el: HTMLElement): boolean =>
+    el.classList.contains("gap-chip") || el.classList.contains("gap-expansion");
+  const isHiddenHunk = (el: HTMLElement): boolean =>
+    el.classList.contains("hunk") && el.style.display === "none";
+
+  const children = Array.from(body.children) as HTMLElement[];
+  let i = 0;
+  while (i < children.length) {
+    if (!isGap(children[i]) && !isHiddenHunk(children[i])) { i++; continue; }
+    const run: HTMLElement[] = [];
+    let hiddenHunks = 0;
+    while (i < children.length && (isGap(children[i]) || isHiddenHunk(children[i]))) {
+      run.push(children[i]);
+      if (isHiddenHunk(children[i])) hiddenHunks++;
+      i++;
+    }
+    if (hiddenHunks === 0) continue;   // pure context gap — leave it be
+    body.insertBefore(_filterFold(run, hiddenHunks), run[0]);
+    for (const el of run) el.style.display = "none";
+  }
+}
+
+/** One collapse placeholder standing in for `run` (the hidden hunks and
+ *  their surrounding gaps). Clicking toggles the run back into view for
+ *  a peek without leaving the filter. */
+function _filterFold(run: HTMLElement[], hiddenHunks: number): HTMLElement {
+  const fold = _el("div", "filter-fold");
+  const word = hiddenHunks === 1 ? "hunk" : "hunks";
+  const label = (expanded: boolean): string =>
+    expanded ? `× collapse ${hiddenHunks} hidden ${word}` : `⋯ ${hiddenHunks} hidden ${word}`;
+  fold.textContent = label(false);
+  fold.addEventListener("click", () => {
+    const expanded = !fold.classList.contains("expanded");
+    fold.classList.toggle("expanded", expanded);
+    fold.textContent = label(expanded);
+    for (const el of run) el.style.display = expanded ? "" : "none";
+  });
+  return fold;
 }
 
 interface CommentCounts { total: number; unresolved: number }

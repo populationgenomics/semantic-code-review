@@ -912,6 +912,26 @@ body {
 }
 .gap-chip .gap-icon { margin-right: 6px; color: var(--accent); }
 
+/* Collapse placeholder for hunks filtered out by a sidebar pill, plus
+   the context gaps around them. Distinguished from a context .gap-chip
+   by a solid accent-tinted border — it hides changed hunks, not just
+   unchanged lines. */
+.filter-fold {
+  margin: 8px 0;
+  padding: 6px 12px;
+  background: var(--bg-alt);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+  text-align: center;
+  font-family: var(--mono);
+  transition: background 0.1s, color 0.1s;
+}
+.filter-fold:hover { background: var(--bg-panel); color: var(--fg); }
+
 .gap-expansion { position: relative; margin: 8px 0; }
 .gap-expansion .diff { border-style: dashed; opacity: 0.92; }
 .gap-expansion .gap-collapse {

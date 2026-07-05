@@ -476,6 +476,76 @@ describe("streaming events", () => {
     expect(srcChildWrap.style.display).toBe("none");
   });
 
+  test("filtering collapses hidden hunks and their context gaps into one fold", async () => {
+    const hunkAt = (id: string, line: number): Record<string, unknown> =>
+      makeHunkBlock(id, "", {
+        old_start: line, old_count: 1, new_start: line, new_count: 1,
+        rows: [{ kind: "pair", old_line: line, new_line: line, old_text: "a", new_text: "A" }],
+      });
+    await bootViewer(makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 3, dels: 3, summary: "",
+        // 9 lines with changed lines at 2, 5, 8 → gaps at 1, 3-4, 6-7, 9.
+        head_lines: ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9"],
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [hunkAt("H0", 2), hunkAt("H1", 5), hunkAt("H2", 8)],
+      }],
+      symbols: [
+        { id: "SY0", title: "mid", rationale: "", hunk_ids: ["H1"] },
+        { id: "SY1", title: "firsttwo", rationale: "", hunk_ids: ["H0", "H1"] },
+      ],
+    }));
+
+    const clickPill = (id: string): void =>
+      (document.querySelector(`[data-axis="symbols"] .group-btn[data-pill-id="${id}"]`) as HTMLElement).click();
+    const hunk = (id: string): HTMLElement => document.querySelector(`.hunk[data-id="${id}"]`)!;
+    const gaps = (): HTMLElement[] =>
+      Array.from(document.querySelectorAll<HTMLElement>(".gap-chip"));
+
+    // Four context gap chips render before filtering.
+    expect(gaps()).toHaveLength(4);
+
+    // Filter to only H1: the runs on either side (each a hidden hunk
+    // flanked by gaps) collapse into one fold apiece; every gap chip is
+    // swallowed into a fold.
+    clickPill("SY0");
+    const folds = Array.from(document.querySelectorAll<HTMLElement>(".filter-fold"));
+    expect(folds).toHaveLength(2);
+    expect(folds[0].textContent).toBe("⋯ 1 hidden hunk");
+    expect(hunk("H1").style.display).not.toBe("none");
+    expect(hunk("H0").style.display).toBe("none");
+    expect(hunk("H2").style.display).toBe("none");
+    for (const g of gaps()) expect(g.style.display).toBe("none");
+
+    // Clicking a fold peeks its run back into view without leaving the
+    // filter; clicking again re-collapses.
+    folds[0].click();
+    expect(folds[0].textContent).toBe("× collapse 1 hidden hunk");
+    expect(hunk("H0").style.display).not.toBe("none");
+    folds[0].click();
+    expect(hunk("H0").style.display).toBe("none");
+
+    // A run of pure context (no hidden hunk between two survivors) is
+    // left as an ordinary gap chip. Filtering to H0+H1: only the trailing
+    // run (H2 + its gaps) collapses; the top and between-01 gaps stay.
+    clickPill("SY1");
+    expect(document.querySelectorAll(".filter-fold")).toHaveLength(1);
+    const g = gaps();
+    expect(g[0].style.display).not.toBe("none");   // top gap (line 1)
+    expect(g[1].style.display).not.toBe("none");   // between H0 and H1
+    expect(g[2].style.display).toBe("none");        // between H1 and H2 (collapsed)
+    expect(g[3].style.display).toBe("none");        // bottom gap (collapsed)
+
+    // Show all tears the folds down and restores every gap.
+    (document.querySelector(".group-btn-all") as HTMLElement).click();
+    expect(document.querySelectorAll(".filter-fold")).toHaveLength(0);
+    for (const gap of gaps()) expect(gap.style.display).not.toBe("none");
+    expect(hunk("H0").style.display).not.toBe("none");
+    expect(hunk("H2").style.display).not.toBe("none");
+  });
+
   test("symbols axis renders flat pills from boot and filters on click", async () => {
     await bootViewer(makeData({
       pending: false,
