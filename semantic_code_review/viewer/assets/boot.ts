@@ -55,6 +55,9 @@ function boot(): void {
     // Focusing a Symbols-axis pill search-highlights that symbol's name
     // across every diff line; any other pill (or none) clears it.
     onActivePillChange: (symbolName) => Render.setSymbolSearch(symbolName),
+    // A filter change flips each file between its normal body and the
+    // focused merged-diff body — a full re-render, driven from render.ts.
+    onFilterChange: () => Render.render(),
   });
   Render.init(DATA);       // wires hash + keyboard + initial paint
   Progress.init(DATA);

@@ -409,18 +409,23 @@ describe("streaming events", () => {
     expect(pills[1].textContent).toContain("b.py");
     expect(pills[1].querySelector(".group-btn-count")!.textContent).toBe("1");
 
-    // Click the a.py pill — only its two hunks remain visible; b's
-    // hunk is hidden and its file element collapses.
+    // Click the a.py pill — the view re-renders focused on a.py: its
+    // hunks are present in a merged diff-group, and b.py drops out
+    // entirely (no surviving hunk).
     (pills[0] as HTMLElement).click();
-    const h0 = document.querySelector('.hunk[data-id="H0_0"]') as HTMLElement;
-    const h1 = document.querySelector('.hunk[data-id="H1_0"]') as HTMLElement;
-    expect(h0.style.display).not.toBe("none");
-    expect(h1.style.display).toBe("none");
-    expect((pills[0] as HTMLElement).classList.contains("active")).toBe(true);
+    expect(document.querySelector('.hunk[data-id="H0_0"]')).not.toBeNull();
+    expect(document.querySelector('.hunk[data-id="H1_0"]')).toBeNull();
+    expect(document.querySelector('.file[data-id="F1"]')).toBeNull();
+    expect(document.querySelector(".file.filtered .diff-group")).not.toBeNull();
+    // The pill state survives the re-render.
+    expect(
+      document.querySelector('.group-btn[data-axis="files"][data-pill-id="BF0"]')!
+        .classList.contains("active"),
+    ).toBe(true);
 
-    // Clicking it again clears the filter.
-    (pills[0] as HTMLElement).click();
-    expect(h1.style.display).not.toBe("none");
+    // Clicking it again clears the filter — b.py comes back.
+    (document.querySelector('.group-btn[data-axis="files"][data-pill-id="BF0"]') as HTMLElement).click();
+    expect(document.querySelector('.hunk[data-id="H1_0"]')).not.toBeNull();
     expect(document.querySelector(".group-btn-all")!.classList.contains("active")).toBe(true);
   });
 
@@ -461,24 +466,28 @@ describe("streaming events", () => {
     const srcChildren = srcNode.querySelectorAll(".group-tree-children .group-btn-label");
     expect(Array.from(srcChildren).map((e) => e.textContent)).toEqual(["a.py", "b.py"]);
 
-    // Clicking the "src" directory filters to its whole subtree: both
-    // src hunks visible, the docs hunk hidden.
-    srcPill.click();
-    expect((document.querySelector('.hunk[data-id="Ha"]') as HTMLElement).style.display).not.toBe("none");
-    expect((document.querySelector('.hunk[data-id="Hb"]') as HTMLElement).style.display).not.toBe("none");
-    expect((document.querySelector('.hunk[data-id="Hi"]') as HTMLElement).style.display).toBe("none");
-
-    // The toggle collapses the directory's children in place.
+    // The toggle collapses the directory's children in place. (Tested
+    // before the filter click, which re-renders the sidebar and would
+    // detach these nodes.)
     const srcToggle = srcNode.querySelector(":scope > .group-tree-row > .group-tree-toggle") as HTMLElement;
     const srcChildWrap = srcNode.querySelector(":scope > .group-tree-children") as HTMLElement;
     expect(srcChildWrap.style.display).not.toBe("none");
     srcToggle.click();
     expect(srcChildWrap.style.display).toBe("none");
+    srcToggle.click();   // re-expand so the pill is reachable again
+
+    // Clicking the "src" directory filters to its whole subtree: the
+    // view re-renders focused on the two src hunks; the docs file drops
+    // out entirely.
+    srcPill.click();
+    expect(document.querySelector('.hunk[data-id="Ha"]')).not.toBeNull();
+    expect(document.querySelector('.hunk[data-id="Hb"]')).not.toBeNull();
+    expect(document.querySelector('.hunk[data-id="Hi"]')).toBeNull();
   });
 
-  test("filtering collapses hidden hunks and their context gaps into one fold", async () => {
+  test("filtering merges surviving hunks into one headerless diff, dropping gaps", async () => {
     const hunkAt = (id: string, line: number): Record<string, unknown> =>
-      makeHunkBlock(id, "", {
+      makeHunkBlock(id, "renamed", {
         old_start: line, old_count: 1, new_start: line, new_count: 1,
         rows: [{ kind: "pair", old_line: line, new_line: line, old_text: "a", new_text: "A" }],
       });
@@ -493,57 +502,44 @@ describe("streaming events", () => {
         hunks: [hunkAt("H0", 2), hunkAt("H1", 5), hunkAt("H2", 8)],
       }],
       symbols: [
-        { id: "SY0", title: "mid", rationale: "", hunk_ids: ["H1"] },
-        { id: "SY1", title: "firsttwo", rationale: "", hunk_ids: ["H0", "H1"] },
+        { id: "SY0", title: "first", rationale: "", hunk_ids: ["H0"] },
+        { id: "SY1", title: "firstlast", rationale: "", hunk_ids: ["H0", "H2"] },
       ],
     }));
 
     const clickPill = (id: string): void =>
       (document.querySelector(`[data-axis="symbols"] .group-btn[data-pill-id="${id}"]`) as HTMLElement).click();
-    const hunk = (id: string): HTMLElement => document.querySelector(`.hunk[data-id="${id}"]`)!;
-    const gaps = (): HTMLElement[] =>
-      Array.from(document.querySelectorAll<HTMLElement>(".gap-chip"));
 
-    // Four context gap chips render before filtering.
-    expect(gaps()).toHaveLength(4);
+    // Unfiltered: gap chips and per-hunk headers render.
+    expect(document.querySelectorAll(".gap-chip").length).toBeGreaterThan(0);
+    expect(document.querySelectorAll(".hunk-header").length).toBe(3);
 
-    // Filter to only H1: the runs on either side (each a hidden hunk
-    // flanked by gaps) collapse into one fold apiece; every gap chip is
-    // swallowed into a fold.
-    clickPill("SY0");
-    const folds = Array.from(document.querySelectorAll<HTMLElement>(".filter-fold"));
-    expect(folds).toHaveLength(2);
-    expect(folds[0].textContent).toBe("⋯ 1 hidden hunk");
-    expect(hunk("H1").style.display).not.toBe("none");
-    expect(hunk("H0").style.display).toBe("none");
-    expect(hunk("H2").style.display).toBe("none");
-    for (const g of gaps()) expect(g.style.display).toBe("none");
-
-    // Clicking a fold peeks its run back into view without leaving the
-    // filter; clicking again re-collapses.
-    folds[0].click();
-    expect(folds[0].textContent).toBe("× collapse 1 hidden hunk");
-    expect(hunk("H0").style.display).not.toBe("none");
-    folds[0].click();
-    expect(hunk("H0").style.display).toBe("none");
-
-    // A run of pure context (no hidden hunk between two survivors) is
-    // left as an ordinary gap chip. Filtering to H0+H1: only the trailing
-    // run (H2 + its gaps) collapses; the top and between-01 gaps stay.
+    // Filter to two non-adjacent hunks (H0, H2). They merge into one
+    // diff-group with no context gaps and no per-hunk headers; H1 is gone.
     clickPill("SY1");
-    expect(document.querySelectorAll(".filter-fold")).toHaveLength(1);
-    const g = gaps();
-    expect(g[0].style.display).not.toBe("none");   // top gap (line 1)
-    expect(g[1].style.display).not.toBe("none");   // between H0 and H1
-    expect(g[2].style.display).toBe("none");        // between H1 and H2 (collapsed)
-    expect(g[3].style.display).toBe("none");        // bottom gap (collapsed)
+    const group = document.querySelector(".file.filtered .diff-group");
+    expect(group).not.toBeNull();
+    expect(group!.querySelectorAll(".hunk-focused").length).toBe(2);
+    expect(document.querySelector('.hunk[data-id="H0"]')).not.toBeNull();
+    expect(document.querySelector('.hunk[data-id="H2"]')).not.toBeNull();
+    expect(document.querySelector('.hunk[data-id="H1"]')).toBeNull();
+    expect(document.querySelectorAll(".gap-chip")).toHaveLength(0);
+    expect(document.querySelectorAll(".hunk-header")).toHaveLength(0);
+    // The merged section carries both hunks' diff rows in document order.
+    const rows = group!.querySelectorAll(".half-new .row:not(.row-annotation)");
+    expect(rows).toHaveLength(2);
 
-    // Show all tears the folds down and restores every gap.
+    // Narrow to a single hunk — one hunk in the group, still headerless.
+    clickPill("SY0");
+    const single = document.querySelector(".file.filtered .diff-group")!;
+    expect(single.querySelectorAll(".hunk-focused")).toHaveLength(1);
+    expect(document.querySelector('.hunk[data-id="H2"]')).toBeNull();
+
+    // Show all restores the normal structure: gaps and headers return.
     (document.querySelector(".group-btn-all") as HTMLElement).click();
-    expect(document.querySelectorAll(".filter-fold")).toHaveLength(0);
-    for (const gap of gaps()) expect(gap.style.display).not.toBe("none");
-    expect(hunk("H0").style.display).not.toBe("none");
-    expect(hunk("H2").style.display).not.toBe("none");
+    expect(document.querySelector(".diff-group")).toBeNull();
+    expect(document.querySelectorAll(".hunk-header")).toHaveLength(3);
+    expect(document.querySelectorAll(".gap-chip").length).toBeGreaterThan(0);
   });
 
   test("symbols axis renders flat pills from boot and filters on click", async () => {
@@ -568,13 +564,15 @@ describe("streaming events", () => {
     expect(pills[0].textContent).toContain("Foo.bar");
     expect(pills[0].querySelector(".group-btn-count")!.textContent).toBe("1");
 
-    // Click the Foo.bar pill — only H0_0 stays visible.
+    // Click the Foo.bar pill — the view re-renders focused on H0_0; the
+    // sibling hunk H0_1 drops out.
     (pills[0] as HTMLElement).click();
-    const h0 = document.querySelector('.hunk[data-id="H0_0"]') as HTMLElement;
-    const h1 = document.querySelector('.hunk[data-id="H0_1"]') as HTMLElement;
-    expect(h0.style.display).not.toBe("none");
-    expect(h1.style.display).toBe("none");
-    expect((pills[0] as HTMLElement).classList.contains("active")).toBe(true);
+    expect(document.querySelector('.hunk[data-id="H0_0"]')).not.toBeNull();
+    expect(document.querySelector('.hunk[data-id="H0_1"]')).toBeNull();
+    expect(
+      document.querySelector('.group-btn[data-axis="symbols"][data-pill-id="SY0"]')!
+        .classList.contains("active"),
+    ).toBe(true);
 
     // The symbols axis coexists with Themes/Files (Files renders from boot).
     expect(sidebar.querySelector('[data-axis="files"]')).not.toBeNull();
@@ -658,31 +656,29 @@ describe("streaming events", () => {
     expect(Array.from(methodPills).map((p) => p.querySelector(".group-btn-label")!.textContent))
       .toEqual(["bar", "baz"]);
 
-    const h0 = document.querySelector('.hunk[data-id="H0_0"]') as HTMLElement;
-    const h1 = document.querySelector('.hunk[data-id="H0_1"]') as HTMLElement;
-    const h2 = document.querySelector('.hunk[data-id="H0_2"]') as HTMLElement;
-
-    // Click the class → both its methods' hunks stay visible, the
-    // unrelated H0_2 is hidden.
+    // Click the class → both its methods' hunks survive in the focused
+    // merged diff; the unrelated H0_2 drops out. (Filtering re-renders,
+    // so hunk elements are re-queried after each click.)
     classPill.click();
-    expect(h0.style.display).not.toBe("none");
-    expect(h1.style.display).not.toBe("none");
-    expect(h2.style.display).toBe("none");
+    expect(document.querySelector('.hunk[data-id="H0_0"]')).not.toBeNull();
+    expect(document.querySelector('.hunk[data-id="H0_1"]')).not.toBeNull();
+    expect(document.querySelector('.hunk[data-id="H0_2"]')).toBeNull();
+    expect(document.querySelectorAll(".file.filtered .diff-group .hunk-focused")).toHaveLength(2);
 
     // Click the method → only its own hunk remains.
-    section.querySelector<HTMLElement>('.group-btn[data-pill-id="SY1"]')!.click();
-    expect(h0.style.display).not.toBe("none");
-    expect(h1.style.display).toBe("none");
-    expect(h2.style.display).toBe("none");
+    document.querySelector<HTMLElement>('.group-btn[data-axis="symbols"][data-pill-id="SY1"]')!.click();
+    expect(document.querySelector('.hunk[data-id="H0_0"]')).not.toBeNull();
+    expect(document.querySelector('.hunk[data-id="H0_1"]')).toBeNull();
+    expect(document.querySelector('.hunk[data-id="H0_2"]')).toBeNull();
 
-    // The collapse toggle hides the children without filtering.
-    const toggle = section.querySelector<HTMLElement>(".group-tree-toggle")!;
+    // The collapse toggle hides the children without changing the filter.
+    const toggle = document.querySelector<HTMLElement>('[data-axis="symbols"] .group-tree-toggle')!;
     expect(toggle.classList.contains("group-tree-toggle-leaf")).toBe(false);
     toggle.click();
-    const childWrap = section.querySelector(".group-tree-children") as HTMLElement;
+    const childWrap = document.querySelector('[data-axis="symbols"] .group-tree-children') as HTMLElement;
     expect(childWrap.style.display).toBe("none");
-    // Filter unaffected by collapse — still on SY1.
-    expect(h1.style.display).toBe("none");
+    // Filter unaffected by collapse (no re-render) — still on SY1.
+    expect(document.querySelector('.hunk[data-id="H0_1"]')).toBeNull();
   });
 
   test("done event hides the progress strip and clears pending", async () => {

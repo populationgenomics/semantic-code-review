@@ -70,7 +70,10 @@ function render(): void {
   if (!app) return;
   app.innerHTML = "";
   app.appendChild(_renderPRPanel(_data.pr));
-  for (const f of _data.files) app.appendChild(_renderFile(f));
+  for (const f of _data.files) {
+    const el = _renderFile(f);
+    if (el) app.appendChild(el);   // focused render drops files with no surviving hunk
+  }
   Sidebar.render();
   Sidebar.applyFilter();
   _updateStatus();
@@ -96,6 +99,11 @@ function renderHunkReplace(file: FileBlock, hunkIdx: number): void {
   const h = file.hunks[hunkIdx];
   if (!h) return;
   delete _state.renderedDiffs[h.id];
+  // Under an active filter the file body is the focused merged diff
+  // (header-less .hunk wrappers), not the normal hunk layout — a
+  // surgical swap would inject a full hunk header. Fall back to a full
+  // re-render, which rebuilds the focused body correctly.
+  if (Sidebar.activeHunkIds() !== null) { render(); return; }
   const fresh = _renderHunk(h, file);
   const existing = document.querySelector(
     '.hunk[data-id="' + _cssEscape(h.id) + '"]',
@@ -266,7 +274,9 @@ function _renderPRPanel(pr: PRBlock): HTMLElement {
   return panel;
 }
 
-function _renderFile(f: FileBlock): HTMLElement {
+function _renderFile(f: FileBlock): HTMLElement | null {
+  const activeIds = Sidebar.activeHunkIds();
+  if (activeIds !== null) return _renderFileFocused(f, activeIds);
   const div = _el("div", "file");
   div.dataset.id = f.id;
   const folded = _isFolded(f.id, _defaultFileFolded());
@@ -287,6 +297,39 @@ function _renderFile(f: FileBlock): HTMLElement {
     // Run a file-level fold pass once the body is assembled.
     Folds.attachFileFolds(div, f);
   }
+  return div;
+}
+
+/** Focused (filtered) render of one file: the surviving hunks' diffs
+ *  concatenated into a single section, no per-hunk headers and no context
+ *  gaps, so a symbol/file filter reads as one continuous diff of just the
+ *  matching changes. Returns null when no hunk survives (the caller drops
+ *  the file). Line-note annotations still attach — they live on the diff
+ *  rows _renderHunkDiff builds — but hunk-level intent/smells don't
+ *  render here. The file fold override is still honoured. */
+function _renderFileFocused(f: FileBlock, activeIds: Set<string>): HTMLElement | null {
+  const visible = f.hunks.filter((h) => activeIds.has(h.id));
+  if (visible.length === 0) return null;
+  const div = _el("div", "file filtered");
+  div.dataset.id = f.id;
+  const folded = _isFolded(f.id, _defaultFileFolded());
+  div.classList.toggle("folded", folded);
+  div.appendChild(_renderFileHeader(f, folded));
+  if (folded) return div;
+  const body = _el("div", "file-body");
+  const overview = _renderFileOverview(f);
+  if (overview) body.appendChild(overview);
+  const group = _el("div", "diff-group");
+  for (const h of visible) {
+    // A minimal .hunk[data-id] wrapper (no header) keeps the diff
+    // addressable for comment anchoring; .diff-group merges the borders.
+    const wrap = _el("div", "hunk hunk-focused");
+    wrap.dataset.id = h.id;
+    wrap.appendChild(_renderHunkDiff(h, f));
+    group.appendChild(wrap);
+  }
+  body.appendChild(group);
+  div.appendChild(body);
   return div;
 }
 

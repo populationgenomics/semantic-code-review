@@ -7,14 +7,15 @@
 // directory tree (single-child directory chains compressed into one
 // node, siblings sorted alphanumerically).
 //
-// Filter semantics: one active pill at a time across all axes;
-// clicking a pill toggles visibility on the per-file body via
-// applyGroupFilter. The "ungrouped" visual tell is anchored to the
-// themes axis (every hunk lives in a file, so the files axis has
-// no useful "ungrouped" signal). Active pill is persisted in
+// Filter semantics: one active pill at a time across all axes.
+// Clicking a pill sets the active pill and fires onFilterChange (a full
+// re-render); render.ts reads activeHunkIds() and, per file, swaps the
+// normal body for a focused merged diff of just the pill's hunks (no
+// headers, no context gaps), dropping files with no surviving hunk. The
+// "ungrouped" visual tell (applyFilter) is anchored to the themes axis
+// and only shows in the unfiltered view. Active pill is persisted in
 // localStorage as `<axis>:<id>`.
 
-import { Annotations } from "./annotations";
 import { Comments } from "./comments";
 
 type AxisId = "themes" | "files" | "symbols";
@@ -57,6 +58,11 @@ let _lsKey = "scr-active-group:local";
 // injected callback rather than a direct import so the sidebar doesn't
 // take a cyclic dependency on render.
 let _onActivePillChange: ((symbolName: string | null) => void) | null = null;
+// Fired whenever the active pill changes — boot points this at
+// Render.render. A filter change flips each file between its normal body
+// and the focused merged-diff body (built in render.ts from
+// activeHunkIds), so it needs a full re-render, not a display toggle.
+let _onFilterChange: (() => void) | null = null;
 // Collapsed tree nodes (Files + Symbols axes), by pill id. In-memory
 // only (trees are expanded by default; collapse is a transient view
 // preference that survives re-renders within a session but not a
@@ -68,10 +74,14 @@ const _collapsedNodes = new Set<string>();
  *  in a way the in-place refreshers don't cover). */
 function init(
   data: ViewerData,
-  opts?: { onActivePillChange?: (symbolName: string | null) => void },
+  opts?: {
+    onActivePillChange?: (symbolName: string | null) => void;
+    onFilterChange?: () => void;
+  },
 ): void {
   _data = data;
   if (opts && opts.onActivePillChange) _onActivePillChange = opts.onActivePillChange;
+  if (opts && opts.onFilterChange) _onFilterChange = opts.onFilterChange;
   _lsKey =
     "scr-active-group:"
     + (data.pr && data.pr.head_sha ? data.pr.head_sha : "local");
@@ -350,20 +360,13 @@ function setActivePill(pill: ActivePill | null): void {
     if (pill === null) localStorage.removeItem(_lsKey);
     else localStorage.setItem(_lsKey, `${pill.axis}:${pill.id}`);
   } catch (_) { /* ignore */ }
-  document.querySelectorAll(".group-btn").forEach(
-    (b) => b.classList.remove("active"),
-  );
-  if (pill === null) {
-    const all = document.querySelector(".group-btn-all");
-    if (all) all.classList.add("active");
-  } else {
-    const sel = `.group-btn[data-axis="${pill.axis}"][data-pill-id="${pill.id}"]`;
-    const btn = document.querySelector(sel);
-    if (btn) btn.classList.add("active");
-  }
-  applyFilter();
+  // Seed the symbol-search term before re-rendering so freshly rendered
+  // cells pick it up in _renderContent (order matters).
   _emitActivePill();
-  Annotations.reflowAll();
+  // Full re-render: render.ts swaps each file between its normal body and
+  // the focused merged-diff body, and its render() repaints the pills'
+  // active state via Sidebar.render.
+  _onFilterChange?.();
 }
 
 /** Name to search-highlight across the diff for the active pill: the
@@ -379,7 +382,11 @@ function _emitActivePill(): void {
   _onActivePillChange?.(_activeSymbolName());
 }
 
-function _activePillHunkIds(): Set<string> | null {
+/** The active pill's hunk-id set, or null when no pill is active.
+ *  render.ts reads this to decide, per file, between the normal body and
+ *  the focused merged-diff body (only the hunks in this set, no headers,
+ *  no context gaps). */
+function activeHunkIds(): Set<string> | null {
   if (_activePill === null) return null;
   const axis = AXES.find((a) => a.id === _activePill!.axis);
   if (!axis) return null;
@@ -387,86 +394,17 @@ function _activePillHunkIds(): Set<string> | null {
   return g ? new Set(g.hunk_ids || []) : new Set<string>();
 }
 
-/** Walk every .hunk in the file body, tag `.ungrouped` for hunks no
- *  themes-axis group claims, and toggle visibility based on the
- *  active pill. Files with no visible hunks hide too — keeps the
- *  filtered view tidy. Then collapse the filtered-out hunks and the
- *  context gaps around them into a single fold per run. */
+/** Tag `.ungrouped` on every rendered hunk no themes-axis group claims,
+ *  the dotted-border tell for the unfiltered view. A no-op under an
+ *  active filter: the focused bodies carry no themeable `.hunk` headers,
+ *  and render.ts already selected which hunks appear. */
 function applyFilter(): void {
-  const activeIds = _activePillHunkIds();
-  document.querySelectorAll(".file").forEach((fileEl) => {
-    let visible = 0;
-    fileEl.querySelectorAll(".hunk").forEach((hunkEl) => {
-      const hid = (hunkEl as HTMLElement).dataset.id || "";
-      const inAnyGroup = (THEMES_AXIS.hunkCount[hid] || 0) > 0;
-      hunkEl.classList.toggle("ungrouped", !inAnyGroup);
-      const show = activeIds === null ? true : activeIds.has(hid);
-      (hunkEl as HTMLElement).style.display = show ? "" : "none";
-      if (show) visible++;
-    });
-    _refreshInterstitialFolds(fileEl as HTMLElement, activeIds);
-    (fileEl as HTMLElement).style.display =
-      visible === 0 && activeIds !== null ? "none" : "";
+  const filtered = _activePill !== null;
+  document.querySelectorAll<HTMLElement>(".hunk").forEach((hunkEl) => {
+    const hid = hunkEl.dataset.id || "";
+    const inAnyGroup = (THEMES_AXIS.hunkCount[hid] || 0) > 0;
+    hunkEl.classList.toggle("ungrouped", !filtered && !inAnyGroup);
   });
-}
-
-/** Collapse each run of filtered-out hunks together with the context
- *  gaps around them into one fold placeholder, so a symbol/file filter
- *  shows the surviving hunks separated by a single "N hidden hunks"
- *  fold rather than a scatter of orphaned "expand context" chips.
- *
- *  Rebuilt from scratch each call: prior placeholders are dropped and
- *  every gap restored first, so a null filter (Show all) just tears the
- *  collapse down. Runs of pure context gaps (no hidden hunk between two
- *  survivors) are left alone — those are ordinary between-hunk chips.
- *  Hunk display itself is owned by applyFilter; this only reads it. */
-function _refreshInterstitialFolds(fileEl: HTMLElement, activeIds: Set<string> | null): void {
-  fileEl.querySelectorAll(".filter-fold").forEach((el) => el.remove());
-  fileEl.querySelectorAll<HTMLElement>(".gap-chip, .gap-expansion").forEach((el) => {
-    el.style.display = "";
-  });
-  if (activeIds === null) return;
-  const body = fileEl.querySelector(".file-body");
-  if (!body) return;
-
-  const isGap = (el: HTMLElement): boolean =>
-    el.classList.contains("gap-chip") || el.classList.contains("gap-expansion");
-  const isHiddenHunk = (el: HTMLElement): boolean =>
-    el.classList.contains("hunk") && el.style.display === "none";
-
-  const children = Array.from(body.children) as HTMLElement[];
-  let i = 0;
-  while (i < children.length) {
-    if (!isGap(children[i]) && !isHiddenHunk(children[i])) { i++; continue; }
-    const run: HTMLElement[] = [];
-    let hiddenHunks = 0;
-    while (i < children.length && (isGap(children[i]) || isHiddenHunk(children[i]))) {
-      run.push(children[i]);
-      if (isHiddenHunk(children[i])) hiddenHunks++;
-      i++;
-    }
-    if (hiddenHunks === 0) continue;   // pure context gap — leave it be
-    body.insertBefore(_filterFold(run, hiddenHunks), run[0]);
-    for (const el of run) el.style.display = "none";
-  }
-}
-
-/** One collapse placeholder standing in for `run` (the hidden hunks and
- *  their surrounding gaps). Clicking toggles the run back into view for
- *  a peek without leaving the filter. */
-function _filterFold(run: HTMLElement[], hiddenHunks: number): HTMLElement {
-  const fold = _el("div", "filter-fold");
-  const word = hiddenHunks === 1 ? "hunk" : "hunks";
-  const label = (expanded: boolean): string =>
-    expanded ? `× collapse ${hiddenHunks} hidden ${word}` : `⋯ ${hiddenHunks} hidden ${word}`;
-  fold.textContent = label(false);
-  fold.addEventListener("click", () => {
-    const expanded = !fold.classList.contains("expanded");
-    fold.classList.toggle("expanded", expanded);
-    fold.textContent = label(expanded);
-    for (const el of run) el.style.display = expanded ? "" : "none";
-  });
-  return fold;
 }
 
 interface CommentCounts { total: number; unresolved: number }
@@ -572,4 +510,5 @@ export const Sidebar = {
   refreshFileCommentCounts,
   setActivePill,
   applyFilter,
+  activeHunkIds,
 };
