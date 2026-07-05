@@ -125,15 +125,38 @@ diff.
 Which hunks are live is set by the active sidebar filter (the pill's
 `activeHunkIds`): with no filter every hunk is live and regions hold only
 unchanged context (the between-hunk expand gaps). With a filter, only the
-pill's hunks are live (and open by default) — every other hunk *demotes*,
-folded together with its surrounding context into one region whose
-expansion shows those changes inline with no header. A file no live hunk
-touches is dropped from the render.
+pill's hunks are live (their code revealed — see [[fold-level]]) — every
+other hunk *demotes*, folded together with its surrounding context into
+one region whose expansion shows those changes inline with no header. A
+file no live hunk touches is dropped from the render.
 
 Distinct from [[fold-region]]: a fold region is an indent-based collapse
 *within* a rendered hunk (chevrons + the fold-summary pass); a
 collapsible region is the between-/around-hunk expand chip that stands in
 for context and, under a filter, demoted hunks.
+
+**Fold level**
+The viewer's global collapse depth (`RenderState.fold`, driven by the
+fold slider / keys 1–4): `files` → `hunks` → `segments` → `off`, each a
+shallower fold. Code (raw diff rows) shows only at `off`; `segments`
+shows each [[hunk]]'s [[segment]] summaries (a segment-less hunk folds as
+one synthetic whole-hunk segment, so every hunk behaves uniformly);
+`hunks` shows hunk headers; `files` shows file headers.
+
+Per-item exceptions live in `RenderState.overrides` — a reviewer
+expanding/collapsing one file/hunk/segment; an override wins over the
+level default. Picking a level (`_setGlobalFold`) is authoritative: it
+clears every override, folding the whole tree to that depth, including a
+filter's focused hunks.
+
+Focus reveal (`RenderState.focusReveal`) is a separate *ephemeral* bit,
+not an override: set when a sidebar pill is clicked
+(`Render.applyFilterChange`), cleared the moment the slider is touched.
+While set, the filter's live hunks render open (code shown) regardless of
+level — so clicking a symbol shows its code — but because it isn't a
+stored override it never leaks an expanded hunk back into the unfiltered
+view. Fold toggles flip the actually-visible state, so one click collapses
+a focus-revealed hunk rather than no-op'ing against the level default.
 
 **Viewer data**
 The in-memory runtime data structure served as `/data.json` by the
