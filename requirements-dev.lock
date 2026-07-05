@@ -611,7 +611,9 @@ fastmcp==3.4.2 \
 fastmcp-slim==3.4.2 \
     --hash=sha256:290646e0955a516235a317151034559aa48336cb843d3f006131aedad8759bb4 \
     --hash=sha256:bdc72492212681ca502755fa8acc0457f559295da1fc3dfc0599adc1c04b82f3
-    # via fastmcp
+    # via
+    #   fastmcp
+    #   pydantic-ai-slim
 filelock==3.29.5 \
     --hash=sha256:6e6034c57a00a020e767f2614a5539863f056de7e7991d6d1473aef7ff73f156 \
     --hash=sha256:8af830889ba3a0ffcefbd6c7d2af8a54012058103771f2e10848222f476a1693
@@ -1197,9 +1199,7 @@ markupsafe==3.0.3 \
 mcp==1.28.1 \
     --hash=sha256:2726bca5e7193f61c5dde8b12500a6de2d9acf6d1a1c0be9e8c2e706437991df \
     --hash=sha256:d51e36a5f5644faea4f85ea649bfffa6bc6c26770d42798ad6a3de3d2ba69683
-    # via
-    #   fastmcp-slim
-    #   pydantic-ai-slim
+    # via fastmcp-slim
 mdurl==0.1.2 \
     --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8 \
     --hash=sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba
@@ -1638,13 +1638,13 @@ pydantic==2.13.3 \
     #   pydantic-handlebars
     #   pydantic-settings
     #   xai-sdk
-pydantic-ai==1.90.0 \
-    --hash=sha256:530985297ef5aada9c4480fd416f457a21cc19d6caed88c7652c85da620b6952 \
-    --hash=sha256:9c00884d5fc46df4ec8a7f393c9aae4936948ca0ea72e7f8fbc5c704b8af5516
+pydantic-ai==1.102.0 \
+    --hash=sha256:5def631d6e1c68b5e992c88da21b78377fe9262aeaf7f9ca09f67c100a9d3878 \
+    --hash=sha256:bc38cf4936cf08fa3aaf9d34abf908fd73b47147768cdeb34ec3eaf43909aca8
     # via semantic-code-review (pyproject.toml)
-pydantic-ai-slim==1.90.0 \
-    --hash=sha256:39e6c8eca29436a6aa9a7440852cb80081ebd54d49b91a1dfbc18dd4a6da77a0 \
-    --hash=sha256:4916258f5a422e5aace4cc5285fa55e7cc332939109594f2c1ff9a5f59be4104
+pydantic-ai-slim==1.102.0 \
+    --hash=sha256:0b8f2b70fa2b40efcbd09d341a346934fc4e46622ae281f858c6bfd3d0d3152b \
+    --hash=sha256:f9fa9c3fb58a76f85522f78d1037d201b424de46d532263ed780b3730060449f
     # via
     #   pydantic-ai
     #   pydantic-evals
@@ -1772,13 +1772,13 @@ pydantic-core==2.46.3 \
     # via
     #   cohere
     #   pydantic
-pydantic-evals==1.90.0 \
-    --hash=sha256:0bc676554b9f2c4e487f5e2bacb2d22ddb96390ebe0d85f62855cd1678491ed7 \
-    --hash=sha256:d3b78775b90ad4c8e68c3cfaa7fe643492a2908bbb092333fadfbb50bc63bada
+pydantic-evals==1.102.0 \
+    --hash=sha256:579edd6f7056d0fe52e03c7004377a0b9c42264c60a370258235fb0750fe20a2 \
+    --hash=sha256:711a6335d24a11c324e5a5c7758b12dfd77209f885ab2501d7eedb9dd5b75b18
     # via pydantic-ai-slim
-pydantic-graph==1.90.0 \
-    --hash=sha256:0845d5726f95a63e89342bcf8236c8a660d616b7e5a30d8aa2c9a731f96018ed \
-    --hash=sha256:30d69bb491599612ad88a5122ebf4a10a000eae8f89abb8910f1532bead23cc5
+pydantic-graph==1.102.0 \
+    --hash=sha256:b1a28314adc4abca4db02cf095d064782ec5712e0847ce7a6b79a3c84bf1fc01 \
+    --hash=sha256:e285bd7115e4e92676eaf0a5e7e6faa64cda8c4819f67923a118c50666b909ab
     # via pydantic-ai-slim
 pydantic-handlebars==0.2.1 \
     --hash=sha256:c713427d6498cf4b66814447d54753a2748f8a8d3a9f00c194192ddb3df61e52 \
