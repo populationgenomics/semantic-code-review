@@ -84,7 +84,7 @@ body {
 
 .group-sidebar-header h3,
 .group-axis-header h3 {
-  margin: 0 0 8px 2px;
+  margin: 0 0 4px 2px;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -96,21 +96,22 @@ body {
  * can scan every axis at once without flipping a tab. Themes sits
  * above Files; the "Show all" button sits above both axes and
  * clears whichever pill is active. */
-.group-axis { margin-bottom: 14px; }
+.group-axis { margin-bottom: 10px; }
 .group-axis:last-child { margin-bottom: 0; }
-.group-axis-header h3 { margin-top: 6px; }
+.group-axis-header h3 { margin-top: 4px; }
 .group-btn {
   display: flex;
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 6px 8px;
-  margin-bottom: 4px;
+  padding: 3px 8px;
+  margin-bottom: 1px;
   background: transparent;
   border: 1px solid transparent;
   border-radius: 4px;
   color: var(--fg);
   font-size: 12px;
+  line-height: 1.4;
   text-align: left;
   cursor: pointer;
   font-family: inherit;
@@ -165,7 +166,7 @@ body {
   color: var(--fg);
 }
 .group-btn-all {
-  margin-bottom: 10px;
+  margin-bottom: 6px;
   color: var(--fg-muted);
   font-style: italic;
 }
@@ -175,12 +176,12 @@ body {
  * with their parents; children indent under the row. */
 .group-tree-node { margin-bottom: 0; }
 .group-tree-row { display: flex; align-items: center; gap: 2px; }
-.group-tree-row .group-btn { margin-bottom: 4px; }
+.group-tree-row .group-btn { margin-bottom: 1px; }
 .group-tree-toggle {
   flex: 0 0 auto;
   width: 14px;
   align-self: stretch;
-  margin-bottom: 4px;
+  margin-bottom: 1px;
   padding: 0;
   background: transparent;
   border: none;
