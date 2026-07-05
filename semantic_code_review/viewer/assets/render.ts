@@ -31,6 +31,11 @@ interface RenderState {
   fold: FoldMode;
   overrides: Record<string, boolean>;
   renderedDiffs: Record<string, HTMLElement>;
+  // Ephemeral: reveal the focused hunks' code (set when a sidebar pill is
+  // clicked, cleared the moment the fold-level slider is touched). Kept
+  // out of `overrides` on purpose — a stored per-hunk override would leak
+  // an expanded hunk into the unfiltered view once the filter clears.
+  focusReveal: boolean;
 }
 
 let _data: ViewerData = { version: "1", pr: {} as PRBlock, smells_catalogue: {}, files: [], groups: [], symbols: [] };
@@ -44,6 +49,7 @@ const _state: RenderState = {
   fold: "hunks",
   overrides: Object.create(null),
   renderedDiffs: Object.create(null),
+  focusReveal: true,
 };
 
 // --- Public API ----------------------------------------------------------
@@ -58,6 +64,7 @@ function renderInit(data: ViewerData): void {
   _state.fold = "hunks";
   _state.overrides = Object.create(null);
   _state.renderedDiffs = Object.create(null);
+  _state.focusReveal = true;
   _wireInputs();
   _restoreHash();
   render();
@@ -159,6 +166,17 @@ function _toggleFold(id: string, currentDefault: boolean): void {
 function _setGlobalFold(fold: FoldMode): void {
   _state.fold = fold;
   _state.overrides = Object.create(null);
+  // The slider is authoritative: fold every hunk (focused or not) to this
+  // level, so focus-reveal stops forcing the focused hunks open.
+  _state.focusReveal = false;
+  render();
+}
+
+/** A sidebar filter changed. Reveal the newly focused hunks' code (an
+ *  ephemeral state, distinct from a stored fold override) and re-render.
+ *  Boot wires this to the sidebar's onFilterChange. */
+function applyFilterChange(): void {
+  _state.focusReveal = true;
   render();
 }
 
@@ -325,11 +343,12 @@ function _renderFileBody(
     body.appendChild(_renderRegionChip(f, { position, rows, marks }));
   };
 
+  // Just after a sidebar pill click, reveal the focused hunks' code
+  // (ephemeral); the fold-level slider clears the flag and takes over.
+  const reveal = liveIds !== null && _state.focusReveal;
   for (const h of f.hunks.filter(isLive)) {
     flush(h.new_start - 1, emittedLive ? "between" : "top");
-    // Focused hunks open by default — you filtered to see them — but an
-    // explicit fold override still wins.
-    body.appendChild(_renderHunk(h, f, liveIds !== null ? false : undefined));
+    body.appendChild(_renderHunk(h, f, reveal));
     emittedLive = true;
     curNew = h.new_start + h.new_count;
     curOld = h.old_start + h.old_count;
@@ -352,7 +371,7 @@ function _renderFileHeader(f: FileBlock, folded: boolean): HTMLElement {
     for (const sm of smells) badge.appendChild(_smellPill({ tag: sm, note: "" }));
     hdr.appendChild(badge);
   }
-  hdr.addEventListener("click", () => _toggleFold(f.id, _defaultFileFolded()));
+  hdr.addEventListener("click", () => _toggleFold(f.id, folded));
   return hdr;
 }
 
@@ -491,21 +510,24 @@ function _refreshFileFolds(f: FileBlock): void {
 
 // --- Hunk + diff body ---------------------------------------------------
 
-function _renderHunk(h: HunkBlock, f: FileBlock, defaultFolded = _defaultHunkFolded()): HTMLElement {
+function _renderHunk(h: HunkBlock, f: FileBlock, reveal = false): HTMLElement {
   const div = _el("div", "hunk");
   div.dataset.id = h.id;
-  const folded = _isFolded(h.id, defaultFolded);
+  // reveal (focus) forces the hunk fully open — code, not summaries — but
+  // an explicit fold override the reviewer set still wins.
+  const folded = _isFolded(h.id, reveal ? false : _defaultHunkFolded());
   div.classList.toggle("folded", folded);
   div.style.borderLeftColor = _maxSeverityColor(h);
   div.appendChild(_renderHunkHeader(h, folded, f));
   if (!folded) {
-    if (
-      h.segments && h.segments.length > 0
-      && _defaultSegmentFolded()
-      && !_anySegmentOverridden(h, false)
-    ) {
+    // The collapse ladder shows segment summaries (never raw code) until
+    // `off` or a reveal. A hunk with no segments folds as one synthetic
+    // segment spanning it, so every hunk behaves uniformly at this level.
+    const segs = _displaySegments(h);
+    const anyOpen = segs.some((s) => _isFolded(s.id, _defaultSegmentFolded()) === false);
+    if (!reveal && _defaultSegmentFolded() && !anyOpen) {
       const list = _el("div", "seg-list");
-      for (const s of h.segments) list.appendChild(_renderSegmentFolded(s, f));
+      for (const s of segs) list.appendChild(_renderSegmentFolded(s, f));
       div.appendChild(list);
     } else {
       div.appendChild(_renderHunkDiff(h, f));
@@ -549,11 +571,20 @@ function _buildRefLink(ref: Ref): HTMLElement {
   return a;
 }
 
-function _anySegmentOverridden(h: HunkBlock, toValue: boolean): boolean {
-  return (h.segments || []).some((s) => {
-    const val = _isFolded(s.id, _defaultSegmentFolded());
-    return val === toValue;
-  });
+/** The segments to show a hunk's body as at segment-fold level: its own
+ *  if it has any, else one synthetic segment spanning the whole hunk so a
+ *  segment-less hunk still folds to a single summary (never raw code). */
+function _displaySegments(h: HunkBlock): SegmentBlock[] {
+  if (h.segments && h.segments.length > 0) return h.segments;
+  return [{
+    id: `${h.id}_whole`,
+    new_start: h.new_start,
+    new_count: h.new_count,
+    intent: h.intent || "",
+    smells: h.smells || [],
+    context: h.context || "",
+    refs: h.refs || [],
+  }];
 }
 
 function _renderHunkHeader(h: HunkBlock, folded: boolean, f: FileBlock): HTMLElement {
@@ -592,7 +623,9 @@ function _renderHunkHeader(h: HunkBlock, folded: boolean, f: FileBlock): HTMLEle
   hdr.appendChild(meta);
   hdr.addEventListener("click", (e) => {
     e.stopPropagation();
-    _toggleFold(h.id, _defaultHunkFolded());
+    // Flip the visible state — `folded` is the actual current state
+    // (respecting reveal + overrides), not just the level default.
+    _toggleFold(h.id, folded);
   });
   return hdr;
 }
@@ -609,7 +642,9 @@ function _renderSegmentFolded(s: SegmentBlock, f: FileBlock): HTMLElement {
   }));
   div.addEventListener("click", (e) => {
     e.stopPropagation();
-    _toggleFold(s.id, _defaultSegmentFolded());
+    // A rendered summary is always in the folded state; clicking opens it
+    // (which, in step b, reveals the whole hunk's code).
+    _toggleFold(s.id, true);
   });
   return div;
 }
@@ -954,6 +989,7 @@ function _wireInputs(): void {
 export const Render = {
   init: renderInit,
   render,
+  applyFilterChange,
   renderHunkReplace,
   repaintHunkHeader,
   clearRenderedDiffCache,

@@ -687,6 +687,104 @@ describe("streaming events", () => {
     expect(document.querySelector('.hunk[data-id="H0_1"]')).toBeNull();
   });
 
+  // --- Fold-level ladder + focus reveal -----------------------------------
+
+  const foldFile = (): Record<string, unknown> => ({
+    id: "F0", path: "a.py", status: "modified", language: "python",
+    adds: 3, dels: 3, summary: "",
+    head_lines: ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9"],
+    symbols: { added: [], modified: [], removed: [] },
+    hunks: [
+      makeHunkBlock("H0", "", { old_start: 2, old_count: 1, new_start: 2, new_count: 1,
+        rows: [{ kind: "pair", old_line: 2, new_line: 2, old_text: "a", new_text: "A" }] }),
+      makeHunkBlock("H1", "", { old_start: 5, old_count: 1, new_start: 5, new_count: 1,
+        rows: [{ kind: "pair", old_line: 5, new_line: 5, old_text: "b", new_text: "B" }] }),
+      makeHunkBlock("H2", "", { old_start: 8, old_count: 1, new_start: 8, new_count: 1,
+        rows: [{ kind: "pair", old_line: 8, new_line: 8, old_text: "c", new_text: "C" }] }),
+    ],
+  });
+  const fold = (level: string): void =>
+    (document.querySelector(`.fold-slider button[data-fold="${level}"]`) as HTMLElement).click();
+  const codeRows = (sel: string): number =>
+    document.querySelectorAll(`${sel} .diff .half-new .row:not(.row-annotation)`).length;
+
+  test("fold ladder reveals code only at 'off'; segment-less hunks fold as one segment", async () => {
+    await bootViewer(makeData({ pending: false, files: [foldFile()], symbols: [] }));
+
+    // Default "hunks": headers only, no segment summaries, no code.
+    expect(document.querySelectorAll(".hunk-header").length).toBe(3);
+    expect(document.querySelectorAll(".seg-list").length).toBe(0);
+    expect(codeRows(".hunk")).toBe(0);
+
+    // "segment": every hunk folds to one synthetic segment summary; no code.
+    fold("segments");
+    expect(document.querySelectorAll(".hunk .seg-list .segment").length).toBe(3);
+    expect(codeRows(".hunk")).toBe(0);
+
+    // "off": code revealed, summaries gone.
+    fold("off");
+    expect(document.querySelectorAll(".seg-list").length).toBe(0);
+    expect(codeRows(".hunk")).toBe(3);
+
+    // "hunk": back to headers only.
+    fold("hunks");
+    expect(codeRows(".hunk")).toBe(0);
+    expect(document.querySelectorAll(".seg-list").length).toBe(0);
+  });
+
+  test("focus reveals the focused hunk's code; the slider still folds it to level", async () => {
+    await bootViewer(makeData({
+      pending: false, files: [foldFile()],
+      symbols: [{ id: "SY0", title: "mid", rationale: "", hunk_ids: ["H1"] }],
+    }));
+    // Default "hunks" — nothing revealed yet.
+    expect(codeRows('.hunk[data-id="H1"]')).toBe(0);
+
+    // Focus H1 → its code is revealed even at "hunks" level (ephemeral).
+    (document.querySelector('[data-axis="symbols"] .group-btn[data-pill-id="SY0"]') as HTMLElement).click();
+    expect(codeRows('.hunk[data-id="H1"]')).toBe(1);
+    expect(document.querySelector('.hunk[data-id="H0"]')).toBeNull();   // demoted
+
+    // The slider is authoritative under a filter: "hunk" folds H1 to its
+    // header (focus-reveal cleared), still filtered.
+    fold("hunks");
+    expect(codeRows('.hunk[data-id="H1"]')).toBe(0);
+    expect(document.querySelector('.hunk[data-id="H1"] .hunk-header')).not.toBeNull();
+    expect(document.querySelector('.hunk[data-id="H0"]')).toBeNull();
+
+    // "off" shows its code again.
+    fold("off");
+    expect(codeRows('.hunk[data-id="H1"]')).toBe(1);
+  });
+
+  test("focus reveal does not leak into the unfiltered view", async () => {
+    await bootViewer(makeData({
+      pending: false, files: [foldFile()],
+      symbols: [{ id: "SY0", title: "mid", rationale: "", hunk_ids: ["H1"] }],
+    }));
+    (document.querySelector('[data-axis="symbols"] .group-btn[data-pill-id="SY0"]') as HTMLElement).click();
+    expect(codeRows('.hunk[data-id="H1"]')).toBe(1);
+
+    // Show all → back to the unfiltered "hunks" level: no hunk shows code.
+    (document.querySelector(".group-btn-all") as HTMLElement).click();
+    expect(document.querySelectorAll(".hunk-header").length).toBe(3);
+    expect(codeRows(".hunk")).toBe(0);
+  });
+
+  test("clicking a revealed hunk's header folds it (toggle flips the visible state)", async () => {
+    await bootViewer(makeData({
+      pending: false, files: [foldFile()],
+      symbols: [{ id: "SY0", title: "mid", rationale: "", hunk_ids: ["H1"] }],
+    }));
+    (document.querySelector('[data-axis="symbols"] .group-btn[data-pill-id="SY0"]') as HTMLElement).click();
+    expect(codeRows('.hunk[data-id="H1"]')).toBe(1);
+
+    // One click on the header collapses it — not a no-op against the level
+    // default (which would say "already folded" and flip it open).
+    (document.querySelector('.hunk[data-id="H1"] .hunk-header') as HTMLElement).click();
+    expect(codeRows('.hunk[data-id="H1"]')).toBe(0);
+  });
+
   test("done event hides the progress strip and clears pending", async () => {
     await bootViewer(makeData());
     const es = lastEventSource();
