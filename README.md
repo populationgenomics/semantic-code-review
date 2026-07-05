@@ -6,6 +6,10 @@ did this block change" annotations, and inline comments. When invoked
 as a Claude Code plugin, it round-trips those comments back into the
 session so the agent can walk through them with you.
 
+For a screenshot tour of the viewer — the sidebar axes, the fold ladder,
+segments, comments, and the review console — see
+[docs/walkthrough.md](docs/walkthrough.md).
+
 ## Usage as a Claude Code plugin
 
 Prerequisites on the user's machine:
