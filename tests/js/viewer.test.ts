@@ -424,6 +424,58 @@ describe("streaming events", () => {
     expect(document.querySelector(".group-btn-all")!.classList.contains("active")).toBe(true);
   });
 
+  test("by-file axis groups into a directory tree: compress, sort, and subtree filter", async () => {
+    const mkFile = (id: string, p: string, hid: string): Record<string, unknown> => ({
+      id, path: p, status: "modified", language: "python",
+      adds: 0, dels: 0, summary: "", head_lines: null,
+      symbols: { added: [], modified: [], removed: [] },
+      hunks: [makeHunkBlock(hid)],
+    });
+    await bootViewer(makeData({
+      pending: false,
+      files: [
+        // src/ holds two files → an interior "src" node with two leaves.
+        mkFile("F0", "src/b.py", "Hb"),
+        mkFile("F1", "src/a.py", "Ha"),
+        // docs/guide/ is a single-child chain → compressed to "docs/guide".
+        mkFile("F2", "docs/guide/intro.md", "Hi"),
+      ],
+    }));
+    const filesSection = document.querySelector('[data-axis="files"]')!;
+    const roots = filesSection.querySelectorAll(":scope > .group-tree-node");
+    // Two top-level nodes, sorted alphanumerically: "docs/guide", "src".
+    const rootLabel = (n: Element): string =>
+      n.querySelector(":scope > .group-tree-row > .group-btn .group-btn-label")!.textContent!;
+    expect(Array.from(roots).map(rootLabel)).toEqual(["docs/guide", "src"]);
+
+    // "docs/guide" is a compressed single-child chain: one leaf under it.
+    const docsNode = roots[0];
+    const docsChildren = docsNode.querySelectorAll(".group-tree-children .group-btn-label");
+    expect(Array.from(docsChildren).map((e) => e.textContent)).toEqual(["intro.md"]);
+
+    // "src" holds two leaves, sorted a.py before b.py; its count is the
+    // subtree hunk union (2).
+    const srcNode = roots[1];
+    const srcPill = srcNode.querySelector(":scope > .group-tree-row > .group-btn") as HTMLElement;
+    expect(srcPill.querySelector(".group-btn-count")!.textContent).toBe("2");
+    const srcChildren = srcNode.querySelectorAll(".group-tree-children .group-btn-label");
+    expect(Array.from(srcChildren).map((e) => e.textContent)).toEqual(["a.py", "b.py"]);
+
+    // Clicking the "src" directory filters to its whole subtree: both
+    // src hunks visible, the docs hunk hidden.
+    srcPill.click();
+    expect((document.querySelector('.hunk[data-id="Ha"]') as HTMLElement).style.display).not.toBe("none");
+    expect((document.querySelector('.hunk[data-id="Hb"]') as HTMLElement).style.display).not.toBe("none");
+    expect((document.querySelector('.hunk[data-id="Hi"]') as HTMLElement).style.display).toBe("none");
+
+    // The toggle collapses the directory's children in place.
+    const srcToggle = srcNode.querySelector(":scope > .group-tree-row > .group-tree-toggle") as HTMLElement;
+    const srcChildWrap = srcNode.querySelector(":scope > .group-tree-children") as HTMLElement;
+    expect(srcChildWrap.style.display).not.toBe("none");
+    srcToggle.click();
+    expect(srcChildWrap.style.display).toBe("none");
+  });
+
   test("symbols axis renders flat pills from boot and filters on click", async () => {
     await bootViewer(makeData({
       pending: false,

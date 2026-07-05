@@ -3,7 +3,9 @@
 // Owns the #group-sidebar DOM tree and the multi-axis state behind
 // it: a Themes axis populated by the overview LLM pass (refreshed
 // in place when the `overview` SSE event arrives) and a Files axis
-// derived deterministically from DATA.files.
+// derived deterministically from DATA.files, rendered as a foldable
+// directory tree (single-child directory chains compressed into one
+// node, siblings sorted alphanumerically).
 //
 // Filter semantics: one active pill at a time across all axes;
 // clicking a pill toggles visibility on the per-file body via
@@ -55,10 +57,11 @@ let _lsKey = "scr-active-group:local";
 // injected callback rather than a direct import so the sidebar doesn't
 // take a cyclic dependency on render.
 let _onActivePillChange: ((symbolName: string | null) => void) | null = null;
-// Collapsed symbol-tree nodes, by pill id. In-memory only (the tree is
-// expanded by default; collapse is a transient view preference that
-// survives re-renders within a session but not a reload).
-const _collapsedSymbols = new Set<string>();
+// Collapsed tree nodes (Files + Symbols axes), by pill id. In-memory
+// only (trees are expanded by default; collapse is a transient view
+// preference that survives re-renders within a session but not a
+// reload). Ids are distinct across axes (BD/BF/SY), so one set is safe.
+const _collapsedNodes = new Set<string>();
 
 /** Populate axes from the initial viewer data + restore any active
  *  pill from localStorage. Idempotent (call again after DATA mutates
@@ -118,29 +121,84 @@ function refreshThemes(groups: GroupBlock[]): void {
   }
 }
 
-/** Derive the by-file axis from DATA.files. One pill per file with
- *  hunks; pill ids `BF<fi>` (distinct ID space from themes' `G<i>`).
- *  Skipped files (zero hunks) get no pill. */
+/** Derive the by-file axis from DATA.files as a foldable directory
+ *  tree. Files with hunks become leaf nodes (id `BF<fi>`, title the
+ *  basename); their parent directories become interior nodes (id
+ *  `BD<n>`) whose hunk_ids are the subtree union — clicking a directory
+ *  filters to every changed hunk beneath it. A directory that holds a
+ *  single subdirectory and no files is collapsed into its child
+ *  ("src/main" as one node). Siblings (directories and files together)
+ *  are sorted alphanumerically. Ids are distinct ID spaces from themes'
+ *  `G<i>` and symbols' `SY<i>`. Skipped files (zero hunks) get no node.
+ *  `groups` holds the roots; `byId` flattens every node for active-pill
+ *  lookup. */
 function rebuildFilesAxis(): void {
   if (!_data) return;
   FILES_AXIS.groups.length = 0;
   for (const k of Object.keys(FILES_AXIS.byId)) delete FILES_AXIS.byId[k];
   for (const k of Object.keys(FILES_AXIS.hunkCount)) delete FILES_AXIS.hunkCount[k];
+
+  interface FileLeaf { fi: number; name: string; path: string; hunkIds: string[]; }
+  interface FileDir { name: string; dirs: Map<string, FileDir>; files: FileLeaf[]; }
+  const newDir = (name: string): FileDir => ({ name, dirs: new Map(), files: [] });
+
+  const root = newDir("");
   for (let fi = 0; fi < (_data.files || []).length; fi++) {
     const f = _data.files[fi];
     if (!f.hunks || f.hunks.length === 0) continue;
-    const hunk_ids = f.hunks.map((h) => h.id);
-    const g: GroupBlock = {
-      id: `BF${fi}`,
-      title: _shortenPath(f.path),
-      rationale: f.path,
-      hunk_ids,
-    };
-    FILES_AXIS.groups.push(g);
+    const parts = f.path.split("/");
+    const fileName = parts.pop() as string;
+    let cur = root;
+    for (const seg of parts) {
+      let next = cur.dirs.get(seg);
+      if (!next) { next = newDir(seg); cur.dirs.set(seg, next); }
+      cur = next;
+    }
+    cur.files.push({ fi, name: fileName, path: f.path, hunkIds: f.hunks.map((h) => h.id) });
+  }
+
+  let dirSeq = 0;
+  const leafGroup = (leaf: FileLeaf): GroupBlock =>
+    ({ id: `BF${leaf.fi}`, title: leaf.name, rationale: leaf.path, hunk_ids: leaf.hunkIds });
+
+  // A directory's children (subdirs + files) as GroupBlocks, sorted
+  // alphanumerically by display name. `prefix` is the parent's full
+  // path, threaded so directory nodes carry their full path as tooltip.
+  const childrenOf = (dir: FileDir, prefix: string): GroupBlock[] => {
+    const out: GroupBlock[] = [];
+    for (const sub of dir.dirs.values()) out.push(dirGroup(sub, prefix));
+    for (const leaf of dir.files) out.push(leafGroup(leaf));
+    out.sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true }));
+    return out;
+  };
+
+  const dirGroup = (dir: FileDir, prefix: string): GroupBlock => {
+    // Compress single-subdir chains: a directory with no files and
+    // exactly one subdirectory merges its name into this node.
+    let name = dir.name;
+    let cur = dir;
+    while (cur.files.length === 0 && cur.dirs.size === 1) {
+      const only = cur.dirs.values().next().value as FileDir;
+      name = `${name}/${only.name}`;
+      cur = only;
+    }
+    const fullPath = prefix ? `${prefix}/${name}` : name;
+    const children = childrenOf(cur, fullPath);
+    const hunk_ids: string[] = [];
+    for (const c of children) for (const hid of c.hunk_ids) hunk_ids.push(hid);
+    return { id: `BD${dirSeq++}`, title: name, rationale: fullPath, hunk_ids, children };
+  };
+
+  const register = (g: GroupBlock): void => {
     FILES_AXIS.byId[g.id] = g;
-    for (const hid of hunk_ids) {
+    for (const hid of g.hunk_ids || []) {
       FILES_AXIS.hunkCount[hid] = (FILES_AXIS.hunkCount[hid] || 0) + 1;
     }
+    for (const c of g.children || []) register(c);
+  };
+  for (const g of childrenOf(root, "")) {
+    FILES_AXIS.groups.push(g);
+    register(g);
   }
 }
 
@@ -193,20 +251,21 @@ function render(): void {
     const header = _el("div", "group-axis-header");
     header.appendChild(_el("h3", null, axis.label));
     section.appendChild(header);
-    if (axis.id === "symbols") {
-      // Nested class ▸ method tree (ADR 0001 slice 5).
-      for (const g of axis.groups) section.appendChild(_symbolNode(axis, g));
+    if (axis.id === "themes") {
+      for (const g of axis.groups) section.appendChild(_pillButton(axis, g, null));
     } else {
-      const commentCounts = axis.id === "files" ? _commentCountsByFilePath() : null;
-      for (const g of axis.groups) section.appendChild(_pillButton(axis, g, commentCounts));
+      // Files (directory tree) and Symbols (class ▸ method tree) both
+      // render as foldable trees. Files pills carry comment-count badges.
+      const commentCounts = axis.id === "files" ? _fileGroupCommentCounts() : null;
+      for (const g of axis.groups) section.appendChild(_treeNode(axis, g, commentCounts));
     }
     sidebar.appendChild(section);
   }
 }
 
-/** One pill button for a group. Shared by the flat axes and the symbols
- *  tree's per-node row. `commentCounts` (Files axis only) appends the
- *  unresolved/total badge. */
+/** One pill button for a group. Shared by the flat Themes axis and the
+ *  Files/Symbols tree's per-node row. `commentCounts` (Files axis only)
+ *  is keyed by group id and appends the unresolved/total badge. */
 function _pillButton(
   axis: SidebarAxis,
   g: GroupBlock,
@@ -220,7 +279,7 @@ function _pillButton(
   if (commentCounts) {
     // Files axis only — Themes axis is keyed by hunks, not paths,
     // so there's no single "comments per pill" mapping to surface.
-    const cc = commentCounts[g.rationale] || { total: 0, unresolved: 0 };
+    const cc = commentCounts[g.id] || { total: 0, unresolved: 0 };
     const badge = _renderCommentCountBadge(cc);
     if (badge) btn.appendChild(badge);
   }
@@ -234,25 +293,31 @@ function _pillButton(
   return btn;
 }
 
-/** Render one symbol-tree node: an optional expand/collapse toggle, the
- *  node's own filtering pill, and (recursively) its children indented
- *  beneath it. Ancestors are shown for context even when unchanged;
- *  clicking the pill filters to the subtree union, clicking a leaf to
- *  just that symbol's hunks. */
-function _symbolNode(axis: SidebarAxis, g: GroupBlock): HTMLElement {
+/** Render one tree node (Files directory tree or Symbols class ▸ method
+ *  tree): an optional expand/collapse toggle, the node's own filtering
+ *  pill, and (recursively) its children indented beneath it. Interior
+ *  nodes are shown for context even when they aren't themselves changed;
+ *  clicking a node's pill filters to its subtree union, clicking a leaf
+ *  to just that file's/symbol's hunks. `commentCounts` (Files axis only)
+ *  is passed through to every pill. */
+function _treeNode(
+  axis: SidebarAxis,
+  g: GroupBlock,
+  commentCounts: Record<string, CommentCounts> | null,
+): HTMLElement {
   const node = _el("div", "group-tree-node");
   const row = _el("div", "group-tree-row");
   const kids = g.children || [];
   let childWrap: HTMLElement | null = null;
   if (kids.length > 0) {
-    const collapsed = _collapsedSymbols.has(g.id);
+    const collapsed = _collapsedNodes.has(g.id);
     const toggle = _el("button", "group-tree-toggle", collapsed ? "▸" : "▾");
     toggle.title = collapsed ? "Expand" : "Collapse";
     toggle.addEventListener("click", (e) => {
       e.stopPropagation();
-      const nowCollapsed = !_collapsedSymbols.has(g.id);
-      if (nowCollapsed) _collapsedSymbols.add(g.id);
-      else _collapsedSymbols.delete(g.id);
+      const nowCollapsed = !_collapsedNodes.has(g.id);
+      if (nowCollapsed) _collapsedNodes.add(g.id);
+      else _collapsedNodes.delete(g.id);
       toggle.textContent = nowCollapsed ? "▸" : "▾";
       toggle.title = nowCollapsed ? "Expand" : "Collapse";
       if (childWrap) childWrap.style.display = nowCollapsed ? "none" : "";
@@ -262,12 +327,12 @@ function _symbolNode(axis: SidebarAxis, g: GroupBlock): HTMLElement {
     // Keep leaves aligned with parents' pills under the toggle column.
     row.appendChild(_el("span", "group-tree-toggle group-tree-toggle-leaf"));
   }
-  row.appendChild(_pillButton(axis, g, null));
+  row.appendChild(_pillButton(axis, g, commentCounts));
   node.appendChild(row);
   if (kids.length > 0) {
     childWrap = _el("div", "group-tree-children");
-    if (_collapsedSymbols.has(g.id)) childWrap.style.display = "none";
-    for (const c of kids) childWrap.appendChild(_symbolNode(axis, c));
+    if (_collapsedNodes.has(g.id)) childWrap.style.display = "none";
+    for (const c of kids) childWrap.appendChild(_treeNode(axis, c, commentCounts));
     node.appendChild(childWrap);
   }
   return node;
@@ -369,6 +434,34 @@ function _commentCountsByFilePath(): Record<string, CommentCounts> {
   return out;
 }
 
+/** Comment counts for every Files-axis node, keyed by group id. Leaf
+ *  (file) counts come from `_commentCountsByFilePath`; directory nodes
+ *  aggregate their subtree so a folded directory still surfaces the
+ *  unresolved threads hiding beneath it. */
+function _fileGroupCommentCounts(): Record<string, CommentCounts> {
+  const byPath = _commentCountsByFilePath();
+  const out: Record<string, CommentCounts> = Object.create(null);
+  const visit = (g: GroupBlock): CommentCounts => {
+    const kids = g.children || [];
+    let total = 0;
+    let unresolved = 0;
+    if (kids.length === 0) {
+      const cc = byPath[g.rationale];
+      if (cc) { total = cc.total; unresolved = cc.unresolved; }
+    } else {
+      for (const c of kids) {
+        const cc = visit(c);
+        total += cc.total;
+        unresolved += cc.unresolved;
+      }
+    }
+    out[g.id] = { total, unresolved };
+    return out[g.id];
+  };
+  for (const g of FILES_AXIS.groups) visit(g);
+  return out;
+}
+
 function _renderCommentCountBadge(cc: CommentCounts): HTMLElement | null {
   if (cc.total === 0) return null;
   const badge = _el(
@@ -390,24 +483,16 @@ function refreshFileCommentCounts(): void {
   if (!sidebar) return;
   const filesSection = sidebar.querySelector('[data-axis="files"]');
   if (!filesSection) return;
-  const counts = _commentCountsByFilePath();
+  const counts = _fileGroupCommentCounts();
   filesSection.querySelectorAll<HTMLElement>(".group-btn").forEach((btn) => {
     const pillId = btn.dataset.pillId || "";
-    const group = FILES_AXIS.byId[pillId];
-    if (!group) return;
-    const cc = counts[group.rationale] || { total: 0, unresolved: 0 };
+    if (!FILES_AXIS.byId[pillId]) return;
+    const cc = counts[pillId] || { total: 0, unresolved: 0 };
     const existing = btn.querySelector(".group-btn-comments");
     if (existing) existing.remove();
     const fresh = _renderCommentCountBadge(cc);
     if (fresh) btn.appendChild(fresh);
   });
-}
-
-function _shortenPath(path: string): string {
-  if (!path) return "";
-  if (path.length <= 28) return path;
-  const idx = path.lastIndexOf("/");
-  return idx >= 0 ? path.slice(idx + 1) : path;
 }
 
 function _el(tag: string, className: string | null, text?: string): HTMLElement {
