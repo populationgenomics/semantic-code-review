@@ -18,8 +18,8 @@ Prerequisites on the user's machine:
 
 Optional:
 
-- `gh` — only needed if you ever run `scr fetch` / `scr run` against
-  a GitHub PR URL
+- `gh` — only needed for GitHub-PR review (`scr pr`, or the
+  lower-level `scr fetch`)
 - `ripgrep` (`rg`) — speeds up the LLM's code-search tool; `git grep`
   is used as a fallback
 
@@ -162,32 +162,38 @@ npm ci --ignore-scripts && npm run build
 scr review HEAD~1..HEAD --spec SPEC.md
 ```
 
-Subcommands:
+The three commands you'll actually use:
 
 - `scr init` — interactive setup: detect usable backends, pick a
-  default + model, guide credential setup, write the config.
-- `scr review <ref-or-range> [--spec SPEC.md]` — local git diff,
-  runs LLM augment, opens viewer, prints reviewer comments as
-  markdown when you click Done.
-- `scr pr <owner/repo> [<number>]` — same flow against a GitHub PR.
-  Omit the number to enumerate open PRs requesting your review;
-  on Done, posts the inline comments back to GitHub as a single
-  COMMENT-event review. Confirms before posting unless `--yes`.
-- `scr fetch <pr-url>` — fetch a GitHub PR into a run directory.
+  default + model, guide credential setup, write the config. Run
+  once.
+- `scr review <ref-or-range> [--spec SPEC.md]` — review a local git
+  diff. Runs the LLM augment pass, opens the viewer, and prints your
+  inline comments as markdown when you click Done.
+- `scr pr <owner/repo> [<number>]` — the same flow against a GitHub
+  PR. Omit the number to pick from the open PRs requesting your
+  review; on Done it posts your inline comments back as a single
+  COMMENT-event review (confirms first unless `--yes`). Needs the `gh`
+  CLI on `PATH` and authenticated.
+
+`scr pr` is `scr review` plus a GitHub round-trip: same fetch, augment,
+viewer, and comment store, with the comments grouped into one review
+object via `gh api` at the end.
+
+<details>
+<summary>Plumbing — the review/pr pipeline split into stages, for
+scripting or debugging</summary>
+
+- `scr fetch <pr-url>` — materialise a GitHub PR into a run directory.
 - `scr augment <run-dir>` — run the LLM augmentation pass on a run
   directory.
-- `scr render <run-dir>` — render the HTML viewer from an augmented
-  run.
-- `scr run <pr-url>` — fetch + augment + render (no viewer server).
 - `scr show <run-dir>` — print the augmented diff to stdout.
-- `scr strip <augmented.diff>` — write a plain unified diff to stdout.
+- `scr strip <augmented.diff>` — strip annotations back to a plain
+  unified diff on stdout.
 - `scr lint <augmented.diff>` — validate the augmented-diff format.
 - `scr runs path` — print the runs root resolved for the current cwd.
-
-`scr pr` reuses everything `scr review` does (same fetch, augment,
-viewer, server, comment store) plus a thin GitHub-side helper that
-groups the inline comments into one review object via `gh api`. The
-`gh` CLI must be on `PATH` and authenticated.
+- `scr config show | edit | path` — inspect or edit the config files.
+</details>
 
 ### Where run artefacts live
 
@@ -208,7 +214,7 @@ worktrees inside contain real git history that no one wants to
 upload by accident.
 
 Override with `--runs-root <path>` on any command that creates runs
-(`review`, `pr`, `fetch`, `run`).
+(`review`, `pr`, `fetch`).
 
 ## Development
 
@@ -259,12 +265,12 @@ in the repo's GitHub settings.
 - `semantic_code_review/augment/` — overview + per-hunk LLM pipeline,
   prompts, schemas, MCP tool wrapper.
 - `semantic_code_review/viewer/` — Python side: `build_json.py`,
-  `hunk_layout.py`. Frontend assets in `viewer/assets/`: eight
-  TypeScript modules (boot/render/sidebar/annotations/comments/
-  folds/progress/sse) bundled by esbuild into a single
-  `viewer.js`, `viewer.css`, the static `index.html` served by
-  the review server, and vendored `highlight.js` under
-  `assets/vendor/`.
+  `hunk_layout.py`. Frontend assets in `viewer/assets/`: the
+  TypeScript modules (`boot` entry, plus `render`, `sidebar`,
+  `folds`, `annotations`, `comments`, `console`, `sse`, …) bundled
+  by esbuild into a single `viewer.js`, alongside `viewer.css`, the
+  static `index.html` served by the review server, and vendored
+  `highlight.js` under `assets/vendor/`.
 - `semantic_code_review/review/` — local HTTP server that
   back-channels reviewer comments to the calling process, the
   shared `serve_review` helper used by both `scr review` and
