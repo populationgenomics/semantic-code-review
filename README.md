@@ -113,7 +113,8 @@ env var, pass `--backend <name>`:
 The non-Anthropic / non-Google entries all reach the provider via
 the OpenAI Chat Completions wire format (`type = "openai-compat"`).
 Override any builtin's model — or add a new provider — with a
-`[backends.<name>]` block in your config; see `scr config edit`.
+`[backends.<name>]` block in your config; see `scr config edit` and
+[docs/config.md](docs/config.md) for the full config structure.
 
 If your bearer lives in a secret store rather than a long-lived env
 var, use `api_key_command`: it runs a shell-free argv command and
@@ -150,11 +151,12 @@ scr review HEAD~1..HEAD --spec SPEC.md
 ```
 
 `scr init` is the quickest way to get configured: it detects which
-backends are usable in your environment, lets you pick a default, writes
-the (non-secret) choice to your config, and — for backends that need a
-key — offers to set an env var, run a command to fetch the key
-(`api_key_command`), or write it to a gitignored `.env`. It never puts a
-key in the config file.
+backends are usable in your environment, lets you pick a default backend
+and model (live-listed from the backend once a credential resolves), and
+guides credential setup — offering, per backend, to set an env var, fetch
+the key from a command (`api_key_command`), write it to a gitignored
+`.env`, or (user scope only) store it in your user config's `[env]`. All
+config and secret files are written `0600`.
 
 From a source checkout (for development, or to pin the exact hashed
 dependency set), build the viewer bundle yourself:
