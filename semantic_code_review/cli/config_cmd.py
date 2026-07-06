@@ -8,7 +8,7 @@ from pathlib import Path
 
 import typer
 
-from .. import git_ops
+from .. import git_ops, paths
 from . import app
 from ._shared import get_config
 
@@ -147,9 +147,9 @@ def _edit_full_config(path: Path, template: str | None) -> None:
     from ..config import BUILTIN_BACKENDS
     from ..config_template import SCAFFOLD_SECTION_NAME, render_backend_template
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    paths.ensure_private_dir(path.parent)
     if not path.exists():
-        path.write_text(_CONFIG_TEMPLATE, encoding="utf-8")
+        paths.write_private_file(path, _CONFIG_TEMPLATE)
 
     if template is not None:
         valid = sorted([SCAFFOLD_SECTION_NAME, *BUILTIN_BACKENDS])
@@ -166,7 +166,7 @@ def _edit_full_config(path: Path, template: str | None) -> None:
         else:
             block = render_backend_template(template)
             sep = "" if existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
-            path.write_text(existing + sep + block, encoding="utf-8")
+            paths.write_private_file(path, existing + sep + block)
 
     editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
     _sp.run([editor, str(path)], check=False)
@@ -187,9 +187,9 @@ def _edit_inline_prompt(path: Path) -> None:
 
     from ..config import ScrConfig, write_inline_extra_prompt
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    paths.ensure_private_dir(path.parent)
     if not path.exists():
-        path.write_text(_CONFIG_TEMPLATE, encoding="utf-8")
+        paths.write_private_file(path, _CONFIG_TEMPLATE)
 
     # Read the current prompt via the standard config loader so the
     # tempfile starts with what `scr config show` would say. Empty

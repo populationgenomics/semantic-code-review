@@ -24,9 +24,8 @@ from pathlib import Path
 
 import typer
 
-from .. import git_ops
+from .. import git_ops, paths
 from ..config import BackendDef, BackendType, ScrConfig
-from ..paths import default_config_path
 from . import app
 
 
@@ -240,9 +239,9 @@ def _write_env_key(var: str) -> None:
     env_path = Path(".env")
     existing = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
     sep = "" if (not existing or existing.endswith("\n")) else "\n"
-    env_path.write_text(f"{existing}{sep}{var}={value}\n", encoding="utf-8")
+    paths.write_private_file(env_path, f"{existing}{sep}{var}={value}\n")
     _ensure_gitignored(".env")
-    typer.echo(f"scr: wrote {var} to {env_path} (keep it out of version control).")
+    typer.echo(f"scr: wrote {var} to {env_path} (mode 0600; keep it out of version control).")
 
 
 def _ensure_gitignored(entry: str) -> None:
@@ -271,7 +270,7 @@ _FRESH_HEADER = """\
 
 def _resolve_config_path(scope: str) -> Path:
     if scope == "user":
-        return default_config_path()
+        return paths.default_config_path()
     try:
         root = git_ops.git(None, "rev-parse", "--show-toplevel").strip()
     except git_ops.GitError as e:
@@ -291,7 +290,7 @@ def _write_config(
     file. Returns a warning string when a `[backends.<name>]` section
     already exists (left untouched) so the caller can surface it.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    paths.ensure_private_dir(path.parent)
     text = path.read_text(encoding="utf-8") if path.exists() else _FRESH_HEADER
     text = _set_backend_line(text, backend)
 
@@ -305,7 +304,7 @@ def _write_config(
         else:
             text = text.rstrip("\n") + "\n\n" + _render_backends_block(backend, model_override, api_key_command)
 
-    path.write_text(text, encoding="utf-8")
+    paths.write_private_file(path, text)
     return warning
 
 

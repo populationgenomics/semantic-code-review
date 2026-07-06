@@ -13,6 +13,39 @@ from pathlib import Path
 from . import git_ops
 
 
+def write_private_file(path: Path, text: str) -> None:
+    """Write `text` to `path` as an owner-only (0600) file.
+
+    Config and credential files (`config.toml`, `.env`) must never be
+    group- or world-readable. New files are created 0600 from the start
+    — via `O_CREAT` with an explicit mode rather than write-then-chmod —
+    so there is no window where a freshly written secret is readable by
+    others; an existing file's mode is tightened too. The parent
+    directory is created if missing but its mode is left alone: the
+    parent may be a shared location (a repo root, for `.env`) that must
+    not be narrowed. Use `ensure_private_dir` for scr's own config dirs.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, text.encode("utf-8"))
+    finally:
+        os.close(fd)
+    os.chmod(path, 0o600)
+
+
+def ensure_private_dir(path: Path) -> Path:
+    """Create `path` as an owner-only (0700) directory and return it.
+
+    For scr's own config directories (`~/.config/scr`, `<repo>/.scr`),
+    whose contents may include credentials. Never call this on a shared
+    parent such as a repo root.
+    """
+    path.mkdir(parents=True, exist_ok=True)
+    os.chmod(path, 0o700)
+    return path
+
+
 def default_config_path() -> Path:
     """Path to the user-level scr config.
 

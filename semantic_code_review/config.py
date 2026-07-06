@@ -50,7 +50,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any
 
-from .paths import default_config_path, find_repo_config_path
+from .paths import default_config_path, find_repo_config_path, write_private_file
 
 
 class BackendType(str, Enum):
@@ -504,7 +504,7 @@ def write_inline_extra_prompt(path: Path, new_body: str) -> None:
         # as no-op so this is safe.
         for rx in (_RE_EXTRA_PROMPT_TRIPLE, _RE_EXTRA_PROMPT_QUOTED):
             text = _replace_in_augment_section(text, rx, "")
-        path.write_text(text, encoding="utf-8")
+        write_private_file(path, text)
         return
 
     # The standard form we write. Leading + trailing newlines inside
@@ -516,7 +516,7 @@ def write_inline_extra_prompt(path: Path, new_body: str) -> None:
     for rx in (_RE_EXTRA_PROMPT_TRIPLE, _RE_EXTRA_PROMPT_QUOTED):
         new_text = _replace_in_augment_section(text, rx, new_block)
         if new_text != text:
-            path.write_text(new_text, encoding="utf-8")
+            write_private_file(path, new_text)
             return
         text = new_text
 
@@ -531,7 +531,7 @@ def write_inline_extra_prompt(path: Path, new_body: str) -> None:
         if not text:
             sep = ""
         text = text + sep + "[augment]\n" + new_block
-    path.write_text(text, encoding="utf-8")
+    write_private_file(path, text)
 
 
 def _replace_in_augment_section(text: str, rx: re.Pattern[str], replacement: str) -> str:
