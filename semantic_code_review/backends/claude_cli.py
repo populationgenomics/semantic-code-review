@@ -17,7 +17,6 @@ import contextlib
 import json
 import os
 import shutil
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -33,8 +32,6 @@ from ._cli_driver import (
 )
 from .base import Backend
 
-_FALLBACK_WARNED = False
-
 
 class ClaudeCliBackend(Backend):
     auto_priority = 1
@@ -44,7 +41,10 @@ class ClaudeCliBackend(Backend):
             raise typer.BadParameter(
                 f"--backend={self.name} but `claude` is not on PATH (install Claude Code CLI or set ANTHROPIC_API_KEY)."
             )
-        _warn_once()
+        # No startup note: claude-cli is a first-class, deliberately-chosen
+        # path. Its trade-offs (slower, subscription rate limits) are
+        # self-evident, and the opus→sonnet demotion is `claude`'s own
+        # `--fallback-model` behaviour, surfaced by `claude` when it happens.
         return Client(
             model=ClaudeCLIModel(model=model),
             is_subprocess_backend=True,
@@ -52,22 +52,6 @@ class ClaudeCliBackend(Backend):
 
     def supports_auto(self) -> bool:
         return shutil.which("claude") is not None
-
-
-def _warn_once() -> None:
-    global _FALLBACK_WARNED
-    if _FALLBACK_WARNED:
-        return
-    _FALLBACK_WARNED = True
-    sys.stderr.write(
-        "scr: no ANTHROPIC_API_KEY; falling back to `claude -p` subprocess. "
-        "Annotation quality is the same as the SDK path (same model, prompts, "
-        "and repo tools via MCP), but expect slower runs: subprocess startup "
-        "per hunk plus Claude Code subscription rate limits. If the hunk pass "
-        "hits a rate limit on the primary model, --fallback-model silently "
-        "demotes that call (opus → sonnet by default).\n"
-    )
-    sys.stderr.flush()
 
 
 # ---------------------------------------------------------------------------
