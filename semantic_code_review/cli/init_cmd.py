@@ -2,14 +2,17 @@
 
 Detects which backends are usable right now (mirroring the signals
 `resolve_auto` / `resolve_api_key` use), lets the user pick a default
-backend + model, writes the non-secret choices to the user (or per-repo)
-config, and guides credential setup.
+backend, guides credential setup, then picks a model — live-listing the
+backend's models once the credential resolves. Writes the choices to the
+user (or per-repo) config.
 
-Credentials never go into the TOML config. When the chosen backend has
-no detected credential the wizard offers alternatives: set the env var
-yourself (instruct-only), configure a command that fetches the key
-(`api_key_command` — a command is not a secret, so it *is* written to
-config), or drop the key into a gitignored `.env`.
+Credential setup is a set of composable *sources* (see `credentials.py`);
+each backend accepts a subset. A key can go into a gitignored `.env`
+(0600), a fetch command (`api_key_command`, stored in config — a command
+is not a secret), an env var the user sets, or — user scope only — the
+user config's `[env]` table (0600). All secret/config writes are 0600
+(see `paths.write_private_file`); the config-key option is refused for
+`--scope=repo`, where the file lives inside the repository.
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ import typer
 
 from .. import git_ops, paths
 from ..config import BackendDef, BackendType, ScrConfig
-from . import app
+from . import app, credentials, prompt
 
 
 @app.command("init")
@@ -47,14 +50,17 @@ def init(
     typer.echo("scr init — set up a default backend.\n")
     name = _choose_backend(cfg)
     bdef = cfg.backends[name]
+    # Credential before model: a resolved key lets the model step list the
+    # backend's actual models (and doubles as a live credential check).
+    cred = _credential_step(name, bdef, scope)
     model_override = _choose_model(name, bdef)
-    api_key_command = _credential_step(name, bdef)
 
     warning = _write_config(
         path,
         backend=name,
         model_override=model_override,
-        api_key_command=api_key_command,
+        api_key_command=cred.api_key_command,
+        config_env=cred.config_env,
     )
     typer.echo(f"\nscr: wrote {path}")
     if warning:
@@ -82,17 +88,21 @@ def _env_present(var: str | None) -> bool:
     return bool(var) and bool(os.environ.get(var or "", "").strip())
 
 
-def _command_yields_key(argv: tuple[str, ...]) -> bool:
-    """True if ``argv`` runs, exits 0, and prints non-empty output.
-
-    Non-raising: any failure (missing binary, non-zero exit, timeout)
-    is a plain False so detection never aborts the wizard.
+def _command_key_value(argv: tuple[str, ...]) -> str | None:
+    """The key ``argv`` prints, or None. Non-raising: any failure (missing
+    binary, non-zero exit, timeout, empty output) is None so detection
+    never aborts the wizard.
     """
     try:
         proc = subprocess.run(list(argv), capture_output=True, text=True, timeout=10, check=False)
     except (OSError, subprocess.SubprocessError):
-        return False
-    return proc.returncode == 0 and bool((proc.stdout or "").strip())
+        return None
+    out = (proc.stdout or "").strip()
+    return out if (proc.returncode == 0 and out) else None
+
+
+def _command_yields_key(argv: tuple[str, ...]) -> bool:
+    return _command_key_value(argv) is not None
 
 
 def _detect(name: str, bdef: BackendDef) -> _Status:
@@ -128,89 +138,127 @@ def _ordered_backends(cfg: ScrConfig) -> list[tuple[str, BackendDef, _Status]]:
 
 
 def _choose_backend(cfg: ScrConfig) -> str:
-    """Numbered menu (ready first) with detection + description. Default is
-    the current config backend, else the first ready one, else the first row.
+    """Arrow-key select (ready first) with detection marker + description.
+    Default is the current config backend, else the first ready one.
     """
     rows = _ordered_backends(cfg)
-    typer.echo("Backends (✓ ready · ○ local · · needs a credential):\n")
-    for i, (name, bdef, status) in enumerate(rows, start=1):
-        typer.echo(f"  [{i}] {status.marker} {name:<12} {status.detail}")
+    choices: list[tuple[str, str]] = []
+    for name, bdef, status in rows:
+        label = f"{status.marker} {name:<12} {status.detail}"
         if bdef.description:
-            typer.echo(f"         {bdef.description}")
-    default_idx = _default_backend_index(cfg, rows)
-    choice = typer.prompt("\nDefault backend", default=str(default_idx))
-    idx = _parse_choice(choice, len(rows))
-    return rows[idx - 1][0]
+            label += f"\n     {bdef.description}"
+        choices.append((label, name))
+    return prompt.select(
+        "Default backend  (✓ ready · ○ local · · needs a credential)",
+        choices,
+        default=_default_backend(cfg, rows),
+    )
 
 
-def _default_backend_index(cfg: ScrConfig, rows: list[tuple[str, BackendDef, _Status]]) -> int:
+def _default_backend(cfg: ScrConfig, rows: list[tuple[str, BackendDef, _Status]]) -> str:
     names = [r[0] for r in rows]
     if cfg.backend and cfg.backend in names:
-        return names.index(cfg.backend) + 1
-    for i, (_name, _bdef, status) in enumerate(rows, start=1):
+        return cfg.backend
+    for name, _bdef, status in rows:
         if status.state == "ready":
-            return i
-    return 1
-
-
-def _parse_choice(raw: str, count: int) -> int:
-    try:
-        idx = int(raw.strip())
-    except ValueError:
-        raise typer.BadParameter(f"expected a number 1–{count}, got {raw!r}") from None
-    if not 1 <= idx <= count:
-        raise typer.BadParameter(f"choice {idx} out of range 1–{count}")
-    return idx
+            return name
+    return names[0]
 
 
 def _choose_model(name: str, bdef: BackendDef) -> str | None:
-    """Prompt for a model. Returns an override only when the user picks
-    something other than the backend's builtin default (blank keeps it).
+    """Pick a model, live-listing the backend's models when the credential
+    resolves. Returns an override only when the choice differs from the
+    backend's builtin default (matching the default keeps it implicit).
     """
     default = bdef.default_model or ""
-    prompt = f"Model for {name}" + (f" [{default}]" if default else " (required — this backend pins no default)")
-    entered = typer.prompt(prompt, default=default, show_default=False).strip()
-    if not entered:
+    key = os.environ.get(bdef.api_key_env) if bdef.api_key_env else None
+    models = credentials.list_models(bdef, key)
+
+    if models:
+        other = "\x00other"  # sentinel value distinct from any real model id
+        choices = [(m, m) for m in models]
+        choices.append(("other — type a model id", other))
+        picked = prompt.select(f"Model for {name}", choices, default=default if default in models else models[0])
+        if picked == other:
+            picked = prompt.text(f"Model id for {name}", default=default)
+    else:
+        label = f"Model for {name}" + ("" if default else " (required — this backend pins no default)")
+        picked = prompt.text(label, default=default)
+
+    picked = picked.strip()
+    if not picked or picked == (bdef.default_model or ""):
         return None
-    return entered if entered != (bdef.default_model or None) else None
+    return picked
 
 
-def _credential_step(name: str, bdef: BackendDef) -> tuple[str, ...] | None:
-    """Guide credential setup for the chosen backend.
+@dataclasses.dataclass
+class _Credential:
+    """What the credential step wants persisted. `api_key_command` goes
+    under `[backends.<name>]`; `config_env` is a `(VAR, value)` written to
+    the `[env]` table (the config-key source). Both may be None.
+    """
 
-    Returns an `api_key_command` tuple to persist in `[backends.<name>]`
-    when the user opts for the fetch-command route, else None.
+    api_key_command: tuple[str, ...] | None = None
+    config_env: tuple[str, str] | None = None
+
+
+def _credential_step(name: str, bdef: BackendDef, scope: str) -> _Credential:
+    """Guide credential setup by offering the backend's allowed sources.
+
+    Whichever source is chosen, its key (when we can obtain it) is applied
+    to this process's environment so the following model step can list the
+    backend's models live.
     """
     status = _detect(name, bdef)
     if status.state == "ready":
         typer.echo(f"\nscr: credential ready — {status.detail}.")
-        return None
-    if status.state == "local":
+        return _Credential()
+
+    ids = credentials.allowed_source_ids(name, bdef, scope=scope)
+    if status.state == "local" or ids == ["none"]:
         typer.echo(f"\nscr: {status.detail}.")
-        return None
-    if bdef.type is BackendType.CLAUDE_CLI:
-        typer.echo(f"\nscr: {status.detail}.")
-        return None
+        return _Credential()
 
     var = bdef.api_key_env or "API_KEY"
-    typer.echo(f"\n{name} needs a credential (${var}). Choose how to provide it:")
-    typer.echo("  [1] I'll set the env var myself (in .env or my shell)")
-    typer.echo("  [2] Run a command to fetch it (stored in config; the key is not)")
-    typer.echo("  [3] Paste it now into a gitignored .env")
-    choice = typer.prompt("Credential source", default="1").strip()
+    choices = [(credentials.SOURCES[i].label.format(var=var), i) for i in ids]
+    source = prompt.select(f"\n{name} needs a credential (${var}). How will you provide it?", choices, default=ids[0])
 
-    if choice == "2":
-        return _configure_api_key_command(name, var)
-    if choice == "3":
-        _write_env_key(var)
+    if source == "command":
+        return _Credential(api_key_command=_configure_api_key_command(name, var))
+    if source == "dotenv":
+        value = _acquire_key(var)
+        if value:
+            _write_env_key(var, value)
+        return _Credential()
+    if source == "config":
+        value = _acquire_key(var)
+        return _Credential(config_env=(var, value)) if value else _Credential()
+    if source == "vertex":
+        typer.echo(
+            "\nUsing Vertex AI: set GOOGLE_CLOUD_PROJECT and authenticate with\n"
+            "    gcloud auth application-default login"
+        )
+        return _Credential()
+    # "env"
+    typer.echo(f"\nExport it in your shell, or add it to a .env in the repo you review from:\n    {var}=<your-key>")
+    return _Credential()
+
+
+def _acquire_key(var: str) -> str | None:
+    """Prompt for a key (hidden), apply it to this process's env so the
+    model step can list live, and return it (None when left blank).
+    """
+    value = prompt.password(f"Paste {var}")
+    if not value:
+        typer.echo("scr: no value entered; skipping.", err=True)
         return None
-    typer.echo(f"\nAdd this to a .env in the repo you review from, or export it in your shell:\n    {var}=<your-key>")
-    return None
+    os.environ[var] = value
+    return value
 
 
 def _configure_api_key_command(name: str, var: str) -> tuple[str, ...] | None:
     """Prompt for a key-fetch command, validate it, return its argv."""
-    raw = typer.prompt("Command to fetch the key (e.g. `gh auth token`)").strip()
+    raw = prompt.text("Command to fetch the key (e.g. `gh auth token`)")
     try:
         argv = tuple(shlex.split(raw))
     except ValueError as e:
@@ -219,7 +267,9 @@ def _configure_api_key_command(name: str, var: str) -> tuple[str, ...] | None:
     if not argv:
         typer.echo("scr: empty command", err=True)
         raise typer.Exit(code=2)
-    if _command_yields_key(argv):
+    value = _command_key_value(argv)
+    if value:
+        os.environ[var] = value  # so the model step can list live
         typer.echo(f"scr: command produced a key — storing api_key_command for {name}.")
     else:
         typer.echo(
@@ -230,12 +280,8 @@ def _configure_api_key_command(name: str, var: str) -> tuple[str, ...] | None:
     return argv
 
 
-def _write_env_key(var: str) -> None:
-    """Append ``var`` to ./.env (hidden prompt) and ensure .env is gitignored."""
-    value = typer.prompt(f"{var}", hide_input=True).strip()
-    if not value:
-        typer.echo("scr: no value entered; skipping .env write.", err=True)
-        return
+def _write_env_key(var: str, value: str) -> None:
+    """Append ``var=value`` to ./.env (0600) and ensure .env is gitignored."""
     env_path = Path(".env")
     existing = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
     sep = "" if (not existing or existing.endswith("\n")) else "\n"
@@ -263,8 +309,8 @@ def _ensure_gitignored(entry: str) -> None:
 # --- config writing --------------------------------------------------------
 
 _FRESH_HEADER = """\
-# scr config — non-secret defaults. CLI flags and env vars override.
-# Do NOT put API keys here; use a .env or your shell (or api_key_command).
+# scr config — CLI flags and env vars override these. A key in [env] must
+# stay user-scoped (this file is 0600); never in a repo's .scr/config.toml.
 """
 
 
@@ -285,6 +331,7 @@ def _write_config(
     backend: str,
     model_override: str | None,
     api_key_command: tuple[str, ...] | None,
+    config_env: tuple[str, str] | None = None,
 ) -> str | None:
     """Write the chosen backend/model to ``path``, preserving any existing
     file. Returns a warning string when a `[backends.<name>]` section
@@ -293,6 +340,8 @@ def _write_config(
     paths.ensure_private_dir(path.parent)
     text = path.read_text(encoding="utf-8") if path.exists() else _FRESH_HEADER
     text = _set_backend_line(text, backend)
+    if config_env is not None:
+        text = _set_env_key(text, *config_env)
 
     warning: str | None = None
     if model_override or api_key_command:
@@ -306,6 +355,22 @@ def _write_config(
 
     paths.write_private_file(path, text)
     return warning
+
+
+def _set_env_key(text: str, var: str, value: str) -> str:
+    """Set ``var = "value"`` under an `[env]` table (the config-key source),
+    replacing an existing assignment or creating the section. Only ever
+    called for user-scoped config (0600); `allowed_source_ids` withholds
+    the config source for repo scope.
+    """
+    line = f'{var} = "{value}"'
+    assign = re.compile(rf"^[ \t]*{re.escape(var)}[ \t]*=.*$", re.MULTILINE)
+    if re.search(r"^\[env\]", text, re.MULTILINE):
+        if assign.search(text):
+            return assign.sub(line, text, count=1)
+        return re.sub(r"(^\[env\][^\n]*\n)", rf"\1{line}\n", text, count=1, flags=re.MULTILINE)
+    sep = "" if text.endswith("\n\n") else ("\n" if text.endswith("\n") else "\n\n")
+    return f"{text}{sep}[env]\n{line}\n"
 
 
 def _set_backend_line(text: str, backend: str) -> str:

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import stat
 import tomllib
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
-from semantic_code_review.cli import app, init_cmd
+from semantic_code_review.cli import app, credentials, init_cmd
 from semantic_code_review.config import ScrConfig
 
 # Every backend env var init probes, so a stray one in the test runner's
@@ -46,6 +47,24 @@ def _user_config(tmp_path: Path) -> Path:
     return tmp_path / "xdg" / "scr" / "config.toml"
 
 
+def _drive(monkeypatch, *, backend, source=None, model="", command="", key="", models=None):
+    """Script the interactive seam so `scr init` runs non-interactively.
+
+    `backend` and `source` are the values the two selects return; `model`
+    /`command`/`key` feed the text + password prompts. `models` is what
+    the live lister returns (None → free-text model entry, and — since the
+    real lister would hit the network — the default for tests)."""
+    selects = iter([backend, *([source] if source else [])])
+    monkeypatch.setattr(init_cmd.prompt, "select", lambda *_a, **_k: next(selects))
+    monkeypatch.setattr(
+        init_cmd.prompt,
+        "text",
+        lambda msg="", default="", **_k: command if "Command" in str(msg) else (model or default),
+    )
+    monkeypatch.setattr(init_cmd.prompt, "password", lambda *_a, **_k: key)
+    monkeypatch.setattr(init_cmd.credentials, "list_models", lambda *_a, **_k: models)
+
+
 def test_init_writes_chosen_backend_to_fresh_config(clean_env, tmp_path, monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "gsk-test")  # groq → ready → only ready row
     idx = _index_of("groq")
@@ -60,10 +79,9 @@ def test_init_writes_chosen_backend_to_fresh_config(clean_env, tmp_path, monkeyp
     assert "backends" not in parsed  # default model kept → no override block
 
 
-def test_init_configures_api_key_command(clean_env, tmp_path):
-    idx = _index_of("groq")  # setup (no key) → credential menu appears
-    # backend, model(enter), credential=2 (fetch command), command string.
-    result = CliRunner().invoke(app, ["init"], input=f"{idx}\n\n2\ngh auth token\n")
+def test_init_configures_api_key_command(clean_env, tmp_path, monkeypatch):
+    _drive(monkeypatch, backend="groq", source="command", command="gh auth token")
+    result = CliRunner().invoke(app, ["init"])
     assert result.exit_code == 0, result.output
 
     parsed = tomllib.loads(_user_config(tmp_path).read_text())
@@ -71,9 +89,9 @@ def test_init_configures_api_key_command(clean_env, tmp_path):
     assert parsed["backends"]["groq"]["api_key_command"] == "gh auth token"
 
 
-def test_init_instruct_only_writes_no_secret(clean_env, tmp_path):
-    idx = _index_of("groq")
-    result = CliRunner().invoke(app, ["init"], input=f"{idx}\n\n1\n")
+def test_init_instruct_only_writes_no_secret(clean_env, tmp_path, monkeypatch):
+    _drive(monkeypatch, backend="groq", source="env")
+    result = CliRunner().invoke(app, ["init"])
     assert result.exit_code == 0, result.output
     assert "GROQ_API_KEY=<your-key>" in result.output
     parsed = tomllib.loads(_user_config(tmp_path).read_text())
@@ -84,22 +102,55 @@ def test_init_instruct_only_writes_no_secret(clean_env, tmp_path):
 def test_init_paste_writes_gitignored_env(clean_env, tmp_path, monkeypatch):
     # Run outside a git repo so _ensure_gitignored no-ops; .env lands in cwd.
     monkeypatch.chdir(tmp_path)
-    idx = _index_of("groq")
-    result = CliRunner().invoke(app, ["init"], input=f"{idx}\n\n3\nsupersecret\n")
+    _drive(monkeypatch, backend="groq", source="dotenv", key="supersecret")
+    result = CliRunner().invoke(app, ["init"])
     assert result.exit_code == 0, result.output
-    env_text = (tmp_path / ".env").read_text()
-    assert "GROQ_API_KEY=supersecret" in env_text
-    # The secret must never reach the TOML config.
+    env_path = tmp_path / ".env"
+    assert "GROQ_API_KEY=supersecret" in env_path.read_text()
+    assert stat.S_IMODE(env_path.stat().st_mode) == 0o600  # secret file is 0600
+    # The secret must never reach the TOML config on the .env route.
     assert "supersecret" not in _user_config(tmp_path).read_text()
+
+
+def test_init_config_key_writes_env_table(clean_env, tmp_path, monkeypatch):
+    """The relaxed policy: a key may go into user config's [env] (0600)."""
+    _drive(monkeypatch, backend="groq", source="config", key="sk-in-config")
+    result = CliRunner().invoke(app, ["init"])
+    assert result.exit_code == 0, result.output
+    cfg_path = _user_config(tmp_path)
+    parsed = tomllib.loads(cfg_path.read_text())
+    assert parsed["env"]["GROQ_API_KEY"] == "sk-in-config"
+    assert stat.S_IMODE(cfg_path.stat().st_mode) == 0o600
+
+
+def test_config_source_offered_only_for_user_scope():
+    from semantic_code_review.config import BUILTIN_BACKENDS
+
+    bdef = BUILTIN_BACKENDS["groq"]
+    assert "config" in credentials.allowed_source_ids("groq", bdef, scope="user")
+    assert "config" not in credentials.allowed_source_ids("groq", bdef, scope="repo")
 
 
 def test_init_model_override_writes_backend_block(clean_env, tmp_path, monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
-    idx = _index_of("groq")
-    result = CliRunner().invoke(app, ["init"], input=f"{idx}\nllama-3.1-8b-instant\n")
+    _drive(monkeypatch, backend="groq", model="llama-3.1-8b-instant")
+    result = CliRunner().invoke(app, ["init"])
     assert result.exit_code == 0, result.output
     parsed = tomllib.loads(_user_config(tmp_path).read_text())
     assert parsed["backends"]["groq"]["model"] == "llama-3.1-8b-instant"
+
+
+def test_init_model_picker_selects_from_live_list(clean_env, tmp_path, monkeypatch):
+    """When the lister returns models, the model select's value is persisted."""
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+    # A model distinct from groq's builtin default, so an override block is written.
+    selects = iter(["groq", "moonshotai/kimi-k2"])  # backend, then model
+    monkeypatch.setattr(init_cmd.prompt, "select", lambda *_a, **_k: next(selects))
+    monkeypatch.setattr(init_cmd.credentials, "list_models", lambda *_a, **_k: ["moonshotai/kimi-k2", "other-model"])
+    result = CliRunner().invoke(app, ["init"])
+    assert result.exit_code == 0, result.output
+    parsed = tomllib.loads(_user_config(tmp_path).read_text())
+    assert parsed["backends"]["groq"]["model"] == "moonshotai/kimi-k2"
 
 
 # --- unit coverage of the pieces the flow tests can't isolate cleanly ------
