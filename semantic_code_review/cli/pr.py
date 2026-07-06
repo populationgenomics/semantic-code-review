@@ -92,6 +92,7 @@ def pr(
         port=port,
         timeout=timeout,
         extra_review_prompt=extra_review_prompt,
+        skip_globs=cfg.skip_globs,
         client=client,
         yes=yes,
     )

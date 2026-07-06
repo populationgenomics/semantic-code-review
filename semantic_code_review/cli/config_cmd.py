@@ -56,7 +56,12 @@ def config_show() -> None:
         typer.echo("[env]")
         for k, v in cfg.env.items():
             applied = "applied" if os.environ.get(k) == v else "overridden by shell/.env"
-            typer.echo(f"  {k} = {v!r} (from {cfg.sources.get(f'env.{k}', '?')}, {applied})")
+            # Values are redacted: [env] may hold an API key (the config-key
+            # credential source), and `config show` output ends up in logs
+            # and screen-shares.
+            typer.echo(f"  {k} = <redacted> (from {cfg.sources.get(f'env.{k}', '?')}, {applied})")
+    if cfg.extra_review_prompt is not None or cfg.skip_globs:
+        typer.echo("[augment]")
     if cfg.extra_review_prompt is not None:
         # Show line count + a leading snippet rather than the whole
         # body — extra-review prompts are typically multi-paragraph
@@ -64,11 +69,12 @@ def config_show() -> None:
         prompt = cfg.extra_review_prompt
         lines = prompt.count("\n") + 1
         first_line = prompt.split("\n", 1)[0][:80]
-        typer.echo("[augment]")
         typer.echo(
             f"  extra_prompt = <{lines}-line prompt: {first_line!r}…> "
             f"(from {cfg.sources.get('augment.extra_prompt', '?')})"
         )
+    if cfg.skip_globs:
+        typer.echo(f"  skip_globs = {list(cfg.skip_globs)} (from {cfg.sources.get('augment.skip_globs', '?')})")
 
 
 @config_app.command("edit")
@@ -239,10 +245,12 @@ def _edit_inline_prompt(path: Path) -> None:
 
 
 _CONFIG_TEMPLATE = """\
-# scr config — non-secret defaults. CLI flags and env vars override.
+# scr config. CLI flags and env vars override these.
 #
-# Do NOT put API keys here. Config files leak too easily (accidental
-# commits, dotfile repos, screen-shares). Use a `.env` or your shell.
+# A key may live in [env] below, but ONLY in your user config
+# (~/.config/scr/config.toml, written 0600) — never in a repo's
+# .scr/config.toml, which sits inside the repository. `.env` or your
+# shell work too. `scr config show` redacts [env] values.
 
 # Default backend when --backend isn't passed. "auto" picks claude-api
 # if ANTHROPIC_API_KEY is set, else claude-cli if `claude` is on PATH.
@@ -258,9 +266,14 @@ _CONFIG_TEMPLATE = """\
 # [model]
 # default = "claude-opus-4-7"
 
-# Environment variables to set if not already in the parent env.
-# Useful for non-secrets like GCP project / location.
+# Environment variables to set if not already in the parent env — GCP
+# project/location, or (user config only) an API key.
 # [env]
 # GOOGLE_CLOUD_PROJECT = "aasgard-dev"
 # GOOGLE_CLOUD_LOCATION = "global"
+
+# Extra file globs to skip in the LLM passes, on top of the builtin
+# lockfile/bundle/binary denylist. Accumulates with the user scope.
+# [augment]
+# skip_globs = ["go.sum", "gen/**", "*.generated.ts"]
 """

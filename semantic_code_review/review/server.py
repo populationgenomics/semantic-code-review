@@ -652,6 +652,27 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": "left_start/left_end required"})
             return
 
+        # Generated / lock / binary files are excluded from the LLM passes;
+        # honour that here too so expanding a fold in one doesn't sneak a
+        # lock file to the model. Return a canned summary, no LLM call.
+        files = (self.ctx.viewer_json or {}).get("files") or []
+        if 0 <= file_idx < len(files) and files[file_idx].get("status") in ("generated", "binary"):
+            rs, re_ = right_range or (0, 0)
+            ls, le = left_range or (0, 0)
+            skipped = {
+                "file_idx": file_idx,
+                "context": context,
+                "right_start": rs,
+                "right_end": re_,
+                "left_start": ls,
+                "left_end": le,
+                "summary": "Generated / lock file — not summarised.",
+            }
+            _update_viewer_json_fold(self.ctx.viewer_json, skipped)
+            _ctx_publish(self.ctx, "fold-summary", skipped)
+            self._json(200, skipped)
+            return
+
         # Map typed errors from the apply step to HTTP statuses.
         from ..augment.fold_summary import (
             FoldSummaryFileIndexError,

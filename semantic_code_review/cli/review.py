@@ -88,6 +88,7 @@ def review(
         timeout=timeout,
         client=client,
         extra_review_prompt=extra_review_prompt,
+        skip_globs=cfg.skip_globs,
         show_progress=not verbose,
     )
     try:

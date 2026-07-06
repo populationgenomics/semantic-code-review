@@ -228,6 +228,11 @@ class ScrConfig:
     # disables. The CLI --extra-prompt flag loads from a file path
     # and overrides this for the current run.
     extra_review_prompt: str | None = None
+    # Extra glob patterns for files to skip in the LLM passes, on top of
+    # the builtin DEFAULT_SKIP_GLOBS (lockfiles, bundles, binaries). Set
+    # under [augment].skip_globs = ["go.sum", "gen/**"]. Accumulated across
+    # scopes (user + repo both contribute) rather than overridden.
+    skip_globs: tuple[str, ...] = ()
     # Where each setting came from, for `scr config show`.
     sources: dict[str, str] = field(default_factory=dict)
 
@@ -304,6 +309,13 @@ class ScrConfig:
                 if text:
                     self.extra_review_prompt = text
                     self.sources["augment.extra_prompt"] = source
+            globs = augment.get("skip_globs")
+            if globs is not None:
+                if not isinstance(globs, list) or not all(isinstance(g, str) for g in globs):
+                    raise ConfigError(f"{source}: augment.skip_globs must be a list of strings")
+                # Accumulate across scopes so user + repo patterns both apply.
+                self.skip_globs = (*self.skip_globs, *(g for g in globs if g))
+                self.sources["augment.skip_globs"] = source
 
     def _merge_backend(self, name: str, body: dict[str, Any], *, source: str) -> None:
         existing = self.backends.get(name)

@@ -66,12 +66,15 @@ DEFAULT_SKIP_GLOBS: tuple[str, ...] = (
     "*.lock",
     "*.min.js",
     "*.min.css",
+    "*.map",
+    "*.snap",
     "package-lock.json",
     "pnpm-lock.yaml",
     "yarn.lock",
     "Pipfile.lock",
     "poetry.lock",
     "uv.lock",
+    "go.sum",
     "*.png",
     "*.jpg",
     "*.jpeg",
@@ -104,6 +107,7 @@ async def augment_run_dir(
     cache: CacheStore | None = None,
     only_files: list[str] | None = None,
     max_hunks: int | None = None,
+    skip_globs: tuple[str, ...] = (),
     skip_overview: bool = False,
     skip_context: bool = False,
     extra_review_prompt: str | None = None,
@@ -142,7 +146,7 @@ async def augment_run_dir(
     skipped_files: set[str] = set()
     diff_files: list[AnnotatedFile] = []
     for pfile in parsed_files:
-        if _should_skip(pfile.path):
+        if _should_skip(pfile.path, skip_globs):
             ann = FileAnnotations(role=FileRole.GENERATED, summary="Generated / lock file — not analysed.")
             skipped_files.add(pfile.path)
         else:

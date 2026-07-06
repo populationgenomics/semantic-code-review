@@ -495,3 +495,19 @@ async def test_augment_extra_review_re_emits_sse_for_touched_hunks(tmp_path: Pat
     assert len(h1_events) == 1
     # The re-emitted block carries the new line_note in its body.
     assert h0_events[-1]["block"]["line_notes"] == [{"line": 1, "body": "look here"}]
+
+
+def test_should_skip_defaults_and_extra_globs() -> None:
+    """The denylist covers common generated/lock/binary files, and config
+    `skip_globs` extends it (both full-path and basename are matched)."""
+    from semantic_code_review.augment.pipeline import _should_skip
+
+    # Broadened defaults.
+    for p in ("go.sum", "app.js.map", "x/__snapshots__/y.snap", "uv.lock", "a/b.min.js", "logo.png"):
+        assert _should_skip(p), f"{p} should be skipped by default"
+    # Not skipped without a matching pattern.
+    assert not _should_skip("src/app.py")
+    assert not _should_skip("gen/schema.py")
+    # Config-supplied extra globs extend the denylist (path or basename).
+    assert _should_skip("gen/schema.py", ("gen/**",))
+    assert _should_skip("build/out.js", ("*.js",))

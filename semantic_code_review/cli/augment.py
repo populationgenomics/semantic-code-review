@@ -63,6 +63,7 @@ def augment(
             concurrency=concurrency,
             max_hunks=max_hunks,
             only_files=list(only_files) if only_files else None,
+            skip_globs=cfg.skip_globs,
             skip_overview=skip_overview,
             skip_context=skip_context,
             cache=cache,

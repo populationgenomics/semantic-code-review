@@ -71,6 +71,9 @@ class PrFlowOptions:
     extra_review_prompt: str | None
     client: Client | None
     yes: bool
+    # Extra file globs to skip in the LLM passes (config [augment].skip_globs).
+    # Trailing + defaulted so existing constructors need no change.
+    skip_globs: tuple[str, ...] = ()
 
 
 def run_pr_flow(opts: PrFlowOptions) -> int:
@@ -241,6 +244,7 @@ def _build_tasks(
             cache=cache,
             client=opts.client,
             extra_review_prompt=opts.extra_review_prompt,
+            skip_globs=opts.skip_globs,
             # Page carries the progress display now; suppress the
             # terminal meter to avoid duplicate noise and to keep
             # the listening-URL / warning lines unobstructed.

@@ -520,6 +520,59 @@ def test_fold_summary_broadcasts_and_patches_viewer_json(tmp_path: Path) -> None
         srv.stop()
 
 
+def test_fold_summary_skips_generated_file(tmp_path: Path) -> None:
+    """A GENERATED (lock / bundle / binary) file gets a canned summary and
+    the summariser is never invoked — so expanding a fold inside one can't
+    sneak the file to the model."""
+    from semantic_code_review.review.server import ReviewServer
+
+    viewer_json = {
+        "version": "1",
+        "files": [
+            {
+                "id": "F0",
+                "path": "uv.lock",
+                "status": "generated",
+                "hunks": [
+                    {
+                        "id": "H0_0",
+                        "fold_regions": [
+                            {
+                                "context": "right",
+                                "right_start": 1,
+                                "right_end": 3,
+                                "left_start": 0,
+                                "left_end": 0,
+                                "summary": "",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    srv = ReviewServer(run_dir=tmp_path, viewer_json=viewer_json)
+    srv.start()
+    try:
+
+        async def boom(*_a, **_k):
+            raise AssertionError("fold summariser must not run for a generated file")
+
+        srv.set_fold_summariser(boom)
+        code, body = _request(
+            srv.url() + "/fold-summary",
+            "POST",
+            {"file_idx": 0, "context": "right", "right_start": 1, "right_end": 3},
+        )
+        assert code == 200
+        assert "not summarised" in body["summary"]
+        # The canned note is patched into the viewer JSON like a real one.
+        _, data = _request(srv.url() + "/data.json")
+        assert data["files"][0]["hunks"][0]["fold_regions"][0]["summary"] == body["summary"]
+    finally:
+        srv.stop()
+
+
 def test_fold_summary_for_left_context_passes_ranges_through(tmp_path: Path) -> None:
     """A pure-deletion fold posts {context:'left', left_start, left_end};
     the server routes to the same task with right_range=None and the

@@ -112,6 +112,22 @@ Look for bugs, perf, security.
     assert cfg.sources["augment.extra_prompt"] == str(user)
 
 
+def test_augment_skip_globs_accumulate_across_scopes(tmp_path: Path) -> None:
+    """`[augment].skip_globs` from user + repo both apply (union), so a
+    repo can add patterns without dropping the user's."""
+    user = _write(tmp_path / "user.toml", '[augment]\nskip_globs = ["go.sum"]\n')
+    repo = _write(tmp_path / "repo.toml", '[augment]\nskip_globs = ["gen/**", ""]\n')
+    cfg = ScrConfig.load(user_path=user, repo_path=repo)
+    assert cfg.skip_globs == ("go.sum", "gen/**")  # empty strings dropped
+    assert cfg.sources["augment.skip_globs"] == str(repo)
+
+
+def test_augment_skip_globs_rejects_non_list(tmp_path: Path) -> None:
+    user = _write(tmp_path / "user.toml", '[augment]\nskip_globs = "go.sum"\n')
+    with pytest.raises(ConfigError, match="skip_globs must be a list"):
+        ScrConfig.load(user_path=user, repo_path=None)
+
+
 def test_augment_extra_prompt_empty_string_is_ignored(tmp_path: Path) -> None:
     """An all-whitespace value is treated as 'unset' rather than
     spinning up an extra pass with an empty system prompt."""
