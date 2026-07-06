@@ -29,10 +29,16 @@ class GoogleSdkBackend(Backend):
         from pydantic_ai.providers.google import GoogleProvider
 
         if os.environ.get("GOOGLE_CLOUD_PROJECT"):
+            # Vertex via ADC. pydantic-ai 2.x split the Vertex path off
+            # GoogleProvider (which is Gemini-API-only now) into a dedicated
+            # GoogleCloudProvider that reads project/location/credentials
+            # from the environment.
+            from pydantic_ai.providers.google_cloud import GoogleCloudProvider
+
             return Client(
                 model=GoogleModel(
                     model_name=gem_model,
-                    provider=GoogleProvider(vertexai=True),
+                    provider=GoogleCloudProvider(),
                 ),
             )
 

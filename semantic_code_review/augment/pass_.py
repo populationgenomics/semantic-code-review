@@ -135,7 +135,7 @@ async def run_pass(
     payload = submit_args_from_result(run_result)
 
     if cache is not None and key is not None:
-        usage = run_result.usage()
+        usage = run_result.usage  # pydantic-ai 2.x: property, not a method
         cache.put(
             key,
             request=cache_request or {},
