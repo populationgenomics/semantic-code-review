@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "semantic-code-review"
-version = "0.25.2"
+version = "0.26.0"
 description = "LLM-augmented GitHub PR viewer with foldable semantic diffs."
 readme = "README.md"
 license = { text = "MIT" }
