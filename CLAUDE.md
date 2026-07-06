@@ -58,3 +58,19 @@ persuasion, no recaps. Every token written is re-paid on every future read.
 - **Pin third-party GitHub Actions to the latest stable release**: the moving major tag
   (`@v3`) where the action publishes one, else the exact latest version (`@v8.2.0`). Verify
   against the action's releases when adding or bumping one.
+
+## Live `claude-cli` contract tests
+
+`tests/backends/test_claude_cli_live.py` spawns the real `claude` CLI to guard the
+`claude -p` envelope + MCP handshake our subprocess driver depends on. The CLI is not a
+versioned API surface, so Anthropic can change it under us; the mocked `claude-cli` tests
+only check our *assumption* of that contract, so drift passes CI green and reaches users
+first. These are the guard against that.
+
+- **Local only** — the CLI needs paid auth (subscription OAuth or an API key); CI has
+  neither, so there's no CI job. They're skipped unless `claude` is on `PATH` and
+  `SCR_LIVE_CLI=1`.
+- **Run periodically, and always when bumping the pinned `claude`, `anthropic`, or
+  `pydantic-ai`**: `SCR_LIVE_CLI=1 uv run pytest tests/backends/test_claude_cli_live.py`.
+  A failure means the CLI contract moved — update the driver/parser (and the mocked-test
+  fakes) to match.
