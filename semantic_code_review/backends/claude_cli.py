@@ -155,17 +155,24 @@ class ClaudeCLIModel(SubprocessModel):
 
     # ---- mcp config plumbing ---------------------------------------------
 
-    def _ensure_mcp_config(self) -> Path:
-        if self._mcp_config_path is not None and self._mcp_config_path.exists():
-            return self._mcp_config_path
+    def _mcp_server_entry(self) -> dict[str, Any]:
+        """The single `--mcp-config` server entry for this spawn.
+
+        A hosted HTTP endpoint (ADR 0003 Slice 3) wins when set — `claude`
+        connects to the run's one warm server. Otherwise fall back to the
+        stdio server `claude` launches per spawn (the retiring path).
+        """
+        if self._mcp_endpoint is not None:
+            return self._mcp_endpoint
         assert self._repo_tools is not None
         # `claude -p` launches stdio MCP servers as subprocesses itself; it
         # owns stdin/stdout of the child.
-        config = {
-            "mcpServers": {
-                "scr": {"type": "stdio", **_mcp_config_for(self._repo_tools)},
-            }
-        }
+        return {"type": "stdio", **_mcp_config_for(self._repo_tools)}
+
+    def _ensure_mcp_config(self) -> Path:
+        if self._mcp_config_path is not None and self._mcp_config_path.exists():
+            return self._mcp_config_path
+        config = {"mcpServers": {"scr": self._mcp_server_entry()}}
         fd, path = tempfile.mkstemp(prefix="scr-mcp-", suffix=".json")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(config, fh)
@@ -208,7 +215,7 @@ class ClaudeCLIModel(SubprocessModel):
         prompt = self._build_prompt(user_text, submit_tool_name)
         schema_json = json.dumps(schema, ensure_ascii=False)
 
-        mcp_active = self._repo_tools is not None
+        mcp_active = self._mcp_endpoint is not None or self._repo_tools is not None
         max_turns = self._max_turns_with_mcp if mcp_active else self._max_turns_single_shot
 
         # NOTE: do NOT pass --bare here. Its docs are explicit:
@@ -293,7 +300,7 @@ class ClaudeCLIModel(SubprocessModel):
         `bypassPermissions` silently grants the model built-in Bash/Edit,
         defeating the read-only intent.
         """
-        mcp_active = self._repo_tools is not None
+        mcp_active = self._mcp_endpoint is not None or self._repo_tools is not None
         max_turns = self._max_turns_with_mcp if mcp_active else self._max_turns_single_shot
         # Persistence stays ON here (no --no-session-persistence): the console
         # resumes this session across turns for tool-loop continuity. The

@@ -23,7 +23,7 @@ from ..format.parse import parse_raw_diff
 from ..format.sidecar import dump_sidecar
 from ..viewer.build_json import file_fold_spans
 from ..viewer.hunk_layout import build_hunk_viewer_block
-from . import source_cache
+from . import mcp_http_host, source_cache
 from .agents import Client
 from .hunks import (
     build_hunk_annotations,
@@ -243,10 +243,17 @@ async def augment_run_dir(
             else None
         )
 
-        # CLI subprocess backends use this to spawn an MCP server bound
-        # to the run's worktree. SDK backends are no-ops; the SDK Agent
-        # gets `deps=repo_tools` directly via `Agent.run` in `run_hunk_pass`.
-        client.set_repo_tools(repo_tools)
+        # CLI subprocess backends reach the tools through one warm HTTP MCP
+        # server for the whole run (ADR 0003 Slice 3) — started here, torn
+        # down with the client below — instead of cold-starting a stdio child
+        # per hunk. SDK backends get `deps=repo_tools` directly via `Agent.run`.
+        mcp_host: mcp_http_host.McpHttpHost | None = None
+        if repo_tools is not None and client.is_subprocess_backend:
+            mcp_host = mcp_http_host.McpHttpHost(repo_tools)
+            mcp_host.start()
+            client.set_mcp_endpoint(mcp_host.mcp_config())
+        else:
+            client.set_repo_tools(repo_tools)
 
         overview_json = overview_to_prompt_json(diff)
 
@@ -269,7 +276,14 @@ async def augment_run_dir(
         # `aclosing` calls `client.aclose()` on exit so /tmp doesn't
         # accumulate them across runs. SDKBackend's aclose is a no-op
         # so this is uniform across backends.
-        async with contextlib.aclosing(client):
+        async with contextlib.AsyncExitStack() as run_stack:
+            # One scope for both tool-using passes (per-hunk + extra-review):
+            # aclose() drops the client's temp MCP config, stop() shuts the
+            # host down — exception-safe, so neither leaks on a failed run.
+            await run_stack.enter_async_context(contextlib.aclosing(client))
+            if mcp_host is not None:
+                run_stack.callback(mcp_host.stop)
+
             sem = asyncio.Semaphore(concurrency)
             stats = _HunkStats()
             results: dict[tuple[int, int], HunkAnnotations] = {}
@@ -300,58 +314,58 @@ async def augment_run_dir(
             log.info("per-hunk pass: %d hunks queued (concurrency=%d)", len(tasks), concurrency)
             await asyncio.gather(*tasks)
 
-        # Merge per-hunk results back into the diff in one pass.
-        diff = _merge_hunk_results(diff, results)
+            # Merge per-hunk results back into the diff in one pass.
+            diff = _merge_hunk_results(diff, results)
 
-        # --- PR-level extra-review pass (opt-in) -------------------------
-        # Runs once over the whole diff so the user's prompt can catch
-        # cross-file concerns (schema migrations, missing tests, design
-        # consistency) that a per-hunk view fundamentally can't see.
-        # Best-effort: any failure leaves `diff` unchanged and logs.
-        if extra_review_prompt:
-            from .extra_review import run_pr_level_extra_review
+            # --- PR-level extra-review pass (opt-in) -------------------------
+            # Runs once over the whole diff so the user's prompt can catch
+            # cross-file concerns (schema migrations, missing tests, design
+            # consistency) that a per-hunk view fundamentally can't see.
+            # Best-effort: any failure leaves `diff` unchanged and logs.
+            if extra_review_prompt:
+                from .extra_review import run_pr_level_extra_review
 
-            diff_before = diff
-            diff = await run_pr_level_extra_review(
-                client,
-                diff=diff,
-                overview_json=overview_json,
-                diff_text=raw,
-                prompt_text=extra_review_prompt,
-                model=model,
-                cache=cache,
-                trace_dir=trace_dir,
-            )
-            # Re-emit hunk SSE events for hunks whose line_notes grew.
-            # The streaming viewer already rendered the per-hunk blocks
-            # without extras; this pushes the augmented bodies so the
-            # promote-to-comment affordance lights up on the new notes
-            # without the user needing to refresh.
-            for fi, fp in enumerate(diff.files):
-                if fi >= len(diff_before.files):
-                    continue
-                old_fp = diff_before.files[fi]
-                for hi, hunk in enumerate(fp.hunks):
-                    if hi >= len(old_fp.hunks):
+                diff_before = diff
+                diff = await run_pr_level_extra_review(
+                    client,
+                    diff=diff,
+                    overview_json=overview_json,
+                    diff_text=raw,
+                    prompt_text=extra_review_prompt,
+                    model=model,
+                    cache=cache,
+                    trace_dir=trace_dir,
+                )
+                # Re-emit hunk SSE events for hunks whose line_notes grew.
+                # The streaming viewer already rendered the per-hunk blocks
+                # without extras; this pushes the augmented bodies so the
+                # promote-to-comment affordance lights up on the new notes
+                # without the user needing to refresh.
+                for fi, fp in enumerate(diff.files):
+                    if fi >= len(diff_before.files):
                         continue
-                    if len(hunk.ann.line_notes) == len(old_fp.hunks[hi].ann.line_notes):
-                        continue
-                    block = build_hunk_viewer_block(
-                        hunk,
-                        fi,
-                        hi,
-                        *file_spans.get(fi, ([], [])),
-                    )
-                    _safe_emit(
-                        on_event,
-                        "hunk",
-                        {
-                            "file_idx": fi,
-                            "hunk_idx": hi,
-                            "ok": True,
-                            "block": block,
-                        },
-                    )
+                    old_fp = diff_before.files[fi]
+                    for hi, hunk in enumerate(fp.hunks):
+                        if hi >= len(old_fp.hunks):
+                            continue
+                        if len(hunk.ann.line_notes) == len(old_fp.hunks[hi].ann.line_notes):
+                            continue
+                        block = build_hunk_viewer_block(
+                            hunk,
+                            fi,
+                            hi,
+                            *file_spans.get(fi, ([], [])),
+                        )
+                        _safe_emit(
+                            on_event,
+                            "hunk",
+                            {
+                                "file_idx": fi,
+                                "hunk_idx": hi,
+                                "ok": True,
+                                "block": block,
+                            },
+                        )
 
         # --- Emit ----------------------------------------------------------
         augmented_text = emit_augmented_diff(diff)

@@ -303,6 +303,11 @@ class SubprocessModel(Model, ABC):
         self._model = model
         self._max_validation_retries = max_validation_retries
         self._repo_tools: RepoTools | None = None
+        # A hosted HTTP MCP server entry (`{type:"http", url, headers}`),
+        # set by the run when it starts one warm server (ADR 0003 Slice 3).
+        # When present it supersedes the per-spawn stdio server `set_repo_tools`
+        # would otherwise launch; None keeps the legacy stdio path.
+        self._mcp_endpoint: dict[str, Any] | None = None
         # Debug observability (opt-in). When a sink is bound, each subprocess
         # spawn emits a structured record the review server fans out to the
         # debug drawer. None (the default) is a hard gate: no sink → the
@@ -378,6 +383,18 @@ class SubprocessModel(Model, ABC):
         Setting to None reverts to single-shot mode.
         """
         self._repo_tools = repo_tools
+        self._invalidate_mcp_artifacts()
+
+    def set_mcp_endpoint(self, config: dict[str, Any] | None) -> None:
+        """Point the CLI at a hosted HTTP MCP server (ADR 0003 Slice 3).
+
+        `config` is the `--mcp-config` server entry the run's host exposes
+        (`McpHttpHost.mcp_config()`), or None to clear it. Takes precedence
+        over the stdio server `set_repo_tools` binds, so a run that hosts one
+        warm server routes every spawn through it instead of cold-starting a
+        stdio child per call.
+        """
+        self._mcp_endpoint = config
         self._invalidate_mcp_artifacts()
 
     async def aclose(self) -> None:

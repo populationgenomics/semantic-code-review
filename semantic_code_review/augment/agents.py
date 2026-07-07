@@ -89,6 +89,19 @@ class Client:
             if callable(setter):
                 setter(repo_tools)
 
+    def set_mcp_endpoint(self, config: dict[str, Any] | None) -> None:
+        """Point a subprocess backend at a hosted HTTP MCP server.
+
+        `config` is the run's `McpHttpHost.mcp_config()` (or None to clear).
+        Proxies to the inner CLI Model, superseding the per-spawn stdio
+        server (ADR 0003 Slice 3). SDK string models have no subprocess to
+        point — the call no-ops.
+        """
+        if isinstance(self.model, Model):
+            setter = getattr(self.model, "set_mcp_endpoint", None)
+            if callable(setter):
+                setter(config)
+
     def set_console_session(self, session_id: str | None) -> None:
         """Resume the CLI's console session next turn (subprocess only).
 

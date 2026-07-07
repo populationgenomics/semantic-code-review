@@ -6,6 +6,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
 from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
@@ -179,6 +180,63 @@ async def test_augment_produces_parseable_output(tmp_path: Path) -> None:
     assert reparsed.files[0].hunks[0].ann.intent.startswith("Bump x")
     assert reparsed.files[0].hunks[1].ann.intent.startswith("Bump y")
     assert canned.calls == 3  # 1 overview + 2 hunks
+
+
+class _RecordingSubprocModel(_CannedModel):
+    """Canned model that records the MCP endpoint the driver would be given."""
+
+    def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(*args, **kwargs)
+        self.endpoints: list = []
+
+    def set_mcp_endpoint(self, config) -> None:  # type: ignore[no-untyped-def]
+        self.endpoints.append(config)
+
+    def set_repo_tools(self, repo_tools) -> None:  # type: ignore[no-untyped-def]
+        pass
+
+
+async def test_augment_subprocess_backend_hosts_one_mcp_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A subprocess backend starts one HTTP MCP host for the run, points the
+    driver at it, and tears it down afterward (ADR 0003 Slice 3)."""
+    from semantic_code_review.augment import pipeline as pipeline_mod
+
+    run = _make_run_dir(tmp_path)
+    model = _RecordingSubprocModel(
+        overview_args={"summary": "s", "themes": [], "files": []},
+        hunk_args_list=[
+            {"intent": "a", "confidence": 90, "smells": []},
+            {"intent": "b", "confidence": 90, "smells": []},
+        ],
+    )
+    backend = Client(model=model, is_subprocess_backend=True)
+
+    created: list = []
+
+    class _FakeHost:
+        def __init__(self, repo_tools, *, on_tool=None, name="scr") -> None:  # type: ignore[no-untyped-def]
+            self.repo_tools = repo_tools
+            self.started = False
+            self.stopped = False
+            created.append(self)
+
+        def start(self) -> None:
+            self.started = True
+
+        def stop(self) -> None:
+            self.stopped = True
+
+        def mcp_config(self) -> dict:
+            return {"type": "http", "url": "http://127.0.0.1:0/mcp", "headers": {"Authorization": "Bearer t"}}
+
+    monkeypatch.setattr(pipeline_mod.mcp_http_host, "McpHttpHost", _FakeHost)
+
+    await augment_run_dir(run, model="t", concurrency=1, client=backend, cache=None)
+
+    assert len(created) == 1  # one warm host for the whole run, not per hunk
+    assert created[0].started
+    assert created[0].stopped  # torn down at end
+    assert model.endpoints and model.endpoints[0]["type"] == "http"
 
 
 async def test_augment_only_files_filters(tmp_path: Path) -> None:

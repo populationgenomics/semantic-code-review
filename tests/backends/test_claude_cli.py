@@ -298,6 +298,60 @@ async def test_set_repo_tools_invalidates_cached_config(
     await claude_model.aclose()
 
 
+_HTTP_ENDPOINT = {
+    "type": "http",
+    "url": "http://127.0.0.1:9999/mcp",
+    "headers": {"Authorization": "Bearer test-token"},
+}
+
+
+async def test_claude_http_endpoint_injected_when_set(
+    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hosted HTTP endpoint (ADR 0003 Slice 3) is written into the
+    --mcp-config as a `type:"http"` server, not a stdio spawn."""
+    claude_model.set_mcp_endpoint(_HTTP_ENDPOINT)
+    proc = FakeProc(claude_envelope({"intent": "http mcp"}))
+    calls = install_fake_subproc(monkeypatch, [proc])
+    await _agent(claude_model).run("USER")
+
+    argv = calls[0]["argv"]
+    assert "--mcp-config" in argv
+    assert "--strict-mcp-config" in argv
+    config_path = argv[argv.index("--mcp-config") + 1]
+    server = json.loads(open(config_path, encoding="utf-8").read())["mcpServers"]["scr"]
+    assert server == _HTTP_ENDPOINT
+    await claude_model.aclose()
+
+
+async def test_http_endpoint_takes_precedence_over_repo_tools(
+    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """With both bound, the hosted endpoint wins over the stdio spawn."""
+    claude_model.set_repo_tools(RepoTools(head_worktree=tmp_path, repo_git=tmp_path, base_sha="b", head_sha="h"))
+    claude_model.set_mcp_endpoint(_HTTP_ENDPOINT)
+    proc = FakeProc(claude_envelope({"intent": "precedence"}))
+    calls = install_fake_subproc(monkeypatch, [proc])
+    await _agent(claude_model).run("USER")
+
+    config_path = calls[0]["argv"][calls[0]["argv"].index("--mcp-config") + 1]
+    server = json.loads(open(config_path, encoding="utf-8").read())["mcpServers"]["scr"]
+    assert server["type"] == "http"
+    await claude_model.aclose()
+
+
+async def test_clearing_endpoint_reverts_to_single_shot(
+    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """set_mcp_endpoint(None) with no repo_tools drops MCP entirely."""
+    claude_model.set_mcp_endpoint(_HTTP_ENDPOINT)
+    claude_model.set_mcp_endpoint(None)
+    proc = FakeProc(claude_envelope({"intent": "cleared"}))
+    calls = install_fake_subproc(monkeypatch, [proc])
+    await _agent(claude_model).run("USER")
+    assert "--mcp-config" not in calls[0]["argv"]
+
+
 # ---------------------------------------------------------------------------
 # CLI driver — free-form (review console, ADR 0002 Slice 5)
 # ---------------------------------------------------------------------------
