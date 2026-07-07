@@ -79,21 +79,29 @@ Keyed by `(sha, path)`; immutable inputs mean no invalidation.
 once; SDK augment on a multi-hunk file shows fewer parses; behaviour is
 otherwise identical.
 
-## Slice 2 — Live tool activity for CLI *(CLI-only)*
+## Slice 2 — Live tool activity for CLI *(CLI-only) — SKIPPED*
 
-Bring `claude-cli` to the `console-tool` parity SDK already has. Form
-depends on whether Slice 3 has landed:
+**Not built. Folded into Slice 3.** The plan kept two forms of CLI tool
+visibility: an interim back-channel (the stdio MCP server POSTs
+`{tool, args}` to a localhost ingest endpoint, fanned out as a
+`console-tool` frame) and a post-hosting form (the in-process handler
+publishes `console-tool` directly). Slice 0 and the Slice 3 decision
+retire the interim form before it is worth writing:
 
-- **Interim (pre-hosting):** the stdio MCP server POSTs `{tool, args}` to
-  a localhost ingest endpoint on the review server; the server fans it
-  out as a `console-tool` frame stamped with the in-flight turn's
-  `console_id` (only one turn runs at a time). Ingest URL + token passed
-  via `_mcp_config_for` env.
-- **Post-hosting:** the in-process handler publishes `console-tool`
-  directly — the back-channel is deleted.
+- **It is throwaway.** Slice 3 hosts the server in-process and publishes
+  `console-tool` directly; the back-channel it would replace is deleted
+  the moment hosting lands. Building it now is code written to be thrown
+  away one slice later.
+- **Nothing forces the interim.** Slice 0 cleared the Slice 3 gate, so
+  hosting is going ahead directly — there is no prolonged pre-hosting
+  window the back-channel needs to cover. The animated pending indicator
+  already carries the interim liveness cue (ADR 0003).
 
-**Done when:** a CLI-backed console turn shows tool-activity lines as the
-model reads/greps, matching the SDK console.
+So CLI tool visibility ships as part of Slice 3, via the in-process
+handler — no separate slice, no back-channel.
+
+**Done when:** covered by Slice 3's done-criteria (tool activity
+published in-process).
 
 ## Slice 3 — Host the MCP server over HTTP *(CLI-only)*
 
