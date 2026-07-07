@@ -21,7 +21,6 @@ from pydantic_ai import Agent
 from pydantic_ai.output import ToolOutput
 
 from semantic_code_review.augment.schemas import HunkAnnotations
-from semantic_code_review.augment.tools import RepoTools
 from semantic_code_review.backends.claude_cli import (
     ClaudeCliBackend,
     ClaudeCLIError,
@@ -221,36 +220,7 @@ async def test_claude_missing_structured_output_raises(
         await _agent(claude_model).run("USER")
 
 
-async def test_claude_mcp_injected_when_repo_tools_set(
-    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    claude_model.set_repo_tools(
-        RepoTools(
-            head_worktree=tmp_path,
-            repo_git=tmp_path,
-            base_sha="b",
-            head_sha="h",
-        )
-    )
-    proc = FakeProc(claude_envelope({"intent": "with mcp"}))
-    calls = install_fake_subproc(monkeypatch, [proc])
-    await _agent(claude_model).run("USER")
-
-    argv = calls[0]["argv"]
-    assert "--mcp-config" in argv
-    config_path = argv[argv.index("--mcp-config") + 1]
-    assert "--strict-mcp-config" in argv
-    # max-turns should be the MCP default (>1) so the agent can explore.
-    assert int(argv[argv.index("--max-turns") + 1]) > 1
-    config = json.loads(open(config_path, encoding="utf-8").read())
-    server = config["mcpServers"]["scr"]
-    assert server["type"] == "stdio"
-    assert "semantic_code_review.augment.mcp_server" in server["args"]
-
-    await claude_model.aclose()
-
-
-async def test_claude_single_shot_when_no_repo_tools(
+async def test_claude_single_shot_when_no_endpoint(
     claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     proc = FakeProc(claude_envelope({"intent": "single shot"}))
@@ -262,40 +232,6 @@ async def test_claude_single_shot_when_no_repo_tools(
     # Single-shot mode allows a few turns so the model has room to
     # redirect if it attempts a disallowed tool call before the JSON.
     assert int(argv[argv.index("--max-turns") + 1]) == 3
-
-
-async def test_set_repo_tools_invalidates_cached_config(
-    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    """Re-binding RepoTools must drop the previous temp config so the
-    next call materialises a fresh one for the new worktree."""
-    claude_model.set_repo_tools(
-        RepoTools(
-            head_worktree=tmp_path / "a",
-            repo_git=tmp_path / "a",
-            base_sha="x",
-            head_sha="y",
-        )
-    )
-    proc1 = FakeProc(claude_envelope({"intent": "1"}))
-    proc2 = FakeProc(claude_envelope({"intent": "2"}))
-    calls = install_fake_subproc(monkeypatch, [proc1, proc2])
-    await _agent(claude_model).run("USER")
-    first_config = calls[0]["argv"][calls[0]["argv"].index("--mcp-config") + 1]
-
-    claude_model.set_repo_tools(
-        RepoTools(
-            head_worktree=tmp_path / "b",
-            repo_git=tmp_path / "b",
-            base_sha="x",
-            head_sha="y",
-        )
-    )
-    await _agent(claude_model).run("USER")
-    second_config = calls[1]["argv"][calls[1]["argv"].index("--mcp-config") + 1]
-
-    assert first_config != second_config
-    await claude_model.aclose()
 
 
 _HTTP_ENDPOINT = {
@@ -324,26 +260,30 @@ async def test_claude_http_endpoint_injected_when_set(
     await claude_model.aclose()
 
 
-async def test_http_endpoint_takes_precedence_over_repo_tools(
-    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch, tmp_path
+async def test_rebinding_endpoint_invalidates_cached_config(
+    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With both bound, the hosted endpoint wins over the stdio spawn."""
-    claude_model.set_repo_tools(RepoTools(head_worktree=tmp_path, repo_git=tmp_path, base_sha="b", head_sha="h"))
+    """Re-binding the endpoint drops the previous temp config so the next
+    call materialises a fresh one for the new server."""
     claude_model.set_mcp_endpoint(_HTTP_ENDPOINT)
-    proc = FakeProc(claude_envelope({"intent": "precedence"}))
-    calls = install_fake_subproc(monkeypatch, [proc])
+    proc1 = FakeProc(claude_envelope({"intent": "1"}))
+    proc2 = FakeProc(claude_envelope({"intent": "2"}))
+    calls = install_fake_subproc(monkeypatch, [proc1, proc2])
     await _agent(claude_model).run("USER")
+    first_config = calls[0]["argv"][calls[0]["argv"].index("--mcp-config") + 1]
 
-    config_path = calls[0]["argv"][calls[0]["argv"].index("--mcp-config") + 1]
-    server = json.loads(open(config_path, encoding="utf-8").read())["mcpServers"]["scr"]
-    assert server["type"] == "http"
+    claude_model.set_mcp_endpoint({**_HTTP_ENDPOINT, "url": "http://127.0.0.1:9998/mcp"})
+    await _agent(claude_model).run("USER")
+    second_config = calls[1]["argv"][calls[1]["argv"].index("--mcp-config") + 1]
+
+    assert first_config != second_config
     await claude_model.aclose()
 
 
 async def test_clearing_endpoint_reverts_to_single_shot(
     claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """set_mcp_endpoint(None) with no repo_tools drops MCP entirely."""
+    """set_mcp_endpoint(None) drops MCP entirely."""
     claude_model.set_mcp_endpoint(_HTTP_ENDPOINT)
     claude_model.set_mcp_endpoint(None)
     proc = FakeProc(claude_envelope({"intent": "cleared"}))
@@ -413,19 +353,12 @@ async def test_claude_structured_path_has_no_effort(
     assert "--effort" not in calls[0]["argv"]
 
 
-async def test_claude_freeform_mcp_injected_when_repo_tools_set(
-    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch, tmp_path
+async def test_claude_freeform_mcp_injected_when_endpoint_set(
+    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The console runs MCP-backed: the worktree server is wired into the
+    """The console runs MCP-backed: the hosted server is wired into the
     free-form spawn exactly as for the structured path."""
-    claude_model.set_repo_tools(
-        RepoTools(
-            head_worktree=tmp_path,
-            repo_git=tmp_path,
-            base_sha="b",
-            head_sha="h",
-        )
-    )
+    claude_model.set_mcp_endpoint(_HTTP_ENDPOINT)
     proc = FakeProc(claude_envelope("answer", use_structured_output=False))
     calls = install_fake_subproc(monkeypatch, [proc])
     await _freeform_agent(claude_model).run("explain")

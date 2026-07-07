@@ -192,9 +192,6 @@ class _RecordingSubprocModel(_CannedModel):
     def set_mcp_endpoint(self, config) -> None:  # type: ignore[no-untyped-def]
         self.endpoints.append(config)
 
-    def set_repo_tools(self, repo_tools) -> None:  # type: ignore[no-untyped-def]
-        pass
-
 
 async def test_augment_subprocess_backend_hosts_one_mcp_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A subprocess backend starts one HTTP MCP host for the run, points the

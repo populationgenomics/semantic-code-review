@@ -128,17 +128,14 @@ computes once per key under a lock for the ~8 concurrent augment clients.
 (not per hunk/turn), every `claude -p` connects to it, augment shows the
 Slice-0 overhead gone, and tool activity is published in-process.
 
-**Status (landed, pending live validation):** the host
-(`augment/mcp_http_host.py`), thread-safe cache, and endpoint wiring are
-in — augment starts one host per run and the console one per turn, both
-pointing the driver at it and (console) publishing `console-tool`
-in-process. The driver keeps the stdio path as a *transitional* fallback
-when no endpoint is set, so nothing breaks pre-validation; in production
-`_repo_tools` is no longer bound on the CLI driver, so that branch is
-already dead code. Retiring it for real (deleting `augment/mcp_server.py`
-+ the stdio plumbing, no fallback) is gated on a live run —
-`SCR_LIVE_CLI=1` — confirming `claude -p` connects over HTTP. Not yet run
-(needs paid CLI auth). This is the one remaining Slice 3 step.
+**Status: done.** The host (`augment/mcp_http_host.py`), thread-safe
+cache, and endpoint wiring are in — augment starts one host per run and
+the console one per turn, both pointing the driver at it and (console)
+publishing `console-tool` in-process. Live-validated (`scr review` shows
+tools working over HTTP), so the stdio server is fully retired:
+`augment/mcp_server.py`, `_mcp_config_for`, `set_repo_tools`/`_repo_tools`
+on the CLI driver, and their tests are deleted — no fallback. The live
+contract test (`test_claude_cli_live.py`) now drives the HTTP host.
 
 ## Slice 4 — Richer tools in `RepoTools` *(shared; future)*
 

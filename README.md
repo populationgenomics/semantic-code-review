@@ -74,10 +74,10 @@ See `commands/review.md` for the full slash-command prompt.
 - `ANTHROPIC_API_KEY` set → uses the Anthropic SDK directly (best
   performance: prompt caching, native concurrency, structured tool
   use).
-- Otherwise, `claude` on `PATH` → falls back to a `claude -p`
-  subprocess with a stdio MCP server exposing the same repo-tools
-  the SDK path uses. No API key needed; works with any logged-in
-  Claude Code installation.
+- Otherwise, `claude` on `PATH` → falls back to `claude -p`
+  subprocesses that connect to one warm HTTP MCP server `scr` hosts,
+  exposing the same repo-tools the SDK path uses. No API key needed;
+  works with any logged-in Claude Code installation.
 - Neither available → fails fast with a clear error.
 
 Force a backend with `--backend <name>`. Run `scr config show` for

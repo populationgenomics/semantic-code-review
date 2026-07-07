@@ -1,6 +1,6 @@
 # ADR 0003 — Tool surface: shared cache, long-lived MCP host
 
-- Status: Proposed
+- Status: Accepted (implemented)
 - Date: 2026-07-07
 
 ## Context

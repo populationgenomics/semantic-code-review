@@ -18,13 +18,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import sys
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from pydantic_ai.messages import (
@@ -42,8 +39,6 @@ from pydantic_ai.models import Model, ModelRequestParameters
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.usage import RequestUsage
-
-from ..augment.tools import RepoTools
 
 log = logging.getLogger(__name__)
 
@@ -162,37 +157,6 @@ def _redact_argv(argv: list[str]) -> list[str]:
     return out
 
 
-def _mcp_config_for(rt: RepoTools) -> dict[str, Any]:
-    """Build the JSON the CLIs use to spawn our stdio MCP server.
-
-    Both clients accept this shape (claude reads it via `--mcp-config`,
-    gemini via `mcpServers` in `settings.json`). Ensures the child
-    Python finds `semantic_code_review` even when the parent CLI was
-    launched from an unrelated cwd.
-    """
-    import semantic_code_review as _pkg
-
-    pkg_root = str(Path(_pkg.__file__).resolve().parent.parent)
-    existing_pp = os.environ.get("PYTHONPATH", "")
-    pythonpath = f"{pkg_root}{os.pathsep}{existing_pp}" if existing_pp else pkg_root
-    return {
-        "command": sys.executable,
-        "args": [
-            "-m",
-            "semantic_code_review.augment.mcp_server",
-            "--head-worktree",
-            str(rt.head_worktree),
-            "--repo-git",
-            str(rt.repo_git),
-            "--base-sha",
-            rt.base_sha,
-            "--head-sha",
-            rt.head_sha,
-        ],
-        "env": {"PYTHONPATH": pythonpath},
-    }
-
-
 def _usage_from_envelope(envelope: dict[str, Any]) -> RequestUsage:
     usage_src = envelope.get("usage") or {}
     return RequestUsage(
@@ -302,11 +266,9 @@ class SubprocessModel(Model, ABC):
         super().__init__()
         self._model = model
         self._max_validation_retries = max_validation_retries
-        self._repo_tools: RepoTools | None = None
-        # A hosted HTTP MCP server entry (`{type:"http", url, headers}`),
-        # set by the run when it starts one warm server (ADR 0003 Slice 3).
-        # When present it supersedes the per-spawn stdio server `set_repo_tools`
-        # would otherwise launch; None keeps the legacy stdio path.
+        # The run's hosted HTTP MCP server entry (`{type:"http", url, headers}`),
+        # set via `set_mcp_endpoint` (ADR 0003 Slice 3). None ⇒ single-shot,
+        # no tools.
         self._mcp_endpoint: dict[str, Any] | None = None
         # Debug observability (opt-in). When a sink is bound, each subprocess
         # spawn emits a structured record the review server fans out to the
@@ -376,23 +338,12 @@ class SubprocessModel(Model, ABC):
     def system(self) -> str:
         return self._provider_name
 
-    def set_repo_tools(self, repo_tools: RepoTools | None) -> None:
-        """Bind/unbind `RepoTools` for MCP-backed repo access.
-
-        Called by the augment pipeline once it has resolved the run dir.
-        Setting to None reverts to single-shot mode.
-        """
-        self._repo_tools = repo_tools
-        self._invalidate_mcp_artifacts()
-
     def set_mcp_endpoint(self, config: dict[str, Any] | None) -> None:
-        """Point the CLI at a hosted HTTP MCP server (ADR 0003 Slice 3).
+        """Point the CLI at the run's hosted HTTP MCP server (ADR 0003 Slice 3).
 
         `config` is the `--mcp-config` server entry the run's host exposes
-        (`McpHttpHost.mcp_config()`), or None to clear it. Takes precedence
-        over the stdio server `set_repo_tools` binds, so a run that hosts one
-        warm server routes every spawn through it instead of cold-starting a
-        stdio child per call.
+        (`McpHttpHost.mcp_config()`), or None to clear it (single-shot, no
+        tools). Every spawn connects to that one warm server.
         """
         self._mcp_endpoint = config
         self._invalidate_mcp_artifacts()
@@ -405,7 +356,7 @@ class SubprocessModel(Model, ABC):
     # ---- subclass hooks --------------------------------------------------
 
     def _invalidate_mcp_artifacts(self) -> None:
-        """Drop any temp files materialised for the current `_repo_tools`."""
+        """Drop any temp files materialised for the current MCP endpoint."""
 
     @abstractmethod
     def _build_invocation(
@@ -695,7 +646,6 @@ __all__ = [
     "_extract_json_object",
     "_flatten_messages",
     "_instructions_to_system",
-    "_mcp_config_for",
     "_output_tool",
     "_stringify",
     "_structured_to_response",

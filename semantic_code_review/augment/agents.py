@@ -69,12 +69,10 @@ class Client:
     the CLI drivers under `backends/`). The pipeline calls
     `make_*_agent(client.model)` to build pass-specific agents.
 
-    `set_repo_tools` proxies to the inner CLI Model when present so the
-    subprocess can spawn an MCP server bound to the run's worktree;
-    SDK string models have no repo-tool concept here — the SDK Agent
-    receives `deps=repo_tools` at `Agent.run` call time. The pipeline
-    calls both: `client.set_repo_tools(rt)` for the CLI side, and
-    passes `rt` as `deps=` for the SDK side.
+    `set_mcp_endpoint` proxies to the inner CLI Model when present so the
+    subprocess reaches tools through the run's hosted MCP server; SDK
+    string models have no MCP concept here — the SDK Agent receives
+    `deps=repo_tools` at `Agent.run` call time instead.
 
     `aclose()` is delegated to the inner Model. SDK string models have
     no per-run resources to release; the no-op fallthrough is fine.
@@ -83,19 +81,12 @@ class Client:
     model: str | Model
     is_subprocess_backend: bool = False
 
-    def set_repo_tools(self, repo_tools: RepoTools | None) -> None:
-        if isinstance(self.model, Model):
-            setter = getattr(self.model, "set_repo_tools", None)
-            if callable(setter):
-                setter(repo_tools)
-
     def set_mcp_endpoint(self, config: dict[str, Any] | None) -> None:
-        """Point a subprocess backend at a hosted HTTP MCP server.
+        """Point a subprocess backend at the run's hosted HTTP MCP server.
 
         `config` is the run's `McpHttpHost.mcp_config()` (or None to clear).
-        Proxies to the inner CLI Model, superseding the per-spawn stdio
-        server (ADR 0003 Slice 3). SDK string models have no subprocess to
-        point — the call no-ops.
+        Proxies to the inner CLI Model (ADR 0003 Slice 3). SDK string models
+        have no subprocess to point — the call no-ops.
         """
         if isinstance(self.model, Model):
             setter = getattr(self.model, "set_mcp_endpoint", None)

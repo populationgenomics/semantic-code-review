@@ -105,25 +105,24 @@ def test_string_model_backend_aclose_is_noop() -> None:
     assert backend.is_subprocess_backend is False
 
 
-def test_set_repo_tools_on_string_model_is_noop() -> None:
-    """String-model backends ignore set_repo_tools — the Agent receives
+def test_set_mcp_endpoint_on_string_model_is_noop() -> None:
+    """String-model backends ignore set_mcp_endpoint — the Agent receives
     repo_tools as deps directly via Agent.run."""
     backend = Client(model="anthropic:claude-opus-4-7")
-    backend.set_repo_tools(None)  # must not error
-    backend.set_repo_tools("not-actually-RepoTools")  # type: ignore[arg-type]
+    backend.set_mcp_endpoint(None)  # must not error
+    backend.set_mcp_endpoint({"type": "http", "url": "http://x/mcp", "headers": {}})
 
 
-def test_set_repo_tools_proxies_to_cli_model() -> None:
-    """CLI-Model backends forward to the inner client's set_repo_tools."""
+def test_set_mcp_endpoint_gated_by_model_instance() -> None:
+    """Client.set_mcp_endpoint proxies only to a real Model instance."""
     seen: list = []
 
     class _StubModel:
-        def set_repo_tools(self, rt) -> None:  # type: ignore[no-untyped-def]
-            seen.append(rt)
+        def set_mcp_endpoint(self, config) -> None:  # type: ignore[no-untyped-def]
+            seen.append(config)
 
     backend = Client(model=_StubModel(), is_subprocess_backend=True)  # type: ignore[arg-type]
-    backend.set_repo_tools("rt1")  # type: ignore[arg-type]
-    # Client.set_repo_tools requires a Model instance — _StubModel
-    # isn't one, so the proxy is gated by isinstance() and won't fire.
-    # Demonstrate that the gate exists; CLI Models cover the live path.
+    backend.set_mcp_endpoint({"type": "http"})
+    # _StubModel isn't a pydantic-ai Model, so the isinstance() gate blocks
+    # the proxy — CLI Models cover the live path.
     assert seen == []

@@ -28,6 +28,7 @@ import pytest
 from pydantic_ai import Agent
 from pydantic_ai.output import ToolOutput
 
+from semantic_code_review.augment import mcp_http_host
 from semantic_code_review.augment.schemas import HunkAnnotations
 from semantic_code_review.augment.tools import RepoTools
 from semantic_code_review.backends.claude_cli import ClaudeCLIModel
@@ -117,16 +118,18 @@ async def test_live_mcp_tool_loop_contract(tmp_path: Path) -> None:
     ).stdout.strip()
 
     model = ClaudeCLIModel(model=_MODEL)
-    model.set_repo_tools(RepoTools(head_worktree=repo, repo_git=repo, base_sha=sha, head_sha=sha))
-    try:
-        result = await _structured_agent(model).run(
-            "Use the read_file tool to read mod.py. In your intent, state the exact "
-            "numeric value assigned to the constant defined there."
-        )
-        assert isinstance(result.output, HunkAnnotations)
-        assert "91337" in result.output.model_dump_json(), (
-            "live MCP-backed claude did not surface the file's value — the read_file "
-            "tool was likely unavailable (MCP tools disabled by the spawn flags)"
-        )
-    finally:
-        await model.aclose()
+    repo_tools = RepoTools(head_worktree=repo, repo_git=repo, base_sha=sha, head_sha=sha)
+    with mcp_http_host.McpHttpHost(repo_tools) as host:
+        model.set_mcp_endpoint(host.mcp_config())
+        try:
+            result = await _structured_agent(model).run(
+                "Use the read_file tool to read mod.py. In your intent, state the exact "
+                "numeric value assigned to the constant defined there."
+            )
+            assert isinstance(result.output, HunkAnnotations)
+            assert "91337" in result.output.model_dump_json(), (
+                "live MCP-backed claude did not surface the file's value — the read_file "
+                "tool was likely unavailable (claude did not connect to the hosted MCP server)"
+            )
+        finally:
+            await model.aclose()

@@ -252,8 +252,6 @@ async def augment_run_dir(
             mcp_host = mcp_http_host.McpHttpHost(repo_tools)
             mcp_host.start()
             client.set_mcp_endpoint(mcp_host.mcp_config())
-        else:
-            client.set_repo_tools(repo_tools)
 
         overview_json = overview_to_prompt_json(diff)
 

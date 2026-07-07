@@ -9,8 +9,9 @@ decorated with `@_tool` are exported to two consumers:
 
   * pydantic-ai SDK Agents — via `TOOL_FUNCTIONS`, a list of `RunContext`-
     wrapping callables produced from the decorated methods.
-  * The MCP stdio server (`mcp_server.py`) — via `mcp_tool_schemas()` for
-    the `tools/list` payload and `mcp_dispatch()` for `tools/call`.
+  * The hosted HTTP MCP server (`mcp_http_host.py`) — via
+    `mcp_tool_schemas()` for the `tools/list` payload and `mcp_dispatch()`
+    for `tools/call`.
 
 Both surfaces are derived by introspection: rename a `RepoTools` method
 and both update with no other edits.

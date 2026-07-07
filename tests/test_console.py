@@ -375,7 +375,7 @@ async def test_run_console_turn_is_streaming_wrapper(
 
 
 class _RecordingCLIModel(Model):
-    """A minimal subprocess-style Model: records `set_repo_tools` /
+    """A minimal subprocess-style Model: records `set_mcp_endpoint` /
     `set_console_session` calls and answers free-form with a fixed text.
     Stands in for a CLI driver (which can't stream) so the one-shot console
     path can be exercised without a real subprocess. `last_console_session_id`
@@ -387,7 +387,6 @@ class _RecordingCLIModel(Model):
         super().__init__()
         self._answer = answer
         self._session_id = session_id
-        self.repo_tools_calls: list = []
         self.mcp_endpoints: list = []
         self.console_sessions: list = []
 
@@ -398,9 +397,6 @@ class _RecordingCLIModel(Model):
     @property
     def system(self) -> str:
         return "recording-cli"
-
-    def set_repo_tools(self, repo_tools) -> None:
-        self.repo_tools_calls.append(repo_tools)
 
     def set_mcp_endpoint(self, config) -> None:
         self.mcp_endpoints.append(config)
