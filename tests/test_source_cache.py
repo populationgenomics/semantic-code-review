@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import subprocess
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -61,6 +64,42 @@ def test_outline_computes_once_per_key() -> None:
     assert cache.outline("sha", "a.py", compute) == []
     assert cache.outline("sha", "a.py", compute) == []
     assert len(calls) == 1
+
+
+def test_source_computes_once_under_concurrency() -> None:
+    """8 threads racing on one key compute it exactly once (ADR 0003 Slice 3)."""
+    cache = source_cache.SourceCache()
+    calls: list[int] = []
+    calls_lock = threading.Lock()
+
+    def compute() -> str:
+        with calls_lock:
+            calls.append(1)
+        time.sleep(0.05)  # widen the race window
+        return "content"
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        results = list(ex.map(lambda _: cache.source("sha", "a.py", compute), range(8)))
+
+    assert results == ["content"] * 8
+    assert len(calls) == 1
+
+
+def test_distinct_keys_compute_concurrently() -> None:
+    """Different keys don't serialise on each other — the per-key lock,
+    not a global one, guards compute()."""
+    cache = source_cache.SourceCache()
+    barrier = threading.Barrier(4, timeout=2.0)
+
+    def compute() -> str:
+        # If computes serialised, the 4th thread would never reach the
+        # barrier and this would time out.
+        barrier.wait()
+        return "x"
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        results = list(ex.map(lambda i: cache.source(None, f"f{i}.py", compute), range(4)))
+    assert results == ["x"] * 4
 
 
 # --- RepoTools wiring ------------------------------------------------------
