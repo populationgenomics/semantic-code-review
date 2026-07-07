@@ -374,17 +374,20 @@ async def test_run_console_turn_is_streaming_wrapper(
 
 
 class _RecordingCLIModel(Model):
-    """A minimal subprocess-style Model: records `set_repo_tools` calls
-    and answers free-form with a fixed text. Stands in for a CLI driver
-    (which can't stream) so the one-shot console path can be exercised
-    without a real subprocess."""
+    """A minimal subprocess-style Model: records `set_repo_tools` /
+    `set_console_session` calls and answers free-form with a fixed text.
+    Stands in for a CLI driver (which can't stream) so the one-shot console
+    path can be exercised without a real subprocess. `last_console_session_id`
+    reports a fixed id, as the real driver captures from the CLI envelope."""
 
     is_subprocess_backend = True
 
-    def __init__(self, answer: str = "cli answer") -> None:
+    def __init__(self, answer: str = "cli answer", session_id: str = "sess-1") -> None:
         super().__init__()
         self._answer = answer
+        self._session_id = session_id
         self.repo_tools_calls: list = []
+        self.console_sessions: list = []
 
     @property
     def model_name(self) -> str:
@@ -396,6 +399,13 @@ class _RecordingCLIModel(Model):
 
     def set_repo_tools(self, repo_tools) -> None:
         self.repo_tools_calls.append(repo_tools)
+
+    def set_console_session(self, session_id) -> None:
+        self.console_sessions.append(session_id)
+
+    @property
+    def last_console_session_id(self) -> str:
+        return self._session_id
 
     async def request(self, messages, model_settings, model_request_parameters):
         from pydantic_ai.messages import ModelResponse, TextPart
@@ -430,7 +440,10 @@ async def test_stream_console_turn_cli_backend_runs_oneshot(
     )
 
     assert answer == "grounded cli answer"
-    assert history
+    # CLI backends carry the `claude -p` session id forward, not pydantic
+    # messages: the first turn resumes nothing and returns the session id.
+    assert model.console_sessions == [None]
+    assert history == "sess-1"
     # One-shot: nothing streamed incrementally.
     assert deltas == []
     assert tools == []
@@ -438,6 +451,24 @@ async def test_stream_console_turn_cli_backend_runs_oneshot(
     assert len(model.repo_tools_calls) == 2
     assert isinstance(model.repo_tools_calls[0], RepoTools)
     assert model.repo_tools_calls[1] is None
+
+
+async def test_stream_console_turn_cli_backend_resumes_session(
+    tmp_path: Path,
+) -> None:
+    """The session id from turn 1 threads into turn 2 as the resume target,
+    so the CLI restores its own tool-loop context instead of replaying."""
+    run_dir = _populate_run_dir(tmp_path)
+    model = _RecordingCLIModel(session_id="sess-42")
+    client = Client(model=model, is_subprocess_backend=True)
+
+    _answer1, history = await stream_console_turn(client, run_dir=run_dir, question="first?")
+    assert history == "sess-42"
+
+    _answer2, history2 = await stream_console_turn(client, run_dir=run_dir, question="second?", history=history)
+    # Turn 1 started fresh (None); turn 2 resumed the captured id.
+    assert model.console_sessions == [None, "sess-42"]
+    assert history2 == "sess-42"
 
 
 async def test_stream_console_turn_cli_backend_honours_cancel(

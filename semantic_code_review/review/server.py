@@ -313,14 +313,15 @@ FoldSummariser = Callable[..., Coroutine[Any, Any, dict]]
 
 
 #: Signature of the streaming console turn driver wired by
-#: ``serve_review`` once augmentation completes (SDK backends only, for
-#: now). Called as ``asker(question, history, on_delta, on_tool,
-#: cancel)`` and awaited to ``(answer_text, new_history)``: ``history``
-#: is the opaque prior ``message_history`` (None on the first turn),
-#: ``on_delta(str)`` / ``on_tool(str)`` are sync callbacks the driver
-#: invokes as text and tool activity stream, and ``cancel`` is a
-#: ``threading.Event`` it polls between chunks (raising
-#: ``ConsoleCancelled`` when set). The history is held verbatim on
+#: ``serve_review`` once augmentation completes. Called as
+#: ``asker(question, history, on_delta, on_tool, cancel)`` and awaited to
+#: ``(answer_text, new_history)``: ``history`` is the opaque continuation
+#: token from the prior turn (None on the first) — pydantic
+#: ``message_history`` for SDK backends, a ``claude -p`` session id for CLI
+#: subprocess backends. ``on_delta(str)`` / ``on_tool(str)`` are sync
+#: callbacks the driver invokes as text and tool activity stream, and
+#: ``cancel`` is a ``threading.Event`` it polls between chunks (raising
+#: ``ConsoleCancelled`` when set). The token is held verbatim on
 #: ``ServerContext`` and threaded back in on the next turn; the server
 #: never inspects it. Stored as ``Any`` to keep the pydantic-ai message
 #: types out of this stdlib-only module — the concrete signature lives

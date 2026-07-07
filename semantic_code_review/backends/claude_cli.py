@@ -125,6 +125,33 @@ class ClaudeCLIModel(SubprocessModel):
         # flag. "high" is supported on both Opus 4.8 and the Sonnet fallback.
         self._console_effort = console_effort
         self._mcp_config_path: Path | None = None
+        # Console session continuity (ADR 0002). The review console keeps one
+        # persisted `claude -p` session per conversation and resumes it each
+        # turn, so the model's own tool-loop context (MCP reads, prior turns)
+        # is restored by the CLI rather than re-derived from a flattened text
+        # replay. `_resume_session_id` is the id to resume (None = first turn);
+        # `_last_session_id` is the id the last free-form turn ran under, read
+        # back by the console to carry forward. Unused by the structured
+        # augment path, which stays single-shot with persistence off.
+        self._resume_session_id: str | None = None
+        self._last_session_id: str | None = None
+
+    # ---- console session continuity --------------------------------------
+
+    def set_console_session(self, session_id: str | None) -> None:
+        """Resume this `claude -p` session on the next free-form turn.
+
+        None starts a fresh session (the conversation's first turn, or after
+        the reviewer resets the console). The console reads the id the turn
+        ran under back off :attr:`last_console_session_id` and threads it in
+        here on the following turn.
+        """
+        self._resume_session_id = session_id
+
+    @property
+    def last_console_session_id(self) -> str | None:
+        """Session id of the most recent free-form turn (None if none yet)."""
+        return self._last_session_id
 
     # ---- mcp config plumbing ---------------------------------------------
 
@@ -240,6 +267,11 @@ class ClaudeCLIModel(SubprocessModel):
         """
         mcp_active = self._repo_tools is not None
         max_turns = self._max_turns_with_mcp if mcp_active else self._max_turns_single_shot
+        # Persistence stays ON here (no --no-session-persistence): the console
+        # resumes this session across turns for tool-loop continuity. The
+        # first turn creates the session (persistence is the CLI default);
+        # later turns pass --resume. The structured augment path keeps
+        # persistence off — it's single-shot and would only litter sessions.
         argv = [
             self._claude,
             "-p",
@@ -249,7 +281,6 @@ class ClaudeCLIModel(SubprocessModel):
             system_text,
             "--tools",
             "",
-            "--no-session-persistence",
             "--setting-sources",
             "",
             "--permission-mode",
@@ -259,6 +290,8 @@ class ClaudeCLIModel(SubprocessModel):
             "--max-turns",
             str(max_turns),
         ]
+        if self._resume_session_id:
+            argv += ["--resume", self._resume_session_id]
         # Turn reasoning up for the console (see __init__). The structured
         # path omits this on purpose.
         if self._console_effort:
@@ -280,11 +313,15 @@ class ClaudeCLIModel(SubprocessModel):
                 "max_turns": max_turns,
                 "free_form": True,
                 "effort": self._console_effort,
+                "resume": self._resume_session_id or "<new>",
             },
         )
 
     def _envelope_to_text(self, *, envelope: dict[str, Any]) -> str:
         self._raise_if_error(envelope)
+        # Record the session so the console can resume it next turn (both a
+        # freshly-created id and a resumed one come back here identically).
+        self._last_session_id = envelope.get("session_id") or None
         result = envelope.get("result")
         if not result:
             # A max-turns cutoff is already mapped by `_raise_if_error`

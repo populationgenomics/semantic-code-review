@@ -87,6 +87,26 @@ class Client:
             if callable(setter):
                 setter(repo_tools)
 
+    def set_console_session(self, session_id: str | None) -> None:
+        """Resume the CLI's console session next turn (subprocess only).
+
+        The console calls this before a subprocess turn so the driver adds
+        `--resume <id>` and the model's tool-loop context carries across
+        turns. SDK string models have no session concept — the call no-ops,
+        and the console threads pydantic `message_history` for them instead.
+        """
+        if isinstance(self.model, Model):
+            setter = getattr(self.model, "set_console_session", None)
+            if callable(setter):
+                setter(session_id)
+
+    @property
+    def last_console_session_id(self) -> str | None:
+        """Session id of the most recent subprocess console turn, else None."""
+        if isinstance(self.model, Model):
+            return getattr(self.model, "last_console_session_id", None)
+        return None
+
     async def aclose(self) -> None:
         if isinstance(self.model, Model):
             close = getattr(self.model, "aclose", None)

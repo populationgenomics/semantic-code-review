@@ -50,6 +50,30 @@ def _structured_agent(model: ClaudeCLIModel) -> Agent[None, HunkAnnotations]:
     )
 
 
+async def test_live_console_session_resume_contract() -> None:
+    """Free-form console continuity: a fact stated in turn 1 is recalled in
+    turn 2 purely by resuming the `claude -p` session (`--resume <id>`), with
+    no pydantic `message_history` replay. Guards the resume flag + envelope
+    `session_id` round-trip the console relies on for cross-turn context —
+    the mocked tests can only assert our half of that contract."""
+    model = ClaudeCLIModel(model=_MODEL)
+    agent = Agent(model=model, instructions="You are a helper.")
+
+    await agent.run("Remember this secret code: PURPLE-ELEPHANT-42. Just acknowledge.")
+    session_id = model.last_console_session_id
+    assert session_id, "free-form turn did not capture a session id from the envelope"
+
+    model.set_console_session(session_id)
+    result = await agent.run(
+        "What was the secret code? Answer from our prior conversation; reply with only the code.",
+        message_history=None,
+    )
+    assert "PURPLE-ELEPHANT-42" in result.output, (
+        f"resumed session did not restore turn-1 context (got {result.output!r}); "
+        "the --resume contract may have drifted"
+    )
+
+
 async def test_live_structured_envelope_contract() -> None:
     """Single-shot: a real `claude -p --json-schema ...` envelope still
     parses into `HunkAnnotations`. Breaks if the envelope shape or the

@@ -386,6 +386,53 @@ async def test_claude_freeform_empty_result_raises(
         await _freeform_agent(claude_model).run("explain")
 
 
+async def test_claude_freeform_first_turn_persists_and_captures_session(
+    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """First console turn: persistence stays on (no --no-session-persistence,
+    no --resume) and the driver captures the envelope's session id to resume."""
+    proc = FakeProc(claude_envelope("answer", use_structured_output=False))
+    calls = install_fake_subproc(monkeypatch, [proc])
+    await _freeform_agent(claude_model).run("why?")
+
+    argv = calls[0]["argv"]
+    assert "--no-session-persistence" not in argv
+    assert "--resume" not in argv
+    # `claude_envelope` reports session_id="sess-abc".
+    assert claude_model.last_console_session_id == "sess-abc"
+
+
+async def test_claude_freeform_resume_passes_session_id(
+    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A resumed console turn passes `--resume <id>` so the CLI restores the
+    conversation (and its internal tool loop) rather than replaying text."""
+    claude_model.set_console_session("sess-prev")
+    proc = FakeProc(claude_envelope("answer", use_structured_output=False))
+    calls = install_fake_subproc(monkeypatch, [proc])
+    await _freeform_agent(claude_model).run("follow-up?")
+
+    argv = calls[0]["argv"]
+    assert "--resume" in argv and argv[argv.index("--resume") + 1] == "sess-prev"
+    assert "--no-session-persistence" not in argv
+
+
+async def test_claude_structured_path_keeps_session_persistence_off(
+    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The structured augment path is single-shot: it stays
+    --no-session-persistence and never resumes, even after a console turn set
+    a session on the shared driver."""
+    claude_model.set_console_session("sess-prev")
+    proc = FakeProc(claude_envelope({"intent": "explain the refactor"}))
+    calls = install_fake_subproc(monkeypatch, [proc])
+    await _agent(claude_model).run("review this hunk")
+
+    argv = calls[0]["argv"]
+    assert "--no-session-persistence" in argv
+    assert "--resume" not in argv
+
+
 def _max_turns_envelope() -> bytes:
     """The real `claude -p` envelope for a `--max-turns` cutoff mid tool-loop
     (confirmed against CLI 2.1.201): `is_error=true`, `result=null`, and a

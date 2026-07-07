@@ -302,29 +302,42 @@ async def _run_console_turn_oneshot(
     prompt: str,
     repo_tools: RepoTools,
     *,
-    history: list | None,
+    session_id: str | None,
     cancel: threading.Event | None,
-) -> tuple[str, list]:
+) -> tuple[str, str | None]:
     """Run one console turn to completion via `Agent.run` (CLI backends).
 
-    The CLI driver exposes the worktree to the subprocess through MCP,
-    not pydantic-ai `deps`, so `RepoTools` is bound onto the client's
-    inner Model for the duration of the call (and unbound after, which
-    also cleans up the temp MCP-config file). `deps=` is still passed so
-    the agent's tool surface validates. Cancel is best-effort: the
-    subprocess runs as one opaque shot, so we honour the flag before and
-    after rather than mid-flight.
+    CLI drivers can't stream, and — unlike SDK backends — don't carry the
+    conversation as pydantic `message_history`. Each turn resumes the
+    driver's persisted `claude -p` session (``session_id``, None on the
+    first turn) so the subprocess restores its own tool-loop context —
+    MCP reads, prior answers — instead of re-deriving it from a lossy text
+    replay (the prior turns' internal tool calls never surface to
+    pydantic-ai). The compact seed is likewise paid once, into the session.
+
+    The CLI driver exposes the worktree to the subprocess through MCP, not
+    pydantic-ai `deps`, so `RepoTools` is bound onto the client's inner
+    Model for the duration of the call (and unbound after, which also
+    cleans up the temp MCP-config file). `deps=` is still passed so the
+    agent's tool surface validates; `message_history` is `None` because the
+    CLI session, not pydantic-ai, holds the history. Cancel is best-effort:
+    the subprocess runs as one opaque shot, so we honour the flag before
+    and after rather than mid-flight.
+
+    Returns ``(answer, session_id)`` — the session id to thread into the
+    next turn.
     """
     if cancel is not None and cancel.is_set():
         raise ConsoleCancelled("console turn cancelled")
+    client.set_console_session(session_id)
     client.set_repo_tools(repo_tools)
     try:
-        result = await agent.run(prompt, deps=repo_tools, message_history=history)
+        result = await agent.run(prompt, deps=repo_tools, message_history=None)
     finally:
         client.set_repo_tools(None)
     if cancel is not None and cancel.is_set():
         raise ConsoleCancelled("console turn cancelled")
-    return result.output, list(result.all_messages())
+    return result.output, client.last_console_session_id
 
 
 async def stream_console_turn(
@@ -332,12 +345,12 @@ async def stream_console_turn(
     *,
     run_dir: Path,
     question: str,
-    history: list | None = None,
+    history: Any = None,
     on_delta: Callable[[str], None] | None = None,
     on_tool: Callable[[str], None] | None = None,
     cancel: threading.Event | None = None,
     selection: Any = None,
-) -> tuple[str, list]:
+) -> tuple[str, Any]:
     """Stream one console turn, returning ``(answer, new_history)``.
 
     Drives the agent via ``Agent.iter`` so assistant text can be pumped
@@ -347,10 +360,13 @@ async def stream_console_turn(
     and raises :class:`ConsoleCancelled` when set — the partial turn is
     abandoned and its messages never join the returned history.
 
-    `history` is the opaque prior `message_history` (None on the first
-    turn); the returned list is the full history to carry forward.
-    `selection`, when present, is the reviewer's pinned selection, folded
-    once into this turn's user message (see :func:`_format_selection`).
+    `history` is the opaque continuation token from the prior turn (None
+    on the first), backend-shaped: pydantic `message_history` for SDK
+    backends, the `claude -p` session id (a str) for CLI subprocess
+    backends. The returned value is the token to carry into the next turn;
+    the caller holds it verbatim and never inspects it. `selection`, when
+    present, is the reviewer's pinned selection, folded once into this
+    turn's user message (see :func:`_format_selection`).
     """
     agent, prompt, repo_tools = _prepare_turn(
         client,
@@ -367,13 +383,17 @@ async def stream_console_turn(
     # instead — the worker emits a single `console-done` with the full
     # text, which the frontend renders identically to "zero deltas, one
     # done". `on_delta`/`on_tool` simply never fire.
+    #
+    # For subprocess backends `history` is the prior turn's `claude -p`
+    # session id (a str), not pydantic messages: the CLI session holds the
+    # conversation, so continuity is a resume, not a replay.
     if client.is_subprocess_backend:
         return await _run_console_turn_oneshot(
             client,
             agent,
             prompt,
             repo_tools,
-            history=history,
+            session_id=history,
             cancel=cancel,
         )
 
@@ -421,9 +441,9 @@ async def run_console_turn(
     *,
     run_dir: Path,
     question: str,
-    history: list | None = None,
+    history: Any = None,
     selection: Any = None,
-) -> tuple[str, list]:
+) -> tuple[str, Any]:
     """Run one console turn to completion and return (answer, new_history).
 
     The Slice 1 blocking shape, retained for the non-streaming callers
