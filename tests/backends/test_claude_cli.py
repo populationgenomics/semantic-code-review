@@ -386,6 +386,26 @@ async def test_claude_freeform_empty_result_raises(
         await _freeform_agent(claude_model).run("explain")
 
 
+async def test_claude_freeform_tool_config_is_read_only_mcp(
+    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The console exposes only our MCP tools and hard-denies mutating
+    built-ins. It must NOT use the `--tools ""` + bypassPermissions combo:
+    `--tools ""` disables MCP too (the model then leaks tool-call XML as
+    text), and bypassPermissions silently grants built-in Bash/Edit."""
+    proc = FakeProc(claude_envelope("answer", use_structured_output=False))
+    calls = install_fake_subproc(monkeypatch, [proc])
+    await _freeform_agent(claude_model).run("why?")
+
+    argv = calls[0]["argv"]
+    assert "--tools" not in argv
+    assert "bypassPermissions" not in argv
+    assert argv[argv.index("--permission-mode") + 1] == "default"
+    assert argv[argv.index("--allowedTools") + 1] == "mcp__scr"
+    disallowed = argv[argv.index("--disallowedTools") + 1 : argv.index("--output-format")]
+    assert {"Bash", "Edit", "Write"} <= set(disallowed)
+
+
 async def test_claude_freeform_first_turn_persists_and_captures_session(
     claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
 ) -> None:

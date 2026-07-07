@@ -264,6 +264,16 @@ class ClaudeCLIModel(SubprocessModel):
         for `--output-format json` only to recover the envelope's `result`
         text and usage. MCP is wired exactly as in the structured path, so
         the model can explore the worktrees mid-answer.
+
+        Tool exposure is read-only-by-construction: default permission mode
+        auto-approves our allow-listed MCP tools and denies everything else
+        without prompting (`-p` can't prompt), and the mutating built-ins are
+        hard-denied. We deliberately do NOT use `--tools ""` +
+        `bypassPermissions` (the obvious "no built-ins" combo): `--tools ""`
+        disables ALL tools including MCP — so the model can't call read_file/
+        grep and leaks the raw tool-call XML into its answer as text — and
+        `bypassPermissions` silently grants the model built-in Bash/Edit,
+        defeating the read-only intent.
         """
         mcp_active = self._repo_tools is not None
         max_turns = self._max_turns_with_mcp if mcp_active else self._max_turns_single_shot
@@ -279,12 +289,17 @@ class ClaudeCLIModel(SubprocessModel):
             self._model,
             "--system-prompt",
             system_text,
-            "--tools",
-            "",
             "--setting-sources",
             "",
             "--permission-mode",
-            "bypassPermissions",
+            "default",
+            "--allowedTools",
+            "mcp__scr",
+            "--disallowedTools",
+            "Bash",
+            "Edit",
+            "Write",
+            "NotebookEdit",
             "--output-format",
             "json",
             "--max-turns",
