@@ -38,6 +38,30 @@ under real concurrency. A throwaway timing harness is fine.
 representative diff, enough to decide whether hosting (Slice 3) pays for
 itself.
 
+**Result (measured):** ~765 ms per spawn, ~99% of it Python interpreter
+startup + import (tree-sitter, pydantic_ai); the first tree-sitter parse
+is ~6 ms — negligible. Under 8-way concurrency (augment's real
+concurrency) per-spawn ready time rises to ~990 ms from CPU contention;
+wall-clock for a batch of 8 spawns is ~1.24 s. Modelled: a 50-hunk PR
+burns ~38 s of serial-equivalent cold-start CPU (~6–8 s wall at
+concurrency 8), scaling linearly with hunk count.
+
+Two consequences for the design:
+
+- **The eliminable cost is the import, not the parse.** Hosting's payoff
+  is killing the ~765 ms/spawn interpreter+import, not warming the parse
+  cache — the cross-spawn parse saving is ~6 ms/file. So Slice 1's cache
+  gives the CLI path almost nothing until a warm server exists, and even
+  then little; it earns its keep on the SDK path (in-process, no spawn).
+- **Not all of it is on the critical path.** The spawn overlaps `claude
+  -p`'s own startup and the multi-second per-hunk LLM round-trip, so the
+  wall-clock urgency is softer than the CPU number suggests. The clear
+  win is reclaimed CPU (8 cores each burning ~1 s per hunk-batch) and
+  concurrency headroom.
+
+**Verdict:** cost is real and scales with hunk count — Slice 3 is
+justified. (Harness was throwaway; not committed.)
+
 ## Slice 1 — `(sha, path)` cache in `RepoTools` *(shared)*
 
 Memoise source reads and tree-sitter parses (`outline_symbols`) on a

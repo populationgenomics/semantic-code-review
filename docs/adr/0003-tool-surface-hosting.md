@@ -85,9 +85,11 @@ already covers the "is it working" cue in the interim.)
 ## Consequences
 
 - The CLI backend reaches SDK parity on tool visibility, and augment
-  drops N process spawns — **gated on measuring that per-spawn cost
-  first**, so the transport rewrite is only undertaken if the payoff is
-  real.
+  drops N process spawns. The gate — measure the per-spawn cost first —
+  is now cleared: ~765 ms/spawn, almost all Python interpreter + import
+  (the tree-sitter re-parse is ~6 ms), scaling linearly with hunk count.
+  The payoff is real, so Slice 3 is justified; the eliminable cost is the
+  import, not the parse (measurements + caveats in the slice plan).
 - New surface: a localhost HTTP endpoint + bearer auth, and an MCP
   server lifecycle `scr` now owns (start/stop, teardown). Augment runs
   ~8 `claude -p` clients concurrently against the one server, so the
