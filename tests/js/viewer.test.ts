@@ -1708,8 +1708,8 @@ describe("review console", () => {
     await bootViewer(makeData({ pending: false }));
     await ask("x");
     lastEventSource().dispatch("console-delta", { console_id: "some-other-tab", text: "not mine" });
-    // Still the placeholder — the foreign delta didn't accumulate.
-    expect(document.querySelector(".console-a .console-text")?.textContent).toBe("…");
+    // Still the pending placeholder — the foreign delta didn't accumulate.
+    expect(document.querySelector(".console-a .console-dots")).not.toBeNull();
   });
 
   test("a console-error frame surfaces the error inline", async () => {
