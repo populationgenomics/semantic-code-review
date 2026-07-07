@@ -67,6 +67,12 @@ def pr(
         ),
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
+    debug: bool = typer.Option(
+        False,
+        "--debug",
+        envvar="SCR_DEBUG",
+        help="Surface each CLI-backend subprocess spawn (raw argv + envelope) in the viewer's debug drawer.",
+    ),
 ) -> None:
     """Review a GitHub PR; round-trip reviewer comments back as a single review."""
     configure_logging(verbose)
@@ -95,5 +101,6 @@ def pr(
         skip_globs=cfg.skip_globs,
         client=client,
         yes=yes,
+        debug=debug,
     )
     raise typer.Exit(code=run_pr_flow(opts))

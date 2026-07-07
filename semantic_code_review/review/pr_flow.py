@@ -71,6 +71,9 @@ class PrFlowOptions:
     extra_review_prompt: str | None
     client: Client | None
     yes: bool
+    # `--debug` / SCR_DEBUG: surface each CLI-backend subprocess spawn in
+    # the viewer's debug drawer.
+    debug: bool = False
     # Extra file globs to skip in the LLM passes (config [augment].skip_globs).
     # Trailing + defaulted so existing constructors need no change.
     skip_globs: tuple[str, ...] = ()
@@ -111,7 +114,7 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
         _err("scr pr: meta.json is missing headRefOid; can't anchor review")
         return 2
 
-    augment_task, fold_summary_task, console_task = _build_tasks(opts, run_dir)
+    augment_task, fold_summary_task, console_task, bind_debug_sink = _build_tasks(opts, run_dir)
     if not opts.augment:
         # Mirror cli/review.py's behaviour: copy raw → augmented so render
         # has something to parse when augment is skipped.
@@ -144,6 +147,8 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
         port=opts.port,
         timeout=opts.timeout,
         open_browser=opts.open_browser,
+        debug=opts.debug,
+        bind_debug_sink=bind_debug_sink,
     )
 
     posted: PostResult | None = result.posted
@@ -213,13 +218,21 @@ def _resolve_pr_number(repo: str) -> tuple[int | None, int | None]:
 def _build_tasks(
     opts: PrFlowOptions,
     run_dir: Path,
-) -> tuple[Callable | None, Callable | None, Callable | None]:
-    """Build the augment + fold-summary + console closures, or ``(None,
-    None, None)`` when augmentation is skipped (the console grounds its
-    answers in the augment sidecar, so it's unavailable without it).
+) -> tuple[
+    Callable | None,
+    Callable | None,
+    Callable | None,
+    Callable[[Callable[[dict], None]], None] | None,
+]:
+    """Build the augment + fold-summary + console closures plus a debug-sink
+    binder, or all-``None`` when augmentation is skipped (the console grounds
+    its answers in the augment sidecar, so it's unavailable without it).
+
+    The binder, present only in ``--debug``, lets the server route the CLI
+    driver's per-spawn records to its SSE fan-out (see ``serve_review``).
     """
     if not opts.augment:
-        return None, None, None
+        return None, None, None, None
 
     # Imports inside: anthropic SDK + augment pipeline are lazy-loaded so
     # `--no-augment` runs (and `scr --help`) don't pay the cost.
@@ -263,7 +276,10 @@ def _build_tasks(
     # Anthropic SDK, so mirror that for the console's client.
     console_client = opts.client or Client(model=f"anthropic:{opts.model}")
     console_task = _build_console_task(client=console_client, run_dir=run_dir)
-    return augment_task, fold_summary_task, console_task
+    bind_debug_sink: Callable[[Callable[[dict], None]], None] | None = None
+    if opts.debug:
+        bind_debug_sink = lambda sink, c=console_client: c.set_debug_sink(sink)  # noqa: E731
+    return augment_task, fold_summary_task, console_task, bind_debug_sink
 
 
 def _build_post_callback(
