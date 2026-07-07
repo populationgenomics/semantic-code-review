@@ -7,3 +7,4 @@ edit: a later ADR can mark an earlier one `Superseded by NNNN`.
 
 - [0001 — Tree-sitter structural layer](0001-tree-sitter-structural-layer.md)
 - [0002 — Review console](0002-review-console.md)
+- [0003 — Tool surface: shared cache, long-lived MCP host](0003-tool-surface-hosting.md)
