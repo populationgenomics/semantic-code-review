@@ -140,6 +140,7 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
     result = serve_review(
         run_dir,
         augment=augment_task,
+        skip_globs=opts.skip_globs,
         fold_summary=fold_summary_task,
         console=console_task,
         post=post_callback,

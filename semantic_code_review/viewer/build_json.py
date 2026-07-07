@@ -15,11 +15,13 @@ from pathlib import Path
 from typing import Any
 
 from .. import structural
+from ..augment import skip
 from ..augment.schemas import (
     SMELL_CATALOGUE,
     AnnotatedDiff,
     AnnotatedFile,
     FileAnnotations,
+    FileRole,
     Overview,
     PRInfo,
     lift_file,
@@ -58,13 +60,20 @@ def build_viewer_json(
     }
 
 
-def build_pending_viewer_json(run_dir: Path) -> dict[str, Any]:
+def build_pending_viewer_json(run_dir: Path, skip_globs: tuple[str, ...] = ()) -> dict[str, Any]:
     """Build viewer JSON from raw.diff alone, before augmentation runs.
 
-    All annotations are empty; the page renders the file/hunk structure
-    with the top-level `pending` flag set so the viewer JS shows
-    "analysing…" placeholders in each hunk's intent slot. Replaced by a
-    full re-render when the augmentation pass completes.
+    Annotations are empty except for skipped files (lock/vendored/binary,
+    per `skip.should_skip`), which are pre-marked GENERATED — the same
+    files `augment_run_dir` won't dispatch. This keeps the pending page's
+    progress grid in step with what the pipeline actually analyses;
+    without it, a skipped file's hunks sit "queued" forever because no
+    per-hunk event ever arrives for them. The top-level `pending` flag
+    drives the "analysing…" placeholders for the files that *are* queued.
+    Replaced by a full re-render when the augmentation pass completes.
+
+    `skip_globs` must match what `augment_run_dir` is given (config
+    `[augment].skip_globs`), or the two disagree on the skip set.
     """
     meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
     parsed = parse_raw_diff((run_dir / "raw.diff").read_text(encoding="utf-8"))
@@ -74,10 +83,16 @@ def build_pending_viewer_json(run_dir: Path) -> dict[str, Any]:
         head_sha=meta.get("headRefOid", ""),
         model="",
     )
+
+    def _pending_ann(path: str) -> FileAnnotations:
+        if skip.should_skip(path, skip_globs):
+            return FileAnnotations(role=FileRole.GENERATED, summary=skip.SKIP_SUMMARY)
+        return FileAnnotations()
+
     diff = AnnotatedDiff(
         version=parsed.version,
         pr=pr,
-        files=[lift_file(pf, ann=FileAnnotations()) for pf in parsed.files],
+        files=[lift_file(pf, ann=_pending_ann(pf.path)) for pf in parsed.files],
     )
     head_dir = run_dir / "head"
     base_dir = run_dir / "base"

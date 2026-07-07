@@ -188,6 +188,7 @@ def run_review(opts: ReviewOptions) -> int:
     result = serve_review(
         run_dir,
         augment=augment_task,
+        skip_globs=opts.skip_globs,
         fold_summary=fold_summary_task,
         console=console_task,
         port=opts.port,
@@ -228,6 +229,7 @@ def serve_review(
     run_dir: Path,
     *,
     augment: AugmentCallable | None = None,
+    skip_globs: tuple[str, ...] = (),
     fold_summary: FoldSummaryCallable | None = None,
     console: ConsoleCallable | None = None,
     post: PostCallable | None = None,
@@ -259,7 +261,7 @@ def serve_review(
         # Pre-augment: a file/hunk skeleton so the page is responsive
         # while the LLM pass runs. The viewer JS sees `pending: true`
         # and shows "analysing…" placeholders for each hunk.
-        viewer_json = build_pending_viewer_json(run_dir)
+        viewer_json = build_pending_viewer_json(run_dir, skip_globs=skip_globs)
     else:
         viewer_json = _load_viewer_json(run_dir)
     srv = ReviewServer(

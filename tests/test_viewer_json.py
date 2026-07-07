@@ -125,6 +125,55 @@ def test_build_pending_viewer_json_emits_skeleton_with_pending_flag(tmp_path: Pa
     assert data["groups"] == []
 
 
+_MIXED_DIFF = """diff --git a/foo.py b/foo.py
+index 0123456..89abcde 100644
+--- a/foo.py
++++ b/foo.py
+@@ -1,2 +1,2 @@
+ def foo():
+-    return 1
++    return 2
+diff --git a/uv.lock b/uv.lock
+index 1111111..2222222 100644
+--- a/uv.lock
++++ b/uv.lock
+@@ -1,1 +1,1 @@
+-version = "0.1"
++version = "0.2"
+@@ -10,1 +10,1 @@
+-x = 1
++x = 2
+diff --git a/notes.txt b/notes.txt
+index 3333333..4444444 100644
+--- a/notes.txt
++++ b/notes.txt
+@@ -1,1 +1,1 @@
+-a
++b
+"""
+
+
+def test_build_pending_marks_skipped_files_generated(tmp_path: Path) -> None:
+    """Skipped files (lock/vendored, plus config skip_globs) are pre-marked
+    GENERATED in the pending page so the progress grid excludes them — the
+    pipeline never dispatches them, so left "modified" their hunks would sit
+    queued forever (the uv.lock-blocks-finalising bug)."""
+    (tmp_path / "raw.diff").write_text(_MIXED_DIFF, encoding="utf-8")
+    (tmp_path / "meta.json").write_text(
+        json.dumps({"title": "t", "author": {"login": "u"}, "url": "", "baseRefOid": "a", "headRefOid": "b"}),
+        encoding="utf-8",
+    )
+
+    data = build_pending_viewer_json(tmp_path, skip_globs=("*.txt",))
+
+    status = {f["path"]: f["status"] for f in data["files"]}
+    # Real source stays analysable; uv.lock (default glob) and notes.txt
+    # (config glob) are skipped → generated, so progress.ts drops them.
+    assert status["foo.py"] == "modified"
+    assert status["uv.lock"] == "generated"
+    assert status["notes.txt"] == "generated"
+
+
 _SYMBOL_DIFF = """diff --git a/a.py b/a.py
 index 0123456..89abcde 100644
 --- a/a.py

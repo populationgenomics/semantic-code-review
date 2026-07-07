@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import fnmatch
 import json
 import logging
 from collections.abc import Callable
@@ -23,7 +22,7 @@ from ..format.parse import parse_raw_diff
 from ..format.sidecar import dump_sidecar
 from ..viewer.build_json import file_fold_spans
 from ..viewer.hunk_layout import build_hunk_viewer_block
-from . import mcp_http_host, source_cache
+from . import mcp_http_host, skip, source_cache
 from .agents import Client
 from .hunks import (
     build_hunk_annotations,
@@ -59,41 +58,6 @@ def _safe_emit(on_event: OnEvent | None, event_type: str, payload: dict[str, Any
         on_event(event_type, payload)
     except Exception:
         log.exception("on_event consumer raised for %s; continuing", event_type)
-
-
-# Paths we do not send to the LLM — lock files, vendored bundles, binary
-# formats. The hunks still appear in the viewer; they just lack annotations.
-DEFAULT_SKIP_GLOBS: tuple[str, ...] = (
-    "*.lock",
-    "*.min.js",
-    "*.min.css",
-    "*.map",
-    "*.snap",
-    "package-lock.json",
-    "pnpm-lock.yaml",
-    "yarn.lock",
-    "Pipfile.lock",
-    "poetry.lock",
-    "uv.lock",
-    "go.sum",
-    "*.png",
-    "*.jpg",
-    "*.jpeg",
-    "*.gif",
-    "*.svg",
-    "*.ico",
-    "*.woff",
-    "*.woff2",
-    "*.ttf",
-    "*.otf",
-    "*.pdf",
-)
-
-
-def _should_skip(path: str, extra_globs: tuple[str, ...] = ()) -> bool:
-    globs = DEFAULT_SKIP_GLOBS + tuple(extra_globs)
-    name = path.rsplit("/", 1)[-1]
-    return any(fnmatch.fnmatch(path, g) or fnmatch.fnmatch(name, g) for g in globs)
 
 
 log = logging.getLogger(__name__)
@@ -147,8 +111,8 @@ async def augment_run_dir(
     skipped_files: set[str] = set()
     diff_files: list[AnnotatedFile] = []
     for pfile in parsed_files:
-        if _should_skip(pfile.path, skip_globs):
-            ann = FileAnnotations(role=FileRole.GENERATED, summary="Generated / lock file — not analysed.")
+        if skip.should_skip(pfile.path, skip_globs):
+            ann = FileAnnotations(role=FileRole.GENERATED, summary=skip.SKIP_SUMMARY)
             skipped_files.add(pfile.path)
         else:
             ann = FileAnnotations()
