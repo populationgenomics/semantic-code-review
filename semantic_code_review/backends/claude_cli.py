@@ -248,6 +248,10 @@ class ClaudeCLIModel(SubprocessModel):
             "Edit",
             "Write",
             "NotebookEdit",
+            # Disable skills: an advertised-but-unloadable skill (see the
+            # console path) makes the model hedge instead of using the diff +
+            # our MCP tools. Augment passes want deterministic grounding.
+            "--disable-slash-commands",
             "--output-format",
             "json",
             "--max-turns",
@@ -314,6 +318,12 @@ class ClaudeCLIModel(SubprocessModel):
             "Edit",
             "Write",
             "NotebookEdit",
+            # Disable skills. With --setting-sources "" a skill's definition
+            # isn't loaded, so an advertised skill (e.g. claude-api) resolves
+            # but fails on invocation — the model then hedges ("the skill
+            # failed to load, answering from memory"). We want answers
+            # grounded in the diff + our MCP tools, not external skills.
+            "--disable-slash-commands",
             "--output-format",
             "json",
             "--max-turns",

@@ -142,6 +142,7 @@ async def test_claude_model_round_trip_through_agent(
     assert "bypassPermissions" not in argv
     assert argv[argv.index("--permission-mode") + 1] == "default"
     assert argv[argv.index("--allowedTools") + 1] == "mcp__scr"
+    assert "--disable-slash-commands" in argv
     # Single-shot: augment passes don't resume a session.
     assert "--no-session-persistence" in argv
     # --bare must NOT be present: it disables OAuth/keychain auth, which
@@ -449,8 +450,10 @@ async def test_claude_freeform_tool_config_is_read_only_mcp(
     assert "bypassPermissions" not in argv
     assert argv[argv.index("--permission-mode") + 1] == "default"
     assert argv[argv.index("--allowedTools") + 1] == "mcp__scr"
-    disallowed = argv[argv.index("--disallowedTools") + 1 : argv.index("--output-format")]
+    disallowed = argv[argv.index("--disallowedTools") + 1 : argv.index("--disable-slash-commands")]
     assert {"Bash", "Edit", "Write"} <= set(disallowed)
+    # Skills off: an advertised-but-unloadable skill makes the model hedge.
+    assert "--disable-slash-commands" in argv
 
 
 async def test_claude_freeform_first_turn_persists_and_captures_session(
