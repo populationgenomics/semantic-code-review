@@ -1095,6 +1095,57 @@ body { padding-bottom: 30px; }
 }
 .console-mermaid svg { max-width: 100%; height: auto; }
 
+/* --- Debug drawer (--debug) ----------------------------------------------- *
+ * A gated raw-log panel: a fixed toggle button bottom-right opens a scrolling
+ * drawer of backend spawn records. Read-only diagnostics; styled quietly so
+ * it never competes with the review UI. */
+.debug-toggle {
+  position: fixed; right: 12px; bottom: 38px; z-index: 41;
+  font: 11px/1 var(--mono, monospace);
+  padding: 5px 9px; border-radius: 6px;
+  background: var(--bg-panel, var(--bg-alt)); color: var(--fg-muted);
+  border: 1px solid var(--border); cursor: pointer;
+}
+.debug-toggle:hover { color: var(--fg); border-color: var(--fg-muted); }
+.debug-drawer {
+  position: fixed; right: 12px; bottom: 66px; width: min(680px, 92vw);
+  max-height: 66vh; overflow-y: auto; z-index: 41;
+  background: var(--bg-alt); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.35);
+}
+.debug-drawer.hidden { display: none; }
+.debug-drawer-header {
+  position: sticky; top: 0; display: flex; justify-content: space-between;
+  align-items: center; padding: 8px 12px;
+  background: var(--bg-alt); border-bottom: 1px solid var(--border);
+  font-size: 12px; font-weight: 600; color: var(--fg);
+}
+.debug-drawer-close {
+  background: none; border: none; color: var(--fg-muted);
+  font-size: 16px; line-height: 1; cursor: pointer; padding: 0 4px;
+}
+.debug-drawer-close:hover { color: var(--fg); }
+.debug-log { display: flex; flex-direction: column; }
+.debug-entry { border-bottom: 1px solid var(--border); }
+.debug-entry-summary {
+  cursor: pointer; padding: 6px 12px; list-style: none;
+  font: 12px/1.4 var(--mono, monospace); color: var(--fg);
+  word-break: break-word;
+}
+.debug-entry-error > .debug-entry-summary { color: var(--danger, #e5534b); }
+.debug-field { padding: 2px 12px 6px 12px; }
+.debug-field-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--fg-muted); margin: 4px 0 2px;
+}
+.debug-field-value {
+  margin: 0; padding: 6px 8px; border-radius: 4px;
+  background: var(--bg, var(--bg-alt)); border: 1px solid var(--border);
+  font: 11px/1.45 var(--mono, monospace); color: var(--fg);
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 240px; overflow-y: auto;
+}
+
 /* --- Help overlay --------------------------------------------------------- */
 .help-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100;

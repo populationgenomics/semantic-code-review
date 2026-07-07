@@ -58,6 +58,12 @@ def review(
         ),
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
+    debug: bool = typer.Option(
+        False,
+        "--debug",
+        envvar="SCR_DEBUG",
+        help="Surface each CLI-backend subprocess spawn (raw argv + envelope) in the viewer's debug drawer.",
+    ),
 ) -> None:
     """Review a local git diff; round-trip reviewer comments to stdout."""
     configure_logging(verbose)
@@ -90,6 +96,7 @@ def review(
         extra_review_prompt=extra_review_prompt,
         skip_globs=cfg.skip_globs,
         show_progress=not verbose,
+        debug=debug,
     )
     try:
         code = run_review(opts)

@@ -15,7 +15,9 @@ unqualified model name maps to.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
@@ -106,6 +108,18 @@ class Client:
         if isinstance(self.model, Model):
             return getattr(self.model, "last_console_session_id", None)
         return None
+
+    def set_debug_sink(self, sink: Callable[[dict[str, Any]], None] | None) -> None:
+        """Route the CLI driver's per-spawn debug records to `sink`.
+
+        Bound by the review server in `--debug` mode. Only subprocess
+        backends emit records; SDK string models have no subprocess envelope,
+        so the call no-ops.
+        """
+        if isinstance(self.model, Model):
+            setter = getattr(self.model, "set_debug_sink", None)
+            if callable(setter):
+                setter(sink)
 
     async def aclose(self) -> None:
         if isinstance(self.model, Model):

@@ -10,6 +10,7 @@ import { Annotations } from "./annotations";
 import { Comments } from "./comments";
 import { Console } from "./console";
 import { DataStore, type FoldRegionAddress } from "./data_store";
+import { DebugDrawer } from "./debug_drawer";
 import { Folds } from "./folds";
 import { PostModal } from "./post_modal";
 import { Progress } from "./progress";
@@ -173,6 +174,9 @@ function installSessionEvents(): void {
   // completes; a page that booted mid-augment (DATA.pending) keeps the
   // input disabled until the augment-complete `done` event below.
   Console.init(SESSION_ENDPOINT, { ready: !DATA.pending });
+  // Debug drawer: gated on the server's --debug flag. Mounted before the
+  // SSE wiring so the buffered `debug-log` replay lands in it.
+  if (DATA.debug) DebugDrawer.init();
   Sse.connect(SESSION_ENDPOINT, {
     overviewStart: () => Progress.setOverviewState("running"),
     overviewFailed: () => Progress.setOverviewState("failed"),
@@ -206,6 +210,9 @@ function installSessionEvents(): void {
     consoleTool: (payload) => Console.onTool(payload),
     consoleDone: (payload) => Console.onDone(payload),
     consoleError: (payload) => Console.onError(payload),
+    // Only fires when the server is in --debug mode (it emits no
+    // `debug-log` frames otherwise); the drawer is mounted above.
+    debugLog: (payload) => DebugDrawer.onLog(payload),
   });
 }
 

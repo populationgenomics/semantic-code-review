@@ -21,6 +21,7 @@ interface SseHandlers {
   consoleTool?: (payload: SseConsoleToolEvent) => void;
   consoleDone?: (payload: SseConsoleDoneEvent) => void;
   consoleError?: (payload: SseConsoleErrorEvent) => void;
+  debugLog?: (payload: SseDebugLogEvent) => void;
 }
 
 /** Subscribe to `<endpoint>/events`. Returns the EventSource so
@@ -71,6 +72,7 @@ function connect(endpoint: string, handlers: SseHandlers): EventSource | null {
   if (handlers.consoleTool) wireJson<SseConsoleToolEvent>("console-tool", handlers.consoleTool);
   if (handlers.consoleDone) wireJson<SseConsoleDoneEvent>("console-done", handlers.consoleDone);
   if (handlers.consoleError) wireJson<SseConsoleErrorEvent>("console-error", handlers.consoleError);
+  if (handlers.debugLog) wireJson<SseDebugLogEvent>("debug-log", handlers.debugLog);
   return es;
 }
 

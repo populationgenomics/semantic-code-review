@@ -28,6 +28,9 @@ interface ViewerData {
    *  symbol, mapped to overlapping hunk ids (ADR 0001 Symbols axis).
    *  Present (possibly empty) whenever a worktree was available. */
   symbols: GroupBlock[];
+  /** Server runtime debug flag (--debug / SCR_DEBUG). When true the
+   *  viewer mounts the raw-log drawer and subscribes to `debug-log`. */
+  debug?: boolean;
 }
 
 interface SmellCatalogueEntry {
@@ -312,6 +315,32 @@ interface SseConsoleDoneEvent {
 interface SseConsoleErrorEvent {
   console_id: string;
   error: string;
+}
+
+// One raw CLI-backend subprocess spawn (--debug). Emitted per `claude -p`
+// invocation across console turns and augment passes; consumed by the debug
+// drawer. Buffered (unlike the console frames) so a freshly-loaded drawer
+// replays the session's spawns.
+interface SseDebugLogEvent {
+  provider: string;
+  model: string;
+  /** True for a console (free-form) turn; false for an augment pass. */
+  free_form: boolean;
+  returncode: number;
+  duration_ms: number;
+  /** Spawn argv, with the `--system-prompt` value truncated. */
+  argv: string[];
+  stdin_preview: string;
+  stderr_tail: string;
+  envelope: {
+    subtype?: string | null;
+    is_error?: boolean | null;
+    stop_reason?: string | null;
+    num_turns?: number | null;
+    session_id?: string | null;
+    usage?: unknown;
+    result_preview?: string | null;
+  };
 }
 
 // --- /fold-summary HTTP request --------------------------------------------

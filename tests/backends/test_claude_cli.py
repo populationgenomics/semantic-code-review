@@ -386,6 +386,47 @@ async def test_claude_freeform_empty_result_raises(
         await _freeform_agent(claude_model).run("explain")
 
 
+async def test_claude_debug_sink_receives_freeform_spawn_record(
+    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a debug sink bound, a free-form turn emits one record carrying
+    the spawn's argv + envelope summary."""
+    records: list[dict] = []
+    claude_model.set_debug_sink(records.append)
+    proc = FakeProc(claude_envelope("the answer", use_structured_output=False))
+    install_fake_subproc(monkeypatch, [proc])
+    await _freeform_agent(claude_model).run("why?")
+
+    assert len(records) == 1
+    r = records[0]
+    assert r["provider"] == "claude-cli"
+    assert r["free_form"] is True
+    assert r["returncode"] == 0
+    assert r["envelope"]["session_id"] == "sess-abc"
+    assert r["envelope"]["result_preview"] == "the answer"
+    assert "--allowedTools" in r["argv"]
+
+
+async def test_claude_debug_sink_off_by_default(claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No sink bound → no record is built (zero overhead off the debug path)."""
+    proc = FakeProc(claude_envelope("answer", use_structured_output=False))
+    install_fake_subproc(monkeypatch, [proc])
+    # Should not raise despite no sink; nothing to assert beyond a clean run.
+    result = await _freeform_agent(claude_model).run("why?")
+    assert result.output == "answer"
+
+
+def test_redact_argv_truncates_system_prompt() -> None:
+    from semantic_code_review.backends._cli_driver import _redact_argv
+
+    argv = ["claude", "-p", "--system-prompt", "S" * 500, "--model", "opus"]
+    out = _redact_argv(argv)
+    assert out[:3] == ["claude", "-p", "--system-prompt"]
+    assert out[3] != "S" * 500 and out[3].startswith("S") and "chars)" in out[3]
+    # Non-redacted flags pass through untouched.
+    assert out[4:] == ["--model", "opus"]
+
+
 async def test_claude_freeform_tool_config_is_read_only_mcp(
     claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
 ) -> None:

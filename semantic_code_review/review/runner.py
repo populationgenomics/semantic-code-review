@@ -112,6 +112,9 @@ class ReviewOptions:
     # Extra file globs to skip in the LLM passes (config [augment].skip_globs).
     skip_globs: tuple[str, ...] = ()
     show_progress: bool = True
+    # `--debug` / SCR_DEBUG: surface each CLI-backend subprocess spawn (raw
+    # argv + envelope) in the viewer's debug drawer.
+    debug: bool = False
 
 
 def run_review(opts: ReviewOptions) -> int:
@@ -128,6 +131,7 @@ def run_review(opts: ReviewOptions) -> int:
     augment_task: AugmentCallable | None = None
     fold_summary_task: FoldSummaryCallable | None = None
     console_task: ConsoleCallable | None = None
+    bind_debug_sink: Callable[[Callable[[dict], None]], None] | None = None
     if opts.augment:
         from ..augment.pipeline import augment_run_dir  # lazy: anthropic SDK
 
@@ -168,6 +172,11 @@ def run_review(opts: ReviewOptions) -> int:
             client=console_client,
             run_dir=run_dir,
         )
+        # In --debug, surface the client driver's per-spawn records in the
+        # viewer drawer. The augment pass shares this client, so its spawns
+        # flow too; set_debug_sink no-ops on the SDK string-model path.
+        if opts.debug:
+            bind_debug_sink = lambda sink, c=console_client: c.set_debug_sink(sink)  # noqa: E731
     else:
         # When augment is skipped, copy raw.diff to augmented.diff so render
         # has something to parse. It'll have no annotations.
@@ -184,6 +193,8 @@ def run_review(opts: ReviewOptions) -> int:
         port=opts.port,
         timeout=opts.timeout,
         open_browser=opts.open_browser,
+        debug=opts.debug,
+        bind_debug_sink=bind_debug_sink,
     )
     # The markdown dump is the reviewer's "new notes" feed — ingested
     # upstream comments are already on GitHub and would crowd it out.
@@ -225,6 +236,8 @@ def serve_review(
     timeout: int = 3600,
     open_browser: bool = True,
     on_ready: Callable[[str], None] | None = None,
+    debug: bool = False,
+    bind_debug_sink: Callable[[Callable[[dict], None]], None] | None = None,
 ) -> ServeResult:
     """Render the viewer for a populated run dir, host the back-channel
     server, block on the user clicking Done, and return the comments
@@ -255,12 +268,17 @@ def serve_review(
         port=port,
         post_callback=post,
         post_meta=post_meta,
+        debug=debug,
     )
     srv.start()
     try:
         log.info("review server at %s", srv.url())
         sys.stderr.write(f"scr review: listening on {srv.url()}\n")
         sys.stderr.flush()
+        # Route the CLI backend's per-spawn debug records to the viewer's
+        # drawer. Bound before augmentation so its spawns are captured too.
+        if debug and bind_debug_sink is not None:
+            bind_debug_sink(lambda record: srv.publish("debug-log", record))
         if on_ready is not None:
             on_ready(srv.url())
         if open_browser:

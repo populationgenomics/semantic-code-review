@@ -345,6 +345,10 @@ class ServerContext:
     viewer_json: dict[str, Any]
     done_event: threading.Event
     last_activity: float = 0.0
+    # `--debug` / SCR_DEBUG. When true the /data.json payload carries
+    # `debug: true` so the viewer mounts its raw-log drawer, and the CLI
+    # backend's per-spawn records are fanned out as `debug-log` SSE frames.
+    debug: bool = False
     # Optional, wired by serve_review when an LLM backend is available.
     # The /fold-summary route returns 409 until this is set (the augment
     # pass has to finish first so the sidecar exists).
@@ -444,7 +448,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._serve_static(path[len("/static/") :])
             return
         if path == "/data.json":
-            self._json(200, self.ctx.viewer_json)
+            # Stamp the runtime debug flag alongside the diff payload so the
+            # viewer knows whether to mount the debug drawer. Merged at serve
+            # time because update_viewer_json swaps viewer_json wholesale.
+            self._json(200, {**self.ctx.viewer_json, "debug": self.ctx.debug})
             return
         if path == "/comments":
             self._json(200, {"comments": [c.model_dump() for c in self.ctx.store.all()]})
@@ -944,6 +951,7 @@ class ReviewServer:
         port: int = 0,
         post_callback: PostCallable | None = None,
         post_meta: dict[str, Any] | None = None,
+        debug: bool = False,
     ) -> None:
         self.run_dir = run_dir
         self.store = CommentStore(run_dir / "comments.json")
@@ -956,6 +964,7 @@ class ReviewServer:
             last_activity=time.time(),
             post_callback=post_callback,
             post_meta=post_meta,
+            debug=debug,
         )
         self._host = host
         self._port = port

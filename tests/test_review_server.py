@@ -93,6 +93,21 @@ def test_get_data_json(server) -> None:
     code, body = _request(server.url() + "/data.json")
     assert code == 200
     assert body["version"] == "1"
+    # Debug off by default: the viewer won't mount the drawer.
+    assert body["debug"] is False
+
+
+def test_data_json_debug_flag(tmp_path: Path) -> None:
+    """--debug stamps `debug: true` into /data.json so the viewer mounts the
+    raw-log drawer."""
+    srv = ReviewServer(run_dir=tmp_path, viewer_json={"version": "1", "files": []}, debug=True)
+    srv.start()
+    try:
+        code, body = _request(srv.url() + "/data.json")
+        assert code == 200
+        assert body["debug"] is True
+    finally:
+        srv.stop()
 
 
 def test_post_comment_upserts_and_persists(server, tmp_path: Path) -> None:

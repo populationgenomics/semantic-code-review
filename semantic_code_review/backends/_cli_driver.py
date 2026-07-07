@@ -20,7 +20,9 @@ import json
 import logging
 import os
 import sys
+import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -133,6 +135,31 @@ def _tail(text: str, n: int = 400) -> str:
     if len(t) <= n:
         return t
     return "..." + t[-n:]
+
+
+def _head(text: str, n: int) -> str:
+    return text if len(text) <= n else text[:n] + f"…(+{len(text) - n} chars)"
+
+
+def _redact_argv(argv: list[str]) -> list[str]:
+    """Copy argv with the `--system-prompt` value truncated.
+
+    The system prompt is long, static, and would dominate every debug
+    record; the rest of the argv (flags, model, session id) is the part
+    worth seeing. Value-bearing flags aside, argv carries no secrets — the
+    CLI reads credentials from the environment, not the command line.
+    """
+    out: list[str] = []
+    redact_next = False
+    for tok in argv:
+        if redact_next:
+            out.append(_head(tok, 120))
+            redact_next = False
+            continue
+        out.append(tok)
+        if tok == "--system-prompt":
+            redact_next = True
+    return out
 
 
 def _mcp_config_for(rt: RepoTools) -> dict[str, Any]:
@@ -276,6 +303,65 @@ class SubprocessModel(Model, ABC):
         self._model = model
         self._max_validation_retries = max_validation_retries
         self._repo_tools: RepoTools | None = None
+        # Debug observability (opt-in). When a sink is bound, each subprocess
+        # spawn emits a structured record the review server fans out to the
+        # debug drawer. None (the default) is a hard gate: no sink → the
+        # record is never built, so there's zero overhead off the debug path.
+        self._debug_sink: Callable[[dict[str, Any]], None] | None = None
+
+    def set_debug_sink(self, sink: Callable[[dict[str, Any]], None] | None) -> None:
+        """Route per-spawn debug records to `sink` (None disables).
+
+        Bound by the review server in `--debug` mode so the raw `claude -p`
+        envelope of every turn is visible in the viewer's debug drawer.
+        """
+        self._debug_sink = sink
+
+    def _emit_debug(
+        self,
+        *,
+        inv: _Invocation,
+        stdout: bytes,
+        stderr: bytes,
+        returncode: int,
+        duration_ms: int,
+        envelope: dict[str, Any] | None,
+        free_form: bool,
+    ) -> None:
+        """Build and hand one per-spawn record to the debug sink (if bound).
+
+        No sink → returns immediately, before any record is built. The
+        record is bounded (argv system-prompt redacted, stdin + result
+        previewed) so it stays cheap to buffer and ship over SSE.
+        """
+        sink = self._debug_sink
+        if sink is None:
+            return
+        env = envelope or {}
+        result = env.get("result")
+        record: dict[str, Any] = {
+            "provider": self._provider_name,
+            "model": self._model,
+            "free_form": free_form,
+            "returncode": returncode,
+            "duration_ms": duration_ms,
+            "argv": _redact_argv(inv.argv),
+            "stdin_preview": _head(inv.stdin.decode("utf-8", errors="replace"), 4000) if inv.stdin else "",
+            "stderr_tail": _tail(stderr.decode("utf-8", errors="replace")),
+            "envelope": {
+                "subtype": env.get("subtype"),
+                "is_error": env.get("is_error"),
+                "stop_reason": env.get("stop_reason"),
+                "num_turns": env.get("num_turns"),
+                "session_id": env.get("session_id"),
+                "usage": env.get("usage"),
+                "result_preview": _head(result, 8000) if isinstance(result, str) else result,
+            },
+        }
+        try:
+            sink(record)
+        except Exception:  # noqa: BLE001 — debug telemetry must never break a turn
+            log.warning("debug sink raised; dropping record", exc_info=True)
 
     @property
     def model_name(self) -> str:
@@ -400,13 +486,30 @@ class SubprocessModel(Model, ABC):
                 tool_def.name,
                 "".join(f" {k}={v}" for k, v in inv.extra_log.items()),
             )
+            t0 = time.monotonic()
             stdout, stderr, returncode = await self._spawn(inv)
+            duration_ms = int((time.monotonic() - t0) * 1000)
 
-            envelope = self._parse_envelope(
-                stdout=stdout,
-                stderr=stderr,
-                returncode=returncode,
-            )
+            envelope: dict[str, Any] | None = None
+            try:
+                envelope = self._parse_envelope(
+                    stdout=stdout,
+                    stderr=stderr,
+                    returncode=returncode,
+                )
+            finally:
+                self._emit_debug(
+                    inv=inv,
+                    stdout=stdout,
+                    stderr=stderr,
+                    returncode=returncode,
+                    duration_ms=duration_ms,
+                    envelope=envelope,
+                    free_form=False,
+                )
+            # `_parse_envelope` returns a dict or raises; a None here would
+            # mean the finally ran on the raise path, which propagates.
+            assert envelope is not None
             try:
                 structured = self._envelope_to_structured(
                     envelope=envelope,
@@ -438,12 +541,27 @@ class SubprocessModel(Model, ABC):
             self._model,
             "".join(f" {k}={v}" for k, v in inv.extra_log.items()),
         )
+        t0 = time.monotonic()
         stdout, stderr, returncode = await self._spawn(inv)
-        envelope = self._parse_envelope(
-            stdout=stdout,
-            stderr=stderr,
-            returncode=returncode,
-        )
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        envelope: dict[str, Any] | None = None
+        try:
+            envelope = self._parse_envelope(
+                stdout=stdout,
+                stderr=stderr,
+                returncode=returncode,
+            )
+        finally:
+            self._emit_debug(
+                inv=inv,
+                stdout=stdout,
+                stderr=stderr,
+                returncode=returncode,
+                duration_ms=duration_ms,
+                envelope=envelope,
+                free_form=True,
+            )
+        assert envelope is not None  # parse returns a dict or raises
         text = self._envelope_to_text(envelope=envelope)
         return _text_to_response(
             text,
