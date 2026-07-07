@@ -79,13 +79,14 @@ child. Delivers the Slice-0 payoff (no per-hunk spawn), a cache warm
 across the session, and in-process observability (subsumes Slice 2's
 back-channel).
 
-**Key decision, settled in this slice:** the server is hand-rolled stdio
-JSON-RPC today. HTTP means either implementing MCP's Streamable-HTTP
-transport (POST + SSE, `Mcp-Session-Id` handshake) by hand, **or**
-adopting the `mcp` Python SDK as a dependency. Weigh dep-light
-hand-rolling (matches the existing server, more code) against the SDK
-(less code, a new runtime dep). Also decide the stdio server's fate:
-retire it, or keep it as a fallback.
+**Transport (settled in ADR 0003):** build on the `mcp` Python SDK —
+hand-rolling MCP's Streamable-HTTP transport (POST + SSE,
+`Mcp-Session-Id` handshake) a second time is recurring cost for a spec
+we don't own, so the SDK dependency is accepted. The hand-rolled stdio
+server (`augment/mcp_server.py`) is retired once this lands, not kept as
+a fallback. This slice's work is the implementation: stand up the SDK
+server, wire the lifecycle, delete the stdio spawn path and its
+`--mcp-config` plumbing.
 
 Cross-cutting concerns: localhost bind + bearer auth; lifecycle owned by
 `scr` (start after augment/at serve, stop on teardown); the cache

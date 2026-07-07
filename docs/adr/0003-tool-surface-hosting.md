@@ -57,6 +57,19 @@ child (`claude` supports `--transport http`/`sse`, verified). This:
   `console-tool` directly, no back-channel, no parsing of `claude`'s
   output.
 
+**Build the HTTP transport on the `mcp` Python SDK, and retire the
+hand-rolled stdio server.** MCP's Streamable-HTTP transport (POST + SSE,
+`Mcp-Session-Id` handshake) is materially more protocol than the stdio
+server's newline-delimited JSON-RPC; hand-rolling it a second time is
+recurring cost for a spec we don't own. The SDK is a new runtime
+dependency — the first taken deliberately against this codebase's
+dep-light default, accepted as the smaller long-run cost. Once the
+hosted server lands, every `claude -p` connects over HTTP, so
+`augment/mcp_server.py` and its per-spawn stdio `--mcp-config` plumbing
+are removed, not kept as a fallback: one transport to maintain, and no
+path a fallback would serve (the hosted server is available whenever the
+tools are).
+
 **Do not route SDK backends through the MCP server.** They already call
 `RepoTools` in-process and already stream tool activity; an HTTP hop
 would add latency and serialization for no observability gain. SDK
@@ -79,12 +92,14 @@ already covers the "is it working" cue in the interim.)
   server lifecycle `scr` now owns (start/stop, teardown). Augment runs
   ~8 `claude -p` clients concurrently against the one server, so the
   cache computes once per key under a lock; reads are otherwise safe.
-- **Biggest cost lives in the hosting slice:** the MCP server is
-  hand-rolled stdio JSON-RPC, so HTTP means implementing MCP's
-  Streamable-HTTP transport (POST + SSE, session handshake) by hand
-  **or** adopting the `mcp` Python SDK — a new dependency in a codebase
-  that deliberately hand-rolls to stay dep-light. That trade-off is
-  settled in the slice plan, not here.
+- **Hosting adds the `mcp` SDK dependency.** HTTP hosting (Slice 3) is
+  built on the `mcp` Python SDK rather than hand-rolling MCP's
+  Streamable-HTTP transport (POST + SSE, `Mcp-Session-Id` handshake) a
+  second time — the first new runtime dep taken deliberately against the
+  codebase's dep-light default, on the judgement that owning a hand-rolled
+  implementation of a spec we don't control costs more over time. It
+  supersedes the hand-rolled stdio server (`augment/mcp_server.py`), which
+  is removed once hosting lands.
 - The shared cache (Slice 1) ships and benefits SDK regardless of
   whether hosting (Slice 3) is ever built — the slices are ordered so
   the shared wins never depend on the CLI-only ones.
@@ -102,3 +117,11 @@ already covers the "is it working" cue in the interim.)
 - **A module-level parse cache.** Violates the no-global-mutable-state
   rule; the cache is owned by the run / hosted server and passed
   explicitly.
+- **Hand-roll the HTTP transport to stay dep-free.** Consistent with the
+  existing stdio server, but Streamable-HTTP (session handshake + SSE) is
+  materially more protocol than newline JSON-RPC; maintaining our own
+  implementation of a spec we don't own outweighs avoiding one dependency.
+- **Keep the stdio server as a fallback after hosting lands.** Two
+  transports to keep working for a path every session takes the same way;
+  the hosted server is available whenever the tools are, so no case is
+  left for the fallback to serve.
