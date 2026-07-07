@@ -2083,7 +2083,7 @@ wheels = [
 
 [[package]]
 name = "semantic-code-review"
-version = "0.27.2"
+version = "0.27.3"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
