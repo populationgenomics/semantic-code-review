@@ -43,7 +43,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models import Model
 
-from . import source_cache
+from . import mcp_http_host, source_cache
 from .agents import Client
 from .hunks import overview_to_prompt_json
 from .tools import RepoTools, console_tool_functions
@@ -298,6 +298,19 @@ def _tool_label(part: Any) -> str:
     return name
 
 
+def _tool_label_from_call(name: str, args: dict[str, Any]) -> str:
+    """`_tool_label` for the hosted MCP handler.
+
+    The handler hands us `(name, args)` directly, not a pydantic event part.
+    """
+    if isinstance(args, dict):
+        for value in args.values():
+            text = str(value).strip()
+            if text:
+                return f"{name} {text[:60]}"
+    return name
+
+
 async def _run_console_turn_oneshot(
     client: Client,
     agent: Agent[RepoTools, str],
@@ -306,6 +319,7 @@ async def _run_console_turn_oneshot(
     *,
     session_id: str | None,
     cancel: threading.Event | None,
+    on_tool: Callable[[str], None] | None = None,
 ) -> tuple[str, str | None]:
     """Run one console turn to completion via `Agent.run` (CLI backends).
 
@@ -332,11 +346,26 @@ async def _run_console_turn_oneshot(
     if cancel is not None and cancel.is_set():
         raise ConsoleCancelled("console turn cancelled")
     client.set_console_session(session_id)
-    client.set_repo_tools(repo_tools)
-    try:
-        result = await agent.run(prompt, deps=repo_tools, message_history=None)
-    finally:
-        client.set_repo_tools(None)
+
+    # One warm HTTP MCP host for this turn (ADR 0003 Slice 3): the driver
+    # connects `claude -p` to it instead of spawning a stdio child, and the
+    # handler's on_tool fires as the model reads/greps — the console-tool
+    # visibility the CLI path otherwise lacks (this folds in Slice 2).
+    host_on_tool: mcp_http_host.OnToolCall | None = None
+    if on_tool is not None:
+        publish = on_tool
+
+        def _publish_tool(name: str, args: dict[str, Any]) -> None:
+            publish(_tool_label_from_call(name, args))
+
+        host_on_tool = _publish_tool
+
+    with mcp_http_host.McpHttpHost(repo_tools, on_tool=host_on_tool) as host:
+        client.set_mcp_endpoint(host.mcp_config())
+        try:
+            result = await agent.run(prompt, deps=repo_tools, message_history=None)
+        finally:
+            client.set_mcp_endpoint(None)
     if cancel is not None and cancel.is_set():
         raise ConsoleCancelled("console turn cancelled")
     return result.output, client.last_console_session_id
@@ -397,6 +426,7 @@ async def stream_console_turn(
             repo_tools,
             session_id=history,
             cancel=cancel,
+            on_tool=on_tool,
         )
 
     def cancelled() -> bool:

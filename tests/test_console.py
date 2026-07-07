@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from typing import ClassVar, Self
 
 import pytest
 from pydantic_ai.models import Model
@@ -387,6 +388,7 @@ class _RecordingCLIModel(Model):
         self._answer = answer
         self._session_id = session_id
         self.repo_tools_calls: list = []
+        self.mcp_endpoints: list = []
         self.console_sessions: list = []
 
     @property
@@ -399,6 +401,9 @@ class _RecordingCLIModel(Model):
 
     def set_repo_tools(self, repo_tools) -> None:
         self.repo_tools_calls.append(repo_tools)
+
+    def set_mcp_endpoint(self, config) -> None:
+        self.mcp_endpoints.append(config)
 
     def set_console_session(self, session_id) -> None:
         self.console_sessions.append(session_id)
@@ -418,12 +423,54 @@ class _RecordingCLIModel(Model):
         )
 
 
+class _FakeConsoleHost:
+    """Stand-in for McpHttpHost so unit tests don't bind a real uvicorn."""
+
+    instances: ClassVar[list] = []
+
+    def __init__(self, repo_tools, *, on_tool=None, name="scr") -> None:  # type: ignore[no-untyped-def]
+        self.repo_tools = repo_tools
+        self.on_tool = on_tool
+        self.started = False
+        self.stopped = False
+        _FakeConsoleHost.instances.append(self)
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def mcp_config(self) -> dict:
+        return {"type": "http", "url": "http://127.0.0.1:0/mcp", "headers": {"Authorization": "Bearer t"}}
+
+    def __enter__(self) -> Self:
+        self.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.stop()
+
+
+@pytest.fixture(autouse=True)
+def fake_console_mcp_host(monkeypatch: pytest.MonkeyPatch) -> type[_FakeConsoleHost]:
+    """Console subprocess turns start a real HTTP MCP host; swap a fake so
+    unit tests neither bind a socket nor need `claude`. A per-test patch (e.g.
+    a host that fires on_tool) can still override this."""
+    from semantic_code_review.augment import console as console_mod
+
+    _FakeConsoleHost.instances = []
+    monkeypatch.setattr(console_mod.mcp_http_host, "McpHttpHost", _FakeConsoleHost)
+    return _FakeConsoleHost
+
+
 async def test_stream_console_turn_cli_backend_runs_oneshot(
     tmp_path: Path,
+    fake_console_mcp_host: type[_FakeConsoleHost],
 ) -> None:
     """A subprocess backend runs one-shot via `Agent.run`: the full
-    answer comes back with no incremental `on_delta` chunks, and
-    `RepoTools` is bound onto the model for the call then unbound."""
+    answer comes back with no incremental `on_delta` chunks, and the turn
+    hosts one MCP server for the call, torn down after."""
     run_dir = _populate_run_dir(tmp_path)
     model = _RecordingCLIModel(answer="grounded cli answer")
     client = Client(model=model, is_subprocess_backend=True)
@@ -447,10 +494,14 @@ async def test_stream_console_turn_cli_backend_runs_oneshot(
     # One-shot: nothing streamed incrementally.
     assert deltas == []
     assert tools == []
-    # RepoTools bound for the call, then unbound (cleans up the MCP temp).
-    assert len(model.repo_tools_calls) == 2
-    assert isinstance(model.repo_tools_calls[0], RepoTools)
-    assert model.repo_tools_calls[1] is None
+    # The turn hosts one MCP server: endpoint set for the call, cleared after.
+    assert len(model.mcp_endpoints) == 2
+    assert model.mcp_endpoints[0]["type"] == "http"
+    assert model.mcp_endpoints[1] is None
+    # Exactly one host, started then torn down.
+    assert len(fake_console_mcp_host.instances) == 1
+    assert fake_console_mcp_host.instances[0].started
+    assert fake_console_mcp_host.instances[0].stopped
 
 
 async def test_stream_console_turn_cli_backend_resumes_session(
@@ -469,6 +520,41 @@ async def test_stream_console_turn_cli_backend_resumes_session(
     # Turn 1 started fresh (None); turn 2 resumed the captured id.
     assert model.console_sessions == [None, "sess-42"]
     assert history2 == "sess-42"
+
+
+async def test_cli_console_publishes_tool_activity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A tool call on the hosted server surfaces as an on_tool label — the
+    console-tool visibility the CLI path gained (ADR 0003 Slice 3)."""
+    from semantic_code_review.augment import console as console_mod
+
+    run_dir = _populate_run_dir(tmp_path)
+
+    class _FiringHost:
+        def __init__(self, repo_tools, *, on_tool=None, name="scr") -> None:  # type: ignore[no-untyped-def]
+            self._on_tool = on_tool
+
+        def __enter__(self) -> Self:
+            # Simulate the model reaching for a tool mid-turn.
+            if self._on_tool is not None:
+                self._on_tool("read_file", {"path": "users.py"})
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            pass
+
+        def mcp_config(self) -> dict:
+            return {"type": "http", "url": "http://127.0.0.1:0/mcp", "headers": {"Authorization": "Bearer t"}}
+
+    monkeypatch.setattr(console_mod.mcp_http_host, "McpHttpHost", _FiringHost)
+
+    tools: list[str] = []
+    await stream_console_turn(
+        Client(model=_RecordingCLIModel(), is_subprocess_backend=True),
+        run_dir=run_dir,
+        question="q",
+        on_tool=tools.append,
+    )
+    assert tools == ["read_file users.py"]
 
 
 async def test_stream_console_turn_cli_backend_honours_cancel(
