@@ -287,13 +287,15 @@ class ClaudeCLIModel(SubprocessModel):
         self._raise_if_error(envelope)
         result = envelope.get("result")
         if not result:
+            # A max-turns cutoff is already mapped by `_raise_if_error`
+            # (is_error=true), so an empty result here is a clean-exit turn
+            # that simply produced no prose.
             stop = envelope.get("stop_reason")
             turns = envelope.get("num_turns")
             raise ClaudeCLIError(
                 "claude -p returned an empty result for a free-form turn "
-                f"(stop_reason={stop!r}, num_turns={turns}). This usually "
-                "means the model exhausted --max-turns mid-tool-loop — bump "
-                "--max-turns or simplify the question."
+                f"(stop_reason={stop!r}, num_turns={turns}); the model finished "
+                "without emitting an answer."
             )
         return result
 
@@ -334,6 +336,19 @@ class ClaudeCLIModel(SubprocessModel):
         """
         if not envelope.get("is_error"):
             return
+        # A `--max-turns` cutoff mid tool-loop arrives as
+        # `subtype="error_max_turns"`, `is_error=true`, `result=null`. It
+        # must be caught before the generic branch below — otherwise it
+        # degrades to an opaque "returned error … <empty>" that names
+        # neither the cause nor the fix.
+        if envelope.get("subtype") == "error_max_turns":
+            raise ClaudeCLIError(
+                "claude -p hit its turn limit "
+                f"(--max-turns) after {envelope.get('num_turns')} turns while "
+                "still in its tool loop, so it never produced an answer. Raise "
+                "the turn budget (ClaudeCLIModel.max_turns_with_mcp / "
+                "max_turns_single_shot) or narrow the request."
+            )
         message = (envelope.get("result") or "").strip()
         lower = message.lower()
         if "not logged in" in lower or "please run /login" in lower:
@@ -371,14 +386,15 @@ class ClaudeCLIModel(SubprocessModel):
             return structured
         result_text = envelope.get("result") or ""
         if not result_text:
+            # A max-turns cutoff is already mapped by `_raise_if_error`
+            # (is_error=true); reaching here means a clean exit that emitted
+            # neither the submit-tool payload nor any result text.
             stop = envelope.get("stop_reason")
             turns = envelope.get("num_turns")
             raise ClaudeCLIError(
                 "claude -p returned no structured_output and no result "
-                f"(stop_reason={stop!r}, num_turns={turns}). This usually "
-                "means the model tried to call a tool instead of emitting "
-                "the JSON payload — bump --max-turns or reinforce the "
-                "no-tool instruction in the prompt."
+                f"(stop_reason={stop!r}, num_turns={turns}); the model finished "
+                "without emitting the JSON payload."
             )
         try:
             return json.loads(result_text)

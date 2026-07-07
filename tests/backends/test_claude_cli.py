@@ -386,6 +386,50 @@ async def test_claude_freeform_empty_result_raises(
         await _freeform_agent(claude_model).run("explain")
 
 
+def _max_turns_envelope() -> bytes:
+    """The real `claude -p` envelope for a `--max-turns` cutoff mid tool-loop
+    (confirmed against CLI 2.1.201): `is_error=true`, `result=null`, and a
+    distinguishing `subtype`."""
+    envelope = {
+        "type": "result",
+        "subtype": "error_max_turns",
+        "is_error": True,
+        "result": None,
+        "stop_reason": "tool_use",
+        "num_turns": 20,
+        "session_id": "sess",
+        "usage": {
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        },
+    }
+    return (json.dumps(envelope) + "\n").encode("utf-8")
+
+
+async def test_claude_structured_max_turns_maps_to_actionable_error(
+    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A max-turns cutoff (is_error=true, subtype=error_max_turns) names the
+    turn limit and the fix, not the opaque generic 'returned error' text."""
+    proc = FakeProc(_max_turns_envelope(), returncode=1)
+    install_fake_subproc(monkeypatch, [proc])
+    with pytest.raises(ClaudeCLIError, match="turn limit"):
+        await _agent(claude_model).run("review this hunk")
+
+
+async def test_claude_freeform_max_turns_maps_to_actionable_error(
+    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The console path funnels the same envelope through the same mapping,
+    so a tool-heavy turn that exhausts --max-turns surfaces the fix."""
+    proc = FakeProc(_max_turns_envelope(), returncode=1)
+    install_fake_subproc(monkeypatch, [proc])
+    with pytest.raises(ClaudeCLIError, match="turn limit"):
+        await _freeform_agent(claude_model).run("explain this change")
+
+
 async def test_claude_freeform_not_logged_in_raises(
     claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
