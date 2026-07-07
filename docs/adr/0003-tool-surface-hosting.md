@@ -105,6 +105,14 @@ already covers the "is it working" cue in the interim.)
 - The shared cache (Slice 1) ships and benefits SDK regardless of
   whether hosting (Slice 3) is ever built — the slices are ordered so
   the shared wins never depend on the CLI-only ones.
+- **The warm host unlocks init-expensive tools.** Tools whose setup cost
+  only amortises over a long-lived server — LSP find-references, a
+  whole-diff call graph, semantic/embeddings search — become viable now.
+  Each is added as a `RepoTools` method, so both backends expose it with
+  no transport work (the MCP host wraps it; SDK function-tools *are* it),
+  provided the read-only-against-pinned-SHAs invariant holds. This records
+  only that the architecture now supports them; each is its own design
+  decision (and likely its own ADR) when taken up, not a commitment here.
 
 ## Rejected alternatives
 

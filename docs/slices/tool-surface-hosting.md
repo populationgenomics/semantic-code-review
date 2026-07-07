@@ -2,13 +2,15 @@
 
 Bring the `claude-cli` backend to the tool-surface parity SDK backends
 already have — live tool visibility and no per-spawn cold start — while
-keeping the cross-cutting wins (a read/parse cache, future richer tools)
-in the shared `RepoTools` layer so both backends benefit. Design
-rationale lives in **ADR 0003**; this plan holds the *how, in order*.
+keeping the cross-cutting win (a read/parse cache) in the shared
+`RepoTools` layer so both backends benefit. Design rationale lives in
+**ADR 0003**; this plan holds the *how, in order*. (Further init-expensive
+tools the warm host unlocks are an ADR 0003 consequence, not a slice here.)
 
-Vertical slices, ordered. The shared-layer slices (1, 4) ship and benefit
-SDK backends on their own; the CLI-only slices (2, 3) never block them.
-Slice 0 gates the expensive transport rewrite behind a measured payoff.
+Vertical slices, ordered. The shared-layer slice (1) ships and benefits
+SDK backends on its own; the CLI-only slice (3) never blocks it. Slice 0
+gates the expensive transport rewrite behind a measured payoff; Slice 2
+was folded into Slice 3.
 
 ## Shared currency
 
@@ -20,10 +22,11 @@ sends us back to ADR 0003.
 
 Layer split, kept strict:
 
-- **Shared (`RepoTools`)** — cache (Slice 1), richer tools (Slice 4).
-  Reaches both backends: the MCP server wraps `RepoTools`; SDK
-  function-tools *are* its methods.
-- **CLI-path only** — observability (Slice 2), HTTP hosting (Slice 3).
+- **Shared (`RepoTools`)** — the cache (Slice 1). Reaches both backends:
+  the MCP server wraps `RepoTools`; SDK function-tools *are* its methods.
+  (Richer tools the host unlocks: see ADR 0003 Consequences.)
+- **CLI-path only** — HTTP hosting (Slice 3), which subsumes the
+  observability originally scoped as Slice 2.
 - **SDK backends** — untouched; consume the shared wins directly.
 
 ---
@@ -136,16 +139,6 @@ tools working over HTTP), so the stdio server is fully retired:
 `augment/mcp_server.py`, `_mcp_config_for`, `set_repo_tools`/`_repo_tools`
 on the CLI driver, and their tests are deleted — no fallback. The live
 contract test (`test_claude_cli_live.py`) now drives the HTTP host.
-
-## Slice 4 — Richer tools in `RepoTools` *(shared; future)*
-
-Init-expensive tools that only pay off amortised over a warm server: LSP
-find-references, a whole-diff call graph, semantic/embeddings search.
-Added as `RepoTools` methods, so both backends expose them with no
-transport work (MCP wraps them; SDK function-tools are them).
-
-**Done when:** at least one such tool is callable from both an SDK and a
-CLI console turn, grounded in the run's worktrees.
 
 ## Not in these slices
 
