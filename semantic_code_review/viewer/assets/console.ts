@@ -369,7 +369,19 @@ function appendAnswer(): PendingTurn {
   activity.className = "console-activity";
   const text = document.createElement("div");
   text.className = "console-text";
-  text.textContent = "…";
+  // Animated placeholder: signals the backend is working even though CLI
+  // turns stream nothing until they return. The first delta / the final
+  // answer replaces `text`'s content (renderConsoleMarkdown sets innerHTML),
+  // so the dots live exactly as long as the turn is in flight.
+  const dots = document.createElement("span");
+  dots.className = "console-dots";
+  dots.setAttribute("aria-label", "working");
+  for (let i = 0; i < 3; i++) {
+    const dot = document.createElement("span");
+    dot.textContent = "•";
+    dots.appendChild(dot);
+  }
+  text.appendChild(dots);
   answer.appendChild(activity);
   answer.appendChild(text);
   _transcript?.appendChild(answer);

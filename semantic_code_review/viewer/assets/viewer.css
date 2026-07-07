@@ -1025,6 +1025,19 @@ body { padding-bottom: 30px; }
   margin-top: -8px;
 }
 .console-a.console-pending .console-text { color: var(--fg-muted); }
+/* Working indicator: three dots blinking in sequence while a turn is in
+ * flight (the whole cue for CLI backends, which stream nothing mid-turn). */
+.console-dots span {
+  display: inline-block;
+  opacity: 0.25;
+  animation: scr-dots 1.2s ease-in-out infinite;
+}
+.console-dots span:nth-child(2) { animation-delay: 0.2s; }
+.console-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes scr-dots {
+  0%, 60%, 100% { opacity: 0.25; }
+  30% { opacity: 1; }
+}
 .console-a.console-error .console-text { color: var(--danger, #e5534b); }
 /* A cancelled turn keeps its partial text but dims it. */
 .console-a.console-cancelled .console-text { opacity: 0.65; }
