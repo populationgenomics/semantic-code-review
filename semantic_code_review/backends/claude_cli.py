@@ -218,6 +218,15 @@ class ClaudeCLIModel(SubprocessModel):
         # lacks an API key but has OAuth/keychain credentials — --bare
         # would defeat the point and always return "Not logged in".
         # We pick the useful pieces of --bare individually below.
+        #
+        # Tool exposure mirrors the console (see _build_text_invocation): the
+        # augment passes explore the worktree through our read-only MCP
+        # server, so we allow-list it and hard-deny the mutating built-ins.
+        # NOT `--tools ""` + bypassPermissions — `--tools ""` disables MCP
+        # too (the passes would silently answer without ever reading the
+        # code), and bypass would hand the model built-in Bash/Edit. Unlike
+        # the console this stays single-shot (`--no-session-persistence`):
+        # each pass is independent, so there's no session to resume.
         argv = [
             self._claude,
             "-p",
@@ -227,13 +236,18 @@ class ClaudeCLIModel(SubprocessModel):
             system_text,
             "--json-schema",
             schema_json,
-            "--tools",
-            "",
             "--no-session-persistence",
             "--setting-sources",
             "",
             "--permission-mode",
-            "bypassPermissions",
+            "default",
+            "--allowedTools",
+            "mcp__scr",
+            "--disallowedTools",
+            "Bash",
+            "Edit",
+            "Write",
+            "NotebookEdit",
             "--output-format",
             "json",
             "--max-turns",

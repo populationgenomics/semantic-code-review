@@ -134,10 +134,16 @@ async def test_claude_model_round_trip_through_agent(
     assert result.output.intent == "explain the refactor"
 
     argv = calls[0]["argv"]
-    # --json-schema carries the output_type's schema; --tools "" disables
-    # claude's built-in tool catalogue (we drive tools via MCP only).
+    # --json-schema carries the output_type's schema. Tools are read-only-
+    # by-construction: allow-list our MCP server, deny mutating built-ins,
+    # never `--tools ""` (which would disable MCP too) or bypassPermissions.
     assert "--json-schema" in argv
-    assert "--tools" in argv and argv[argv.index("--tools") + 1] == ""
+    assert "--tools" not in argv
+    assert "bypassPermissions" not in argv
+    assert argv[argv.index("--permission-mode") + 1] == "default"
+    assert argv[argv.index("--allowedTools") + 1] == "mcp__scr"
+    # Single-shot: augment passes don't resume a session.
+    assert "--no-session-persistence" in argv
     # --bare must NOT be present: it disables OAuth/keychain auth, which
     # is the only reason we're in the subprocess fallback in the first
     # place. Regression guard.

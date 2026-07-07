@@ -88,12 +88,20 @@ async def test_live_structured_envelope_contract() -> None:
 
 async def test_live_mcp_tool_loop_contract(tmp_path: Path) -> None:
     """MCP-backed: wire the stdio `RepoTools` server into a real spawn and
-    confirm claude's MCP client still completes the handshake + tool loop
-    into a validated result. Guards the claude<->our-MCP-server contract,
-    which the mocked tests can only assert about our own half of."""
+    confirm claude's MCP client completes the handshake + tool loop into a
+    validated result.
+
+    The file carries a distinctive constant value the prompt never states, so
+    the assertion that it reappears in the answer proves the model *actually
+    read the file over MCP* — not just that it produced some validated JSON.
+    This guards the contract that a non-empty-result check missed: with the
+    old `--tools ""` flag the MCP tools were silently unavailable and the pass
+    answered from the prompt alone. Guards the claude<->our-MCP-server
+    contract, which the mocked tests can only assert about our own half of."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / "mod.py").write_text("TIMEOUT = 30\n")
+    # An unguessable value: it can only appear in the answer via a real read.
+    (repo / "mod.py").write_text("CONNECT_TIMEOUT_SECONDS = 91337\n")
     env = {
         **os.environ,
         "GIT_AUTHOR_NAME": "t",
@@ -112,9 +120,13 @@ async def test_live_mcp_tool_loop_contract(tmp_path: Path) -> None:
     model.set_repo_tools(RepoTools(head_worktree=repo, repo_git=repo, base_sha=sha, head_sha=sha))
     try:
         result = await _structured_agent(model).run(
-            "Use the read_file tool to read mod.py, then summarise the intent of introducing its TIMEOUT constant."
+            "Use the read_file tool to read mod.py. In your intent, state the exact "
+            "numeric value assigned to the constant defined there."
         )
         assert isinstance(result.output, HunkAnnotations)
-        assert result.output.intent.strip(), "live MCP-backed claude returned an empty intent"
+        assert "91337" in result.output.model_dump_json(), (
+            "live MCP-backed claude did not surface the file's value — the read_file "
+            "tool was likely unavailable (MCP tools disabled by the spawn flags)"
+        )
     finally:
         await model.aclose()
