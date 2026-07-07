@@ -23,6 +23,7 @@ from ..format.parse import parse_raw_diff
 from ..format.sidecar import dump_sidecar
 from ..viewer.build_json import file_fold_spans
 from ..viewer.hunk_layout import build_hunk_viewer_block
+from . import source_cache
 from .agents import Client
 from .hunks import (
     build_hunk_annotations,
@@ -184,6 +185,10 @@ async def augment_run_dir(
         enabled=None if show_progress else False,
     )
 
+    # One read/parse memo for the whole run — the seed's base/head parse
+    # and every per-hunk tool call share it (ADR 0003 Slice 1).
+    parse_cache = source_cache.SourceCache()
+
     # Deterministic structural symbol delta (ADR 0001 Slice 3). Computed
     # from our own tree-sitter parse of base vs head — independent of
     # `skip_context`, which only gates the LLM's per-hunk tool access, not
@@ -196,6 +201,7 @@ async def augment_run_dir(
             repo_git=run_dir / "repo.git",
             base_sha=diff.pr.base_sha,
             head_sha=diff.pr.head_sha,
+            cache=parse_cache,
         ).compute_symbol_delta()
     except Exception:  # noqa: BLE001 — seed is best-effort
         log.warning("structural symbol seed failed; overview runs unseeded", exc_info=True)
@@ -231,6 +237,7 @@ async def augment_run_dir(
                 repo_git=run_dir / "repo.git",
                 base_sha=diff.pr.base_sha,
                 head_sha=diff.pr.head_sha,
+                cache=parse_cache,
             )
             if not skip_context
             else None

@@ -43,6 +43,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models import Model
 
+from . import source_cache
 from .agents import Client
 from .hunks import overview_to_prompt_json
 from .tools import RepoTools, console_tool_functions
@@ -236,6 +237,7 @@ def _prepare_turn(
         base_sha=diff.pr.base_sha,
         head_sha=diff.pr.head_sha,
         diff=diff,
+        cache=source_cache.SourceCache(),
     )
 
     selection_block = _format_selection(selection, repo_tools)

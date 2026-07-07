@@ -31,6 +31,7 @@ from pydantic_ai import RunContext
 from pydantic_ai.tools import Tool
 
 from .. import git_ops, structural
+from . import source_cache
 
 TOOL_RESULT_CAP_BYTES = 20 * 1024
 
@@ -60,6 +61,10 @@ class RepoTools:
     # the augment-side schemas stay off this module's import path;
     # left None on every augment/MCP path, where no sidecar exists yet.
     diff: Any = None
+    # Optional `(sha, path)` read/parse memo, owned by the run and shared
+    # across every `RepoTools` it builds (ADR 0003 Slice 1). None ⇒ each
+    # read/parse recomputes; behaviour is otherwise identical.
+    cache: source_cache.SourceCache | None = None
 
     # --- file reads -------------------------------------------------------
 
@@ -126,13 +131,21 @@ class RepoTools:
         source = self._read_source(path, sha)
         if source is None:
             return "[]"
-        symbols = structural.outline_symbols(source, lang)
+        symbols = self._outline_symbols(path, sha, source, lang)
         return _cap(structural.symbols_to_json(symbols))
 
     def _read_source(self, path: str, sha: str | None) -> str | None:
         """Raw file text from the head worktree (``sha is None``) or at a
         revision via ``git show``. ``None`` if it can't be read.
+
+        Memoised through `self.cache` when one is bound; the content of a
+        `(sha, path)` is immutable for the run, so the read runs once.
         """
+        if self.cache is None:
+            return self._read_source_uncached(path, sha)
+        return self.cache.source(sha, path, lambda: self._read_source_uncached(path, sha))
+
+    def _read_source_uncached(self, path: str, sha: str | None) -> str | None:
         if sha is None:
             full = (self.head_worktree / path).resolve()
             if not _is_inside(full, self.head_worktree) or not full.is_file():
@@ -143,6 +156,17 @@ class RepoTools:
                 return None
         rc, stdout, _stderr = git_ops.git_capture(self.repo_git, "show", f"{sha}:{path}")
         return stdout if rc == 0 else None
+
+    def _outline_symbols(self, path: str, sha: str | None, source: str, lang: str) -> list[structural.Symbol]:
+        """Tree-sitter outline of `source`, memoised by `(sha, path)`.
+
+        `source` and `lang` are redundant with `(sha, path)` under the
+        immutability invariant; they are the inputs the compute actually
+        needs, passed so the cache stays agnostic to how a parse is done.
+        """
+        if self.cache is None:
+            return structural.outline_symbols(source, lang)
+        return self.cache.outline(sha, path, lambda: structural.outline_symbols(source, lang))
 
     @_tool
     def symbol_at(self, path: str, line: int, sha: str | None = None) -> str:
@@ -165,7 +189,7 @@ class RepoTools:
         source = self._read_source(path, sha)
         if source is None:
             return "null"
-        symbols = structural.outline_symbols(source, lang)
+        symbols = self._outline_symbols(path, sha, source, lang)
         return structural.symbol_to_json(structural.enclosing_symbol(symbols, line))
 
     def compute_symbol_delta(self) -> structural.SymbolDelta:
@@ -188,8 +212,8 @@ class RepoTools:
                 continue
             base_src = self._read_source(path, self.base_sha)
             head_src = self._read_source(path, None)
-            base_syms = structural.outline_symbols(base_src, lang) if base_src is not None else []
-            head_syms = structural.outline_symbols(head_src, lang) if head_src is not None else []
+            base_syms = self._outline_symbols(path, self.base_sha, base_src, lang) if base_src is not None else []
+            head_syms = self._outline_symbols(path, None, head_src, lang) if head_src is not None else []
             deltas.append(structural.diff_file(path, base_syms, head_syms))
         return structural.merge(deltas)
 
