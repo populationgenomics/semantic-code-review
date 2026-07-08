@@ -1,10 +1,20 @@
 # scr — semantic code review
 
-LLM-augmented local-diff reviewer. Opens an interactive side-by-side
-diff in the browser with semantic-group navigation, fold-level "what
-did this block change" annotations, and inline comments. When invoked
-as a Claude Code plugin, it round-trips those comments back into the
-session so the agent can walk through them with you.
+A tool for reviewing code you're accountable for but didn't write by
+hand — typically an agent's implementation of a plan you agreed. It uses
+an LLM to direct your attention rather than to gate: it clusters the diff
+into semantic groups and annotates what each block changed, so you can
+judge *whether* the change matches the intent and *how* it was built.
+Nothing is posted or applied without you.
+
+The same review runs at two radii. As a Claude Code plugin
+(`/scr:review`), your inline comments return into the session when you
+click Done and the authoring agent iterates on them. As `scr pr`, the
+same flow runs against a GitHub PR and posts your comments as a single
+review the author — or their agent — picks up later. Both open one
+browser viewer: a side-by-side diff with semantic-group navigation,
+fold-level "what did this block change" annotations, and inline comments
+you leave by clicking a line number.
 
 For a screenshot tour of the viewer — the sidebar axes, the fold ladder,
 segments, comments, and the review console — see
@@ -185,6 +195,16 @@ The three commands you'll actually use:
 `scr pr` is `scr review` plus a GitHub round-trip: same fetch, augment,
 viewer, and comment store, with the comments grouped into one review
 object via `gh api` at the end.
+
+On a PR that already carries review comments, `scr pr` ingests them into
+the viewer alongside your own. Each ingested comment is re-anchored from
+the commit it was written against to the PR's current head by diff
+propagation, so it stays pinned to the code it addressed rather than being
+collapsed as "outdated" the way GitHub's own UI does; the viewer tags each
+as `anchored`, `shifted`, `orphaned`, or gone, and carries thread
+resolution state across. Across successive revisions this keeps a review's
+prior judgments attached to the code as it converges, instead of losing
+them on every push.
 
 <details>
 <summary>Plumbing — the review/pr pipeline split into stages, for

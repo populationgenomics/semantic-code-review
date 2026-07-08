@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "semantic-code-review"
 version = "0.28.1"
-description = "LLM-augmented GitHub PR viewer with foldable semantic diffs."
+description = "A semantic diff reviewer for judging agent-authored changes — the LLM directs attention, you decide."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
