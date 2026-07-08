@@ -8,8 +8,27 @@
 // jsdom's requestAnimationFrame is backed by setTimeout(0), which is
 // good enough for testing reflow coalescing as long as we flush with
 // `await flushRaf()` after scheduling.
+//
+// localStorage: node 25 ships the Web Storage API as an on-by-default
+// global, but it's inert without `--localstorage-file` (accessing it
+// yields a methodless stub) and shadows jsdom's working Storage on the
+// shared global object. We install a real in-memory Storage so
+// getItem/setItem/removeItem/clear behave and stay isolated per run.
 
 import { afterEach, vi } from "vitest";
+
+{
+  const store = new Map<string, string>();
+  const storage: Storage = {
+    getItem: (k) => (store.has(k) ? store.get(k)! : null),
+    setItem: (k, v) => { store.set(k, String(v)); },
+    removeItem: (k) => { store.delete(k); },
+    clear: () => { store.clear(); },
+    key: (i) => Array.from(store.keys())[i] ?? null,
+    get length() { return store.size; },
+  };
+  (globalThis as unknown as { localStorage: Storage }).localStorage = storage;
+}
 
 type RoCallback = (entries: ResizeObserverEntry[]) => void;
 
