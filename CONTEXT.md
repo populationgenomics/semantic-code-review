@@ -181,10 +181,8 @@ deepening to give it a typed owner is in flight.
 **Reviewer comment**
 A reviewer-authored inline comment anchored to a specific
 `(file, side, line)`. Round-trips between the viewer and the
-review server's `/comments` route during a session; persisted to
-`comments.json` in the [[run-directory]], or to browser
-`localStorage` when no session endpoint is present (e.g. opening
-a `scr render` output offline).
+review server's `/comments` route during a session, and is
+persisted to `comments.json` in the [[run-directory]].
 
 Named `ReviewerComment` in TypeScript and `Comment` in Python —
 the TS name is qualified because `lib.dom.Comment` (a `Node`

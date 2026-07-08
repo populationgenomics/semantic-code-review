@@ -359,8 +359,7 @@ interface FoldSummaryResponse extends SseFoldSummaryEvent {}
 // --- /comments wire format -------------------------------------------------
 
 /** Reviewer comment anchored to a specific (file, side, line). Round-
- *  trips between the viewer and the review server's /comments route;
- *  also persisted to localStorage when no session endpoint is set.
+ *  trips between the viewer and the review server's /comments route.
  *
  *  Named ReviewerComment rather than Comment because lib.dom's
  *  `Comment` interface (a Node subtype) is in the global namespace
