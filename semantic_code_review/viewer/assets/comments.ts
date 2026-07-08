@@ -1,5 +1,5 @@
 // Reviewer comments — line-anchored, round-tripped via the live
-// review server or persisted to localStorage. Storage strategy lives
+// review server's `/comments` route. Storage strategy lives
 // in `comment_store.ts`; this module owns the gutter, the editor,
 // and the DOM re-attach pass.
 //
@@ -9,14 +9,14 @@
 // renderAll().
 //
 import { Annotations, type AnnotationHandle } from "./annotations";
-import { type CommentStore, makeLocalStore, makeServerStore } from "./comment_store";
+import { type CommentStore, makeNoopStore, makeServerStore } from "./comment_store";
 
 // --- State ---------------------------------------------------------------
 
 // Picked once at init(); never re-resolved. Until init runs, every
 // op short-circuits to a no-op store so jsdom unit tests that don't
 // bother to init() don't crash on stray click-handlers.
-let _store: CommentStore = makeLocalStore("scr-comments:uninit");
+let _store: CommentStore = makeNoopStore();
 
 // Per-session override of resolved-thread collapse state. Thread ids
 // the user has manually expanded sit here; clicking the header again
@@ -28,10 +28,12 @@ const _expandedResolved = new Set<string>();
 // having to import Sidebar (mutual imports kept off the boot path).
 let _onChange: (() => void) | null = null;
 
-function _sessionEndpoint(): string | null {
-  if (typeof document === "undefined") return null;
+function _sessionEndpoint(): string {
+  // The review server always injects this meta tag; a missing tag is a
+  // broken shell, not a serverless mode, so fail loud rather than
+  // silently diverting comments somewhere they'd be lost.
   const m = document.querySelector('meta[name="scr-session-endpoint"]');
-  if (!m) return null;
+  if (!m) throw new Error("scr-session-endpoint meta tag missing");
   return m.getAttribute("content") || "";  // "" = same origin
 }
 
@@ -52,17 +54,9 @@ interface InitOptions {
   onChange?: () => void;
 }
 
-function init(data: ViewerData, opts: InitOptions = {}): void {
+function init(opts: InitOptions = {}): void {
   _onChange = opts.onChange ?? null;
-  const endpoint = _sessionEndpoint();
-  if (endpoint !== null) {
-    _store = makeServerStore(endpoint);
-  } else {
-    const lsKey =
-      "scr-comments:"
-      + (data.pr && data.pr.head_sha ? data.pr.head_sha : "local");
-    _store = makeLocalStore(lsKey);
-  }
+  _store = makeServerStore(_sessionEndpoint());
   const app = document.getElementById("app");
   if (app) _installGutter(app);
   _store.load().then(() => {

@@ -35,18 +35,19 @@ let DATA!: ViewerData;
 
 // SESSION_ENDPOINT is the prefix prepended to back-channel routes
 // (/exit, /comments, /events, /fold-summary). Empty string means
-// "same origin" — the normal production path. The meta tag is
-// absent when boot.ts is exercised outside the review server
-// (jsdom tests), in which case those features are wired off.
-const SESSION_ENDPOINT: string | null = (() => {
+// "same origin" — the normal production path. The review server
+// always injects this meta tag; a missing tag is a broken shell, so
+// fail loud rather than silently wiring the back-channel off.
+const SESSION_ENDPOINT: string = (() => {
   const m = document.querySelector('meta[name="scr-session-endpoint"]');
-  return m ? (m.getAttribute("content") || "") : null;
+  if (!m) throw new Error("scr-session-endpoint meta tag missing");
+  return m.getAttribute("content") || "";
 })();
 
 // --- Boot ----------------------------------------------------------------
 
 function boot(): void {
-  Comments.init(DATA, {
+  Comments.init({
     // Sidebar pills carry per-file unresolved/total counts; repaint
     // them whenever the store changes (initial load, save, delete).
     onChange: () => Sidebar.refreshFileCommentCounts(),
@@ -120,7 +121,6 @@ function installPrHeader(data: ViewerData): void {
 // avoid coupling "I'm done" to the comment storage layer.
 
 function installDoneButton(): void {
-  if (SESSION_ENDPOINT === null) return;
   const bar = document.querySelector(".pr-bar");
   if (!bar) return;
   const endpoint = SESSION_ENDPOINT;
@@ -167,9 +167,6 @@ function installDoneButton(): void {
 // side-effects to the right module.
 
 function installSessionEvents(): void {
-  if (SESSION_ENDPOINT === null) return;
-  // The console is a live-session feature (it talks to /console/ask on
-  // the review server); mount it only when a session endpoint exists.
   // The console asker is wired server-side only when augmentation
   // completes; a page that booted mid-augment (DATA.pending) keeps the
   // input disabled until the augment-complete `done` event below.

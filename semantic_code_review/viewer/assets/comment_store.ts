@@ -1,24 +1,14 @@
 // CommentStore — persistence strategy for [[reviewer-comment]]s.
 //
-// Two backends: the live review server's `/comments` HTTP route
-// (round-trips per mutation) and browser `localStorage` (scoped by
-// PR head SHA, rewritten as a whole blob on every change). Before
-// this module existed, `comments.ts` carried the in-memory dict
-// directly and branched on `_sessionEndpoint()` inside every storage
-// op — load, save, delete, flush each had its own
-// "if server: fetch …; else: localStorage …" — and the branching
-// was duplicated four times.
-//
-// Now the dict lives in a store; comments.ts picks one at init and
-// the dispatch is uniform. A future third backend (IndexedDB,
-// offline-with-sync, etc.) drops in as a third factory without
-// touching comments.ts.
+// One live backend: the review server's `/comments` HTTP route, which
+// round-trips per mutation. `makeNoopStore` is an in-memory stand-in
+// used only for the pre-init window (see comments.ts), so stray
+// click-handlers before `Comments.init` don't crash.
 //
 // Optimistic updates: `save` and `delete` mutate the in-memory dict
 // synchronously, then return a Promise that resolves when the
 // backend has persisted (or failed). Renders that consult `getAll()`
-// after a sync mutation see the new state immediately, matching the
-// behaviour of the pre-store code.
+// after a sync mutation see the new state immediately.
 
 export interface CommentStore {
   /** Populate the in-memory dict from the backend. Resolves once the
@@ -81,24 +71,11 @@ export function makeServerStore(endpoint: string): CommentStore {
 }
 
 
-export function makeLocalStore(lsKey: string): CommentStore {
+export function makeNoopStore(): CommentStore {
   const dict: Record<string, ReviewerComment> = Object.create(null);
-
-  function flush(): void {
-    const payload = { comments: Object.values(dict) };
-    try { localStorage.setItem(lsKey, JSON.stringify(payload)); }
-    catch (_) { /* quota exceeded / private mode / etc. — ignore */ }
-  }
 
   return {
     load(): Promise<void> {
-      try {
-        const raw = localStorage.getItem(lsKey);
-        if (raw) {
-          const data = JSON.parse(raw) as { comments?: ReviewerComment[] };
-          for (const c of data.comments || []) dict[c.id] = c;
-        }
-      } catch (_) { /* ignore */ }
       return Promise.resolve();
     },
 
@@ -108,13 +85,11 @@ export function makeLocalStore(lsKey: string): CommentStore {
 
     save(c: ReviewerComment): Promise<ReviewerComment | null> {
       dict[c.id] = c;
-      flush();
       return Promise.resolve(c);
     },
 
     delete(id: string): Promise<void> {
       delete dict[id];
-      flush();
       return Promise.resolve();
     },
   };

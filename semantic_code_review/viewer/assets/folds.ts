@@ -52,16 +52,15 @@ interface FoldFileState {
 
 const _FILE_FOLD_STATE: Record<string, FoldFileState> = Object.create(null);
 
-function _sessionEndpoint(): string | null {
+function _sessionEndpoint(): string {
   // Read at call time, not module init — the meta tag may be
   // injected after this module loads (tests set up the DOM
-  // dynamically, and a future bootloader might too). Empty
-  // string content means "same origin" (the production case);
-  // a missing meta tag (null) means no server is available
-  // and the route is wired off.
-  if (typeof document === "undefined") return null;
+  // dynamically, and a future bootloader might too). Empty string
+  // content means "same origin" (the production case). The review
+  // server always injects the tag; a missing tag is a broken shell,
+  // so fail loud rather than silently degrading.
   const m = document.querySelector('meta[name="scr-session-endpoint"]');
-  if (!m) return null;
+  if (!m) throw new Error("scr-session-endpoint meta tag missing");
   return m.getAttribute("content") || "";
 }
 
@@ -367,7 +366,6 @@ function _lastLine(
 function _canRequestFoldSummary(
   fileIdx: number | null, region: FoldRegion,
 ): boolean {
-  if (_sessionEndpoint() === null) return false;
   if (fileIdx == null) return false;
   return _foldAddress(region) !== null;
 }
