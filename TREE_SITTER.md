@@ -1,169 +1,83 @@
 # Tree-sitter: design notes
 
-> **Status:** speculative — captured for future reference, not committed work.
+> **Status:** shipped. tree-sitter is a pinned runtime dependency
+> (`pyproject.toml`, `requirements.lock`); the deterministic structural
+> layer lives in `semantic_code_review/structural/` (`parse.py`,
+> `symbols.py`, `diff.py`). This doc is the design history — why the dep
+> is carried and what remains unbuilt. The live vocabulary (Symbol,
+> SymbolDelta, Symbols axis, overview seed) is defined in
+> [`CONTEXT.md`](CONTEXT.md).
 
-We're not using tree-sitter today. The viewer's structural reasoning is
-delegated to the LLM via tool use (`read_file`, `grep`, `read_file_at`,
-`git_log`); fold regions inside hunks come from a simple indent-based
-heuristic in `compute_fold_regions`. The decision to skip tree-sitter
-was reasonable when the viewer was a static, self-contained HTML
-artifact — every structural pre-computation had to be paid up front
-for files the reviewer might never look at, and added a Python dep
-with native bindings against the supply-chain pinning regime we'd
-just tightened.
+## Why the dep is carried
 
-This document records why that calculus changed once `scr review`
-became a long-running localhost HTTP server with a back-channel, and
-the three concrete opportunities we identified that would make the
-tree-sitter dependency worth carrying.
+tree-sitter was skipped while the viewer was a static, self-contained
+HTML artifact: every structural pre-computation had to be paid up front
+for files the reviewer might never open, and it added a native-binding
+Python dep against the supply-chain pinning regime we'd just tightened.
 
-## What changed
+The calculus changed once `scr review` became a long-running localhost
+HTTP server with a back-channel:
 
-The shift from *static HTML* to *live local process* opens three new
-levers:
+- **Lazy parsing.** A file's AST is built only when the reviewer expands
+  it — up-front parsing of every touched file is no longer the only option.
+- **Cached state across calls.** The server holds parsed ASTs in memory
+  across every per-hunk call, fold-toggle, and ref-click. Parse once,
+  query many.
+- **Interactive features that need ground truth.** Click-to-jump, symbol
+  cross-referencing, and "where else is this used" become affordable when
+  the parse is already resident.
 
-- **Lazy parsing.** A file's AST only needs to exist when the reviewer
-  actually expands that file or interacts with one of its hunks.
-  Up-front parsing of every touched file is no longer the only option.
-- **Cached state across calls.** The server holds parsed ASTs in
-  memory across every per-hunk call, every fold-toggle, every
-  ref-click. We pay parsing once, query many times.
-- **Interactive features that need ground truth.** Click-to-jump,
-  symbol cross-referencing, and on-demand "where else is this used"
-  queries become affordable when the parse is already sitting there.
+## Shipped
 
-## Three opportunities, ordered by leverage
+- **Symbol grouping (the Symbols axis).** The sidebar carries a
+  deterministic structural axis alongside LLM-curated themes: top-level
+  symbols enumerated from each touched file's AST, each linking to the
+  hunks that touch it (`viewer/build_json.py` `_symbol_blocks`,
+  `structural/symbols.py`). Themes answer "what is this PR for?"; symbols
+  answer "show me everything about X".
+- **AST fold regions.** Fold ranges come from real function / class /
+  block boundaries, not indentation (`viewer/build_json.py` `_fold_spans`).
+  The indent heuristic remains only as the fallback for languages without
+  a shipped grammar.
+- **Deterministic overview seed.** The overview pass is seeded with the
+  base→head `SymbolDelta` (`augment/overview.py` `_format_symbol_seed`),
+  so `symbols_added` / `symbols_modified` come from the parse rather than
+  the LLM guessing.
 
-### 1. Symbol-based grouping (recommended first)
+Grammars ship as three individual packages — `tree-sitter-python`,
+`tree-sitter-javascript`, `tree-sitter-typescript`. Other languages
+degrade to the indent-based fold fallback: the floor is unchanged, the
+ceiling rises only for what we ship.
 
-The semantic-groups sidebar today carries one axis: LLM-curated
-**themes** ("node toolchain setup", "annotation arrow geometry").
-Tree-sitter would let us add a second, **structural** axis with no
-LLM call needed:
+## Not yet built
 
-- Parse each touched file's post-image. Enumerate top-level symbols
-  (functions, methods, classes, constants).
-- For each changed symbol, find every hunk in the diff that touches
-  that symbol's definition or calls it.
-- Filter to symbols where ≥ 2 hunks touch the same name (single-hunk
-  symbols don't deserve a sidebar entry).
-- Render as a separate sidebar section — "By symbol" alongside the
-  existing "By theme".
+**Semantic hunk splitting.** Hunks are still whatever `git diff`
+coalesced; the per-hunk pass does some semantic splitting after the fact
+via the optional `segments[]` field. Moving boundary detection upstream —
+re-segmenting the diff so each segment maps to one changed AST node —
+would make it deterministic and retire the prompt's "split into segments"
+guidance. It reshapes the per-hunk pipeline, so it is the most ambitious
+remaining step.
 
-The two axes solve complementary navigation problems. Themes answer
-"what is this PR for?"; symbols answer "show me everything about X".
-Reviewers reach for both depending on the question.
+Two stretch goals fall out once AST diffs drive segmentation:
 
-Hunks with no symbol identity (config files, JSON, plain text) don't
-appear in the symbol axis — they fall through to the theme axis or
-the existing "ungrouped" visual tell.
-
-**Why this first:** smallest scope of the three, no schema change worth
-mentioning, plugs into the sidebar surface we just shipped, directly
-addresses Leo's "build the map" complaint.
-
-### 2. Better fold regions
-
-Today's `compute_fold_regions` is indent-based. That's adequate for
-Python and broken-or-mediocre for everything else (JS/TS, C, Go,
-anything without significant whitespace). Tree-sitter would give us
-*real* function / class / block boundaries.
-
-- Compute fold ranges from the AST, not from indentation.
-- Lazily — only when a hunk is first expanded, since most hunks in a
-  big PR are never expanded.
-- Cache the parsed ranges per file for the rest of the review session.
-- Indent-based fallback stays in place for languages we don't ship
-  grammars for, so the floor doesn't get worse.
-
-This pairs naturally with the lazy-fold-summary deferral we already
-intend to do: the summary call only runs when the reviewer closes a
-fold, and now the fold regions themselves are also computed on first
-expand. Both move work off the eager-augment hot path.
-
-**Sub-line folding is not on the table.** Per-line is the floor for
-diff review (cursor / selection / search / git diff all expect the
-line as the unit). The lever to pull is smarter line-level fold
-boundaries (function bodies instead of indent blocks), which
-tree-sitter delivers. The few sub-line patterns that exist in IDEs
-(collapse-to-glyph for long string literals, parameter-list elision)
-don't generalise and break too many tooling expectations.
-
-### 3. Semantic hunk splitting
-
-Today's hunks are whatever `git diff` happened to coalesce. The
-per-hunk LLM pass already does *some* semantic splitting after the
-fact, via the optional `segments[]` field — when a hunk fuses
-unrelated edits, the model is asked to split them. Tree-sitter could
-move that boundary detection upstream and make it deterministic:
-
-- Parse pre and post of every touched file.
-- Identify which AST nodes changed: function definitions, class
-  definitions, top-level statements.
-- Re-segment the diff so each segment maps to one AST node's worth
-  of change.
-- The LLM annotates per-AST-node rather than per-line-range-the-diff-
-  algorithm-happened-to-emit, and the prompt's "split into segments"
-  guidance becomes redundant (handled offline).
-
-Two stretch goals that fall out once AST diffs exist:
-
-- **Cross-file move detection.** Same body-hash AST node deleted
-  from file A, added to file B → present as one "moved" operation
-  rather than as paired delete+add. This is the single biggest
-  mental-model improvement for refactor-heavy PRs and is impossible
-  without structural parsing.
-- **Sub-symbol rename detection.** Distinguish "function `foo`
-  renamed to `bar`, body unchanged" from "function `foo` had one
-  line changed". We currently hand the LLM a confusing diff for both.
-
-**Why this third:** most ambitious of the three. Bigger pipeline
-change (re-segments the per-hunk pass). Worth doing only after we've
-exercised tree-sitter on (1) and (2) and confirmed the dep earns its
-keep.
-
-## Arguments against
-
-Real costs to weigh, even if we proceed:
-
-- **Per-language grammar maintenance.** `tree-sitter-languages` bundles
-  ~25 grammars. Each new language we want to first-class needs a
-  grammar package. Languages without grammars degrade to the indent
-  fallback — same floor we have today, but the ceiling rises only for
-  what we ship.
-- **The LLM is already doing most of this** via tool use. Tree-sitter
-  optimises a path that works, just slower and less reliably. The
-  win is correctness/latency on hot-path features (fold regions,
-  symbol grouping), not raw token savings.
-- **Native bindings.** Adds a Python dep with C extensions. Has to
-  fit the supply-chain regime (`requirements.lock`,
-  `--require-hashes`). Not blocking — just one more thing to hash and
-  pin.
-- **The free-symbol-enumeration idea** (replace LLM `symbols_added /
-  modified / removed` in the overview pass) is appealing but lower
-  priority. The overview is small enough today that the token saving
-  is a rounding error; we'd do it for reliability, not cost.
-
-## Recommended sequence if we adopt
-
-1. **Symbol grouping.** Adds a structural sidebar axis. No schema
-   change, no pipeline change, easy to back out if the dep proves
-   painful.
-2. **Better fold regions.** Replaces the indent heuristic for
-   languages with grammars; indent fallback for everything else.
-   Pairs with lazy-fold-summary deferral.
-3. **Semantic hunk splitting.** Reshapes the per-hunk pipeline.
-   Worth doing only after (1) and (2) prove the dep carries its
-   weight; the cross-file move-detection payoff is the most
-   compelling argument for going this far.
+- **Cross-file move detection.** Same body-hash AST node deleted from
+  file A and added to file B → one "moved" operation instead of paired
+  delete+add. The single biggest mental-model improvement for
+  refactor-heavy PRs, and impossible without structural parsing.
+- **Sub-symbol rename detection.** Distinguish "function `foo` renamed to
+  `bar`, body unchanged" from "`foo` had one line changed".
 
 ## Out of scope
 
 - Replacing the LLM as the source of `intent` / `context` / `smells`.
   The structural parse augments the LLM; it doesn't supplant it.
-- Sub-line folding (see fold-regions section).
-- Live ref-link verification ("does the symbol named in `reason`
-  actually live at the cited line?"). Plausible follow-on once
-  symbol indexing exists, but speculative.
-- IDE-style real-time editing in the viewer. The viewer is a review
-  surface, not an editor.
+- **Sub-line folding.** Per-line is the floor for diff review (cursor,
+  selection, search, and `git diff` all expect the line as the unit). The
+  lever is smarter line-level boundaries, which AST folds already deliver;
+  collapse-to-glyph and parameter-list elision don't generalise and break
+  too many tooling expectations.
+- Live ref-link verification ("does the symbol named in `reason` actually
+  live at the cited line?"). Plausible follow-on now that symbol indexing
+  exists, but unbuilt.
+- IDE-style real-time editing. The viewer is a review surface, not an editor.

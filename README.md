@@ -94,7 +94,7 @@ Force a backend with `--backend <name>`. Run `scr config show` for
 the registered names — builtins plus anything you've added under
 `[backends.<name>]` in your config.
 
-Both Gemini backends are opt-in only — never picked by `auto`.
+The Gemini backend is opt-in only — never picked by `auto`.
 
 - `--backend=gemini-api` uses Google's official `google-genai` SDK
   directly. Auth ladder: `GOOGLE_CLOUD_PROJECT` set → Vertex AI
@@ -297,6 +297,10 @@ in the repo's GitHub settings.
   by esbuild into a single `viewer.js`, alongside `viewer.css`, the
   static `index.html` served by the review server, and vendored
   `highlight.js` under `assets/vendor/`.
+- `semantic_code_review/structural/` — deterministic tree-sitter layer:
+  `parse.py` (grammars + tag queries → a `Symbol` tree), `symbols.py`,
+  and `diff.py` (base→head `SymbolDelta`). Feeds the Symbols sidebar
+  axis, AST fold regions, and the overview seed.
 - `semantic_code_review/review/` — local HTTP server that
   back-channels reviewer comments to the calling process, the
   shared `serve_review` helper used by both `scr review` and
@@ -306,9 +310,9 @@ in the repo's GitHub settings.
 - `bin/scr` — bootstrap wrapper; preflights deps, maintains the
   Python venv, installs `scr` from PyPI at the pinned version, execs
   the real `scr`.
-- `TREE_SITTER.md` — design notes on a possible future structural
-  pass (symbol grouping, AST-driven fold regions, semantic hunk
-  splitting). Speculative; nothing in tree depends on it.
+- `TREE_SITTER.md` — design history of the structural (tree-sitter)
+  layer. Symbol grouping and AST fold regions are shipped; semantic
+  hunk splitting is still future.
 
 ## Supply-chain hygiene
 
