@@ -3,8 +3,10 @@
 scr (semantic code review) is an LLM-augmented local-diff and GitHub-PR
 reviewer: it opens an interactive side-by-side viewer with semantic-group
 navigation, fold-level annotations, and inline comments that round-trip back
-into a Claude Code session. See [`README.md`](README.md) for usage and
-[`CONTEXT.md`](CONTEXT.md) for the architecture map.
+into a Claude Code session. See [`README.md`](README.md) for usage,
+[`CONTEXT.md`](CONTEXT.md) for the architecture map, and
+[`docs/motivation.md`](docs/motivation.md) for what scr is for and what
+belongs in it.
 
 ## Working norms
 
