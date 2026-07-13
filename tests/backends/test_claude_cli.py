@@ -133,14 +133,16 @@ async def test_claude_model_round_trip_through_agent(
     assert result.output.intent == "explain the refactor"
 
     argv = calls[0]["argv"]
-    # --json-schema carries the output_type's schema. Tools are read-only-
-    # by-construction: allow-list our MCP server, deny mutating built-ins,
-    # never `--tools ""` (which would disable MCP too) or bypassPermissions.
+    # No MCP server is bound here (the overview shape): the model gets no
+    # tools at all. `--tools ""` disables both MCP and the built-ins, so it
+    # answers from the prompt in one turn. Advertising `mcp__scr` without a
+    # server behind it is the regression that tripped `--max-turns`, so the
+    # allow-list must be absent when the server is.
     assert "--json-schema" in argv
-    assert "--tools" not in argv
+    assert argv[argv.index("--tools") + 1] == ""
+    assert "--allowedTools" not in argv
+    assert "--permission-mode" not in argv
     assert "bypassPermissions" not in argv
-    assert argv[argv.index("--permission-mode") + 1] == "default"
-    assert argv[argv.index("--allowedTools") + 1] == "mcp__scr"
     assert "--disable-slash-commands" in argv
     # Single-shot: augment passes don't resume a session.
     assert "--no-session-persistence" in argv
@@ -148,7 +150,6 @@ async def test_claude_model_round_trip_through_agent(
     # is the only reason we're in the subprocess fallback in the first
     # place. Regression guard.
     assert "--bare" not in argv
-    assert "--permission-mode" in argv
     # Instructions registered on the Agent reach claude as --system-prompt.
     sys_idx = argv.index("--system-prompt") + 1
     assert "SYS" in argv[sys_idx]
@@ -254,6 +255,10 @@ async def test_claude_http_endpoint_injected_when_set(
     argv = calls[0]["argv"]
     assert "--mcp-config" in argv
     assert "--strict-mcp-config" in argv
+    # Server bound → the read-only tools are allow-listed alongside it.
+    assert argv[argv.index("--allowedTools") + 1] == "mcp__scr"
+    assert argv[argv.index("--permission-mode") + 1] == "default"
+    assert "--tools" not in argv
     config_path = argv[argv.index("--mcp-config") + 1]
     server = json.loads(open(config_path, encoding="utf-8").read())["mcpServers"]["scr"]
     assert server == _HTTP_ENDPOINT
@@ -289,7 +294,11 @@ async def test_clearing_endpoint_reverts_to_single_shot(
     proc = FakeProc(claude_envelope({"intent": "cleared"}))
     calls = install_fake_subproc(monkeypatch, [proc])
     await _agent(claude_model).run("USER")
-    assert "--mcp-config" not in calls[0]["argv"]
+    argv = calls[0]["argv"]
+    assert "--mcp-config" not in argv
+    # Server dropped → no tools advertised (the single-shot / overview shape).
+    assert argv[argv.index("--tools") + 1] == ""
+    assert "--allowedTools" not in argv
 
 
 # ---------------------------------------------------------------------------

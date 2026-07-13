@@ -212,15 +212,6 @@ class ClaudeCLIModel(SubprocessModel):
         # lacks an API key but has OAuth/keychain credentials — --bare
         # would defeat the point and always return "Not logged in".
         # We pick the useful pieces of --bare individually below.
-        #
-        # Tool exposure mirrors the console (see _build_text_invocation): the
-        # augment passes explore the worktree through our read-only MCP
-        # server, so we allow-list it and hard-deny the mutating built-ins.
-        # NOT `--tools ""` + bypassPermissions — `--tools ""` disables MCP
-        # too (the passes would silently answer without ever reading the
-        # code), and bypass would hand the model built-in Bash/Edit. Unlike
-        # the console this stays single-shot (`--no-session-persistence`):
-        # each pass is independent, so there's no session to resume.
         argv = [
             self._claude,
             "-p",
@@ -233,15 +224,6 @@ class ClaudeCLIModel(SubprocessModel):
             "--no-session-persistence",
             "--setting-sources",
             "",
-            "--permission-mode",
-            "default",
-            "--allowedTools",
-            "mcp__scr",
-            "--disallowedTools",
-            "Bash",
-            "Edit",
-            "Write",
-            "NotebookEdit",
             # Disable skills: an advertised-but-unloadable skill (see the
             # console path) makes the model hedge instead of using the diff +
             # our MCP tools. Augment passes want deterministic grounding.
@@ -253,12 +235,36 @@ class ClaudeCLIModel(SubprocessModel):
         ]
         if self._fallback_model:
             argv += ["--fallback-model", self._fallback_model]
+        # Tool exposure tracks whether a worktree MCP server is actually bound.
+        # The allow-list and the server config must move together: advertising
+        # `mcp__scr` without wiring the server behind it makes the model burn
+        # its (single-shot) turn budget hunting for tools that aren't there and
+        # trip the `--max-turns` cutoff — which is exactly how the overview
+        # pass, run before the MCP host starts, began failing.
         if mcp_active:
+            # Server bound (per-hunk / fold-summary passes): allow-list our
+            # read-only tools, hard-deny the mutating built-ins, wire it up.
+            # NOT `--tools ""` + bypassPermissions — `--tools ""` disables MCP
+            # too, and bypass would hand the model built-in Bash/Edit.
             argv += [
+                "--permission-mode",
+                "default",
+                "--allowedTools",
+                "mcp__scr",
+                "--disallowedTools",
+                "Bash",
+                "Edit",
+                "Write",
+                "NotebookEdit",
                 "--mcp-config",
                 str(self._ensure_mcp_config()),
                 "--strict-mcp-config",
             ]
+        else:
+            # No server bound (the overview pass): give the model no tools at
+            # all (`--tools ""` disables MCP and the built-ins) so it answers
+            # from the prompt in a single turn.
+            argv += ["--tools", ""]
 
         return _Invocation(
             argv=argv,
