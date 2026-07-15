@@ -28,6 +28,7 @@ from ..augment.schemas import (
     Smell,
 )
 from ..cache.store import CacheStore
+from ..format import linenos
 from .agents import Client, make_hunk_agent
 from .pass_ import PassMeta, run_pass
 from .prompts import HUNK_SYSTEM
@@ -77,9 +78,8 @@ def format_hunk_prompt(
     produced here — the review server fires a focused call on first
     fold-close; see :mod:`semantic_code_review.augment.fold_summary`.
     """
-    hunk_text = (
-        f"# File\npath: {fp.path}\nlang: {fp.ann.lang or ''}\n\n# Hunk\n{hunk.parsed.header}\n{hunk.parsed.body}"
-    )
+    numbered = linenos.number_for_prompt(f"{hunk.parsed.header}\n{hunk.parsed.body}")
+    hunk_text = f"# File\npath: {fp.path}\nlang: {fp.ann.lang or ''}\n\n# Hunk\n{numbered}"
     return [
         f"# PR overview\n{overview_json}",
         CachePoint(),

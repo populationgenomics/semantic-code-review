@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from .schemas import SMELL_TAGS_TEXT
 
-PROMPT_VERSION = "p11"
+PROMPT_VERSION = "p12"
 
 
 OVERVIEW_SYSTEM = (
@@ -60,7 +60,12 @@ HUNK_SYSTEM = (
     "reviewer UNDERSTAND what this change does and why. Critique (smells, risks) is "
     "SECONDARY — only raise concerns when you can name a concrete risk.\n\n"
     "BEFORE ANYTHING ELSE: read the hunk body. The full `- ...` / `+ ...` diff is in "
-    "the user prompt. Your `intent` must name what the hunk ACTUALLY does, grounded "
+    "the user prompt, and every body line is prefixed with its POST-IMAGE (new-side) "
+    "line number in a left gutter (deleted lines have a blank gutter — they have no "
+    "post-image line). Copy those numbers for every post-image coordinate you emit — "
+    "`line_notes[].line`, `segments[].new_start`/`new_count`, and same-file "
+    "`refs[].line` — never count lines yourself. "
+    "Your `intent` must name what the hunk ACTUALLY does, grounded "
     "in what you see — not what it plausibly does given the file path or header. "
     "If the hunk is one line, quote the before/after tokens. If you're unsure, call "
     "tools (`read_file`, `read_file_at`, `grep`). If you're still unsure after using "

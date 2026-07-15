@@ -33,6 +33,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.output import ToolOutput
 
 from ..cache.store import CacheStore
+from ..format import linenos
 from .agents import Client
 from .pass_ import PassMeta, run_pass
 from .schemas import AnnotatedDiff, LineNote
@@ -108,10 +109,18 @@ def _format_pr_level_prompt(
     overview_json: str,
     diff_text: str,
 ) -> list[UserContent]:
+    # Post-image line numbers are prepended per body line so the model
+    # copies a coordinate rather than counting `+` lines (which drifts).
+    numbered = linenos.number_for_prompt(diff_text)
     return [
         f"# PR overview\n{overview_json}",
         CachePoint(),
-        f"# Diff\n{diff_text}",
+        (
+            "# Diff\nEach body line is prefixed with its post-image (new-side) "
+            "line number; deleted lines have a blank number column. Use those "
+            "numbers for each note's `line`.\n\n"
+            f"{numbered}"
+        ),
     ]
 
 
