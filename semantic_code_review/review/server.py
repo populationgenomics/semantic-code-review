@@ -17,8 +17,10 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
+import urllib.parse
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -62,6 +64,34 @@ def _resolve_asset(rel: str) -> Path:
     if p.exists():
         return p
     raise FileNotFoundError(f"asset not found: {rel} (looked in {ASSETS_DIR}{', ' + build_dir if build_dir else ''})")
+
+
+# Upper bound on a single /file-text side. Rendered markdown mode
+# (ADR 0004) fetches full base+head text on demand; a pathologically
+# large doc returns null for the offending side so the client falls
+# back to the text diff rather than shipping megabytes to the browser.
+_FILE_TEXT_CAP_BYTES = 2_000_000
+
+
+def _read_worktree_file(worktree: Path, rel: str) -> str | None:
+    """Read a file from a base/head worktree; None when absent, too
+    large, or unreadable.
+
+    `rel` originates in the diff's own file list but is echoed here into
+    a filesystem read, so the path-traversal guard stays even though the
+    input is already trusted.
+    """
+    if not rel or ".." in Path(rel).parts:
+        return None
+    path = worktree / rel
+    try:
+        if not path.is_file():
+            return None
+        if path.stat().st_size > _FILE_TEXT_CAP_BYTES:
+            return None
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
 
 
 # Sentinel pushed onto subscriber queues to ask the handler thread to
@@ -453,6 +483,9 @@ class _Handler(BaseHTTPRequestHandler):
             # time because update_viewer_json swaps viewer_json wholesale.
             self._json(200, {**self.ctx.viewer_json, "debug": self.ctx.debug})
             return
+        if path == "/file-text":
+            self._handle_file_text()
+            return
         if path == "/comments":
             self._json(200, {"comments": [c.model_dump() for c in self.ctx.store.all()]})
             return
@@ -479,10 +512,24 @@ class _Handler(BaseHTTPRequestHandler):
         # Lazy-loaded by the review console the first time an answer
         # completes a mermaid fence; never bundled into viewer.js.
         "vendor/mermaid.min.js": "application/javascript; charset=utf-8",
+        # Lazy-loaded by rendered-markdown mode the first time a flipped
+        # `.md` contains math; never bundled. katex.min.css pulls its
+        # woff2 fonts by the relative `fonts/` path — served by the
+        # pattern branch in _serve_static, not this exact whitelist.
+        "vendor/katex.min.js": "application/javascript; charset=utf-8",
+        "vendor/katex.min.css": "text/css; charset=utf-8",
     }
+
+    #: KaTeX's stylesheet requests fonts by name from `vendor/fonts/`; the
+    #: set is fixed and their basenames well-formed, so a tight pattern
+    #: serves them without 20 near-identical whitelist entries. The
+    #: `_resolve_asset` traversal guard still applies.
+    _KATEX_FONT_RE: ClassVar[re.Pattern[str]] = re.compile(r"vendor/fonts/KaTeX_[A-Za-z0-9]+-[A-Za-z]+\.woff2")
 
     def _serve_static(self, rel: str) -> None:
         ctype = self._STATIC_ASSETS.get(rel)
+        if ctype is None and self._KATEX_FONT_RE.fullmatch(rel):
+            ctype = "font/woff2"
         if ctype is None:
             self._json(404, {"error": "not found"})
             return
@@ -816,6 +863,41 @@ class _Handler(BaseHTTPRequestHandler):
         if cancel is not None:
             cancel.set()
         self._json(200, {"ok": True})
+
+    # --- rendered markdown mode (full file text) -----------------------
+
+    def _handle_file_text(self) -> None:
+        """Serve the full base+head source of one changed file.
+
+        Query: ``?file_idx=N`` (index into ``viewer_json.files``). Lazy
+        backing for rendered markdown mode (ADR 0004) — fetched only when
+        a ``.md`` file is flipped to rendered mode, so ``ViewerData``
+        carries no eager full-text payload. Reads from the ``base/`` /
+        ``head/`` worktrees already materialised in the run dir.
+
+        Returns ``{file_idx, path, base, head}`` where ``base`` / ``head``
+        are the full file text or null when that side has no content
+        (added file → base null; deleted file → head null; over the size
+        cap → that side null so the client falls back to the text diff).
+        """
+        query = urllib.parse.urlparse(self.path).query
+        raw = (urllib.parse.parse_qs(query).get("file_idx") or [""])[0]
+        try:
+            file_idx = int(raw)
+        except (TypeError, ValueError):
+            self._json(400, {"error": "file_idx must be an integer"})
+            return
+        files = (self.ctx.viewer_json or {}).get("files") or []
+        if file_idx < 0 or file_idx >= len(files):
+            self._json(404, {"error": f"file_idx {file_idx} out of range"})
+            return
+        fb = files[file_idx]
+        path = fb.get("path") or ""
+        # A renamed file's pre-image lives at its old path in base/.
+        base_rel = fb.get("old_path") or path
+        head = _read_worktree_file(self.ctx.run_dir / "head", path)
+        base = _read_worktree_file(self.ctx.run_dir / "base", base_rel)
+        self._json(200, {"file_idx": file_idx, "path": path, "base": base, "head": head})
 
     # --- post (confirm-and-post modal) ---------------------------------
 

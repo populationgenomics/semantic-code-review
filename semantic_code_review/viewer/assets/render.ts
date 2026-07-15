@@ -20,6 +20,7 @@ import { Comments } from "./comments";
 import { FileRows } from "./file_rows";
 import { Folds } from "./folds";
 import { Progress } from "./progress";
+import { Rendered } from "./rendered";
 import { Sidebar } from "./sidebar";
 import { blockDiff, matchRanges, wrapRanges, type CharRange } from "./text_highlight";
 
@@ -307,12 +308,19 @@ function _renderFile(f: FileBlock): HTMLElement | null {
   div.appendChild(_renderFileHeader(f, folded));
   if (!folded) {
     const body = _el("div", "file-body");
-    const overview = _renderFileOverview(f);
-    if (overview) body.appendChild(overview);
-    _renderFileBody(body, f, liveIds);
-    div.appendChild(body);
-    // Run a file-level fold pass once the body is assembled.
-    Folds.attachFileFolds(div, f);
+    if (Rendered.isOn(f.id)) {
+      // Rendered markdown mode is a separate body renderer: no diff
+      // overview, no fold chevrons — just the rendered prose.
+      Rendered.renderBody(body, f);
+      div.appendChild(body);
+    } else {
+      const overview = _renderFileOverview(f);
+      if (overview) body.appendChild(overview);
+      _renderFileBody(body, f, liveIds);
+      div.appendChild(body);
+      // Run a file-level fold pass once the body is assembled.
+      Folds.attachFileFolds(div, f);
+    }
   }
   return div;
 }
@@ -371,8 +379,25 @@ function _renderFileHeader(f: FileBlock, folded: boolean): HTMLElement {
     for (const sm of smells) badge.appendChild(_smellPill({ tag: sm, note: "" }));
     hdr.appendChild(badge);
   }
+  if (Rendered.isMarkdown(f)) hdr.appendChild(_renderMdToggle(f));
   hdr.addEventListener("click", () => _toggleFold(f.id, folded));
   return hdr;
+}
+
+/** Per-file toggle flipping a markdown file between the text diff and
+ *  rendered mode. stopPropagation keeps the click off the header's
+ *  fold handler; the toggle fetches (if needed) then re-renders. */
+function _renderMdToggle(f: FileBlock): HTMLElement {
+  const on = Rendered.isOn(f.id);
+  const btn = _el("button", "md-toggle");
+  btn.textContent = on ? "Diff" : "Rendered";
+  btn.title = on ? "Show the text diff" : "Show the rendered markdown";
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    void Rendered.toggle(f, render);
+  });
+  return btn;
 }
 
 function _uniqueFileSmells(f: FileBlock): string[] {
@@ -451,7 +476,7 @@ function _renderRegionChip(f: FileBlock, region: DiffRegion): HTMLElement {
   const label = region.position === "top" ? `expand ${count} ${word} above`
               : region.position === "bottom" ? `expand ${count} ${word} below`
               : `expand ${count} hidden ${word}`;
-  chip.innerHTML = `<span class="gap-icon">${icon}</span> <span class="gap-label">${label}</span>`;
+  chip.innerHTML = `<span class="gap-icon">${icon}</span><span class="gap-label">${label}</span>`;
   chip.addEventListener("click", () => {
     chip.replaceWith(_renderRegionExpansion(f, region));
     _refreshFileFolds(f);
@@ -517,7 +542,6 @@ function _renderHunk(h: HunkBlock, f: FileBlock, reveal = false): HTMLElement {
   // an explicit fold override the reviewer set still wins.
   const folded = _isFolded(h.id, reveal ? false : _defaultHunkFolded());
   div.classList.toggle("folded", folded);
-  div.style.borderLeftColor = _maxSeverityColor(h);
   div.appendChild(_renderHunkHeader(h, folded, f));
   if (!folded) {
     // The collapse ladder shows segment summaries (never raw code) until
@@ -851,26 +875,6 @@ function _clearSymbolHits(code: HTMLElement): void {
     hit.replaceWith(document.createTextNode(hit.textContent || ""));
   }
   code.normalize(); // merge the text nodes the unwrap left adjacent
-}
-
-// --- Severity color ----------------------------------------------------
-
-const _SEV_ORDER: Record<string, number> = {
-  info: 1, minor: 2, major: 3, critical: 4,
-};
-
-function _maxSeverityColor(h: HunkBlock): string {
-  let worst = 0;
-  let color = "var(--border)";
-  const check = (sm: Smell): void => {
-    const def = _smells[sm.tag];
-    if (!def) return;
-    const s = _SEV_ORDER[def.severity] || 0;
-    if (s > worst) { worst = s; color = def.color; }
-  };
-  for (const sm of h.smells || []) check(sm);
-  for (const seg of h.segments || []) for (const sm of seg.smells || []) check(sm);
-  return color;
 }
 
 // --- Slider / status / hash / keyboard ---------------------------------

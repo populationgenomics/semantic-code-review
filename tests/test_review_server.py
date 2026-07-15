@@ -79,6 +79,42 @@ def test_get_static_vendor_mermaid(server) -> None:
         assert b'globalThis["mermaid"]' in body
 
 
+def test_get_static_vendor_katex(server) -> None:
+    """Rendered-markdown mode lazy-loads the vendored KaTeX bundle +
+    stylesheet by injection; both must be served, and the CSS must pull
+    its fonts from the served `vendor/fonts/` path."""
+    for rel, prefix in [
+        ("vendor/katex.min.js", "application/javascript"),
+        ("vendor/katex.min.css", "text/css"),
+    ]:
+        req = urllib.request.Request(server.url() + "/static/" + rel)
+        with urllib.request.urlopen(req, timeout=5) as r:
+            assert r.status == 200
+            assert r.headers.get("Content-Type", "").startswith(prefix)
+            assert r.read()  # non-empty
+
+
+def test_get_static_vendor_katex_font(server) -> None:
+    """A KaTeX woff2 font is served (matched by the font-name pattern, not
+    an exact whitelist entry) so the stylesheet's `url(fonts/…)` resolves."""
+    req = urllib.request.Request(server.url() + "/static/vendor/fonts/KaTeX_Main-Regular.woff2")
+    with urllib.request.urlopen(req, timeout=5) as r:
+        assert r.status == 200
+        assert r.headers.get("Content-Type", "").startswith("font/woff2")
+        assert r.read()
+
+
+def test_get_static_vendor_font_traversal_404(server) -> None:
+    """The font pattern doesn't become a generic reader: a non-KaTeX font
+    name under vendor/fonts/ is refused."""
+    try:
+        urllib.request.urlopen(server.url() + "/static/vendor/fonts/evil.woff2", timeout=5)
+    except urllib.error.HTTPError as e:
+        assert e.code == 404
+    else:
+        raise AssertionError("expected 404 for unlisted font")
+
+
 def test_get_static_unknown_404(server) -> None:
     """Unlisted static paths 404 even if the file would exist on disk."""
     try:
@@ -1103,6 +1139,98 @@ def test_serve_review_serves_pending_then_streams_and_finalises(tmp_path: Path) 
     serve_thread.join(timeout=5)
     assert not serve_thread.is_alive()
     assert "r" in result_box
+
+
+# --- /file-text (rendered markdown mode) -------------------------------
+
+
+def _file_text_server(tmp_path: Path, files: list[dict]) -> ReviewServer:
+    srv = ReviewServer(
+        run_dir=tmp_path,
+        viewer_json={"version": "1", "files": files},
+    )
+    srv.start()
+    return srv
+
+
+def test_file_text_serves_base_and_head(tmp_path: Path) -> None:
+    """GET /file-text?file_idx=N returns both worktree sides in full."""
+    (tmp_path / "base").mkdir()
+    (tmp_path / "head").mkdir()
+    (tmp_path / "base" / "doc.md").write_text("# Old\n\nbase body\n")
+    (tmp_path / "head" / "doc.md").write_text("# New\n\nhead body\n")
+    srv = _file_text_server(tmp_path, [{"id": "F0", "path": "doc.md", "old_path": None, "status": "modified"}])
+    try:
+        code, payload = _request(srv.url() + "/file-text?file_idx=0")
+    finally:
+        srv.stop()
+    assert code == 200
+    assert payload["path"] == "doc.md"
+    assert payload["base"] == "# Old\n\nbase body\n"
+    assert payload["head"] == "# New\n\nhead body\n"
+
+
+def test_file_text_added_file_has_null_base(tmp_path: Path) -> None:
+    """An added file has no pre-image: base is null, head is present."""
+    (tmp_path / "head").mkdir()
+    (tmp_path / "head" / "new.md").write_text("# Added\n")
+    srv = _file_text_server(tmp_path, [{"id": "F0", "path": "new.md", "old_path": None, "status": "added"}])
+    try:
+        code, payload = _request(srv.url() + "/file-text?file_idx=0")
+    finally:
+        srv.stop()
+    assert code == 200
+    assert payload["base"] is None
+    assert payload["head"] == "# Added\n"
+
+
+def test_file_text_renamed_reads_base_from_old_path(tmp_path: Path) -> None:
+    """A renamed file's pre-image is read from old_path in base/."""
+    (tmp_path / "base").mkdir()
+    (tmp_path / "head").mkdir()
+    (tmp_path / "base" / "old.md").write_text("was here\n")
+    (tmp_path / "head" / "new.md").write_text("now here\n")
+    srv = _file_text_server(
+        tmp_path,
+        [{"id": "F0", "path": "new.md", "old_path": "old.md", "status": "renamed"}],
+    )
+    try:
+        code, payload = _request(srv.url() + "/file-text?file_idx=0")
+    finally:
+        srv.stop()
+    assert code == 200
+    assert payload["base"] == "was here\n"
+    assert payload["head"] == "now here\n"
+
+
+def test_file_text_bad_index(tmp_path: Path) -> None:
+    srv = _file_text_server(tmp_path, [])
+    try:
+        with pytest.raises(urllib.error.HTTPError) as oor:
+            _request(srv.url() + "/file-text?file_idx=5")
+        with pytest.raises(urllib.error.HTTPError) as bad:
+            _request(srv.url() + "/file-text?file_idx=nope")
+    finally:
+        srv.stop()
+    assert oor.value.code == 404
+    assert bad.value.code == 400
+
+
+def test_file_text_path_traversal_refused(tmp_path: Path) -> None:
+    """A traversing old_path yields null rather than escaping the worktree."""
+    (tmp_path / "secret.md").write_text("top secret\n")
+    (tmp_path / "head").mkdir()
+    (tmp_path / "head" / "doc.md").write_text("ok\n")
+    srv = _file_text_server(
+        tmp_path,
+        [{"id": "F0", "path": "doc.md", "old_path": "../secret.md", "status": "renamed"}],
+    )
+    try:
+        code, payload = _request(srv.url() + "/file-text?file_idx=0")
+    finally:
+        srv.stop()
+    assert code == 200
+    assert payload["base"] is None
 
 
 # --- format_markdown ---------------------------------------------------

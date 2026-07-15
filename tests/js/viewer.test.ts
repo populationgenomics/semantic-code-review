@@ -1811,3 +1811,136 @@ describe("review console", () => {
     expect(fetchCalls.some((c) => c.url.includes("/console/reset"))).toBe(true);
   });
 });
+
+// --- Rendered markdown mode (ADR 0004 slice 2) -----------------------------
+// End-to-end through the bundled viewer: the per-file toggle appears only
+// for .md files; flipping it fetches /file-text and swaps the body from
+// the text diff to the two-pane rendered block diff (and back). Comments
+// authored on a rendered block round-trip through the same anchor.
+
+describe("rendered markdown mode", () => {
+  function mdData(): ViewerData {
+    return makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "docs/x.md", status: "modified", language: "markdown",
+        adds: 1, dels: 1, summary: "", head_lines: null,
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock("H0_0")],
+      }],
+    });
+  }
+
+  test("a markdown file gets a Rendered toggle", async () => {
+    await bootViewer(mdData());
+    const toggle = document.querySelector(".md-toggle");
+    expect(toggle).not.toBeNull();
+    expect(toggle!.textContent).toBe("Rendered");
+  });
+
+  test("a non-markdown file gets no toggle", async () => {
+    await bootViewer(makeData({ pending: false }));  // a.py
+    expect(document.querySelector(".md-toggle")).toBeNull();
+  });
+
+  test("flipping on fetches /file-text and renders base-left / head-right", async () => {
+    await bootViewer(mdData());
+    queueFetchResponse({
+      status: 200,
+      body: { file_idx: 0, path: "docs/x.md", base: "# Old", head: "# New\n\nhello world" },
+    });
+    (document.querySelector(".md-toggle") as HTMLElement).click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    const grid = document.querySelector(".rmd-grid");
+    expect(grid).not.toBeNull();
+    // textContent, not innerHTML: the changed heading carries intra-block
+    // sub-diff (.char-chg) spans around the changed word.
+    expect(grid!.querySelector(".rmd-col-old .rmd-block h1")!.textContent).toBe("Old");
+    const headText = Array.from(grid!.querySelectorAll(".rmd-col-new .rmd-block"))
+      .map((b) => b.textContent).join(" ");
+    expect(headText).toContain("New");
+    expect(headText).toContain("hello world");
+    // The text-diff body is gone while rendered.
+    expect(document.querySelector(".file .hunk")).toBeNull();
+    expect(fetchCalls.some((c) => c.url.includes("/file-text?file_idx=0"))).toBe(true);
+    expect(document.querySelector(".md-toggle")!.textContent).toBe("Diff");
+  });
+
+  test("flipping back restores the text diff untouched", async () => {
+    await bootViewer(mdData());
+    queueFetchResponse({
+      status: 200,
+      body: { file_idx: 0, path: "docs/x.md", base: "# Old", head: "# New" },
+    });
+    const toggle = (): HTMLElement => document.querySelector(".md-toggle") as HTMLElement;
+    toggle().click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(document.querySelector(".rmd-grid")).not.toBeNull();
+
+    toggle().click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(document.querySelector(".rmd-grid")).toBeNull();
+    expect(document.querySelector(".file .hunk")).not.toBeNull();
+  });
+
+  test("re-flipping on does not re-fetch (source is cached)", async () => {
+    await bootViewer(mdData());
+    queueFetchResponse({
+      status: 200,
+      body: { file_idx: 0, path: "docs/x.md", base: "# Old", head: "# New" },
+    });
+    const toggle = (): HTMLElement => document.querySelector(".md-toggle") as HTMLElement;
+    toggle().click();                                   // on — fetches
+    await new Promise<void>((r) => setTimeout(r, 0));
+    toggle().click();                                   // off
+    await new Promise<void>((r) => setTimeout(r, 0));
+    toggle().click();                                   // on again — cached
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    const hits = fetchCalls.filter((c) => c.url.includes("/file-text")).length;
+    expect(hits).toBe(1);
+    expect(document.querySelector(".rmd-grid")).not.toBeNull();
+  });
+
+  test("a comment on a rendered block anchors on its source line and round-trips", async () => {
+    window.location.hash = "#fold=off";  // expand the diff body so the round-trip row renders
+    await bootViewer(mdData());
+    queueFetchResponse({
+      status: 200,
+      body: { file_idx: 0, path: "docs/x.md", base: "# Old", head: "# New\n\nhello world" },
+    });
+    (document.querySelector(".md-toggle") as HTMLElement).click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    // The head heading block sits on source line 1 (a diff row). Its
+    // hover affordance opens the editor anchored there.
+    const headBlock = document.querySelector(".rmd-col-new .rmd-block")!;
+    const addBtn = headBlock.parentElement!.querySelector<HTMLButtonElement>(".rmd-comment-btn")!;
+    addBtn.click();
+    const ta = document.querySelector<HTMLTextAreaElement>(".comment-editor-input")!;
+    expect(ta).not.toBeNull();
+    ta.value = "reads well";
+
+    let posted: Record<string, unknown> | null = null;
+    (globalThis.fetch as unknown as { mockImplementationOnce: (fn: typeof fetch) => void })
+      .mockImplementationOnce(((url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, init });
+        posted = JSON.parse(init!.body as string);
+        return Promise.resolve({ status: 200, ok: true, json: () => Promise.resolve(posted) } as Response);
+      }) as typeof fetch);
+    document.querySelector<HTMLButtonElement>(".comment-btn-save")!.click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    expect(posted).not.toBeNull();
+    expect(posted!.file).toBe("docs/x.md");
+    expect(posted!.side).toBe("new");
+    expect(posted!.line).toBe(1);
+
+    // Flip back to the text diff: the comment surfaces on the new-side
+    // row at line 1 — same anchor, no new machinery.
+    (document.querySelector(".md-toggle") as HTMLElement).click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(document.querySelector(".comment-thread-entry")!.textContent).toContain("reads well");
+  });
+});

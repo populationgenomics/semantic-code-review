@@ -178,6 +178,67 @@ The TS side has no single owner for the in-memory tree today —
 while every other module reads from the same global reference. A
 deepening to give it a typed owner is in flight.
 
+**Viewer id**
+The stable per-node identity the viewer keys DOM and state on, minted in
+`build_json.py`: `F<idx>` per file (index into the diff's file list),
+`H<fileidx>_<hunkidx>` per [[hunk]], `G<i>` per [[overview-seed]] group,
+`SY<i>` per [[symbol]] node ([[symbols-axis]]). The `F<idx>` id is a
+file's identity everywhere client-side: [[rendered-mode]] keys its
+per-file state (source cache, flipped set, fold level, reveal/section
+overrides) on it and parses the index back out for the
+`/file-text?file_idx=` fetch. Ids are position-derived, so they're
+stable only within one build of a given diff — not across diffs.
+
+**Rendered mode**
+A second body renderer for `.md` files (ADR 0004), switched in by a
+per-file toggle in the file header. The text-diff renderer
+(`_renderDiffRows`, `hunk_layout.py`, the [[collapsible-region]] model)
+stays untouched and authoritative — it owns "what changed", hunks,
+segments, and comment anchoring; rendered mode answers only "does the
+finished prose read well". It is a separate renderer, not a feature on
+the existing one: nothing keyed on row objects carries over.
+
+Client-side given two inputs: the file's full base+head source (fetched
+lazily from the `/file-text` server route on first flip, cached per
+file — kept out of [[viewer-data]] so untoggled docs stay lean) and the
+existing line diff. `rendered.ts` owns the mode state (which files are
+flipped, the source cache); `markdown.ts` turns source into sanitized
+HTML (markdown-it GFM → DOMPurify); `render.ts` consults
+`Rendered.isOn` and delegates the body. The dependency is one-way
+(`render.ts → rendered.ts`); the toggle repaints via a callback rather
+than importing back.
+
+Fully built (ADR 0004 slices 1–4 plus follow-ups). Two-pane base→head
+render with block-level delta and run folding — `_plan` in `rendered.ts`
+collapses contiguous runs of unchanged block-pairs into a full-width
+chip, breaking runs at unchanged headings which stay visible as
+landmarks, with context bleed and a min-run threshold. Controls are
+**per-file, in the file body** (not the global slider/sidebar — rendered
+mode is a per-file toggle, so a mixed text/rendered file set can't share
+one global ladder): a `sections → runs → open` fold ladder and a heading
+**outline** badged changed/unchanged. The outline is a third structural
+notion alongside the LLM-semantic ([[segment]]) and tree-sitter-
+structural ([[symbol]]) models; like them it answers a different
+question and is not reconciled with them.
+
+Delta specifics worth pinning:
+
+- **List splitting.** `markdown.ts` splits a top-level list into one
+  block per item (each re-wrapped in its own single-item `<ul>`/`<ol>`),
+  so a single changed item classifies/aligns/folds alone instead of
+  reddening the whole list.
+- **Alignment projects the diff's own pairing**, not a positional zip: a
+  block keeping any diff-aligned line (`ctx`/`pair` row) is *matched* and
+  pairs 1:1 in order with the next matched block opposite; a fully
+  one-sided block (`del`/`ins` only) drains against a blank cell. Still
+  no cross-side content matching. See `_diffLines`/`_classify`/`_align`.
+- **Intra-block sub-diff** marks the changed characters inside a replaced
+  pair (deleted red left / added green right) by reusing the text diff's
+  `blockDiff` + `wrapRanges` over each block's *rendered* `textContent`.
+- **Math + mermaid** render from their source delimiters via the shared
+  `katex.ts` / `mermaid.ts` modules (lazy-loaded, off the DOMPurify
+  path), hydrated by `Markdown.hydrate` once a block is in the DOM.
+
 **Reviewer comment**
 A reviewer-authored inline comment anchored to a specific
 `(file, side, line)`. Round-trips between the viewer and the

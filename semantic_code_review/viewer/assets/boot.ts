@@ -15,6 +15,7 @@ import { Folds } from "./folds";
 import { PostModal } from "./post_modal";
 import { Progress } from "./progress";
 import { Render } from "./render";
+import { Rendered } from "./rendered";
 import { Sidebar } from "./sidebar";
 import { Sse } from "./sse";
 
@@ -61,6 +62,9 @@ function boot(): void {
     // (ephemeral focus-reveal) — driven from render.ts.
     onFilterChange: () => Render.applyFilterChange(),
   });
+  // lazy /file-text backing for the md toggle; the callback repaints on
+  // rendered-mode fold-level changes and chip reveals.
+  Rendered.init(SESSION_ENDPOINT, () => Render.render());
   Render.init(DATA);       // wires hash + keyboard + initial paint
   Progress.init(DATA);
   installPrHeader(DATA);

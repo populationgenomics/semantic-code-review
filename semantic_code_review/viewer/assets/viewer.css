@@ -252,12 +252,220 @@ body {
 }
 .file-overview .label { color: var(--fg-dim); margin-right: 4px; }
 
+/* --- Rendered markdown mode (ADR 0004) ----------------------------------- */
+/* Per-file toggle in the file header; flips the body to rendered prose. */
+.md-toggle {
+  flex-shrink: 0;
+  font: inherit; font-size: 12px;
+  padding: 2px 8px; border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent; color: var(--fg-muted);
+  cursor: pointer;
+}
+.md-toggle:hover { background: var(--bg-alt); color: var(--fg); }
+.md-toggle[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.rendered-md-notice { color: var(--fg-muted); font-style: italic; padding: 8px 0; }
+
+/* Per-file in-body controls (ADR 0004 slice 3): fold ladder + heading
+ * outline. Rendered mode is a per-file toggle, so its structural controls
+ * live in the file body, not the global PR-bar slider. */
+.rmd-controls {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px;
+  margin: 0 0 12px; padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.rmd-ladder { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; flex-shrink: 0; }
+.rmd-ladder-btn {
+  font: inherit; font-size: 12px; padding: 3px 10px;
+  border: none; border-right: 1px solid var(--border);
+  background: transparent; color: var(--fg-muted); cursor: pointer;
+}
+.rmd-ladder-btn:last-child { border-right: none; }
+.rmd-ladder-btn.active { background: var(--accent); color: #fff; }
+.rmd-ladder-btn:hover:not(.active) { background: var(--bg-panel); color: var(--fg); }
+
+/* Outline: a horizontal run of section pills, indented by heading level,
+ * each dot-badged changed (accent) or unchanged (muted). */
+.rmd-outline { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; min-width: 0; }
+.rmd-outline-entry {
+  display: inline-flex; align-items: center; gap: 5px;
+  font: inherit; font-size: 12px; padding: 2px 8px; border-radius: 6px;
+  border: 1px solid transparent; background: transparent;
+  color: var(--fg-muted); cursor: pointer; max-width: 24ch;
+}
+.rmd-outline-entry:hover { background: var(--bg-alt); color: var(--fg); border-color: var(--border); }
+.rmd-outline-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rmd-outline-badge { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--border); }
+.rmd-outline-changed .rmd-outline-badge { background: var(--accent); }
+.rmd-outline-changed { color: var(--fg); }
+.rmd-outline-l2 { margin-left: 8px; }
+.rmd-outline-l3 { margin-left: 16px; }
+.rmd-outline-l4 { margin-left: 24px; }
+.rmd-outline-l5 { margin-left: 32px; }
+.rmd-outline-l6 { margin-left: 40px; }
+
+/* Two-pane block grid: base left, head right. Each block-pair is one
+ * implicit grid row, so the row track sizes to max(left, right) height —
+ * async/variable content (later slices) reflows only its own row.
+ * align-items:start top-aligns the shorter cell rather than stretching. */
+.rmd-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 20px;
+  align-items: start;
+  line-height: 1.55; color: var(--fg); word-wrap: break-word;
+}
+.rmd-col { position: relative; min-width: 0; }
+.rmd-col-old { border-right: 1px solid var(--border); padding-right: 20px; }
+
+.rmd-block { position: relative; border-radius: 4px; padding: 0 6px; }
+.rmd-block > *:first-child { margin-top: 0; }
+.rmd-block > *:last-child { margin-bottom: 0; }
+/* Own line-diff status: base blocks that lost lines tint red, head
+ * blocks that gained lines tint green; a rewrite is all-red-left /
+ * all-green-right. Same palette as the text diff's row tints. */
+.rmd-removed { background: rgba(248, 81, 73, 0.13); }
+.rmd-added { background: rgba(63, 185, 80, 0.13); }
+
+/* Intra-block sub-diff: the changed characters within a replaced block,
+ * over the whole-block tint. Same treatment as the text diff's char-chg
+ * (subtle fill + a coloured underline, continuous across inline-element
+ * joins): red on the base pane, green on the head pane. */
+.rmd-col-old .char-chg {
+  background: rgba(248, 81, 73, 0.20);
+  border-bottom: 2px solid rgba(248, 81, 73, 0.7);
+}
+.rmd-col-new .char-chg {
+  background: rgba(63, 185, 80, 0.20);
+  border-bottom: 2px solid rgba(63, 185, 80, 0.7);
+}
+
+.rmd-block h1, .rmd-block h2, .rmd-block h3,
+.rmd-block h4, .rmd-block h5, .rmd-block h6 {
+  margin: 20px 0 12px; line-height: 1.25; font-weight: 600;
+}
+.rmd-block h1 { font-size: 1.6em; padding-bottom: .3em; border-bottom: 1px solid var(--border); }
+.rmd-block h2 { font-size: 1.3em; padding-bottom: .3em; border-bottom: 1px solid var(--border); }
+.rmd-block h3 { font-size: 1.1em; }
+.rmd-block p, .rmd-block ul, .rmd-block ol,
+.rmd-block blockquote, .rmd-block table { margin: 0 0 12px; }
+.rmd-block a { color: var(--accent); text-decoration: none; }
+.rmd-block a:hover { text-decoration: underline; }
+.rmd-block code {
+  font-family: var(--mono); font-size: 0.9em;
+  background: var(--bg-alt); padding: 0.15em 0.35em; border-radius: 4px;
+}
+.rmd-block pre {
+  background: var(--bg-alt); padding: 12px 14px; border-radius: 6px;
+  overflow: auto; margin: 0 0 12px;
+}
+.rmd-block pre code { background: transparent; padding: 0; font-size: 0.85em; }
+.rmd-block blockquote {
+  color: var(--fg-muted); border-left: 3px solid var(--border);
+  padding: 0 0 0 12px; margin-left: 0;
+}
+.rmd-block table { border-collapse: collapse; }
+.rmd-block th, .rmd-block td {
+  border: 1px solid var(--border); padding: 6px 12px;
+}
+.rmd-block th { background: var(--bg-alt); font-weight: 600; }
+.rmd-block img { max-width: 100%; }
+.rmd-block hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+.rmd-block .contains-task-list { list-style: none; padding-left: 0; }
+.rmd-block .task-list-item { list-style: none; }
+.rmd-block .task-list-item-checkbox { margin: 0 0.4em 0 0; vertical-align: middle; }
+/* A split list renders one single-item <ul>/<ol> per block-row so items
+ * classify/align individually; drop the per-item wrapper margin so they
+ * stack as one tight list, and restore the normal block gap below the
+ * last item. */
+.rmd-li > ul, .rmd-li > ol { margin-bottom: 0; }
+.rmd-li-last > ul, .rmd-li-last > ol { margin-bottom: 12px; }
+/* A rendered mermaid diagram (its source `pre` is swapped for this). The
+ * SVG scales to the column width; its height reflows this block-pair's
+ * grid row only, never global alignment. */
+.rmd-mermaid { margin: 0 0 12px; text-align: center; }
+.rmd-mermaid svg { max-width: 100%; height: auto; }
+
+/* Math placeholder (katex fills it via hydrate; before that, or on a
+ * katex load/parse failure, it shows the raw TeX source as text). Display
+ * math is its own block — centred, and scrollable so a wide equation
+ * doesn't force the column wider and skew alignment. */
+.rmd-math-display {
+  margin: 0 0 12px; overflow-x: auto; overflow-y: hidden;
+}
+.rmd-math-display .katex-display { margin: 0; }
+
+/* Collapsed run/section chip (ADR 0004 slice 3). Spans both panes as one
+ * grid row, so it stays height-symmetric and the alignment below holds.
+ * Chevrons at each end reveal into the run; a section chip is a single
+ * expand button. */
+.rmd-fold {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  margin: 6px 0; padding: 2px 0;
+  border-top: 1px dashed var(--border);
+  border-bottom: 1px dashed var(--border);
+  color: var(--fg-muted); font-size: 12px;
+}
+.rmd-fold-label { user-select: none; }
+.rmd-fold-chev, .rmd-fold-expand {
+  font: inherit; font-size: 12px; line-height: 1;
+  padding: 2px 8px; border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent; color: var(--fg-muted);
+  cursor: pointer;
+}
+.rmd-fold-chev:hover, .rmd-fold-expand:hover {
+  background: var(--bg-alt); color: var(--fg); border-color: var(--accent);
+}
+
+/* Hover "+" to comment on a block; anchors on the block's first source
+ * line (comments.ts). Sits in the column's left margin. */
+.rmd-comment-btn {
+  position: absolute; left: -18px; top: 0;
+  width: 18px; height: 18px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  font: inherit; font-size: 14px; line-height: 1;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg); color: var(--fg-muted);
+  cursor: pointer; opacity: 0; transition: opacity 0.1s;
+}
+.rmd-col:hover > .rmd-comment-btn { opacity: 1; }
+.rmd-comment-btn:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* Comment threads/editor hang beneath a block in its column. The
+ * annot-box chrome is otherwise `.diff`-scoped; mirror the wrapper here.
+ * The character-pointing arrow is meaningless for a prose block, so drop
+ * it and left-indent the box instead. Inner comment chrome
+ * (.comment-thread-entry, .comment-body, .comment-btn, editor) is
+ * unscoped and applies unchanged. */
+.rmd-col .cell-annotation { display: block; padding: 4px 0 8px 12px; overflow: visible; }
+.rmd-col .annot-arrow { display: none; }
+.rmd-col .annot-box {
+  padding: 4px 10px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  border-radius: 4px;
+  font-size: 13px; line-height: 1.4; color: var(--fg);
+  max-width: 64ch;
+}
+.rmd-col .annot-editor .annot-box.comment-editor-box {
+  max-width: none; width: 100%;
+}
+
 /* --- Hunks ---------------------------------------------------------------- */
+/* No border or rounded rect — the hunk is set off from the file body only
+ * by a slight background darkening (recessed relative to the file card's
+ * --bg-alt), with the header's fold chevron as the collapse affordance. */
 .hunk {
-  margin: 12px 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
   background: var(--bg);
 }
-.hunk.folded { border-left-width: 3px; }
+/* Flat, inline annotation — no filled panel bar. The `@@` position +
+ * intent prose read on the hunk's own surface; a thin dashed rule (only
+ * when a body follows) separates annotation from code, matching the
+ * expand band. A subtle hover fill signals the header is the fold toggle. */
 .hunk-header {
   display: grid;
   grid-template-columns: auto 1fr auto;
@@ -266,10 +474,12 @@ body {
     ".     intent  intent";
   column-gap: 10px;
   row-gap: 4px;
-  padding: 8px 12px;
+  padding: 2px 12px;
   cursor: pointer;
-  background: var(--bg-panel); user-select: none;
+  user-select: none;
 }
+.hunk:not(.folded) .hunk-header { border-bottom: 1px dashed var(--border); }
+.hunk-header:hover { background: var(--bg-alt); }
 .hunk-header > .chevron { grid-area: chev; align-self: start; margin-top: 2px; }
 .hunk-pos {
   grid-area: pos;
@@ -352,12 +562,15 @@ body {
 }
 
 /* --- Segments ------------------------------------------------------------- */
-.seg-list { padding: 8px 12px; background: var(--bg); }
+/* Each folded segment is an inline row (chevron + range + intent), not a
+ * filled/bordered box — the chevron carries the "click to expand"
+ * affordance and a subtle hover fill echoes it. */
+.seg-list { padding: 6px 12px; }
 .segment {
-  margin: 6px 0; padding: 6px 10px; background: var(--bg-alt);
-  border-left: 3px solid var(--border); border-radius: 3px;
+  margin: 1px 0; padding: 3px 6px; border-radius: 4px;
   display: flex; gap: 10px; align-items: flex-start; cursor: pointer;
 }
+.segment:hover { background: var(--bg-alt); }
 .segment .chevron { margin-top: 1px; }
 .segment-range {
   font-family: var(--mono); color: var(--fg-dim); font-size: 12px; min-width: 90px;
@@ -366,11 +579,16 @@ body {
 .segment-intent { flex: 1; font-size: 13px; }
 .segment-intent.empty { color: var(--fg-dim); font-style: italic; }
 
+/* Inline notes below the diff — no filled panel; a thin dashed rule
+ * separates them from the code above (context keeps its accent margin). */
 .context-note, .refs {
-  padding: 6px 12px; background: var(--bg-alt); border-top: 1px solid var(--border);
+  padding: 6px 12px; border-top: 1px dashed var(--border);
   font-size: 12px; color: var(--fg-muted);
 }
-.context-note { border-left: 3px solid var(--accent); padding-left: 16px; }
+.context-note {
+  border-top: none; border-left: 3px solid var(--accent);
+  padding: 4px 0 4px 12px; margin: 6px 12px 0;
+}
 .refs a.ref-link {
   display: inline-block; padding: 1px 6px; margin: 1px 4px 1px 0;
   border: 1px solid var(--border); border-radius: 4px;
@@ -851,8 +1069,11 @@ body {
 .comment-btn-del:hover { color: var(--err); border-color: var(--err); }
 
 /* Gutter hover affordance — show a faint + in the line-number column on
- * hover so reviewers know the number is clickable. */
-.diff .cell-lineno:not(.empty) { cursor: pointer; position: relative; }
+ * hover so reviewers know the number is clickable. No `position: relative`
+ * here: it would override the `position: sticky` that pins the gutter
+ * during horizontal scroll (that sticky is itself a positioned ancestor,
+ * so the hover `+`'s absolute positioning still anchors to it). */
+.diff .cell-lineno:not(.empty) { cursor: pointer; }
 .diff .cell-lineno:not(.empty):hover {
   background: var(--bg-panel);
   color: var(--accent);
@@ -891,29 +1112,26 @@ body {
 }
 
 /* --- Gap expansion chips (inter-hunk context) ---------------------------- */
+/* Same light-weight presentation as rendered mode's fold chip
+ * (.rmd-fold): a thin dashed band rather than a filled, bordered box, so
+ * it reads as a seam between hunks instead of a control panel and carries
+ * little surrounding whitespace. The whole band is the click target. */
 .gap-chip {
-  margin: 8px 0;
-  padding: 6px 12px;
-  background: var(--bg-alt);
-  border: 1px dashed var(--border);
-  border-radius: 4px;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  margin: 6px 0; padding: 2px 0;
+  border-top: 1px dashed var(--border);
+  border-bottom: 1px dashed var(--border);
   color: var(--fg-muted);
   font-size: 12px;
+  font-family: var(--mono);
   cursor: pointer;
   user-select: none;
-  text-align: center;
-  font-family: var(--mono);
-  transition: background 0.1s, color 0.1s, border-color 0.1s;
+  transition: color 0.1s, border-color 0.1s;
 }
-.gap-chip:hover {
-  background: var(--bg-panel);
-  color: var(--fg);
-  border-color: var(--accent);
-  border-style: solid;
-}
-.gap-chip .gap-icon { margin-right: 6px; color: var(--accent); }
+.gap-chip:hover { color: var(--fg); border-color: var(--accent); }
+.gap-chip .gap-icon { color: var(--accent); }
 
-.gap-expansion { position: relative; margin: 8px 0; }
+.gap-expansion { position: relative; }
 .gap-expansion .diff { border-style: dashed; opacity: 0.92; }
 .gap-expansion .gap-collapse {
   position: absolute; top: 4px; right: 4px; z-index: 2;

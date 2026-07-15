@@ -308,6 +308,45 @@ function _openEditor({ rowEl, side, line, file, existing, replyTo, prefillBody, 
   });
 }
 
+// --- Rendered-mode block anchors ---------------------------------------
+//
+// Rendered markdown blocks (ADR 0004 slice 2) aren't diff rows, so the
+// gutter click-handler and renderAll()'s `.row` walk can't reach them.
+// rendered.ts drives its own add-affordance and re-attach through these,
+// reusing the same editor, store, and thread chrome. A block anchors on
+// its first source line; display gathers every comment whose (possibly
+// propagated) line falls within the block's span, so a comment authored
+// mid-block in text mode still shows on the block that contains it.
+
+/** Open the comment editor anchored on a rendered-mode block. */
+function openBlockEditor(opts: {
+  anchorEl: HTMLElement; file: string; side: "old" | "new"; line: number;
+}): void {
+  _openEditor({
+    rowEl: opts.anchorEl, side: opts.side, line: opts.line, file: opts.file,
+  });
+}
+
+/** (Re-)attach comment threads for a rendered-mode block. Threads whose
+ *  display line lies in [startLine, endLine] hang beneath the block. */
+function attachBlockThreads(opts: {
+  anchorEl: HTMLElement; file: string; side: "old" | "new";
+  startLine: number; endLine: number;
+}): void {
+  _removeReviewerCommentRowsAfter(opts.anchorEl);
+  const inRange = _store.getAll().filter((c) => {
+    if (c.file !== opts.file || c.side !== opts.side) return false;
+    const ln = _displayLine(c);
+    return ln != null && ln >= opts.startLine && ln <= opts.endLine;
+  });
+  for (const thread of _buildThreads(inRange)) {
+    const root = thread.entries[0];
+    _buildThreadRow(
+      thread, { file: opts.file, side: opts.side, line: root.line }, opts.anchorEl,
+    );
+  }
+}
+
 function _isIngested(comment: ReviewerComment): boolean {
   return (comment.source || "local") !== "local";
 }
@@ -615,4 +654,6 @@ export const Comments = {
   isPromoted,
   openPromotionEditor,
   promoteSmell,
+  openBlockEditor,
+  attachBlockThreads,
 };
