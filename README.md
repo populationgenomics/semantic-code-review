@@ -16,6 +16,20 @@ browser viewer: a side-by-side diff with semantic-group navigation,
 fold-level "what did this block change" annotations, and inline comments
 you leave by clicking a line number.
 
+Two more affordances inside that viewer:
+
+- **Review console** — an in-viewer chat that answers questions about
+  the change ("what calls this?", "why is this guard here?", "draw the
+  control flow") against the same worktrees, tools, and annotations the
+  augment pass used, so you never drop to a separate Claude session that
+  lacks the run's context.
+- **Rendered-markdown mode** — a per-file toggle on `.md` files that
+  swaps the line-grid for a two-pane base→head *rendered* view (GFM,
+  math, mermaid), block-level delta and folding, so you can judge
+  whether the finished prose reads well rather than only which lines
+  moved. The text diff stays authoritative for hunks, segments, and
+  commenting.
+
 For a screenshot tour of the viewer — the sidebar axes, the fold ladder,
 segments, comments, and the review console — see
 [docs/walkthrough.md](docs/walkthrough.md).
@@ -293,10 +307,12 @@ in the repo's GitHub settings.
 - `semantic_code_review/viewer/` — Python side: `build_json.py`,
   `hunk_layout.py`. Frontend assets in `viewer/assets/`: the
   TypeScript modules (`boot` entry, plus `render`, `sidebar`,
-  `folds`, `annotations`, `comments`, `console`, `sse`, …) bundled
-  by esbuild into a single `viewer.js`, alongside `viewer.css`, the
-  static `index.html` served by the review server, and vendored
-  `highlight.js` under `assets/vendor/`.
+  `folds`, `annotations`, `comments`, `console`, `sse`, the
+  rendered-markdown mode `rendered`/`markdown`/`katex`/`mermaid`, …)
+  bundled by esbuild into a single `viewer.js`, alongside
+  `viewer.css`, the static `index.html` served by the review server,
+  and vendored assets (`highlight.js`, `mermaid`, `KaTeX`) under
+  `assets/vendor/`.
 - `semantic_code_review/structural/` — deterministic tree-sitter layer:
   `parse.py` (grammars + tag queries → a `Symbol` tree), `symbols.py`,
   and `diff.py` (base→head `SymbolDelta`). Feeds the Symbols sidebar
@@ -331,14 +347,25 @@ Lockfiles (all committed):
 - `requirements-dev.lock` — runtime + `pytest` + `pytest-asyncio`.
 - `package-lock.json` — Node toolchain (`typescript`, `vitest`,
   `@playwright/test`, `jsdom`, `@types/node`).
+- `uv.lock` — the uv-resolved lockfile `uv build` (the release
+  workflow) and `uv run` resolve against; kept in sync with the
+  `requirements*.lock` pip closure.
 
-Frontend assets (`highlight.js` + light/dark stylesheets) are
-vendored under `semantic_code_review/viewer/assets/vendor/` at a
-pinned upstream version with the BSD-3-Clause LICENSE file alongside
-them. The viewer HTML inlines those bytes — never loads anything
-from a CDN at runtime. See `vendor/VENDOR.md` for provenance and
-hashes; `vendor/refresh.sh` re-downloads at the pinned version and
-fails loudly if any SHA-256 doesn't match.
+Frontend assets are vendored under
+`semantic_code_review/viewer/assets/vendor/` at pinned upstream
+versions with each project's LICENSE file alongside — never loaded
+from a CDN at runtime:
+
+- `highlight.js` + light/dark stylesheets — inlined into the viewer
+  HTML.
+- `mermaid` (review console diagrams) and `KaTeX` + its woff2 fonts
+  (rendered-markdown math) — lazy-loaded by `<script>`/`<link>`
+  injection from the vendored files the first time they're needed, so
+  neither weighs on the base `viewer.js` bundle.
+
+See `vendor/VENDOR.md` for provenance and hashes; `vendor/refresh.sh`
+re-downloads at the pinned versions and fails loudly if any SHA-256
+doesn't match.
 
 Refreshing:
 
