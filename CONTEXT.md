@@ -325,7 +325,7 @@ changed (deterministic …)` section listing each changed symbol by kind
 and `qualified_name`. The overview system prompt instructs the model to
 populate `Overview.symbols_*` from that section verbatim — turning the
 symbol fields from inference into a deterministic seed (ADR 0001 Slice
-3). The seed is independent of `--no-context` (it's our own tree-sitter
+3). The seed is independent of `--skip-context` (it's our own tree-sitter
 parse, not LLM tool access) and best-effort (a failure leaves the
 overview unseeded). When the delta is empty — every changed file is in
 an unsupported language — no section is appended and the prompt is
