@@ -7,24 +7,25 @@ A running list of things discussed but deferred. Sourced from sessions on
 ## Unlocked by the viewer being a live process
 
 The shift from statically-generated HTML to a server-backed viewer opens
-a whole back-channel of capabilities. None of the items below are in
-tree; the 6 May discussion ranked the first three as the cheapest and
-highest-value next moves, and they share infrastructure (an SSE/websocket
-stream from the server to the page).
+a whole back-channel of capabilities. The 6 May discussion ranked the
+first three as the cheapest and highest-value next moves, and they share
+infrastructure (an SSE/websocket stream from the server to the page).
+Items 1 and 2 have since shipped.
 
-1. **Lazy fold summaries.** Today every fold gets a pre-generated summary
-   at augment time, even though most folds are never closed. Defer until
-   first close: a `POST /fold-summary {hunk_id, region}` runs a one-shot
-   LLM call against the cached overview plus file prefix and writes the
-   result back into `augmented.scr.json` so subsequent loads are free.
-   Saves tokens on every review and improves time-to-first-render.
+1. **Lazy fold summaries.** *(Shipped.)* Today every fold gets a
+   pre-generated summary at augment time, even though most folds are
+   never closed. Defer until first close: a `POST /fold-summary
+   {hunk_id, region}` runs a one-shot LLM call against the cached
+   overview plus file prefix and writes the result back into
+   `augmented.scr.json` so subsequent loads are free. Saves tokens on
+   every review and improves time-to-first-render.
 
-2. **Streaming annotation arrival.** The current pipeline `asyncio.gather`s
-   all hunks and only renders once they all return. With a live process,
-   each hunk's annotation can appear as soon as its call completes, via
-   SSE or websocket. Big perceived-latency win on PRs with more than ten
-   hunks; reviewers can start reading the early hunks while later ones
-   are still being annotated.
+2. **Streaming annotation arrival.** *(Shipped.)* The current pipeline
+   `asyncio.gather`s all hunks and only renders once they all return.
+   With a live process, each hunk's annotation can appear as soon as its
+   call completes, via SSE or websocket. Big perceived-latency win on
+   PRs with more than ten hunks; reviewers can start reading the early
+   hunks while later ones are still being annotated.
 
 3. **"Regenerate with nudge" button.** When an intent comes back wrong,
    click regenerate and type a hint ("describe the error-handling path",
