@@ -1,6 +1,6 @@
 {
   "name": "scr",
-  "version": "0.29.0",
+  "version": "0.29.1",
   "description": "Review agent-authored code you're accountable for but didn't write. /scr:review opens a side-by-side viewer that clusters the diff into semantic groups and annotates what each block changed, so you can judge whether it matches intent and how it was built; your inline comments round-trip back into the session for the agent to iterate on. The LLM directs attention — it never gates.",
   "author": {
     "name": "Toby Sargeant",
