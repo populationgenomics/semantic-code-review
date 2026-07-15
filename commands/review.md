@@ -68,7 +68,7 @@ scr review <the args you inferred>
 Don't try to discover or call `scr` via an absolute path — `scr` on PATH is the contract. If `scr review` fails with command-not-found (and only then), surface the install options to the user verbatim; don't guess between them.
 
 The command:
-- builds the local diff into `.scr/runs/<slug>/`
+- builds the local diff into a run directory under `~/.cache/scr/runs/<...>/`
 - runs the LLM augmentation pass (unless `--no-augment` was passed)
 - starts a localhost HTTP server, opens the browser, and **blocks** until the user clicks "Done" (or the 1-hour default timeout)
 
