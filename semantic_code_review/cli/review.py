@@ -25,7 +25,18 @@ def review(
         help=(
             "Git ref (e.g. 'main') or range ('main..HEAD', 'HEAD~3...HEAD'). "
             "Single ref diffs against current working state; range is "
-            "committed-only."
+            "committed-only. Give a second endpoint for a two-endpoint diff."
+        ),
+    ),
+    right: str = typer.Argument(
+        None,
+        metavar="[RIGHT]",
+        help=(
+            "Optional second endpoint. With SPEC, diffs left vs right: "
+            "two refs ('e4e8f74 HEAD') for a whole-tree diff, or two "
+            "'rev:path' blobs ('A:old.py B:new.py') for a single-file "
+            "diff (cross-path renders as a rename). Both must be the "
+            "same kind."
         ),
     ),
     spec_md: Path = typer.Option(None, "--spec", help="Markdown file with the spec/intent for this change."),
@@ -79,6 +90,7 @@ def review(
 
     opts = ReviewOptions(
         spec=spec,
+        spec_right=right,
         spec_markdown=spec_md,
         runs_root=runs_root,
         repo_root=repo_root,

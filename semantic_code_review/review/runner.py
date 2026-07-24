@@ -89,6 +89,9 @@ ConsoleCallable = Callable[
 @dataclass
 class ReviewOptions:
     spec: str  # git ref or range, user-supplied
+    # Optional second endpoint (two-endpoint form). When set, `spec` and
+    # `spec_right` are the left/right endpoints — two refs or two rev:path.
+    spec_right: str | None = None
     spec_markdown: Path | None = None
     runs_root: Path = field(default_factory=_default_runs_root)
     repo_root: Path | None = None
@@ -122,6 +125,7 @@ def run_review(opts: ReviewOptions) -> int:
     run_dir = materialize_local_diff_run(
         opts.spec,
         opts.runs_root,
+        right=opts.spec_right,
         repo_root=opts.repo_root,
         no_staged=opts.no_staged,
         no_unstaged=opts.no_unstaged,

@@ -199,7 +199,11 @@ The three commands you'll actually use:
   once.
 - `scr review <ref-or-range> [--spec SPEC.md]` — review a local git
   diff. Runs the LLM augment pass, opens the viewer, and prints your
-  inline comments as markdown when you click Done.
+  inline comments as markdown when you click Done. Also takes a second
+  endpoint for an explicit two-sided diff — two refs
+  (`scr review e4e8f74 HEAD`, whole-tree) or two `rev:path` blobs
+  (`scr review A:old.py B:new.py`, single-file; cross-path shows as a
+  rename).
 - `scr pr <owner/repo> [<number>]` — the same flow against a GitHub
   PR. Omit the number to pick from the open PRs requesting your
   review; on Done it posts your inline comments back as a single

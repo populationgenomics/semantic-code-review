@@ -127,3 +127,61 @@ def test_rejects_non_git_dir(tmp_path: Path) -> None:
     # A plain empty directory is not a repo.
     with pytest.raises(LocalDiffError):
         resolve_local_diff("HEAD", repo_root=tmp_path)
+
+
+# --- Two-endpoint form -----------------------------------------------------
+
+
+def _looks_like_sha(s: str) -> bool:
+    return len(s) == 40 and all(c in "0123456789abcdef" for c in s)
+
+
+def test_tree_pair_two_refs(repo: Path) -> None:
+    # `left right` (both refs) == the one-token `left..right` range.
+    r = resolve_local_diff("HEAD~1", right="HEAD", repo_root=repo)
+    assert r.mode == "tree-pair"
+    assert "-x = 1" in r.raw_diff and "+x = 2" in r.raw_diff
+    assert r.files == ["a.py"]
+    assert not r.head_is_working
+    assert _looks_like_sha(r.base_sha) and _looks_like_sha(r.head_sha)
+
+
+def test_blob_pair_same_path(repo: Path) -> None:
+    r = resolve_local_diff("HEAD~1:a.py", right="HEAD:a.py", repo_root=repo)
+    assert r.mode == "blob-pair"
+    assert "-x = 1" in r.raw_diff and "+x = 2" in r.raw_diff
+    # Same path both sides -> plain modification, not a rename.
+    assert "--- a/a.py" in r.raw_diff and "+++ b/a.py" in r.raw_diff
+
+
+def test_blob_pair_cross_path(repo: Path) -> None:
+    (repo / "b.py").write_text("y = 9\n")
+    _sh(repo, "git", "add", "b.py")
+    _sh(repo, "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "add b")
+    # a.py@(prev commit) vs b.py@HEAD — different paths -> rename-shaped diff.
+    r = resolve_local_diff("HEAD~1:a.py", right="HEAD:b.py", repo_root=repo)
+    assert r.mode == "blob-pair"
+    assert "--- a/a.py" in r.raw_diff and "+++ b/b.py" in r.raw_diff
+    assert "-x = 2" in r.raw_diff and "+y = 9" in r.raw_diff
+    assert r.files == ["b.py"]
+    assert _looks_like_sha(r.base_sha) and _looks_like_sha(r.head_sha)
+
+
+def test_endpoint_pair_mixed_kinds_errors(repo: Path) -> None:
+    with pytest.raises(LocalDiffError, match="same kind"):
+        resolve_local_diff("HEAD~1", right="HEAD:a.py", repo_root=repo)
+
+
+def test_endpoint_pair_rejects_flags(repo: Path) -> None:
+    with pytest.raises(LocalDiffError, match="only apply"):
+        resolve_local_diff("HEAD~1", right="HEAD", repo_root=repo, no_staged=True)
+
+
+def test_blob_pair_needs_path(repo: Path) -> None:
+    with pytest.raises(LocalDiffError, match="needs a path"):
+        resolve_local_diff("HEAD~1:", right="HEAD:a.py", repo_root=repo)
+
+
+def test_empty_second_endpoint_errors(repo: Path) -> None:
+    with pytest.raises(LocalDiffError, match="empty second endpoint"):
+        resolve_local_diff("HEAD~1", right="  ", repo_root=repo)

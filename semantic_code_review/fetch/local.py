@@ -1,14 +1,26 @@
 """Local-diff source: a git ref/range against the cwd repo → run directory.
 
+A review targets a diff between a LEFT and a RIGHT endpoint. Endpoints
+come in two kinds and both sides must be the same kind:
+
+* tree endpoint — a commit/ref (``main``, ``e4e8f74``), contributing
+  its whole tree.
+* blob endpoint — ``rev:path``, contributing one file.
+
 Accepted inputs (all run against the current repository's cwd):
 
-* ``ref1..ref2`` or ``ref1...ref2`` — committed-only diff. Must NOT be
-  combined with ``--no-staged`` / ``--no-unstaged``; the range is taken
-  at face value.
-* ``<ref>`` — diff from ``<ref>`` to the current working state (HEAD +
-  staged + unstaged). ``--no-staged`` drops staged changes from the
-  overlay; ``--no-unstaged`` drops unstaged changes. With both, the
-  result is equivalent to ``<ref>..HEAD``.
+* ``<ref>`` — one endpoint; diff from ``<ref>`` to the current working
+  state (HEAD + staged + unstaged). ``--no-staged`` drops staged
+  changes from the overlay; ``--no-unstaged`` drops unstaged changes.
+  With both, the result is equivalent to ``<ref>..HEAD``.
+* ``ref1..ref2`` or ``ref1...ref2`` — one-token shorthand for a
+  committed tree pair (``...`` is merge-base; it has no two-token
+  form). Must NOT be combined with ``--no-staged`` / ``--no-unstaged``.
+* ``<left> <right>`` (two endpoints, ``right`` non-None) — either two
+  refs (whole-tree diff, ``git diff left right``) or two ``rev:path``
+  blobs (single-file diff, cross-path renders as a rename). Mixing
+  kinds is an error. A space separates the endpoints, so ``..`` is
+  purely the one-token tree shorthand — not a competing separator.
 
 Pipeline mirrors the GitHub-PR source:
 
@@ -92,12 +104,16 @@ class LocalResolved:
 def resolve_local_diff(
     spec: str,
     *,
+    right: str | None = None,
     repo_root: Path | None = None,
     no_staged: bool = False,
     no_unstaged: bool = False,
     spec_md_path: Path | None = None,
 ) -> LocalResolved:
-    """Resolve ``spec`` against the cwd repo into a `LocalResolved`.
+    """Resolve ``spec`` (and optional ``right``) into a `LocalResolved`.
+
+    ``right`` selects the two-endpoint form: ``spec`` and ``right`` are
+    the left/right endpoints, both refs or both ``rev:path`` blobs.
 
     Side-effect-free above the git subprocess calls — does not touch
     `runs_root`. Caller-owned: deciding where to materialise.
@@ -111,8 +127,16 @@ def resolve_local_diff(
     if not spec_str:
         raise LocalDiffError("empty ref/range")
 
-    m = _RANGE_RE.match(spec_str)
-    if m:
+    if right is not None:
+        right_str = right.strip()
+        if not right_str:
+            raise LocalDiffError("empty second endpoint")
+        if no_staged or no_unstaged:
+            raise LocalDiffError("--no-staged / --no-unstaged only apply when a single ref is given")
+        raw, base_sha, head_sha, mode = _diff_endpoint_pair(cwd, spec_str, right_str)
+        slug_source = f"{spec_str}..{right_str}"
+        head_is_working = False
+    elif m := _RANGE_RE.match(spec_str):
         if no_staged or no_unstaged:
             raise LocalDiffError("--no-staged / --no-unstaged only apply when a single ref is given")
         base_ref, head_ref = m.group("a"), m.group("b")
@@ -205,6 +229,7 @@ def materialize_local_diff_run(
     spec: str,
     runs_root: Path,
     *,
+    right: str | None = None,
     repo_root: Path | None = None,
     no_staged: bool = False,
     no_unstaged: bool = False,
@@ -216,6 +241,7 @@ def materialize_local_diff_run(
     """
     resolved = resolve_local_diff(
         spec,
+        right=right,
         repo_root=repo_root,
         no_staged=no_staged,
         no_unstaged=no_unstaged,
@@ -240,6 +266,34 @@ def _find_repo_root(start: Path) -> Path:
         if p.parent == p:
             raise LocalDiffError(f"no git repo found at or above {start}")
         p = p.parent
+
+
+def _diff_endpoint_pair(cwd: Path, left: str, right: str) -> tuple[str, str, str, str]:
+    """Diff two same-kind endpoints. Returns (raw, base_sha, head_sha, mode).
+
+    A ``:`` marks a blob endpoint (``rev:path``); its absence marks a
+    tree endpoint (a ref). Both endpoints must be the same kind — a
+    whole tree can't be diffed against a single file.
+    """
+    left_blob, right_blob = ":" in left, ":" in right
+    if left_blob != right_blob:
+        raise LocalDiffError(
+            "both endpoints must be the same kind: two refs (whole-tree) or two rev:path blobs (single-file)"
+        )
+    if not left_blob:
+        raw, base_sha, head_sha = _diff_committed_range(cwd, left, right, "..")
+        return raw, base_sha, head_sha, "tree-pair"
+
+    left_rev, left_path = left.split(":", 1)
+    right_rev, right_path = right.split(":", 1)
+    if not left_path or not right_path:
+        raise LocalDiffError(f"blob endpoint needs a path: {left!r} {right!r}")
+    # Resolve the commit side of each blob so worktree_add (which needs a
+    # commit, not the blob's own SHA) and the diff both pin the same tree.
+    base_sha = _safe_rev_parse(cwd, left_rev)
+    head_sha = _safe_rev_parse(cwd, right_rev)
+    raw = _safe_diff(cwd, f"{base_sha}:{left_path}", f"{head_sha}:{right_path}")
+    return raw, base_sha, head_sha, "blob-pair"
 
 
 def _diff_committed_range(cwd: Path, base_ref: str, head_ref: str, sep: str) -> tuple[str, str, str]:
