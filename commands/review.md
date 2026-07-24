@@ -4,7 +4,7 @@ description: Open an LLM-augmented viewer for local work in progress; walk throu
 
 You are running a **local-review** workflow for the user. Intent: they (or you, in this session) have just implemented or modified some code in this repo, and they want a structured review of that work before moving on.
 
-**Scope.** This skill is for reviewing **local git changes** in conversation with you — working tree, staged, or committed-on-branch. Nothing is posted anywhere. The user is the reviewer; you are the walkthrough partner.
+**Scope.** This skill is for reviewing **local git changes** in conversation with you — working tree, staged, committed-on-branch, or any two arbitrary points in local history (an explicit endpoint pair, e.g. two commits or two `rev:path` blobs). Nothing is posted anywhere. The user is the reviewer; you are the walkthrough partner.
 
 **Not in scope.** For reviewing a GitHub PR with intent to post the reviewer's comments back to GitHub, use `/scr:pr`. Different flow, different command, different stakes — don't conflate them.
 
@@ -23,7 +23,18 @@ Your job is to:
 Pass it through verbatim as the CLI args to `scr review`. Examples:
 - `/review HEAD~1` → `scr review HEAD~1`
 - `/review main..HEAD --spec docs/spec.md` → `scr review main..HEAD --spec docs/spec.md`
+- `/review e4e8f74 HEAD` → `scr review e4e8f74 HEAD`
+- `/review e4e8f74:old/path.py HEAD:new/path.py` → `scr review e4e8f74:old/path.py HEAD:new/path.py`
 - `/review` (empty) → infer (see below)
+
+**Two-endpoint form.** `scr review` accepts a diff between a LEFT and a
+RIGHT endpoint, passed as two space-separated tokens. Both must be the
+same kind: two refs (`e4e8f74 HEAD`) for a whole-tree diff, or two
+`rev:path` blobs (`A:old.py B:new.py`) for a single-file diff — where
+the two files may live at different paths (cross-path renders as a
+rename). A second token is intentional, not a typo: pass it through as
+a second argument, don't collapse it into `A..B` or drop it. `A..B` /
+`A...B` stay the one-token range forms.
 
 ### If `$ARGUMENTS` is empty
 
