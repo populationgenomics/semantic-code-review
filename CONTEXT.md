@@ -276,6 +276,20 @@ a base — not itself a driver, just the scaffolding they extend. Each
 driver lives in its per-backend file alongside the `Backend` adapter
 that constructs it.
 
+Only `claude` has a CLI driver. The gemini-cli driver was removed
+(commit b210096); Gemini access stays on the `gemini-api` SDK backend.
+agy (the Gemini CLI successor) is re-checked periodically for
+reintroduction. Last reviewed 2026-07 (agy 1.0.16): still blocked. It
+now has `--json-schema` (validated `structured_output` in the envelope)
+and `--output-format=json`, and plan-quota auth works via subprocess —
+so a single-shot, no-tools pass could run on it. But it exposes no
+per-invocation `--mcp-config`, so the console and per-hunk/fold-summary
+passes can't ground the model in the worktree (the core mechanism, ADR
+0002/0003); no `--system-prompt` (and ~31k tokens of un-suppressible
+own-scaffolding per call); and only all-or-nothing
+`--dangerously-skip-permissions`, not read-only tool scoping. Gate for
+reintroduction: `--mcp-config` + `--system-prompt`.
+
 Distinct from the `Model` subclasses pydantic-ai ships
 (`AnthropicModel`, `GoogleModel`, …), which we instantiate but do not
 author. pydantic-ai itself has no word for this distinction —
