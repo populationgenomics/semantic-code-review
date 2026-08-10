@@ -169,6 +169,52 @@ class RepoTools:
             return structural.outline_symbols(source, lang)
         return self.cache.outline(sha, path, lambda: structural.outline_symbols(source, lang))
 
+    # --- prompt seeds -----------------------------------------------------
+    #
+    # Not part of the LLM tool surface (no `@_tool`): these run in-process
+    # to put in the prompt what the model would otherwise spend a turn
+    # fetching. Both return "" when the answer doesn't exist — an
+    # unsupported language has no outline, a deleted file has no head
+    # source — so the caller omits the section rather than asserting an
+    # empty one.
+
+    def outline_seed(self, path: str) -> str:
+        """Flat text outline of a head-worktree file, for the hunk prompt.
+
+        Text rather than the `outline` tool's JSON: this rides in every
+        hunk prompt for the file, where the JSON's punctuation is pure
+        overhead. Signatures are kept — they are what makes the outline
+        answer "what does this call take" without a read.
+        """
+        lang = structural.language_for_path(path)
+        if lang is None:
+            return ""
+        source = self._read_source(path, None)
+        if source is None:
+            return ""
+        symbols = self._outline_symbols(path, None, source, lang)
+        lines: list[str] = []
+        _render_outline(symbols, depth=0, out=lines)
+        return _cap("\n".join(lines))
+
+    def source_window(self, path: str, start_line: int, end_line: int) -> str:
+        """Head-side source around a hunk, with 1-indexed line numbers.
+
+        The diff body carries only the few context lines git emitted;
+        this widens that to the enclosing code so the common "read my own
+        file around this change" tool call has nothing left to fetch.
+        """
+        source = self._read_source(path, None)
+        if source is None:
+            return ""
+        lines = source.splitlines()
+        start = max(1, start_line)
+        end = min(len(lines), end_line)
+        if start > end:
+            return ""
+        width = len(str(end))
+        return _cap("\n".join(f"{n:>{width}} {lines[n - 1]}" for n in range(start, end + 1)))
+
     @_tool
     def symbol_at(self, path: str, line: int, sha: str | None = None) -> str:
         """Innermost symbol enclosing a line, as a JSON object (or `null`).
@@ -377,6 +423,17 @@ def _is_inside(child: Path, parent: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _render_outline(symbols: list[structural.Symbol], *, depth: int, out: list[str]) -> None:
+    """Append `symbols` to `out` as indented `kind name  (start-end)` lines."""
+    for sym in symbols:
+        # A declared signature already names its own kind syntactically
+        # (`def f(...)`, `class C`), so `kind` is only worth spending a
+        # token on when there is no signature to show.
+        label = sym.signature or f"{sym.kind} {sym.name}"
+        out.append(f"{'  ' * depth}{label}  ({sym.range.start_line}-{sym.range.end_line})")
+        _render_outline(sym.children, depth=depth + 1, out=out)
 
 
 def _cap(text: str) -> str:

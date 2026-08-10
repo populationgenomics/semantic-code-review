@@ -249,6 +249,15 @@ async def augment_run_dir(
             sem = asyncio.Semaphore(concurrency)
             stats = _HunkStats()
             results: dict[tuple[int, int], HunkAnnotations] = {}
+            # One tree-sitter outline per file, shared by all its hunks:
+            # it is constant across them and rides in the cached per-file
+            # prompt prefix. Empty for unsupported languages and for files
+            # with no head side (pure deletions).
+            file_outlines: dict[int, str] = {}
+            if repo_tools is not None:
+                for fi, _hi, _ord in queued:
+                    if fi not in file_outlines:
+                        file_outlines[fi] = repo_tools.outline_seed(diff.files[fi].path)
             tasks = [
                 asyncio.create_task(
                     _augment_one_hunk(
@@ -268,6 +277,7 @@ async def augment_run_dir(
                         results,
                         on_event,
                         file_spans.get(fi, ([], [])),
+                        file_outlines.get(fi, ""),
                     )
                 )
                 for fi, hi, ord_idx in queued
@@ -367,6 +377,27 @@ class _HunkStats:
     failed: int = 0
 
 
+# Head-side lines of real source to show either side of a hunk. The diff
+# body carries only git's few context lines; widening it in-process is
+# what makes the modal "read my own file around this change" tool call
+# unnecessary — that call cost a whole extra turn, and a turn re-reads
+# the accumulated context.
+HUNK_SURROUNDING_LINES = 25
+
+
+def _surrounding_source(repo_tools: RepoTools, path: str, hunk: AnnotatedHunk) -> str:
+    """Head source around `hunk`, or "" when there is no head side."""
+    parsed = hunk.parsed
+    if parsed.new_count <= 0:
+        return ""
+    hunk_end = parsed.new_start + parsed.new_count - 1
+    return repo_tools.source_window(
+        path,
+        parsed.new_start - HUNK_SURROUNDING_LINES,
+        hunk_end + HUNK_SURROUNDING_LINES,
+    )
+
+
 async def _augment_one_hunk(
     ord_idx: int,
     meter: ProgressMeter,
@@ -384,6 +415,7 @@ async def _augment_one_hunk(
     results: dict[tuple[int, int], HunkAnnotations],
     on_event: OnEvent | None,
     fold_spans: tuple[list, list],
+    file_outline: str,
 ) -> None:
     fp = diff.files[fi]
     hunk = fp.hunks[hi]
@@ -411,6 +443,8 @@ async def _augment_one_hunk(
                 file_summary=file_summary,
                 repo_tools=rt,
                 model=model,
+                file_outline=file_outline,
+                surrounding=_surrounding_source(rt, fp.path, hunk),
                 cache=cache,
                 trace_dir=trace_dir,
             )

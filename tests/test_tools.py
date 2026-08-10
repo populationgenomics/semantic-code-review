@@ -106,6 +106,47 @@ def test_git_log(repo: RepoTools) -> None:
     assert "init" in out
 
 
+# --- prompt seeds ----------------------------------------------------------
+
+
+def test_outline_seed_renders_signatures_and_ranges(repo: RepoTools) -> None:
+    out = repo.outline_seed("a.py")
+    assert "def foo()" in out
+    assert "(1-2)" in out
+
+
+def test_outline_seed_nests_children(repo: RepoTools) -> None:
+    (repo.head_worktree / "cls.py").write_text("class C:\n    def m(self):\n        return 1\n")
+    out = repo.outline_seed("cls.py")
+    lines = out.splitlines()
+    assert lines[0].startswith("class C")
+    assert lines[1].startswith("  def m")
+
+
+def test_outline_seed_empty_for_unsupported_language(repo: RepoTools) -> None:
+    (repo.head_worktree / "notes.txt").write_text("hello\n")
+    assert repo.outline_seed("notes.txt") == ""
+
+
+def test_outline_seed_empty_for_missing_file(repo: RepoTools) -> None:
+    """A pure deletion has no head side — omit the section, don't fake one."""
+    assert repo.outline_seed("gone.py") == ""
+
+
+def test_source_window_is_line_numbered_and_clamped(repo: RepoTools) -> None:
+    """Out-of-range bounds clamp to the file rather than raising."""
+    out = repo.source_window("a.py", -5, 99)
+    assert out.splitlines() == ["1 def foo():", "2     return 1"]
+
+
+def test_source_window_empty_for_missing_file(repo: RepoTools) -> None:
+    assert repo.source_window("gone.py", 1, 5) == ""
+
+
+def test_source_window_empty_when_range_is_past_eof(repo: RepoTools) -> None:
+    assert repo.source_window("a.py", 50, 60) == ""
+
+
 def test_truncation() -> None:
     from semantic_code_review.augment.tools import _cap
 

@@ -11,6 +11,7 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
     ToolCallPart,
+    UserPromptPart,
 )
 from pydantic_ai.models import Model, ModelRequestParameters
 from pydantic_ai.settings import ModelSettings
@@ -23,6 +24,21 @@ from semantic_code_review.format.parse import parse_augmented_diff
 
 def _sh(cwd: Path, *args: str) -> None:
     subprocess.run(args, cwd=cwd, check=True, capture_output=True)
+
+
+def _user_text(messages: list[ModelMessage]) -> str:
+    """Concatenate the text blocks of every user prompt in `messages`."""
+    parts: list[str] = []
+    for message in messages:
+        for part in getattr(message, "parts", []):
+            if not isinstance(part, UserPromptPart):
+                continue
+            content = part.content
+            if isinstance(content, str):
+                parts.append(content)
+                continue
+            parts.extend(block for block in content if isinstance(block, str))
+    return "\n".join(parts)
 
 
 class _CannedModel(Model):
@@ -52,6 +68,9 @@ class _CannedModel(Model):
         self._hunks = list(hunk_args_list)
         self._extras = list(extra_args_list or [])
         self.calls = 0
+        # Flattened user-prompt text per call, keyed by output tool, so
+        # tests can assert what a pass actually sent.
+        self.prompts: list[tuple[str, str]] = []
 
     @property
     def model_name(self) -> str:
@@ -71,6 +90,7 @@ class _CannedModel(Model):
         if not model_request_parameters.output_tools:
             raise AssertionError("_CannedModel expects a ToolOutput-driven Agent — no output_tools present")
         tool_name = model_request_parameters.output_tools[0].name
+        self.prompts.append((tool_name, _user_text(messages)))
         if tool_name == "submit_overview":
             args = self._overview
         elif tool_name == "submit_annotations":
@@ -180,6 +200,73 @@ async def test_augment_produces_parseable_output(tmp_path: Path) -> None:
     assert reparsed.files[0].hunks[0].ann.intent.startswith("Bump x")
     assert reparsed.files[0].hunks[1].ann.intent.startswith("Bump y")
     assert canned.calls == 3  # 1 overview + 2 hunks
+
+
+async def test_hunk_prompt_carries_outline_and_surrounding_source(tmp_path: Path) -> None:
+    """Both seeds are in-process answers to the reads the model used to make.
+
+    A `read_file` of the hunk's own file costs a whole extra turn, and a
+    turn re-reads the accumulated context — so the cheapest fix is to
+    have already answered it.
+    """
+    run = _make_run_dir(tmp_path)
+    (run / "head" / "f.py").write_text(
+        "\n".join(
+            ["x = 2", "", "def helper(n: int) -> int:", "    return n + 1", ""] + [f"# pad {i}" for i in range(20)]
+        ),
+        encoding="utf-8",
+    )
+    backend, canned = _make_canned_backend(
+        overview_args={"summary": "s", "themes": [], "files": [{"path": "f.py", "summary": "fs"}]},
+        hunk_args_list=[
+            {"intent": "a", "confidence": 90, "smells": []},
+            {"intent": "b", "confidence": 90, "smells": []},
+        ],
+    )
+    await augment_run_dir(run, model="t", concurrency=1, client=backend, cache=None)
+
+    hunk_prompts = [text for tool, text in canned.prompts if tool == "submit_annotations"]
+    assert len(hunk_prompts) == 2
+    for prompt in hunk_prompts:
+        assert "# File outline" in prompt
+        assert "def helper(n: int) -> int" in prompt
+        assert "# Surrounding head source" in prompt
+        assert "1 x = 2" in prompt
+
+
+async def test_overview_prompt_has_no_hunk_seeds(tmp_path: Path) -> None:
+    """The seeds are per-hunk; the overview pass works from headers alone."""
+    run = _make_run_dir(tmp_path)
+    backend, canned = _make_canned_backend(
+        overview_args={"summary": "s", "themes": [], "files": [{"path": "f.py", "summary": "fs"}]},
+        hunk_args_list=[
+            {"intent": "a", "confidence": 90, "smells": []},
+            {"intent": "b", "confidence": 90, "smells": []},
+        ],
+    )
+    await augment_run_dir(run, model="t", concurrency=1, client=backend, cache=None)
+
+    overview_prompt = next(text for tool, text in canned.prompts if tool == "submit_overview")
+    assert "# File outline" not in overview_prompt
+    assert "# Surrounding head source" not in overview_prompt
+
+
+async def test_hunk_prompt_omits_seeds_when_context_is_skipped(tmp_path: Path) -> None:
+    """`--skip-context` means no worktree grounding — including the seeds."""
+    run = _make_run_dir(tmp_path)
+    backend, canned = _make_canned_backend(
+        overview_args={"summary": "s", "themes": [], "files": [{"path": "f.py", "summary": "fs"}]},
+        hunk_args_list=[
+            {"intent": "a", "confidence": 90, "smells": []},
+            {"intent": "b", "confidence": 90, "smells": []},
+        ],
+    )
+    await augment_run_dir(run, model="t", concurrency=1, client=backend, cache=None, skip_context=True)
+
+    for tool, text in canned.prompts:
+        if tool == "submit_annotations":
+            assert "# File outline" not in text
+            assert "# Surrounding head source" not in text
 
 
 class _RecordingSubprocModel(_CannedModel):

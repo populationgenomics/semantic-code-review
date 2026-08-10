@@ -66,24 +66,37 @@ def format_hunk_prompt(
     hunk: AnnotatedHunk,
     overview_json: str,
     file_summary: str,
+    file_outline: str = "",
+    surrounding: str = "",
 ) -> list[UserContent]:
     """Assemble the user-prompt blocks for one hunk call.
 
     Returns a `UserContent` list with `CachePoint` markers between the
-    cacheable prefix sections (overview, file summary) and the
+    cacheable prefix sections (overview, file summary + outline) and the
     per-hunk text. pydantic-ai's Anthropic adapter translates each
     `CachePoint` into a `cache_control: ephemeral` annotation on the
     preceding text block; non-supporting providers filter the markers
     out and concatenate the text blocks. Fold-region summaries are not
     produced here — the review server fires a focused call on first
     fold-close; see :mod:`semantic_code_review.augment.fold_summary`.
+
+    `file_outline` sits inside the per-file cached prefix (it is
+    constant across the file's hunks); `surrounding` varies per hunk and
+    so rides with the hunk text. Both are omitted when empty rather than
+    emitted as empty sections — an unsupported language genuinely has no
+    outline, and a header-only section reads as "there is nothing here".
     """
     numbered = linenos.number_for_prompt(f"{hunk.parsed.header}\n{hunk.parsed.body}")
+    file_block = f"# File summary\n{file_summary}"
+    if file_outline:
+        file_block += f"\n\n# File outline (deterministic — tree-sitter, head side)\n{file_outline}"
     hunk_text = f"# File\npath: {fp.path}\nlang: {fp.ann.lang or ''}\n\n# Hunk\n{numbered}"
+    if surrounding:
+        hunk_text += f"\n\n# Surrounding head source (post-image line numbers)\n{surrounding}"
     return [
         f"# PR overview\n{overview_json}",
         CachePoint(),
-        f"# File summary\n{file_summary}",
+        file_block,
         CachePoint(),
         hunk_text,
     ]
@@ -112,6 +125,8 @@ async def run_hunk_pass(
     file_summary: str,
     repo_tools: RepoTools,
     model: str,
+    file_outline: str = "",
+    surrounding: str = "",
     cache: CacheStore | None = None,
     trace_dir: Path | None = None,
 ) -> dict[str, Any]:
@@ -119,7 +134,7 @@ async def run_hunk_pass(
         _HUNK,
         client=client,
         agent=make_hunk_agent(client.model),
-        user_content=format_hunk_prompt(fp, hunk, overview_json, file_summary),
+        user_content=format_hunk_prompt(fp, hunk, overview_json, file_summary, file_outline, surrounding),
         system=HUNK_SYSTEM,
         model=model,
         cache_inputs=(
@@ -128,6 +143,8 @@ async def run_hunk_pass(
             fp.path,
             hunk.parsed.header,
             hunk.parsed.body,
+            file_outline,
+            surrounding,
         ),
         deps=repo_tools,
         model_settings=_HUNK_CACHE_SETTINGS,
