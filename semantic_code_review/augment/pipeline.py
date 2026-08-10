@@ -22,7 +22,7 @@ from ..format.parse import parse_raw_diff
 from ..format.sidecar import dump_sidecar
 from ..viewer.build_json import file_fold_spans
 from ..viewer.hunk_layout import build_hunk_viewer_block
-from . import mcp_http_host, skip, source_cache
+from . import mcp_http_host, skip, source_cache, usage
 from .agents import Client
 from .hunks import (
     build_hunk_annotations,
@@ -340,6 +340,9 @@ async def augment_run_dir(
     # one-liner doesn't fight the meter's redraw window.
     backend_tag = "subprocess" if client.is_subprocess_backend else "sdk"
     summary = f"scr augment: backend={backend_tag} model={model} hunks={len(tasks)} ok={stats.ok} failed={stats.failed}"
+    usage_summary = usage.write_usage_summary(run_dir)
+    if usage_summary is not None:
+        summary += " " + usage.format_summary_line(usage_summary)
     log.info(summary)
     import sys as _sys
 
