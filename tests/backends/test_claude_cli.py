@@ -18,6 +18,7 @@ import os
 import pytest
 import typer
 from pydantic_ai import Agent
+from pydantic_ai.messages import ModelResponse
 from pydantic_ai.output import ToolOutput
 
 from semantic_code_review.augment.schemas import HunkAnnotations
@@ -114,6 +115,47 @@ def test_build_claude_prompt_appends_task_instruction() -> None:
     assert "USER TEXT" in out
     assert "submit_annotations" in out
     assert "Do not include any prose" in out
+
+
+# ---------------------------------------------------------------------------
+# CLI driver — envelope diagnostics
+# ---------------------------------------------------------------------------
+
+
+def _last_provider_details(result: object) -> dict:
+    messages = result.all_messages()  # type: ignore[attr-defined]
+    response = next(m for m in reversed(messages) if isinstance(m, ModelResponse))
+    assert response.provider_details is not None
+    return response.provider_details
+
+
+async def test_envelope_diagnostics_ride_on_provider_details(
+    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`num_turns` is the only view of the subprocess's internal tool loop.
+
+    pydantic-ai sees one synthetic response per spawn, so without this
+    the loop depth that dominates per-hunk cost never reaches the trace.
+    """
+    proc = FakeProc(claude_envelope({"intent": "x"}, num_turns=7))
+    install_fake_subproc(monkeypatch, [proc])
+
+    result = await _agent(claude_model).run("USER")
+    details = _last_provider_details(result)
+    assert details["num_turns"] == 7
+    assert details["subtype"] == "success"
+    assert details["stop_reason"] == "end_turn"
+
+
+async def test_absent_num_turns_is_omitted_not_zeroed(
+    claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A CLI that stops reporting turns must read as unknown, not as zero."""
+    proc = FakeProc(claude_envelope({"intent": "x"}))
+    install_fake_subproc(monkeypatch, [proc])
+
+    result = await _agent(claude_model).run("USER")
+    assert "num_turns" not in _last_provider_details(result)
 
 
 # ---------------------------------------------------------------------------

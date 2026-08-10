@@ -188,6 +188,10 @@ def _response_to_dict(resp: ModelResponse) -> dict[str, Any]:
             "cache_creation_input_tokens": (usage.cache_write_tokens or 0) if usage else 0,
             "cache_read_input_tokens": (usage.cache_read_tokens or 0) if usage else 0,
         },
+        # CLI backends run their tool loop inside the subprocess; this is
+        # where the loop depth (`num_turns`) surfaces. Empty for SDK
+        # backends, whose per-turn detail is already in `iterations`.
+        "provider_details": dict(resp.provider_details) if resp.provider_details else {},
         "content": _response_content(resp),
     }
 

@@ -167,6 +167,25 @@ def _usage_from_envelope(envelope: dict[str, Any]) -> RequestUsage:
     )
 
 
+_ENVELOPE_DIAGNOSTIC_KEYS = ("num_turns", "subtype", "stop_reason", "duration_ms", "duration_api_ms")
+
+
+def _provider_details_from_envelope(envelope: dict[str, Any]) -> dict[str, Any]:
+    """Envelope fields that describe *how* the CLI reached its answer.
+
+    The subprocess runs its whole tool loop internally, so pydantic-ai
+    sees one synthetic response and `usage` is the only signal that
+    survives — which leaves loop depth invisible to the trace. These
+    keys carry it through; `ModelResponse.provider_details` is where
+    pydantic-ai expects provider-specific extras to ride.
+
+    Absent keys are omitted rather than defaulted: a CLI version that
+    stops emitting `num_turns` should read as "not reported", not as
+    zero turns.
+    """
+    return {k: envelope[k] for k in _ENVELOPE_DIAGNOSTIC_KEYS if k in envelope}
+
+
 def _structured_to_response(
     structured: dict[str, Any],
     *,
@@ -186,6 +205,7 @@ def _structured_to_response(
         usage=_usage_from_envelope(envelope),
         model_name=model_name,
         provider_name=provider_name,
+        provider_details=_provider_details_from_envelope(envelope),
         finish_reason="tool_call",
     )
 
@@ -209,6 +229,7 @@ def _text_to_response(
         usage=_usage_from_envelope(envelope),
         model_name=model_name,
         provider_name=provider_name,
+        provider_details=_provider_details_from_envelope(envelope),
         finish_reason="stop",
     )
 

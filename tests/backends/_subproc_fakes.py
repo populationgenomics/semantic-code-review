@@ -63,13 +63,15 @@ def claude_envelope(
     is_error: bool = False,
     use_structured_output: bool = True,
     usage: dict | None = None,
+    num_turns: int | None = None,
 ) -> bytes:
     """Build a `claude -p --output-format=json` envelope.
 
     With `--json-schema` active the validated JSON lives in
     `structured_output` and `result` is empty. Set
     `use_structured_output=False` to simulate the pre-schema shape
-    that older `claude` versions emit.
+    that older `claude` versions emit. `num_turns` is omitted unless
+    given, so the absent-key path stays exercised.
     """
     payload: dict[str, Any] = {
         "type": "result",
@@ -85,6 +87,8 @@ def claude_envelope(
             "cache_read_input_tokens": 0,
         },
     }
+    if num_turns is not None:
+        payload["num_turns"] = num_turns
     if is_error:
         payload["result"] = structured if isinstance(structured, str) else json.dumps(structured)
     elif use_structured_output:
