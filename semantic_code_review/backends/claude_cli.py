@@ -44,10 +44,16 @@ class ClaudeCliBackend(Backend):
         # path. Its trade-offs (slower, subscription rate limits) are
         # self-evident, and the opus→sonnet demotion is `claude`'s own
         # `--fallback-model` behaviour, surfaced by `claude` when it happens.
-        return Client(
-            model=ClaudeCLIModel(model=model),
-            is_subprocess_backend=True,
+        # `max_turns` caps the subprocess's internal tool loop, the term
+        # that dominates per-hunk cost. Left at the driver default unless
+        # the config sets it; `usage.json` reports the turn distribution
+        # a run actually used.
+        driver = (
+            ClaudeCLIModel(model=model)
+            if self.bdef.max_turns is None
+            else ClaudeCLIModel(model=model, max_turns_with_mcp=self.bdef.max_turns)
         )
+        return Client(model=driver, is_subprocess_backend=True)
 
     def supports_auto(self) -> bool:
         return shutil.which("claude") is not None

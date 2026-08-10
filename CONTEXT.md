@@ -28,6 +28,12 @@ overridable with `--runs-root`. Contents:
   during the LLM passes.
 - `comments.json` — reviewer comments persisted by the back-channel
   HTTP server; populated only when `scr review` is the entry point.
+- `trace/` — one JSON per LLM call (prompt, response, usage), plus
+  `augment.log`.
+- `usage.json` — token accounting for the run, derived from `trace/`
+  by `augment/usage.py` after the passes finish: totals, a per-pass
+  breakdown, and the per-call and (CLI backends) internal-turn
+  distributions. Recomputable from the traces at any time.
 
 Each subsystem under `fetch/`, `review/`, `augment/`, and `viewer/`
 takes a `run_dir: Path` and operates inside it. The implicit contract

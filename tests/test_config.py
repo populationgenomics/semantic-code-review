@@ -84,6 +84,28 @@ def test_every_builtin_has_a_description() -> None:
         assert bdef.description, f"{name} is missing a description"
 
 
+def test_max_turns_parsed_from_backend_table(tmp_path: Path) -> None:
+    user = tmp_path / "config.toml"
+    user.write_text("[backends.claude-cli]\nmax_turns = 8\n", encoding="utf-8")
+    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    assert cfg.backends["claude-cli"].max_turns == 8
+
+
+def test_max_turns_defaults_to_none(tmp_path: Path) -> None:
+    """Unset means "keep the driver default", not "no turns"."""
+    cfg = ScrConfig.load(user_path=tmp_path / "missing.toml", repo_path=None)
+    assert cfg.backends["claude-cli"].max_turns is None
+
+
+@pytest.mark.parametrize("value", ['"8"', "true", "0", "-1"])
+def test_max_turns_rejects_non_positive_integers(tmp_path: Path, value: str) -> None:
+    """A quoted number, a bool, and anything below 1 are all mistakes."""
+    user = tmp_path / "config.toml"
+    user.write_text(f"[backends.claude-cli]\nmax_turns = {value}\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="max_turns"):
+        ScrConfig.load(user_path=user, repo_path=None)
+
+
 def test_field_doc_extracts_annotated_metadata() -> None:
     from semantic_code_review.config import field_doc
 

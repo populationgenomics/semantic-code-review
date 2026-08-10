@@ -88,6 +88,13 @@ Defines a backend or overrides a builtin. Keys:
 | `api_key_env` | string | env var the key is read from |
 | `api_key_command` | list or string | argv that prints the key (`["gh","auth","token"]` or `"gh auth token"`, shlex-split). Run with `shell=False`. |
 | `description` | string | shown in `scr init` / `scr config show` |
+| `max_turns` | int ≥ 1 | cap on the CLI's internal tool-loop turns per augment call (`claude-cli` only; default 20) |
+
+`max_turns` is the main cost lever on `claude-cli`: the subprocess runs its
+whole tool loop internally and every turn re-reads the accumulated context,
+so per-hunk cost scales with loop depth rather than with hunk size. Check
+the `turns` distribution in a run's `usage.json` before lowering it — a cap
+below what a hunk needs turns into a failed hunk, not a cheaper one.
 
 Credential resolution for a backend: `$api_key_env` (from the shell, a
 loaded `.env`, or `[env]`) > `api_key_command`. `claude-cli` needs no key;

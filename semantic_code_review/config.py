@@ -112,6 +112,15 @@ class BackendDef:
         str | None,
         "Free-form blurb shown at the top of `scr config edit --template` output.",
     ] = None
+    max_turns: Annotated[
+        int | None,
+        (
+            "Cap on the CLI's internal tool-loop turns per augment call. "
+            "Only meaningful for cli backends, where each turn re-reads the "
+            "accumulated context and so dominates per-hunk cost. None keeps "
+            "the driver default; check usage.json's `turns` before lowering."
+        ),
+    ] = None
 
 
 def field_doc(name: str) -> str:
@@ -350,10 +359,11 @@ class ScrConfig:
                 "description",
                 existing.description if existing else None,
             ),
+            max_turns=_pick_int(body, "max_turns", existing.max_turns if existing else None),
         )
         self.backends[name] = merged
         self.sources[f"backends.{name}"] = source
-        for key in ("model", "base_url", "api_key_env", "api_key_command", "description"):
+        for key in ("model", "base_url", "api_key_env", "api_key_command", "description", "max_turns"):
             if key in body:
                 self.sources[f"backends.{name}.{key}"] = source
 
@@ -433,6 +443,20 @@ def _pick_str(body: dict[str, Any], key: str, fallback: str | None) -> str | Non
         return None
     if not isinstance(v, str):
         raise ConfigError(f"backend field {key!r} must be a string, got {type(v).__name__}")
+    return v
+
+
+def _pick_int(body: dict[str, Any], key: str, fallback: int | None) -> int | None:
+    if key not in body:
+        return fallback
+    v = body[key]
+    if v is None:
+        return None
+    # bool is an int subclass; `max_turns = true` is a mistake, not a 1.
+    if not isinstance(v, int) or isinstance(v, bool):
+        raise ConfigError(f"backend field {key!r} must be an integer, got {type(v).__name__}")
+    if v < 1:
+        raise ConfigError(f"backend field {key!r} must be >= 1, got {v}")
     return v
 
 

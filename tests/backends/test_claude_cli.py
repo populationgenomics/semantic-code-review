@@ -263,6 +263,56 @@ async def test_claude_missing_structured_output_raises(
         await _agent(claude_model).run("USER")
 
 
+async def test_configured_max_turns_caps_the_tool_loop(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """`[backends.claude-cli].max_turns` reaches the spawn's `--max-turns`.
+
+    The internal loop is the term that dominates per-hunk cost, so the
+    cap is tunable per config rather than only in code.
+    """
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_claude = fake_bin / "claude"
+    fake_claude.write_text("#!/bin/sh\nexit 0\n")
+    fake_claude.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ.get('PATH', '')}")
+
+    bdef = BackendDef(type=BackendType.CLAUDE_CLI, default_model="claude-opus-4-7", max_turns=8)
+    client = ClaudeCliBackend("claude-cli", bdef).resolve(model="claude-opus-4-7")
+    model = client.model
+    assert isinstance(model, ClaudeCLIModel)
+    model.set_mcp_endpoint(_HTTP_ENDPOINT)
+
+    proc = FakeProc(claude_envelope({"intent": "x"}))
+    calls = install_fake_subproc(monkeypatch, [proc])
+    await _agent(model).run("USER")
+
+    argv = calls[0]["argv"]
+    assert int(argv[argv.index("--max-turns") + 1]) == 8
+    await model.aclose()
+
+
+async def test_unset_max_turns_keeps_the_driver_default(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_claude = fake_bin / "claude"
+    fake_claude.write_text("#!/bin/sh\nexit 0\n")
+    fake_claude.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ.get('PATH', '')}")
+
+    bdef = BackendDef(type=BackendType.CLAUDE_CLI, default_model="claude-opus-4-7")
+    model = ClaudeCliBackend("claude-cli", bdef).resolve(model="claude-opus-4-7").model
+    assert isinstance(model, ClaudeCLIModel)
+    model.set_mcp_endpoint(_HTTP_ENDPOINT)
+
+    proc = FakeProc(claude_envelope({"intent": "x"}))
+    calls = install_fake_subproc(monkeypatch, [proc])
+    await _agent(model).run("USER")
+
+    argv = calls[0]["argv"]
+    assert int(argv[argv.index("--max-turns") + 1]) == 20
+    await model.aclose()
+
+
 async def test_claude_single_shot_when_no_endpoint(
     claude_model: ClaudeCLIModel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
