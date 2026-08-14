@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -102,17 +103,29 @@ def format_hunk_prompt(
     ]
 
 
+_UNSAFE_IN_FILENAME = re.compile(r"[^A-Za-z0-9._-]")
+
+
 def _hunk_trace_path(
     trace_dir: Path | None,
     fp: AnnotatedFile,
     hunk: AnnotatedHunk,
 ) -> Path | None:
+    """Trace path for one hunk, as a flat file directly under `trace_dir`.
+
+    A `@@` header carries git's trailing section text, which routinely holds
+    a path (``@@ -74,10 +74,10 @@ See `commands/review.md` ...``). Any
+    separator surviving into the name makes the trace a nested file — the
+    writer `mkdir -p`s, so it lands in a stray directory instead of failing —
+    and it then hides from a flat scan of the trace dir. Whitelist the
+    filename-safe characters rather than blacklisting the separators seen
+    so far.
+    """
     if trace_dir is None:
         return None
-    safe_file = fp.path.replace("/", "_")
-    safe_hunk = (
-        hunk.parsed.header.replace(" ", "_").replace("@", "").replace(",", "_").replace("+", "p").replace("-", "m")
-    )
+    safe_file = _UNSAFE_IN_FILENAME.sub("_", fp.path)
+    header = hunk.parsed.header.replace("+", "p").replace("-", "m")
+    safe_hunk = _UNSAFE_IN_FILENAME.sub("_", header)
     return trace_dir / f"hunk-{safe_file}-{safe_hunk[:40]}.json"
 
 

@@ -124,6 +124,23 @@ def test_malformed_trace_skipped_without_losing_the_rest(tmp_path: Path) -> None
     assert summary["totals"]["input_tokens"] == 7
 
 
+def test_nested_legacy_trace_still_counted_against_its_pass(tmp_path: Path) -> None:
+    """Traces written before the filename was sanitised sit in a subdirectory.
+
+    A flat scan dropped their tokens silently, which is the one thing this
+    accounting exists to prevent.
+    """
+    trace_dir = tmp_path / "trace"
+    _write(trace_dir, "hunk-a.py-1.json", _trace(usages=[_usage(inp=10)]))
+    nested = trace_dir / "hunk-README.md-_m74_10__See_`commands"
+    _write(nested, "review.md`.json", _trace(usages=[_usage(inp=90)]))
+
+    summary = usage.summarize_trace_dir(trace_dir)
+
+    assert summary["totals"]["input_tokens"] == 100
+    assert summary["passes"]["hunk"]["calls"] == 2
+
+
 def test_write_usage_summary_returns_none_without_a_trace_dir(tmp_path: Path) -> None:
     assert usage.write_usage_summary(tmp_path) is None
     assert not (tmp_path / usage.USAGE_FILENAME).exists()

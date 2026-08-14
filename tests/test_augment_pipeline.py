@@ -703,3 +703,44 @@ def test_should_skip_defaults_and_extra_globs() -> None:
     # Config-supplied extra globs extend the denylist (path or basename).
     assert skip.should_skip("gen/schema.py", ("gen/**",))
     assert skip.should_skip("build/out.js", ("*.js",))
+
+
+def test_hunk_trace_path_stays_flat_when_the_header_holds_a_path() -> None:
+    """Git puts trailing section text on `@@` headers, often containing a path.
+
+    An unsanitised separator made the trace a nested file (the writer
+    `mkdir -p`s), where a flat scan of the trace dir could not see it.
+    """
+    from semantic_code_review.augment.hunks import _hunk_trace_path
+    from semantic_code_review.augment.schemas import (
+        AnnotatedFile,
+        AnnotatedHunk,
+        FileAnnotations,
+        HunkAnnotations,
+        ParsedHunk,
+    )
+
+    hunk = AnnotatedHunk(
+        parsed=ParsedHunk(
+            header="@@ -74,10 +74,10 @@ See `commands/review.md` for the prompt.",
+            body="",
+            old_start=74,
+            old_count=10,
+            new_start=74,
+            new_count=10,
+        ),
+        ann=HunkAnnotations(intent=""),
+    )
+    fp = AnnotatedFile(
+        path="docs/a/README.md",
+        diff_git_line="diff --git a/docs/a/README.md b/docs/a/README.md",
+        ann=FileAnnotations(),
+        hunks=[hunk],
+    )
+
+    path = _hunk_trace_path(Path("/trace"), fp, hunk)
+
+    assert path is not None
+    assert path.parent == Path("/trace")
+    assert "/" not in path.name[len("hunk-") :]
+    assert path.name.endswith(".json")
