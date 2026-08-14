@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import subprocess
 from pathlib import Path
@@ -268,55 +267,6 @@ async def test_hunk_prompt_omits_seeds_when_context_is_skipped(tmp_path: Path) -
         if tool == "submit_annotations":
             assert "# File outline" not in text
             assert "# Surrounding head source" not in text
-
-
-class _OrderRecordingModel(_CannedModel):
-    """Records call start/end order, yielding to the loop in between.
-
-    The yield is what makes fan-out observable: concurrent calls all
-    append `start` before any appends `end`.
-    """
-
-    def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
-        super().__init__(*args, **kwargs)
-        self.events: list[str] = []
-
-    async def request(  # type: ignore[override]
-        self,
-        messages: list[ModelMessage],
-        model_settings: ModelSettings | None,
-        model_request_parameters: ModelRequestParameters,
-    ) -> ModelResponse:
-        is_hunk = bool(
-            model_request_parameters.output_tools
-            and model_request_parameters.output_tools[0].name == "submit_annotations"
-        )
-        if is_hunk:
-            self.events.append("start")
-        await asyncio.sleep(0)
-        response = await super().request(messages, model_settings, model_request_parameters)
-        if is_hunk:
-            self.events.append("end")
-        return response
-
-
-async def test_first_hunk_runs_alone_to_warm_the_shared_prefix(tmp_path: Path) -> None:
-    """A cold fan-out has every in-flight call write its own prefix copy.
-
-    Cache writes bill at a premium and reads at a fraction, so the first
-    call is run alone to establish the prefix the rest read.
-    """
-    run = _make_run_dir(tmp_path)
-    model = _OrderRecordingModel(
-        {"summary": "s", "themes": [], "files": [{"path": "f.py", "summary": "fs"}]},
-        [
-            {"intent": "a", "confidence": 90, "smells": []},
-            {"intent": "b", "confidence": 90, "smells": []},
-        ],
-    )
-    await augment_run_dir(run, model="t", concurrency=8, client=Client(model=model), cache=None)
-
-    assert model.events[:2] == ["start", "end"]
 
 
 class _RecordingSubprocModel(_CannedModel):

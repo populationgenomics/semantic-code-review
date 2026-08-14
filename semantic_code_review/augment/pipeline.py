@@ -258,43 +258,33 @@ async def augment_run_dir(
                 for fi, _hi, _ord in queued:
                     if fi not in file_outlines:
                         file_outlines[fi] = repo_tools.outline_seed(diff.files[fi].path)
-            coros = [
-                _augment_one_hunk(
-                    ord_idx,
-                    meter,
-                    sem,
-                    client,
-                    diff,
-                    fi,
-                    hi,
-                    overview_json,
-                    repo_tools,
-                    model,
-                    cache,
-                    trace_dir,
-                    stats,
-                    results,
-                    on_event,
-                    file_spans.get(fi, ([], [])),
-                    file_outlines.get(fi, ""),
+            tasks = [
+                asyncio.create_task(
+                    _augment_one_hunk(
+                        ord_idx,
+                        meter,
+                        sem,
+                        client,
+                        diff,
+                        fi,
+                        hi,
+                        overview_json,
+                        repo_tools,
+                        model,
+                        cache,
+                        trace_dir,
+                        stats,
+                        results,
+                        on_event,
+                        file_spans.get(fi, ([], [])),
+                        file_outlines.get(fi, ""),
+                    )
                 )
                 for fi, hi, ord_idx in queued
             ]
 
-            log.info("per-hunk pass: %d hunks queued (concurrency=%d)", len(coros), concurrency)
-            # Run the first hunk alone before fanning out. Every hunk call
-            # shares a prompt prefix (system prompt, tool definitions,
-            # overview), and the provider's prompt cache is keyed on it —
-            # but a cold fan-out puts `concurrency` calls in flight before
-            # any of them has written that prefix, so each writes its own
-            # copy at the write premium instead of reading a shared one.
-            # One serial call ahead of the fan-out costs a wave of
-            # wall-clock and turns the rest into cache reads.
-            # `_augment_one_hunk` swallows its own failures, so a failed
-            # warm-up doesn't hold up the rest.
-            if coros:
-                await coros[0]
-            await asyncio.gather(*[asyncio.create_task(c) for c in coros[1:]])
+            log.info("per-hunk pass: %d hunks queued (concurrency=%d)", len(tasks), concurrency)
+            await asyncio.gather(*tasks)
 
             # Merge per-hunk results back into the diff in one pass.
             diff = _merge_hunk_results(diff, results)
@@ -359,9 +349,7 @@ async def augment_run_dir(
     # fresh line, emit the human-readable summary to stderr so the
     # one-liner doesn't fight the meter's redraw window.
     backend_tag = "subprocess" if client.is_subprocess_backend else "sdk"
-    summary = (
-        f"scr augment: backend={backend_tag} model={model} hunks={len(queued)} ok={stats.ok} failed={stats.failed}"
-    )
+    summary = f"scr augment: backend={backend_tag} model={model} hunks={len(tasks)} ok={stats.ok} failed={stats.failed}"
     usage_summary = usage.write_usage_summary(run_dir)
     if usage_summary is not None:
         summary += " " + usage.format_summary_line(usage_summary)
