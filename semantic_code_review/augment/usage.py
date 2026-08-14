@@ -30,11 +30,16 @@ log = logging.getLogger(__name__)
 USAGE_FILENAME = "usage.json"
 
 
-def _pass_name(trace_name: str) -> str:
-    """Map a trace filename to the pass that wrote it."""
-    stem = trace_name.removesuffix(".json")
+def _pass_name(relative_path: str) -> str:
+    """Map a trace path, relative to the trace dir, to the pass that wrote it.
+
+    Keys on the first path component so a trace written before the filename
+    was sanitised — which landed in a `hunk-…/` subdirectory — still
+    attributes to its pass instead of falling through to `other`.
+    """
+    head = relative_path.split("/", 1)[0].removesuffix(".json")
     for prefix in ("hunk", "fold", "extra-review", "overview"):
-        if stem == prefix or stem.startswith(f"{prefix}-"):
+        if head == prefix or head.startswith(f"{prefix}-"):
             return prefix
     return "other"
 
@@ -137,7 +142,11 @@ def summarize_trace_dir(trace_dir: Path) -> dict[str, Any]:
         caller its accounting for the rest of the run.
     """
     passes: dict[str, _PassAccumulator] = {}
-    for path in sorted(trace_dir.glob("*.json")):
+    # Recursive: a trace whose name once carried a path separator landed in a
+    # subdirectory, and a flat scan silently dropped its tokens from the
+    # totals. The name is sanitised now, but accounting must not depend on
+    # that — an unreadable layout should never read as "spent nothing".
+    for path in sorted(trace_dir.rglob("*.json")):
         if path.name == USAGE_FILENAME:
             continue
         try:
@@ -148,7 +157,7 @@ def summarize_trace_dir(trace_dir: Path) -> dict[str, Any]:
         if not isinstance(trace, dict):
             log.warning("usage: skipping trace %s — not a JSON object", path.name)
             continue
-        passes.setdefault(_pass_name(path.name), _PassAccumulator()).add_trace(trace)
+        passes.setdefault(_pass_name(path.relative_to(trace_dir).as_posix()), _PassAccumulator()).add_trace(trace)
 
     totals = _PassAccumulator()
     for acc in passes.values():
