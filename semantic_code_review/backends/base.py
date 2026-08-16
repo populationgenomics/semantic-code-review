@@ -14,6 +14,7 @@ import subprocess
 from abc import ABC, abstractmethod
 
 import typer
+from pydantic_ai.models import Model
 
 from ..augment.agents import Client
 from ..config import BackendDef
@@ -111,4 +112,22 @@ def _env_get(name: str) -> str | None:
     return os.environ.get(name)
 
 
-__all__ = ["Backend", "resolve_api_key"]
+def supports_native_output_with_tools(model: Model) -> bool:
+    """Whether `model` can combine `NativeOutput` with function tools.
+
+    Native structured output is a per-*model* capability, not a per-backend
+    one: pydantic-ai carries a hard-coded list of Anthropic models that
+    support it, and Google raises unless the model is new enough to combine
+    it with tools. Deriving the flag from the model's profile keeps a newly
+    released model — or one outside the list — on the `ToolOutput` path
+    instead of failing every hunk before the first request.
+    """
+    profile = model.profile
+    if not profile.get("supports_json_schema_output", False):
+        return False
+    # Google-only key; absent on every other provider, where the
+    # combination is unrestricted.
+    return bool(profile.get("google_supports_tool_combination", True))
+
+
+__all__ = ["Backend", "resolve_api_key", "supports_native_output_with_tools"]

@@ -206,3 +206,89 @@ def test_default_matches_the_cli_driver_default() -> None:
     from semantic_code_review.backends.base import Backend
 
     assert Backend.DEFAULT_REQUEST_LIMIT == 20
+
+
+@pytest.mark.parametrize(
+    ("model_name", "expected"),
+    [
+        # pydantic-ai carries a hard-coded list of Anthropic models with
+        # native structured output; one outside it must stay on ToolOutput.
+        ("claude-opus-4-8", True),
+        ("claude-sonnet-4-7", False),
+    ],
+)
+def test_anthropic_native_output_follows_the_model(
+    monkeypatch: pytest.MonkeyPatch, model_name: str, expected: bool
+) -> None:
+    """Native output is a model capability, not a backend one. Forcing it
+    on makes every hunk raise before the first request, which the pipeline
+    catches per hunk — a run that exits 0 with no annotations."""
+    from semantic_code_review.backends.anthropic_sdk import AnthropicSdkBackend
+    from semantic_code_review.config import BackendDef, BackendType
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    bdef = BackendDef(type=BackendType.ANTHROPIC_SDK, default_model=model_name, api_key_env="ANTHROPIC_API_KEY")
+    client = AnthropicSdkBackend("claude-api", bdef).resolve(model=model_name)
+    assert client.native_output is expected
+
+
+@pytest.mark.parametrize(
+    ("model_name", "expected"),
+    [
+        # Google raises on NativeOutput + function tools below Gemini 3,
+        # and the hunk agent always registers tools.
+        ("gemini-2.5-pro", False),
+        ("gemini-3-pro", True),
+    ],
+)
+def test_google_native_output_follows_the_model(
+    monkeypatch: pytest.MonkeyPatch, model_name: str, expected: bool
+) -> None:
+    from semantic_code_review.backends.google_sdk import GoogleSdkBackend
+    from semantic_code_review.config import BackendDef, BackendType
+
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    bdef = BackendDef(type=BackendType.GOOGLE_SDK, default_model=model_name, api_key_env="GEMINI_API_KEY")
+    client = GoogleSdkBackend("gemini-api", bdef).resolve(model=model_name)
+    assert client.native_output is expected
+
+
+def test_every_sdk_backend_bounds_its_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Gemini API-key branch shipped without one — unbounded is
+    pydantic-ai's own 50-request ceiling, which is the burn this guards."""
+    from semantic_code_review.backends.google_sdk import GoogleSdkBackend
+    from semantic_code_review.backends.openai_compat import OpenAICompatBackend
+    from semantic_code_review.config import BackendDef, BackendType
+
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    gem = GoogleSdkBackend(
+        "gemini-api",
+        BackendDef(type=BackendType.GOOGLE_SDK, default_model="gemini-3-pro", api_key_env="GEMINI_API_KEY"),
+    ).resolve(model="gemini-3-pro")
+    assert gem.request_limit == GoogleSdkBackend.DEFAULT_REQUEST_LIMIT
+
+    monkeypatch.setenv("OAI_KEY", "k")
+    oai = OpenAICompatBackend(
+        "openai",
+        BackendDef(
+            type=BackendType.OPENAI_COMPAT,
+            default_model="gpt-4o",
+            api_key_env="OAI_KEY",
+            base_url="https://example/v1",
+        ),
+    ).resolve(model="gpt-4o")
+    assert oai.request_limit == OpenAICompatBackend.DEFAULT_REQUEST_LIMIT
+
+
+def test_thinking_is_only_asked_for_alongside_native_output() -> None:
+    """Anthropic rejects thinking with the forced tool choice `ToolOutput`
+    produces, so a ToolOutput model asked to think raises on every call."""
+    from semantic_code_review.augment.agents import Client
+    from semantic_code_review.augment.hunks import _hunk_model_settings
+
+    native = _hunk_model_settings(Client(model="m", native_output=True))  # type: ignore[arg-type]
+    tools = _hunk_model_settings(Client(model="m", native_output=False))  # type: ignore[arg-type]
+    assert "anthropic_thinking" in native
+    assert "anthropic_thinking" not in tools
