@@ -171,12 +171,11 @@ class RepoTools:
 
     # --- prompt seeds -----------------------------------------------------
     #
-    # Not part of the LLM tool surface (no `@_tool`): these run in-process
-    # to put in the prompt what the model would otherwise spend a turn
-    # fetching. Both return "" when the answer doesn't exist — an
-    # unsupported language has no outline, a deleted file has no head
-    # source — so the caller omits the section rather than asserting an
-    # empty one.
+    # Not part of the LLM tool surface (no `@_tool`): runs in-process to
+    # put in the prompt what the model would otherwise spend a turn
+    # fetching. Returns "" when there is no answer — an unsupported
+    # language has no outline — so the caller omits the section rather
+    # than asserting an empty one.
 
     def outline_seed(self, path: str) -> str:
         """Flat text outline of a head-worktree file, for the hunk prompt.
@@ -196,24 +195,6 @@ class RepoTools:
         lines: list[str] = []
         _render_outline(symbols, depth=0, out=lines)
         return _cap("\n".join(lines))
-
-    def source_window(self, path: str, start_line: int, end_line: int) -> str:
-        """Head-side source around a hunk, with 1-indexed line numbers.
-
-        The diff body carries only the few context lines git emitted;
-        this widens that to the enclosing code so the common "read my own
-        file around this change" tool call has nothing left to fetch.
-        """
-        source = self._read_source(path, None)
-        if source is None:
-            return ""
-        lines = source.splitlines()
-        start = max(1, start_line)
-        end = min(len(lines), end_line)
-        if start > end:
-            return ""
-        width = len(str(end))
-        return _cap("\n".join(f"{n:>{width}} {lines[n - 1]}" for n in range(start, end + 1)))
 
     @_tool
     def symbol_at(self, path: str, line: int, sha: str | None = None) -> str:

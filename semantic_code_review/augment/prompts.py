@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from .schemas import SMELL_TAGS_TEXT
 
-PROMPT_VERSION = "p13"
+PROMPT_VERSION = "p14"
 
 
 OVERVIEW_SYSTEM = (
@@ -73,11 +73,9 @@ HUNK_SYSTEM = (
     "`context`. Never write 'likely', 'probably', 'appears to', 'seems to', "
     "'looks like' — those are signals you're guessing from the header instead of "
     "reading the body or investigating.\n\n"
-    "The prompt already carries two deterministic sections so you don't have to fetch "
-    "them: `# File outline` (every definition in the head-side file, with its declared "
-    "signature and line range) and `# Surrounding head source` (the real code either "
-    "side of the hunk, line-numbered). Read those before reaching for a tool — a "
-    "`read_file` of the hunk's own file is almost always answered there already.\n\n"
+    "The prompt already carries `# File outline` — every definition in the head-side "
+    "file, with its declared signature and line range — so you don't have to fetch it. "
+    "Read it before reaching for a tool.\n\n"
     "You have tools to read OTHER files in the head worktree and at the base SHA, to "
     "grep, to list directories, and to check git history. Use them when the hunk depends "
     "on code outside this file; skip them if the hunk is self-contained.\n\n"

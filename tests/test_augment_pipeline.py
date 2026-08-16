@@ -202,8 +202,8 @@ async def test_augment_produces_parseable_output(tmp_path: Path) -> None:
     assert canned.calls == 3  # 1 overview + 2 hunks
 
 
-async def test_hunk_prompt_carries_outline_and_surrounding_source(tmp_path: Path) -> None:
-    """Both seeds are in-process answers to the reads the model used to make.
+async def test_hunk_prompt_carries_the_file_outline(tmp_path: Path) -> None:
+    """The outline is an in-process answer to a read the model used to make.
 
     A `read_file` of the hunk's own file costs a whole extra turn, and a
     turn re-reads the accumulated context — so the cheapest fix is to
@@ -230,12 +230,10 @@ async def test_hunk_prompt_carries_outline_and_surrounding_source(tmp_path: Path
     for prompt in hunk_prompts:
         assert "# File outline" in prompt
         assert "def helper(n: int) -> int" in prompt
-        assert "# Surrounding head source" in prompt
-        assert "1 x = 2" in prompt
 
 
 async def test_overview_prompt_has_no_hunk_seeds(tmp_path: Path) -> None:
-    """The seeds are per-hunk; the overview pass works from headers alone."""
+    """The outline is per-hunk; the overview pass works from headers alone."""
     run = _make_run_dir(tmp_path)
     backend, canned = _make_canned_backend(
         overview_args={"summary": "s", "themes": [], "files": [{"path": "f.py", "summary": "fs"}]},
@@ -248,7 +246,6 @@ async def test_overview_prompt_has_no_hunk_seeds(tmp_path: Path) -> None:
 
     overview_prompt = next(text for tool, text in canned.prompts if tool == "submit_overview")
     assert "# File outline" not in overview_prompt
-    assert "# Surrounding head source" not in overview_prompt
 
 
 async def test_hunk_prompt_omits_seeds_when_context_is_skipped(tmp_path: Path) -> None:
@@ -266,7 +263,6 @@ async def test_hunk_prompt_omits_seeds_when_context_is_skipped(tmp_path: Path) -
     for tool, text in canned.prompts:
         if tool == "submit_annotations":
             assert "# File outline" not in text
-            assert "# Surrounding head source" not in text
 
 
 class _RecordingSubprocModel(_CannedModel):
