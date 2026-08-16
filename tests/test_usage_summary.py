@@ -235,3 +235,38 @@ async def test_other_errors_are_not_retried(monkeypatch: pytest.MonkeyPatch) -> 
 class _StubClient:
     model = "stub"
     request_limit = 20
+
+
+async def test_a_retried_attempt_keeps_the_failed_attempt_s_trace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each attempt re-runs and re-bills the whole tool loop, and writes
+    to the same path. Overwritten, `usage.json` — derived from these
+    files alone — reports two loops' spend as one."""
+    trace_path = tmp_path / "hunk-a.py-1.json"
+    calls = {"n": 0}
+
+    async def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            _write(tmp_path, trace_path.name, _trace(usages=[_usage(inp=2000, out=200)], error="grammar"))
+            raise RuntimeError("status_code: 400 ... 'Grammar compilation timed out.'")
+        _write(tmp_path, trace_path.name, _trace(usages=[_usage(inp=100, out=10)]))
+        return {"intent": "ok"}
+
+    monkeypatch.setattr(pass_, "_drive_agent", flaky)
+    monkeypatch.setattr(pass_, "_GRAMMAR_BACKOFF_SECONDS", 0.0)
+    await pass_.run_pass(
+        pass_.PassMeta(name="hunk", submit_tool="submit_annotations"),
+        client=_StubClient(),
+        agent=None,
+        user_content="x",
+        system="s",
+        model="m",
+        cache_inputs=(),
+        trace_path=trace_path,
+    )
+
+    summary = usage.summarize_trace_dir(tmp_path)
+    assert summary["totals"]["input_tokens"] == 2100  # both attempts, not just the winner
+    assert summary["passes"]["hunk"]["calls"] == 2
