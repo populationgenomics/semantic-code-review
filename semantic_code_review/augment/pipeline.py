@@ -53,6 +53,13 @@ from .tools import RepoTools
 # fail if the consumer raises.
 OnEvent = Callable[[str, dict[str, Any]], None]
 
+#: Exception types that mean a defect in scr rather than a model or
+#: transport failure. The per-hunk handlers below degrade rather than
+#: abort, which is right for a model that returned nothing usable and
+#: wrong for a bug: a missing keyword argument once surfaced as 33
+#: "failed" hunks and a run that still exited 0. These propagate.
+_BUG_ERRORS = (TypeError, AttributeError, NameError, ImportError)
+
 
 def _safe_emit(on_event: OnEvent | None, event_type: str, payload: dict[str, Any]) -> None:
     if on_event is None:
@@ -519,6 +526,8 @@ async def _augment_one_batch(
                 cache=cache,
                 trace_dir=trace_dir,
             )
+        except _BUG_ERRORS:
+            raise
         except Exception as e:  # noqa: BLE001 — a failed batch degrades to single calls
             log.warning(
                 "batch %s [%s] failed: %s: %s — retrying its hunks individually",
@@ -530,10 +539,32 @@ async def _augment_one_batch(
             fallback = list(batch)
         else:
             by_index, missing = split_batch_annotations(submit, [hi for hi, _ in hunks])
+            # Applying a returned annotation can raise on a malformed
+            # payload. Guard each hunk separately: uncontained, one bad
+            # entry escapes `asyncio.gather` and loses the whole run,
+            # where the unbatched path would have lost one hunk.
+            unusable: list[int] = []
             for hi, hunk in hunks:
                 if hi not in by_index:
                     continue
-                ann = build_hunk_annotations(hunk.parsed, by_index[hi])
+                spans = file_spans.get(fi, ([], []))
+                try:
+                    ann = build_hunk_annotations(hunk.parsed, by_index[hi])
+                    block = build_hunk_viewer_block(
+                        AnnotatedHunk(parsed=hunk.parsed, ann=ann), fi, hi, spans[0], spans[1]
+                    )
+                except _BUG_ERRORS:
+                    raise
+                except Exception as e:  # noqa: BLE001 — one hunk degrades to a single call
+                    log.warning(
+                        "batched hunk %s @ %s unusable: %s: %s — retrying singly",
+                        fp.path,
+                        hunk.parsed.header,
+                        type(e).__name__,
+                        e,
+                    )
+                    unusable.append(hi)
+                    continue
                 results[(fi, hi)] = ann
                 stats.ok += 1
                 meter.finish_hunk(ord_by_hi[hi], ok=True)
@@ -546,20 +577,12 @@ async def _augment_one_batch(
                     len(ann.segments),
                     len(ann.line_notes),
                 )
-                spans = file_spans.get(fi, ([], []))
                 _safe_emit(
                     on_event,
                     "hunk",
-                    {
-                        "file_idx": fi,
-                        "hunk_idx": hi,
-                        "ok": True,
-                        "block": build_hunk_viewer_block(
-                            AnnotatedHunk(parsed=hunk.parsed, ann=ann), fi, hi, spans[0], spans[1]
-                        ),
-                    },
+                    {"file_idx": fi, "hunk_idx": hi, "ok": True, "block": block},
                 )
-            fallback = [entry for entry in batch if entry[1] in missing]
+            fallback = [entry for entry in batch if entry[1] in missing or entry[1] in unusable]
 
     for _fi, hi, ord_idx in fallback:
         await _augment_one_hunk(
@@ -665,7 +688,9 @@ async def _augment_one_hunk(
                     "block": block,
                 },
             )
-        except Exception as e:  # noqa: BLE001
+        except _BUG_ERRORS:
+            raise
+        except Exception as e:  # noqa: BLE001 — a failed hunk costs one annotation
             stats.failed += 1
             meter.finish_hunk(ord_idx, ok=False)
             log.warning(

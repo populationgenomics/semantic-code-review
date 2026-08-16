@@ -741,6 +741,63 @@ async def test_hunk_missing_from_a_batch_is_retried_individually(tmp_path: Path)
     assert [h.ann.intent for h in reparsed.files[0].hunks] == ["batched", "retried singly"]
 
 
+async def test_unusable_batch_entry_costs_one_hunk_not_the_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Applying a returned annotation can raise on a payload that passed
+    validation — a cache entry written under an older schema, say.
+
+    Uncontained it escapes `asyncio.gather` and no augmented.diff is
+    written at all. The unbatched path loses one hunk for the same
+    payload, so the batched path must too.
+    """
+    from semantic_code_review.augment import pipeline as pipeline_mod
+
+    run = _make_run_dir(tmp_path)
+    backend, _canned = _make_canned_backend(
+        overview_args={"summary": "s", "themes": [], "files": [{"path": "f.py", "summary": "fs"}]},
+        hunk_args_list=[
+            {"annotations": [{"hunk_index": 0, "intent": "ok"}, {"hunk_index": 1, "intent": "bad"}]},
+            {"intent": "retried singly"},
+        ],
+    )
+
+    real = pipeline_mod.build_hunk_annotations
+    calls = {"n": 0}
+
+    def flaky(parsed, args):
+        calls["n"] += 1
+        if calls["n"] == 2:  # the second hunk of the batch
+            raise ValueError("malformed annotation payload")
+        return real(parsed, args)
+
+    monkeypatch.setattr(pipeline_mod, "build_hunk_annotations", flaky)
+    await augment_run_dir(run, model="t", concurrency=8, client=backend, cache=None, batch_size=2)
+
+    assert (run / "augmented.diff").exists()
+    reparsed = parse_augmented_diff((run / "augmented.diff").read_text(encoding="utf-8"))
+    assert [h.ann.intent for h in reparsed.files[0].hunks] == ["ok", "retried singly"]
+
+
+async def test_a_bug_in_the_batch_path_is_not_swallowed_as_a_model_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Degrading on a TypeError turns a defect into N silently empty
+    annotations and a run that still exits 0 — it must abort instead."""
+    from semantic_code_review.augment import pipeline as pipeline_mod
+
+    run = _make_run_dir(tmp_path)
+    backend, _canned = _make_canned_backend(
+        overview_args={"summary": "s", "themes": [], "files": [{"path": "f.py", "summary": "fs"}]},
+        hunk_args_list=[{"annotations": [{"hunk_index": 0, "intent": "x"}]}],
+    )
+
+    async def boom(*args, **kwargs):
+        raise TypeError("run_batch_pass() got an unexpected keyword argument")
+
+    monkeypatch.setattr(pipeline_mod, "run_batch_pass", boom)
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        await augment_run_dir(run, model="t", concurrency=8, client=backend, cache=None, batch_size=2)
+
+
 async def test_batch_size_of_one_uses_the_unbatched_path(tmp_path: Path) -> None:
     """'Batching off' must mean the untouched pass, not a batch of one."""
     run = _make_run_dir(tmp_path)
