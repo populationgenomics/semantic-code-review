@@ -30,9 +30,19 @@ class Backend(ABC):
 
     auto_priority: int | None = None
 
+    #: Per-call request ceiling applied when the backend definition sets
+    #: no `max_turns`. Matches `ClaudeCLIModel`'s `--max-turns` default so
+    #: the two transports bound the loop the same way by default.
+    DEFAULT_REQUEST_LIMIT = 20
+
     def __init__(self, name: str, bdef: BackendDef) -> None:
         self.name = name
         self.bdef = bdef
+
+    @property
+    def request_limit(self) -> int:
+        """Requests allowed per pass — `max_turns` if set, else the default."""
+        return self.bdef.max_turns or self.DEFAULT_REQUEST_LIMIT
 
     @abstractmethod
     def resolve(self, *, model: str) -> Client:

@@ -76,10 +76,18 @@ class Client:
 
     `aclose()` is delegated to the inner Model. SDK string models have
     no per-run resources to release; the no-op fallthrough is fine.
+
+    `request_limit` bounds the agentic loop for SDK backends, the way
+    `--max-turns` does for the CLI drivers. Without it a pass runs to
+    pydantic-ai's default ceiling: one observed hunk made 50 tool calls
+    over 51 requests, billed 1.5M input tokens, and returned no
+    annotation at all. The cost is recoverable; the lost hunk is not.
+    None leaves pydantic-ai's default in place.
     """
 
     model: str | Model
     is_subprocess_backend: bool = False
+    request_limit: int | None = None
 
     def set_mcp_endpoint(self, config: dict[str, Any] | None) -> None:
         """Point a subprocess backend at the run's hosted HTTP MCP server.

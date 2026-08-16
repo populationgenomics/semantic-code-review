@@ -40,6 +40,7 @@ class GoogleSdkBackend(Backend):
                     model_name=gem_model,
                     provider=GoogleCloudProvider(),
                 ),
+                request_limit=self.request_limit,
             )
 
         api_key = self._resolve_key()

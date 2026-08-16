@@ -171,3 +171,38 @@ def test_get_returns_adapter_with_bound_name(monkeypatch: pytest.MonkeyPatch) ->
     assert adapter.bdef is bdef
     assert adapter.resolve(model="some-model") == "sentinel"
     assert captured == {"name": "my-llm", "bdef": bdef, "model": "some-model"}
+
+
+# --- agentic-loop bound -----------------------------------------------------
+
+
+def test_sdk_backends_carry_a_request_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without one, a pass that can't answer its question runs to
+    pydantic-ai's ceiling and returns no annotation at all — 51 requests
+    and 1.5M input tokens for a hunk that produced nothing."""
+    from semantic_code_review.backends.anthropic_sdk import AnthropicSdkBackend
+    from semantic_code_review.config import BackendDef, BackendType
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    bdef = BackendDef(type=BackendType.ANTHROPIC_SDK, default_model="m", api_key_env="ANTHROPIC_API_KEY")
+    client = AnthropicSdkBackend("claude-api", bdef).resolve(model="m")
+    assert client.request_limit == AnthropicSdkBackend.DEFAULT_REQUEST_LIMIT
+
+
+def test_max_turns_bounds_the_sdk_loop_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One knob for both transports: the CLI spends it on `--max-turns`,
+    the SDK on pydantic-ai's request limit."""
+    from semantic_code_review.backends.anthropic_sdk import AnthropicSdkBackend
+    from semantic_code_review.config import BackendDef, BackendType
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    bdef = BackendDef(type=BackendType.ANTHROPIC_SDK, default_model="m", api_key_env="ANTHROPIC_API_KEY", max_turns=7)
+    client = AnthropicSdkBackend("claude-api", bdef).resolve(model="m")
+    assert client.request_limit == 7
+
+
+def test_default_matches_the_cli_driver_default() -> None:
+    """The two transports should bound the loop the same way by default."""
+    from semantic_code_review.backends.base import Backend
+
+    assert Backend.DEFAULT_REQUEST_LIMIT == 20

@@ -30,6 +30,7 @@ class AnthropicSdkBackend(Backend):
                 model_name=model,
                 provider=AnthropicProvider(api_key=api_key),
             ),
+            request_limit=self.request_limit,
         )
 
     def supports_auto(self) -> bool:
