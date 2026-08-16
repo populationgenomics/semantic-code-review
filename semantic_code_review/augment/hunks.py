@@ -57,7 +57,7 @@ _HUNK_BATCH = PassMeta(
 
 # Anthropic prompt-caching settings applied to every per-hunk call.
 #
-# The cacheable prefix on this pass is `[system prompt] + [tool defs] +
+# The cacheable prefix on this pass is `[tool defs] + [system prompt] +
 # [overview] + [file summary]`. The first two stay byte-identical for
 # every hunk in the run, so caching them buys cross-hunk reuse on a
 # multi-hunk PR. The CachePoint markers in `format_hunk_prompt` then
@@ -78,9 +78,17 @@ _HUNK_BATCH = PassMeta(
 # AnthropicModelSettings keys are silently ignored by non-Anthropic
 # backends (TypedDict total=False), so this is safe to apply
 # unconditionally — Google + the CLI drivers see them as no-ops.
+# Anthropic allows 4 breakpoints per request. Over budget, pydantic-ai
+# keeps every system and tool one and trims *message* breakpoints
+# oldest-first, which silently evicts the overview marker — the only
+# prefix shared across files. Tool definitions get no breakpoint of
+# their own: Anthropic renders tools -> system -> messages, so caching
+# after the tools block caches `[tools]`, a strict prefix of the
+# `[tools + system]` that the instructions breakpoint already caches,
+# with both constant for the whole run. It can never produce a hit the
+# longer entry doesn't, and it was costing the slot that mattered.
 _HUNK_CACHE_SETTINGS: dict[str, Any] = {
     "anthropic_cache_instructions": True,  # system prompt block
-    "anthropic_cache_tool_definitions": True,  # tools/<RepoTools>
     "anthropic_cache_messages": True,  # rolling breakpoint on the latest turn
 }
 

@@ -282,3 +282,25 @@ def test_both_system_prompts_explain_head_versus_base_search() -> None:
     for prompt in (HUNK_SYSTEM, HUNK_BATCH_SYSTEM):
         assert "HEAD worktree" in prompt
         assert "do not rephrase" in prompt
+
+
+def test_hunk_caching_stays_within_anthropics_breakpoint_budget() -> None:
+    """Anthropic allows 4 per request. Over budget pydantic-ai keeps every
+    system/tool breakpoint and trims message ones oldest-first, which
+    evicts the overview marker — the only prefix shared across files, and
+    byte-identical for the whole run."""
+    from pydantic_ai import CachePoint
+
+    from semantic_code_review.augment.hunks import _HUNK_CACHE_SETTINGS, format_hunk_prompt
+
+    fp, outline = _file()
+    _idx, hunk = _hunk(0)
+    blocks = format_hunk_prompt(fp, hunk, "{}", "s", outline, "")
+
+    in_prompt = sum(1 for b in blocks if isinstance(b, CachePoint))
+    from_settings = sum(
+        1
+        for key in ("anthropic_cache_instructions", "anthropic_cache_tool_definitions", "anthropic_cache_messages")
+        if _HUNK_CACHE_SETTINGS.get(key)
+    )
+    assert in_prompt + from_settings <= 4
