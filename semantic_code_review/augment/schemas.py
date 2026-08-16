@@ -281,6 +281,33 @@ class HunkAnnotations(BaseModel):
     )
 
 
+class BatchHunkAnnotations(HunkAnnotations):
+    """One hunk's annotations inside a batched `submit_annotations` call.
+
+    `hunk_index` is the hunk's 0-based position **within the file**, the
+    same numbering the prompt labels each `# Hunk` block with. Line
+    coordinates elsewhere in the payload stay post-image, exactly as in
+    the single-hunk form — batching changes only which hunks share a
+    call, never how a hunk is addressed.
+    """
+
+    hunk_index: int = Field(ge=0, description="0-based index of the hunk within its file, as labelled in the prompt.")
+
+
+class BatchAnnotations(BaseModel):
+    """Wire format of a batched per-hunk pass: one entry per hunk sent.
+
+    The model is asked for exactly one entry per `# Hunk` block in the
+    prompt. Missing or duplicate `hunk_index` values are the batch's
+    failure mode, so the pipeline validates coverage and falls back to
+    single-hunk calls for whatever a batch didn't return.
+    """
+
+    annotations: list[BatchHunkAnnotations] = Field(
+        description="One entry per hunk in the prompt, addressed by its `hunk_index`."
+    )
+
+
 class FileAnnotations(BaseModel):
     """Per-file annotations carried on `AnnotatedFile.ann`."""
 

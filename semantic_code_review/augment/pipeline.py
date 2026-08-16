@@ -27,7 +27,9 @@ from .agents import Client
 from .hunks import (
     build_hunk_annotations,
     overview_to_prompt_json,
+    run_batch_pass,
     run_hunk_pass,
+    split_batch_annotations,
 )
 from .overview import apply_overview_to_diff, run_overview_pass
 from .progress import ProgressMeter
@@ -76,10 +78,19 @@ async def augment_run_dir(
     skip_overview: bool = False,
     skip_context: bool = False,
     extra_review_prompt: str | None = None,
+    batch_size: int = 1,
     show_progress: bool = True,
     on_event: OnEvent | None = None,
 ) -> Path:
-    """Augment a fetch run directory. Returns the augmented.diff path."""
+    """Augment a fetch run directory. Returns the augmented.diff path.
+
+    `batch_size` > 1 annotates up to that many hunks of one file per call.
+    Batching exists because on the claude-cli backend nothing in the user
+    prompt is cached, so a file's summary and outline are re-paid on every
+    one of its hunks; a batch sends them once. Hunks a batch fails to
+    answer for fall back to one call each, so a bad batch costs no more
+    than the hunks it covered.
+    """
     if client is None:
         # Default to the Anthropic SDK path via pydantic-ai. Callers that
         # need a different backend (CLI, Gemini, tests) construct the
@@ -258,32 +269,66 @@ async def augment_run_dir(
                 for fi, _hi, _ord in queued:
                     if fi not in file_outlines:
                         file_outlines[fi] = repo_tools.outline_seed(diff.files[fi].path)
-            tasks = [
-                asyncio.create_task(
-                    _augment_one_hunk(
-                        ord_idx,
-                        meter,
-                        sem,
-                        client,
-                        diff,
-                        fi,
-                        hi,
-                        overview_json,
-                        repo_tools,
-                        model,
-                        cache,
-                        trace_dir,
-                        stats,
-                        results,
-                        on_event,
-                        file_spans.get(fi, ([], [])),
-                        file_outlines.get(fi, ""),
+            # batch_size <= 1 keeps the original one-call-per-hunk path
+            # rather than routing through a batch of one: the batched form
+            # has its own wire format and system prompt, so "batching off"
+            # has to mean the untouched pass, not a degenerate batch.
+            if batch_size > 1:
+                tasks = [
+                    asyncio.create_task(
+                        _augment_one_batch(
+                            batch,
+                            meter,
+                            sem,
+                            client,
+                            diff,
+                            overview_json,
+                            repo_tools,
+                            model,
+                            cache,
+                            trace_dir,
+                            stats,
+                            results,
+                            on_event,
+                            file_spans,
+                            file_outlines.get(batch[0][0], ""),
+                        )
                     )
-                )
-                for fi, hi, ord_idx in queued
-            ]
+                    for batch in _plan_batches(queued, batch_size)
+                ]
+            else:
+                tasks = [
+                    asyncio.create_task(
+                        _augment_one_hunk(
+                            ord_idx,
+                            meter,
+                            sem,
+                            client,
+                            diff,
+                            fi,
+                            hi,
+                            overview_json,
+                            repo_tools,
+                            model,
+                            cache,
+                            trace_dir,
+                            stats,
+                            results,
+                            on_event,
+                            file_spans.get(fi, ([], [])),
+                            file_outlines.get(fi, ""),
+                        )
+                    )
+                    for fi, hi, ord_idx in queued
+                ]
 
-            log.info("per-hunk pass: %d hunks queued (concurrency=%d)", len(tasks), concurrency)
+            log.info(
+                "per-hunk pass: %d hunks in %d call(s) (batch_size=%d, concurrency=%d)",
+                len(queued),
+                len(tasks),
+                max(1, batch_size),
+                concurrency,
+            )
             await asyncio.gather(*tasks)
 
             # Merge per-hunk results back into the diff in one pass.
@@ -375,6 +420,149 @@ async def augment_run_dir(
 class _HunkStats:
     ok: int = 0
     failed: int = 0
+
+
+def _plan_batches(
+    queued: list[tuple[int, int, int]],
+    batch_size: int,
+) -> list[list[tuple[int, int, int]]]:
+    """Group queued hunks into per-file batches of at most `batch_size`.
+
+    Batches never span files: the whole point is that a file's summary and
+    outline are constant across the batch and can therefore live in the
+    system prompt, which is the region the CLI backend caches. A batch
+    spanning two files would have to push both outlines back into the user
+    prompt, where nothing is cached.
+
+    `batch_size <= 1` yields one hunk per batch, i.e. the unbatched pass.
+    """
+    by_file: dict[int, list[tuple[int, int, int]]] = {}
+    for entry in queued:
+        by_file.setdefault(entry[0], []).append(entry)
+    size = max(1, batch_size)
+    batches: list[list[tuple[int, int, int]]] = []
+    for entries in by_file.values():
+        batches += [entries[i : i + size] for i in range(0, len(entries), size)]
+    return batches
+
+
+async def _augment_one_batch(
+    batch: list[tuple[int, int, int]],
+    meter: ProgressMeter,
+    sem: asyncio.Semaphore,
+    client: Client,
+    diff: AnnotatedDiff,
+    overview_json: str,
+    repo_tools: RepoTools | None,
+    model: str,
+    cache: CacheStore | None,
+    trace_dir: Path,
+    stats: _HunkStats,
+    results: dict[tuple[int, int], HunkAnnotations],
+    on_event: OnEvent | None,
+    file_spans: dict[int, tuple[list, list]],
+    file_outline: str,
+) -> None:
+    """Annotate one file's batch in a single call; retry the remainder singly.
+
+    Anything the batch doesn't answer for — a hunk it skipped, or every
+    hunk if the call itself failed — falls back to the one-hunk-per-call
+    path. The fallback runs *after* this batch's semaphore slot is
+    released, since `_augment_one_hunk` acquires the same semaphore and
+    would otherwise deadlock against a saturated pool.
+    """
+    fi = batch[0][0]
+    fp = diff.files[fi]
+    file_summary = (fp.ann.summary or "").strip()
+    hunks = [(hi, fp.hunks[hi]) for _fi, hi, _ord in batch]
+    ord_by_hi = {hi: ord_idx for _fi, hi, ord_idx in batch}
+    fallback: list[tuple[int, int, int]] = []
+
+    async with sem:
+        for _fi, hi, ord_idx in batch:
+            meter.start_hunk(ord_idx)
+            _safe_emit(on_event, "hunk-start", {"file_idx": fi, "hunk_idx": hi})
+        rt = repo_tools or RepoTools(
+            head_worktree=Path("/dev/null"),
+            repo_git=Path("/dev/null"),
+            base_sha="",
+            head_sha="",
+        )
+        try:
+            submit = await run_batch_pass(
+                client,
+                fp=fp,
+                hunks=hunks,
+                overview_json=overview_json,
+                file_summary=file_summary,
+                repo_tools=rt,
+                model=model,
+                file_outline=file_outline,
+                cache=cache,
+                trace_dir=trace_dir,
+            )
+        except Exception as e:  # noqa: BLE001 — a failed batch degrades to single calls
+            log.warning(
+                "batch %s [%s] failed: %s: %s — retrying its hunks individually",
+                fp.path,
+                ", ".join(str(hi) for hi, _ in hunks),
+                type(e).__name__,
+                e,
+            )
+            fallback = list(batch)
+        else:
+            by_index, missing = split_batch_annotations(submit, [hi for hi, _ in hunks])
+            for hi, hunk in hunks:
+                if hi not in by_index:
+                    continue
+                ann = build_hunk_annotations(hunk.parsed, by_index[hi])
+                results[(fi, hi)] = ann
+                stats.ok += 1
+                meter.finish_hunk(ord_by_hi[hi], ok=True)
+                log.info(
+                    "hunk %s @ %s (batched): intent=%r smells=%d segs=%d notes=%d",
+                    fp.path,
+                    hunk.parsed.header,
+                    (ann.intent or "")[:80],
+                    len(ann.smells),
+                    len(ann.segments),
+                    len(ann.line_notes),
+                )
+                spans = file_spans.get(fi, ([], []))
+                _safe_emit(
+                    on_event,
+                    "hunk",
+                    {
+                        "file_idx": fi,
+                        "hunk_idx": hi,
+                        "ok": True,
+                        "block": build_hunk_viewer_block(
+                            AnnotatedHunk(parsed=hunk.parsed, ann=ann), fi, hi, spans[0], spans[1]
+                        ),
+                    },
+                )
+            fallback = [entry for entry in batch if entry[1] in missing]
+
+    for _fi, hi, ord_idx in fallback:
+        await _augment_one_hunk(
+            ord_idx,
+            meter,
+            sem,
+            client,
+            diff,
+            fi,
+            hi,
+            overview_json,
+            repo_tools,
+            model,
+            cache,
+            trace_dir,
+            stats,
+            results,
+            on_event,
+            file_spans.get(fi, ([], [])),
+            file_outline,
+        )
 
 
 async def _augment_one_hunk(

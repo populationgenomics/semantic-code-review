@@ -690,3 +690,82 @@ def test_hunk_trace_path_stays_flat_when_the_header_holds_a_path() -> None:
     assert path.parent == Path("/trace")
     assert "/" not in path.name[len("hunk-") :]
     assert path.name.endswith(".json")
+
+
+async def test_batching_sends_one_call_per_file(tmp_path: Path) -> None:
+    """Both hunks live in f.py, so batch_size=2 is a single call."""
+    run = _make_run_dir(tmp_path)
+    backend, canned = _make_canned_backend(
+        overview_args={"summary": "s", "themes": [], "files": [{"path": "f.py", "summary": "fs"}]},
+        hunk_args_list=[
+            {"annotations": [{"hunk_index": 0, "intent": "a"}, {"hunk_index": 1, "intent": "b"}]},
+        ],
+    )
+    await augment_run_dir(run, model="t", concurrency=8, client=backend, cache=None, batch_size=2)
+
+    assert canned.calls == 2  # 1 overview + 1 batch
+    reparsed = parse_augmented_diff((run / "augmented.diff").read_text(encoding="utf-8"))
+    assert [h.ann.intent for h in reparsed.files[0].hunks] == ["a", "b"]
+
+
+async def test_batch_user_prompt_carries_file_context_once(tmp_path: Path) -> None:
+    run = _make_run_dir(tmp_path)
+    backend, canned = _make_canned_backend(
+        overview_args={"summary": "s", "themes": [], "files": [{"path": "f.py", "summary": "fs"}]},
+        hunk_args_list=[{"annotations": [{"hunk_index": 0, "intent": "a"}, {"hunk_index": 1, "intent": "b"}]}],
+    )
+    await augment_run_dir(run, model="t", concurrency=8, client=backend, cache=None, batch_size=2)
+
+    batch_prompt = next(text for tool, text in canned.prompts if tool == "submit_annotations")
+    assert "# Hunk 0" in batch_prompt and "# Hunk 1" in batch_prompt
+    # file context appears once for the whole batch, not once per hunk
+    assert batch_prompt.count("# File summary") == 1
+    # the overview is run-invariant, so it belongs in the cached system prompt
+    assert "# PR overview" not in batch_prompt
+
+
+async def test_hunk_missing_from_a_batch_is_retried_individually(tmp_path: Path) -> None:
+    """A partial batch must not silently cost the reviewer that hunk."""
+    run = _make_run_dir(tmp_path)
+    backend, canned = _make_canned_backend(
+        overview_args={"summary": "s", "themes": [], "files": [{"path": "f.py", "summary": "fs"}]},
+        hunk_args_list=[
+            {"annotations": [{"hunk_index": 0, "intent": "batched"}]},  # hunk 1 omitted
+            {"intent": "retried singly"},  # the fallback call, single-hunk shaped
+        ],
+    )
+    await augment_run_dir(run, model="t", concurrency=8, client=backend, cache=None, batch_size=2)
+
+    assert canned.calls == 3  # overview + batch + one fallback
+    reparsed = parse_augmented_diff((run / "augmented.diff").read_text(encoding="utf-8"))
+    assert [h.ann.intent for h in reparsed.files[0].hunks] == ["batched", "retried singly"]
+
+
+async def test_batch_size_of_one_uses_the_unbatched_path(tmp_path: Path) -> None:
+    """'Batching off' must mean the untouched pass, not a batch of one."""
+    run = _make_run_dir(tmp_path)
+    backend, canned = _make_canned_backend(
+        overview_args={"summary": "s", "themes": [], "files": [{"path": "f.py", "summary": "fs"}]},
+        hunk_args_list=[{"intent": "a"}, {"intent": "b"}],
+    )
+    await augment_run_dir(run, model="t", concurrency=8, client=backend, cache=None, batch_size=1)
+
+    assert canned.calls == 3  # overview + one call per hunk
+    prompt = next(text for tool, text in canned.prompts if tool == "submit_annotations")
+    assert "# PR overview" in prompt  # single-hunk shape keeps it in the user prompt
+
+
+def test_batches_never_span_files() -> None:
+    from semantic_code_review.augment.pipeline import _plan_batches
+
+    queued = [(0, 0, 0), (0, 1, 1), (1, 0, 2), (1, 1, 3), (1, 2, 4)]
+    batches = _plan_batches(queued, 4)
+    assert [[e[0] for e in b] for b in batches] == [[0, 0], [1, 1, 1]]
+
+
+def test_batches_split_a_file_that_exceeds_the_cap() -> None:
+    from semantic_code_review.augment.pipeline import _plan_batches
+
+    queued = [(0, i, i) for i in range(7)]
+    batches = _plan_batches(queued, 3)
+    assert [len(b) for b in batches] == [3, 3, 1]

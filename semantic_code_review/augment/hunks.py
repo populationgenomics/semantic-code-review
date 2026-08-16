@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -30,14 +31,23 @@ from ..augment.schemas import (
 )
 from ..cache.store import CacheStore
 from ..format import linenos
-from .agents import Client, make_hunk_agent
+from .agents import Client, make_batch_agent, make_hunk_agent
 from .pass_ import PassMeta, run_pass
-from .prompts import HUNK_SYSTEM
+from .prompts import HUNK_BATCH_SYSTEM, HUNK_SYSTEM
 from .tools import TOOL_FUNCTIONS, RepoTools
 
 log = logging.getLogger(__name__)
 
 _HUNK = PassMeta(
+    name="hunk",
+    submit_tool="submit_annotations",
+    tool_names=tuple(fn.__name__ for fn in TOOL_FUNCTIONS),
+)
+
+# Same submit tool and pass name as the single-hunk form: a batch is a
+# different grouping of the same work, and `usage.json` should account for
+# both under `hunk` rather than splitting the pass in two.
+_HUNK_BATCH = PassMeta(
     name="hunk",
     submit_tool="submit_annotations",
     tool_names=tuple(fn.__name__ for fn in TOOL_FUNCTIONS),
@@ -178,6 +188,144 @@ async def run_hunk_pass(
     )
     assert payload is not None  # `_HUNK.swallow_errors` is false
     return payload
+
+
+def format_batch_system(overview_json: str) -> str:
+    """Assemble the system text for one batched call: RUN-invariant only.
+
+    The system prompt caches because it is byte-identical across every
+    call in the run — one entry, written once, read by all. Per-file
+    content does not belong here even though it is constant within a
+    batch: it makes the prompt per-file, which turns one shared entry
+    into one entry per file that nothing reads back. Measured on commit
+    7a232f9, putting the file summary and outline here took billed input
+    from 243k to 517k. Batch-invariant is not the test; run-invariant is.
+    """
+    return f"{HUNK_BATCH_SYSTEM}\n\n# PR overview\n{overview_json}"
+
+
+def format_batch_prompt(
+    fp: AnnotatedFile,
+    hunks: Sequence[tuple[int, AnnotatedHunk]],
+    file_summary: str,
+    file_outline: str = "",
+) -> list[UserContent]:
+    """User-prompt blocks for a batched call: file context, then each hunk.
+
+    The per-file context sits here rather than in the system prompt: it is
+    constant within the batch but not across the run, so in the system
+    prompt it would un-share the one cached entry. Here it is uncached but
+    sent once per batch instead of once per hunk, which is the saving
+    batching is actually for.
+
+    The `# Hunk <index>` label is the address the model echoes back as
+    `hunk_index`, so it must be the hunk's position within its file — the
+    same numbering the overview pass cites in `groups[].members`.
+    """
+    file_block = f"# File\npath: {fp.path}\nlang: {fp.ann.lang or ''}"
+    if file_summary:
+        file_block += f"\n\n# File summary\n{file_summary}"
+    if file_outline:
+        file_block += f"\n\n# File outline (deterministic — tree-sitter, head side)\n{file_outline}"
+    blocks = [file_block]
+    for index, hunk in hunks:
+        numbered = linenos.number_for_prompt(f"{hunk.parsed.header}\n{hunk.parsed.body}")
+        blocks.append(f"# Hunk {index}\n{numbered}")
+    return ["\n\n".join(blocks)]
+
+
+def _batch_trace_path(trace_dir: Path | None, fp: AnnotatedFile, indices: Sequence[int]) -> Path | None:
+    if trace_dir is None:
+        return None
+    safe_file = _UNSAFE_IN_FILENAME.sub("_", fp.path)
+    span = f"{indices[0]}_{indices[-1]}" if indices else "empty"
+    return trace_dir / f"hunk-batch-{safe_file}-{span}.json"
+
+
+async def run_batch_pass(
+    client: Client,
+    *,
+    fp: AnnotatedFile,
+    hunks: Sequence[tuple[int, AnnotatedHunk]],
+    overview_json: str,
+    file_summary: str,
+    repo_tools: RepoTools,
+    model: str,
+    file_outline: str = "",
+    cache: CacheStore | None = None,
+    trace_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Annotate several hunks of one file in a single call.
+
+    Returns the raw `BatchAnnotations`-shaped payload; the caller splits
+    it with `split_batch_annotations` and re-requests whatever is missing.
+    """
+    system = format_batch_system(overview_json)
+    indices = [i for i, _ in hunks]
+    payload = await run_pass(
+        _HUNK_BATCH,
+        client=client,
+        agent=make_batch_agent(client.model, system),
+        user_content=format_batch_prompt(fp, hunks, file_summary, file_outline),
+        system=system,
+        model=model,
+        cache_inputs=(
+            system,
+            fp.path,
+            file_summary,
+            file_outline,
+            *(h.parsed.header for _, h in hunks),
+            *(h.parsed.body for _, h in hunks),
+        ),
+        deps=repo_tools,
+        model_settings=_HUNK_CACHE_SETTINGS,
+        cache=cache,
+        trace_path=_batch_trace_path(trace_dir, fp, indices),
+        cache_request={"file": fp.path, "hunk_indices": indices},
+    )
+    assert payload is not None  # `_HUNK_BATCH.swallow_errors` is false
+    return payload
+
+
+def split_batch_annotations(
+    submit_args: dict[str, Any],
+    hunk_indices: Sequence[int],
+) -> tuple[dict[int, dict[str, Any]], list[int]]:
+    """Split a batched payload into per-hunk payloads keyed by hunk index.
+
+    Args:
+        submit_args: The raw `BatchAnnotations`-shaped payload.
+        hunk_indices: The hunk indices the prompt actually asked about.
+
+    Returns:
+        `(by_index, missing)` — the payload for each hunk the model
+        answered for, and the indices it didn't. A batch that answers for
+        an index it wasn't asked about, or answers twice for the same
+        one, has misread the prompt: the stray entry is dropped and the
+        first answer wins, since a second entry for a hunk carries no way
+        to tell which is meant. `missing` is what the caller must
+        re-request individually — silently returning a partial batch
+        would drop annotations the reviewer is expecting.
+    """
+    asked = list(hunk_indices)
+    by_index: dict[int, dict[str, Any]] = {}
+    for entry in submit_args.get("annotations") or []:
+        try:
+            idx = int(entry["hunk_index"])
+        except (KeyError, TypeError, ValueError):
+            log.warning("batch: entry with missing/malformed hunk_index — dropped: %r", entry)
+            continue
+        if idx not in asked:
+            log.warning("batch: entry for hunk_index %d which was not in this batch — dropped", idx)
+            continue
+        if idx in by_index:
+            log.warning("batch: duplicate entry for hunk_index %d — keeping the first", idx)
+            continue
+        by_index[idx] = entry
+    missing = [i for i in asked if i not in by_index]
+    if missing:
+        log.warning("batch: no annotation returned for hunk_index %s — will retry individually", missing)
+    return by_index, missing
 
 
 def build_hunk_annotations(parsed: ParsedHunk, submit_args: dict[str, Any]) -> HunkAnnotations:

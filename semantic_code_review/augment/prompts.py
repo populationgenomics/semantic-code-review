@@ -13,7 +13,34 @@ from __future__ import annotations
 
 from .schemas import SMELL_TAGS_TEXT
 
-PROMPT_VERSION = "p14"
+PROMPT_VERSION = "p16"
+
+
+# Field guidance shared by the single-hunk and batched forms of the
+# per-hunk pass. Held in one constant so the two framings can't drift:
+# they differ in how many hunks arrive per call, never in what a hunk's
+# annotation should contain.
+_ANNOTATION_FIELDS = (
+    "Populate the following fields for each hunk:\n"
+    "- `intent`: 1-2 sentences. MOTIVE, not mechanics. Name the exact change (what was "
+    "X, is now Y), not 'probably'. Bad: 'one-line tweak to the compose file (likely an "
+    "image bump)'. Good: 'bumps the postgres image tag from 15.3 to 15.5'.\n"
+    "- `segments`: when the hunk contains semantically distinct edits (e.g. a refactor "
+    "plus an unrelated fix, or a changed if-branch alongside a new else-branch), split "
+    "them. Each segment has POST-IMAGE `new_start`/`new_count` and its own intent. Omit "
+    "segments if the hunk is single-intent.\n"
+    "- `smells`: list of {tag, note}. Tags are from the closed vocabulary: "
+    f"{SMELL_TAGS_TEXT}. Attach each smell to a segment when it's segment-local, or to the "
+    "hunk when it spans the whole change.\n"
+    "- `context`: cross-file dependencies the reviewer can't see from the diff.\n"
+    "- `refs`: {path, line, reason} for other files the reviewer should look at.\n"
+    "- `confidence`: 0-100 integer. Low is fine and honest.\n"
+    "- `line_notes`: {line, body} for notes too specific for intent. `line` is post-image.\n\n"
+    "Fold-region summaries (indent-based collapsed blocks inside the diff) are NOT "
+    "produced here — the review server fires a focused one-shot call for each region "
+    "the reviewer actually collapses. Leave `fold_descriptions` empty.\n\n"
+    "Tone: explanatory, not evaluative. Comprehension first."
+)
 
 
 OVERVIEW_SYSTEM = (
@@ -79,23 +106,44 @@ HUNK_SYSTEM = (
     "You have tools to read OTHER files in the head worktree and at the base SHA, to "
     "grep, to list directories, and to check git history. Use them when the hunk depends "
     "on code outside this file; skip them if the hunk is self-contained.\n\n"
-    "Populate the following fields:\n"
-    "- `intent`: 1-2 sentences. MOTIVE, not mechanics. Name the exact change (what was "
-    "X, is now Y), not 'probably'. Bad: 'one-line tweak to the compose file (likely an "
-    "image bump)'. Good: 'bumps the postgres image tag from 15.3 to 15.5'.\n"
-    "- `segments`: when the hunk contains semantically distinct edits (e.g. a refactor "
-    "plus an unrelated fix, or a changed if-branch alongside a new else-branch), split "
-    "them. Each segment has POST-IMAGE `new_start`/`new_count` and its own intent. Omit "
-    "segments if the hunk is single-intent.\n"
-    "- `smells`: list of {tag, note}. Tags are from the closed vocabulary: "
-    f"{SMELL_TAGS_TEXT}. Attach each smell to a segment when it's segment-local, or to the "
-    "hunk when it spans the whole change.\n"
-    "- `context`: cross-file dependencies the reviewer can't see from the diff.\n"
-    "- `refs`: {path, line, reason} for other files the reviewer should look at.\n"
-    "- `confidence`: 0-100 integer. Low is fine and honest.\n"
-    "- `line_notes`: {line, body} for notes too specific for intent. `line` is post-image.\n\n"
-    "Fold-region summaries (indent-based collapsed blocks inside the diff) are NOT "
-    "produced here — the review server fires a focused one-shot call for each region "
-    "the reviewer actually collapses. Leave `fold_descriptions` empty.\n\n"
-    "Tone: explanatory, not evaluative. Comprehension first."
+    f"{_ANNOTATION_FIELDS}"
+)
+
+
+# The batched form of the per-hunk pass: several hunks from ONE file in a
+# single call. Only run-invariant text lives in the system prompt — that
+# is what makes it one cached entry shared by every call. The file's own
+# context rides in the user prompt, sent once per batch rather than once
+# per hunk, which is the saving batching is for.
+HUNK_BATCH_SYSTEM = (
+    "You are reviewing several hunks from ONE file of a pull request. Your FIRST job is "
+    "to help a human reviewer UNDERSTAND what each change does and why. Critique "
+    "(smells, risks) is SECONDARY — only raise concerns when you can name a concrete "
+    "risk.\n\n"
+    "The user prompt contains one block per hunk, each introduced by a `# Hunk <n>` "
+    "line. Return EXACTLY ONE entry per block, with `hunk_index` set to that `<n>`. "
+    "Never merge two hunks into one entry, never skip a hunk, and never emit an index "
+    "you were not given — a missing entry costs the reviewer that hunk's annotation "
+    "entirely. Judge each hunk on its own: they share a file, not a purpose.\n\n"
+    "BEFORE ANYTHING ELSE: read each hunk body. The full `- ...` / `+ ...` diff is in "
+    "the user prompt, and every body line is prefixed with its POST-IMAGE (new-side) "
+    "line number in a left gutter (deleted lines have a blank gutter — they have no "
+    "post-image line). Copy those numbers for every post-image coordinate you emit — "
+    "`line_notes[].line`, `segments[].new_start`/`new_count`, and same-file "
+    "`refs[].line` — never count lines yourself. Each `intent` must name what THAT hunk "
+    "ACTUALLY does, grounded in what you see — not what it plausibly does given the "
+    "file path or header. If a hunk is one line, quote the before/after tokens. If "
+    "you're unsure, call tools (`read_file`, `read_file_at`, `grep`). If you're still "
+    "unsure after using tools, lower that hunk's `confidence` below 50 and state the "
+    "exact missing piece in its `context`. Never write 'likely', 'probably', 'appears "
+    "to', 'seems to', 'looks like' — those are signals you're guessing from the header "
+    "instead of reading the body or investigating.\n\n"
+    "The section below carries the PR overview. The user prompt opens with this file's "
+    "summary and `# File outline` — every definition in the head-side file with its "
+    "declared signature and line range. Read both before reaching for a tool.\n\n"
+    "You have tools to read OTHER files in the head worktree and at the base SHA, to "
+    "grep, to list directories, and to check git history. Use them when a hunk depends "
+    "on code outside this file; skip them when it is self-contained. One investigation "
+    "can serve several hunks — don't repeat a read you already did for this file.\n\n"
+    f"{_ANNOTATION_FIELDS}"
 )
