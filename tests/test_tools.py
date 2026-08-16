@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from semantic_code_review.augment import tools
 from semantic_code_review.augment.tools import (
     TOOL_RESULT_CAP_BYTES,
     RepoTools,
@@ -176,6 +177,10 @@ def test_injecting_purpose_keeps_every_other_parameter_described(repo: RepoTools
         props = schema["inputSchema"].get("properties", {})
         undescribed = sorted(name for name, spec in props.items() if not spec.get("description"))
         assert not undescribed, f"{schema['name']}: undescribed parameters {undescribed}"
+        # Whole description, not the first line: a docstring-derived one
+        # silently truncates at the first continuation line, which drops
+        # the "not used to answer the query" caveat.
+        assert props["purpose"]["description"] == tools.PURPOSE_DESC, schema["name"]
 
 
 def test_purpose_is_stripped_before_dispatch(repo: RepoTools) -> None:

@@ -22,14 +22,14 @@ from __future__ import annotations
 import inspect
 import logging
 import os
-import re
 import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Annotated, Any, cast
 
+from pydantic import Field
 from pydantic_ai import RunContext
 from pydantic_ai.tools import Tool
 
@@ -461,33 +461,20 @@ def _exported_methods() -> list[tuple[str, Callable]]:
 
 PURPOSE_PARAM = "purpose"
 
-_PURPOSE_DOC = (
-    "purpose: What you are trying to establish with this call, in one\n"
-    "    short clause (e.g. 'find where RepoTools is imported'). Recorded\n"
-    "    for diagnostics, not used to answer the query."
+PURPOSE_DESC = (
+    "What you are trying to establish with this call, in one short clause "
+    "(e.g. 'find where RepoTools is imported'). Recorded for diagnostics, "
+    "not used to answer the query."
 )
 
-#: A Google-style `Args:` header, captured with its indent.
-_ARGS_HEADER = re.compile(r"^([ \t]*)Args:[ \t]*$", re.MULTILINE)
-
-
-def _docstring_with_purpose(doc: str) -> str:
-    """Add `purpose` to a tool docstring's `Args:` section.
-
-    pydantic-ai reads parameter descriptions out of the docstring via
-    griffe, and griffe honours only the *last* `Args:` section. Appending
-    a second one therefore silently drops the descriptions of every real
-    parameter, so `purpose` is inserted into the existing section
-    instead. Indentation must match the section's own, or griffe stops
-    recognising the entries and every description is lost.
-    """
-    match = _ARGS_HEADER.search(doc)
-    if match is None:
-        return f"{doc.rstrip()}\n\n    Args:\n        {_PURPOSE_DOC}\n    "
-    indent = f"{match.group(1)}    "
-    entry = "\n".join(f"{indent}{line}" if line else "" for line in _PURPOSE_DOC.split("\n"))
-    insert_at = match.end() + 1
-    return f"{doc[:insert_at]}{entry}\n{doc[insert_at:]}"
+#: The `purpose` parameter's annotation. The description rides on a
+#: `Field` rather than in the docstring's `Args:` section: pydantic-ai
+#: derives parameter descriptions with griffe, which honours only the
+#: last `Args:` section and is sensitive to its exact indentation — and
+#: Python 3.13 dedents docstrings at compile time (gh-81283), so the
+#: right indent is version-dependent. Annotating leaves every method's
+#: docstring untouched, so real parameters keep their descriptions.
+PurposeParam = Annotated[str, Field(description=PURPOSE_DESC)]
 
 
 def _make_tool_fn(method_name: str, method: Callable) -> Callable:
@@ -517,7 +504,7 @@ def _make_tool_fn(method_name: str, method: Callable) -> Callable:
     purpose_param = inspect.Parameter(
         PURPOSE_PARAM,
         inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        annotation=str,
+        annotation=PurposeParam,
     )
     new_sig = sig.replace(
         parameters=[ctx_param, purpose_param, *method_params],
@@ -531,7 +518,7 @@ def _make_tool_fn(method_name: str, method: Callable) -> Callable:
 
     fn.__name__ = method_name
     fn.__qualname__ = method_name
-    fn.__doc__ = _docstring_with_purpose(method.__doc__ or "")
+    fn.__doc__ = method.__doc__
     fn.__signature__ = new_sig  # type: ignore[attr-defined]
     annotations: dict[str, Any] = {
         p.name: p.annotation
