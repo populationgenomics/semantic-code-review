@@ -82,6 +82,14 @@ _HUNK_CACHE_SETTINGS: dict[str, Any] = {
     "anthropic_cache_instructions": True,  # system prompt block
     "anthropic_cache_tool_definitions": True,  # tools/<RepoTools>
     "anthropic_cache_messages": True,  # rolling breakpoint on the latest turn
+    # Adaptive thinking, with the summary returned rather than omitted.
+    # On Opus 4.7+ leaving `thinking` unset means the model does not think
+    # at all — so every SDK-backend hunk had been annotated with reasoning
+    # off, while the CLI backend got Claude Code's own. `display` defaults
+    # to "omitted", which streams empty thinking blocks; "summarized" is
+    # what makes a trace show *why* a pass investigated the way it did,
+    # which is otherwise only reconstructible from the tool-call sequence.
+    "anthropic_thinking": {"type": "adaptive", "display": "summarized"},
 }
 
 
@@ -192,7 +200,7 @@ async def run_hunk_pass(
     payload = await run_pass(
         _HUNK,
         client=client,
-        agent=make_hunk_agent(client.model),
+        agent=make_hunk_agent(client.model, native_output=client.native_output),
         user_content=format_hunk_prompt(fp, hunk, overview_json, file_summary, file_outline, removed_symbols),
         system=HUNK_SYSTEM,
         model=model,
@@ -298,7 +306,7 @@ async def run_batch_pass(
     payload = await run_pass(
         _HUNK_BATCH,
         client=client,
-        agent=make_batch_agent(client.model, system),
+        agent=make_batch_agent(client.model, system, native_output=client.native_output),
         user_content=format_batch_prompt(fp, hunks, file_summary, file_outline, removed_symbols),
         system=system,
         model=model,

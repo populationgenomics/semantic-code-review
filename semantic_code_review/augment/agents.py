@@ -21,10 +21,10 @@ from typing import Any
 
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
-from pydantic_ai.output import ToolOutput
+from pydantic_ai.output import NativeOutput, ToolOutput
 
 from .prompts import HUNK_SYSTEM, OVERVIEW_SYSTEM
-from .schemas import BatchAnnotations, HunkAnnotations, OverviewSubmission
+from .schemas import BatchAnnotations, HunkSubmission, OverviewSubmission
 from .tools import TOOL_FUNCTIONS, RepoTools
 
 
@@ -42,19 +42,27 @@ def make_overview_agent(model: str | Model) -> Agent[None, OverviewSubmission]:
     )
 
 
-def make_hunk_agent(model: str | Model) -> Agent[RepoTools, HunkAnnotations]:
+def make_hunk_agent(model: str | Model, *, native_output: bool = False) -> Agent[RepoTools, HunkSubmission]:
     """Agent for the per-hunk annotation pass.
 
     Registers the repo tool functions so the SDK Agent can `read_file`,
     `grep`, etc. against the run's worktree. CLI backends ignore
     `function_tools` — they expose the same tools to the underlying
-    subprocess via the MCP server. Output is constrained via
-    `ToolOutput(HunkAnnotations, name='submit_annotations')`.
+    subprocess via the MCP server.
+
+    `native_output` selects Anthropic's native structured outputs over a
+    submit tool; see `Client.native_output` for why the two backends
+    differ. The output name is the same either way, so traces and the
+    cache surface don't fork.
     """
     return Agent(
         model=model,
         deps_type=RepoTools,
-        output_type=ToolOutput(HunkAnnotations, name="submit_annotations"),
+        output_type=(
+            NativeOutput(HunkSubmission, name="submit_annotations")
+            if native_output
+            else ToolOutput(HunkSubmission, name="submit_annotations")
+        ),
         instructions=HUNK_SYSTEM,
         tools=TOOL_FUNCTIONS,
     )
@@ -88,6 +96,18 @@ class Client:
     model: str | Model
     is_subprocess_backend: bool = False
     request_limit: int | None = None
+    native_output: bool = False
+    """Constrain output with Anthropic's native structured outputs rather
+    than a submit tool.
+
+    Anthropic rejects thinking and output *tools* in the same request, so
+    a pass that wants reasoning has to take the native path. The CLI
+    drivers cannot: `_output_tool` reads
+    `model_request_parameters.output_tools[0]` and raises when it is
+    empty, because the subprocess is driven by `--json-schema` built from
+    that tool. SDK backends set this; CLI backends and test doubles leave
+    it False and keep the submit-tool shape.
+    """
 
     def set_mcp_endpoint(self, config: dict[str, Any] | None) -> None:
         """Point a subprocess backend at the run's hosted HTTP MCP server.
@@ -141,7 +161,12 @@ class Client:
                 await close()  # pyright: ignore[reportGeneralTypeIssues]
 
 
-def make_batch_agent(model: str | Model, system: str) -> Agent[RepoTools, BatchAnnotations]:
+def make_batch_agent(
+    model: str | Model,
+    system: str,
+    *,
+    native_output: bool = False,
+) -> Agent[RepoTools, BatchAnnotations]:
     """Agent for the batched per-hunk pass — several hunks from one file.
 
     `system` is the fully-assembled instruction text, not a suffix: the
@@ -154,7 +179,11 @@ def make_batch_agent(model: str | Model, system: str) -> Agent[RepoTools, BatchA
     return Agent(
         model=model,
         deps_type=RepoTools,
-        output_type=ToolOutput(BatchAnnotations, name="submit_annotations"),
+        output_type=(
+            NativeOutput(BatchAnnotations, name="submit_annotations")
+            if native_output
+            else ToolOutput(BatchAnnotations, name="submit_annotations")
+        ),
         instructions=system,
         tools=TOOL_FUNCTIONS,
     )

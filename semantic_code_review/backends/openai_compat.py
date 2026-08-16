@@ -37,6 +37,7 @@ class OpenAICompatBackend(Backend):
                 provider=OpenAIProvider(base_url=bdef.base_url, api_key=api_key),
             ),
             request_limit=self.request_limit,
+            native_output=True,
         )
 
 

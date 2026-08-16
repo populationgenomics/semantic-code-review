@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from .schemas import SMELL_TAGS_TEXT
 
-PROMPT_VERSION = "p17"
+PROMPT_VERSION = "p18"
 
 
 # Field guidance shared by the single-hunk and batched forms of the
@@ -36,9 +36,6 @@ _ANNOTATION_FIELDS = (
     "- `refs`: {path, line, reason} for other files the reviewer should look at.\n"
     "- `confidence`: 0-100 integer. Low is fine and honest.\n"
     "- `line_notes`: {line, body} for notes too specific for intent. `line` is post-image.\n\n"
-    "Fold-region summaries (indent-based collapsed blocks inside the diff) are NOT "
-    "produced here — the review server fires a focused one-shot call for each region "
-    "the reviewer actually collapses. Leave `fold_descriptions` empty.\n\n"
     "Tone: explanatory, not evaluative. Comprehension first."
 )
 

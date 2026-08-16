@@ -6,7 +6,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from semantic_code_review.augment import usage
+import pytest
+
+from semantic_code_review.augment import pass_, usage
 
 
 def _trace(
@@ -176,3 +178,60 @@ def test_summary_line_splits_cache_reads_from_writes() -> None:
     assert "cache_w=300" in line
     assert "per-hunk median=500" in line
     assert "turns median=3 max=8" in line
+
+
+# --- grammar-compile retry --------------------------------------------------
+
+
+async def test_grammar_timeout_is_retried_not_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anthropic compiles a native-output schema on first use and caches it
+    for 24h; a fanned-out run races dozens of concurrent first uses and some
+    lose with a 400. Transient, so retry rather than lose the hunk."""
+    calls = {"n": 0}
+
+    async def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("status_code: 400 ... 'Grammar compilation timed out.'")
+        return {"intent": "ok"}
+
+    monkeypatch.setattr(pass_, "_drive_agent", flaky)
+    monkeypatch.setattr(pass_, "_GRAMMAR_BACKOFF_SECONDS", 0.0)
+    out = await pass_.run_pass(
+        pass_.PassMeta(name="hunk", submit_tool="submit_annotations"),
+        client=_StubClient(),
+        agent=None,
+        user_content="x",
+        system="s",
+        model="m",
+        cache_inputs=(),
+    )
+    assert out == {"intent": "ok"}
+    assert calls["n"] == 2
+
+
+async def test_other_errors_are_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only the grammar race is transient; everything else fails fast."""
+    calls = {"n": 0}
+
+    async def always_fails(*args, **kwargs):
+        calls["n"] += 1
+        raise RuntimeError("status_code: 400 ... 'invalid_request_error: bad tool'")
+
+    monkeypatch.setattr(pass_, "_drive_agent", always_fails)
+    with pytest.raises(RuntimeError, match="bad tool"):
+        await pass_.run_pass(
+            pass_.PassMeta(name="hunk", submit_tool="submit_annotations"),
+            client=_StubClient(),
+            agent=None,
+            user_content="x",
+            system="s",
+            model="m",
+            cache_inputs=(),
+        )
+    assert calls["n"] == 1
+
+
+class _StubClient:
+    model = "stub"
+    request_limit = 20

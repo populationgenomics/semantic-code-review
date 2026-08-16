@@ -48,6 +48,7 @@ from pydantic_ai.messages import (
     RetryPromptPart,
     SystemPromptPart,
     TextPart,
+    ThinkingPart,
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
@@ -128,13 +129,17 @@ def _request_to_sent(req: ModelRequest) -> list[dict[str, Any]]:
 def _response_content(resp: ModelResponse) -> list[dict[str, Any]]:
     """Flatten ModelResponse parts into the legacy assistant `content` blocks.
 
-    Parts the legacy shape doesn't have a slot for (ThinkingPart,
-    BuiltinToolCallPart, …) fall through to a generic dump so a
-    misbehaving model run's trace still shows what the model emitted.
+    Thinking is captured in full rather than as a repr: with
+    `display: "summarized"` it is the model's own account of why it
+    investigated the way it did, which is the one thing a trace of bare
+    tool calls cannot show. Parts with no slot here (BuiltinToolCallPart,
+    …) still fall through to a generic dump.
     """
     out: list[dict[str, Any]] = []
     for part in resp.parts:
-        if isinstance(part, TextPart):
+        if isinstance(part, ThinkingPart):
+            out.append({"type": "thinking", "thinking": part.content, "signature": part.signature or ""})
+        elif isinstance(part, TextPart):
             out.append({"type": "text", "text": part.content})
         elif isinstance(part, ToolCallPart):
             try:

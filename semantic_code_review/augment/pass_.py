@@ -15,6 +15,7 @@ case that most needs one.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -24,7 +25,7 @@ from typing import Any
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 
-from ..cache.store import CacheStore
+from ..cache.store import CacheKey, CacheStore
 from .agents import Client
 from .trace_adapter import (
     submit_args_from_result,
@@ -33,6 +34,17 @@ from .trace_adapter import (
 )
 
 log = logging.getLogger(__name__)
+
+#: Anthropic compiles a native-output schema into a grammar on first use
+#: and caches it for 24 hours. A run fans out dozens of hunks at once, so
+#: the first use is dozens of concurrent compiles of the same uncompiled
+#: schema and some lose the race with a 400. It is transient — the same
+#: schema succeeds once any one call has warmed the cache — so retry
+#: rather than treat it as a failed hunk. Observed: a whole 33-hunk run
+#: lost to this on the first use of a changed schema.
+_GRAMMAR_TIMEOUT = "Grammar compilation timed out"
+_GRAMMAR_RETRIES = 3
+_GRAMMAR_BACKOFF_SECONDS = 4.0
 
 
 @dataclass(frozen=True)
@@ -96,6 +108,67 @@ async def run_pass(
     # cannot answer its question keeps investigating until pydantic-ai's
     # default ceiling — losing the hunk after spending the most on it.
     usage_limits = UsageLimits(request_limit=client.request_limit) if client.request_limit else None
+    # The last attempt is outside the loop so the function has one exit on
+    # each path — the retries swallow the grammar error, the final call
+    # propagates whatever it raises.
+    for attempt in range(_GRAMMAR_RETRIES - 1):
+        try:
+            return await _drive_agent(
+                meta,
+                client=client,
+                agent=agent,
+                user_content=user_content,
+                system=system,
+                deps=deps,
+                model_settings=model_settings,
+                usage_limits=usage_limits,
+                cache=cache,
+                key=key,
+                trace_path=trace_path,
+                cache_request=cache_request,
+            )
+        except Exception as exc:
+            if _GRAMMAR_TIMEOUT not in str(exc):
+                raise
+            log.info(
+                "%s pass: schema grammar not compiled yet (attempt %d/%d) — retrying",
+                meta.name,
+                attempt + 1,
+                _GRAMMAR_RETRIES,
+            )
+            await asyncio.sleep(_GRAMMAR_BACKOFF_SECONDS * (attempt + 1))
+    return await _drive_agent(
+        meta,
+        client=client,
+        agent=agent,
+        user_content=user_content,
+        system=system,
+        deps=deps,
+        model_settings=model_settings,
+        usage_limits=usage_limits,
+        cache=cache,
+        key=key,
+        trace_path=trace_path,
+        cache_request=cache_request,
+    )
+
+
+async def _drive_agent(
+    meta: PassMeta,
+    *,
+    client: Client,
+    agent: Agent[Any, Any],
+    user_content: Any,
+    system: str,
+    deps: Any,
+    model_settings: Any,
+    usage_limits: Any,
+    cache: CacheStore | None,
+    key: CacheKey | None,
+    trace_path: Path | None,
+    cache_request: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """One attempt at the agent loop: drive, trace, account, cache."""
     async with agent.iter(
         user_content,
         deps=deps,
