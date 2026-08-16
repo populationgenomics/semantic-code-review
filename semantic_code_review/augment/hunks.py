@@ -53,12 +53,24 @@ _HUNK = PassMeta(
 # split the user prompt so within-file (overview + summary cached) and
 # within-PR (overview cached) prefixes are reused too.
 #
+# `anthropic_cache_messages` is the one that matters on a tool-using
+# pass, and its absence was costing more than the other two save. The
+# agent loop appends [tool_use][tool_result] per turn *after* every
+# fixed breakpoint, so without a rolling breakpoint the whole growing
+# conversation is re-sent as fresh input every turn: measured on a
+# 51-turn hunk, cache_read sat flat at 7,076 while fresh input climbed
+# 7,740 -> 46,698 and cache_write stayed at 0 throughout. Cost per turn
+# grows linearly and the loop's total grows quadratically. With the
+# rolling breakpoint each turn writes only its own delta and reads the
+# accumulated prefix at a tenth of the price.
+#
 # AnthropicModelSettings keys are silently ignored by non-Anthropic
 # backends (TypedDict total=False), so this is safe to apply
 # unconditionally — Google + the CLI drivers see them as no-ops.
 _HUNK_CACHE_SETTINGS: dict[str, Any] = {
     "anthropic_cache_instructions": True,  # system prompt block
     "anthropic_cache_tool_definitions": True,  # tools/<RepoTools>
+    "anthropic_cache_messages": True,  # rolling breakpoint on the latest turn
 }
 
 
