@@ -20,7 +20,6 @@ from ..augment.schemas import (
     AnnotatedDiff,
     AnnotatedFile,
     AnnotatedHunk,
-    FoldDescription,
     HunkAnnotations,
     LineNote,
     Overview,
@@ -39,16 +38,10 @@ from .trace_adapter import trace_filename
 
 log = logging.getLogger(__name__)
 
+# Shared by the single-hunk and batched forms: a batch is a different
+# grouping of the same work, so `usage.json` accounts for both under
+# `hunk` rather than splitting the pass in two.
 _HUNK = PassMeta(
-    name="hunk",
-    submit_tool="submit_annotations",
-    tool_names=tuple(fn.__name__ for fn in TOOL_FUNCTIONS),
-)
-
-# Same submit tool and pass name as the single-hunk form: a batch is a
-# different grouping of the same work, and `usage.json` should account for
-# both under `hunk` rather than splitting the pass in two.
-_HUNK_BATCH = PassMeta(
     name="hunk",
     submit_tool="submit_annotations",
     tool_names=tuple(fn.__name__ for fn in TOOL_FUNCTIONS),
@@ -378,7 +371,7 @@ async def run_batch_pass(
     system = format_batch_system(overview_json)
     indices = [i for i, _ in hunks]
     payload = await run_pass(
-        _HUNK_BATCH,
+        _HUNK,
         client=client,
         agent=make_batch_agent(client.model, system, native_output=client.native_output),
         user_content=format_batch_prompt(fp, hunks, file_summary, file_outline, removed_symbols),
@@ -399,7 +392,7 @@ async def run_batch_pass(
         trace_path=_batch_trace_path(trace_dir, fp, indices),
         cache_request={"file": fp.path, "hunk_indices": indices},
     )
-    assert payload is not None  # `_HUNK_BATCH.swallow_errors` is false
+    assert payload is not None  # `_HUNK.swallow_errors` is false
     return payload
 
 
@@ -448,9 +441,11 @@ def build_hunk_annotations(parsed: ParsedHunk, submit_args: dict[str, Any]) -> H
     """Validate a submit_annotations payload against `parsed` and return
     a `HunkAnnotations` record.
 
-    Drops segments/fold_descriptions outside the hunk's post-image range
-    or overlapping a previously-kept segment — the LLM occasionally emits
-    pre-image line numbers or off-by-a-few ranges.
+    Drops segments outside the hunk's post-image range or overlapping a
+    previously-kept segment — the LLM occasionally emits pre-image line
+    numbers or off-by-a-few ranges. `fold_descriptions` is not read: it
+    is not part of `HunkSubmission`, so the model is never asked for it;
+    the fold-summary pass fills it later.
     """
     hunk_end = parsed.new_start + parsed.new_count - 1
 
@@ -495,28 +490,6 @@ def build_hunk_annotations(parsed: ParsedHunk, submit_args: dict[str, Any]) -> H
         )
         last_end = end
 
-    fold_descriptions: list[FoldDescription] = []
-    for fd in submit_args.get("fold_descriptions") or []:
-        try:
-            start = int(fd["new_start"])
-            count = int(fd["new_count"])
-        except (KeyError, TypeError, ValueError):
-            log.warning("hunk %s: malformed fold_description %r — dropped", parsed.header, fd)
-            continue
-        end = start + count - 1
-        if count <= 0 or start < parsed.new_start or end > hunk_end:
-            log.warning(
-                "hunk %s: fold +%d..+%d outside range — dropped",
-                parsed.header,
-                start,
-                end,
-            )
-            continue
-        summary = (fd.get("summary") or "").strip()
-        if not summary:
-            continue
-        fold_descriptions.append(FoldDescription(right_start=start, right_end=end, summary=summary))
-
     line_notes = [
         LineNote(**ln) for ln in submit_args.get("line_notes") or [] if _line_in_hunk(int(ln["line"]), parsed)
     ]
@@ -529,7 +502,6 @@ def build_hunk_annotations(parsed: ParsedHunk, submit_args: dict[str, Any]) -> H
         refs=[Ref(**_ref(r)) for r in submit_args.get("refs") or []],
         line_notes=line_notes,
         segments=segments,
-        fold_descriptions=fold_descriptions,
     )
 
 
