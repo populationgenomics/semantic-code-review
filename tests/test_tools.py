@@ -133,20 +133,6 @@ def test_outline_seed_empty_for_missing_file(repo: RepoTools) -> None:
     assert repo.outline_seed("gone.py") == ""
 
 
-def test_source_window_is_line_numbered_and_clamped(repo: RepoTools) -> None:
-    """Out-of-range bounds clamp to the file rather than raising."""
-    out = repo.source_window("a.py", -5, 99)
-    assert out.splitlines() == ["1 def foo():", "2     return 1"]
-
-
-def test_source_window_empty_for_missing_file(repo: RepoTools) -> None:
-    assert repo.source_window("gone.py", 1, 5) == ""
-
-
-def test_source_window_empty_when_range_is_past_eof(repo: RepoTools) -> None:
-    assert repo.source_window("a.py", 50, 60) == ""
-
-
 def test_truncation() -> None:
     from semantic_code_review.augment.tools import _cap
 

@@ -68,7 +68,6 @@ def format_hunk_prompt(
     overview_json: str,
     file_summary: str,
     file_outline: str = "",
-    surrounding: str = "",
 ) -> list[UserContent]:
     """Assemble the user-prompt blocks for one hunk call.
 
@@ -81,19 +80,17 @@ def format_hunk_prompt(
     produced here — the review server fires a focused call on first
     fold-close; see :mod:`semantic_code_review.augment.fold_summary`.
 
-    `file_outline` sits inside the per-file cached prefix (it is
-    constant across the file's hunks); `surrounding` varies per hunk and
-    so rides with the hunk text. Both are omitted when empty rather than
-    emitted as empty sections — an unsupported language genuinely has no
-    outline, and a header-only section reads as "there is nothing here".
+    `file_outline` sits inside the per-file cached prefix — it is
+    constant across the file's hunks. It is omitted when empty rather
+    than emitted as an empty section: an unsupported language genuinely
+    has no outline, and a header-only section reads as "there is nothing
+    here".
     """
     numbered = linenos.number_for_prompt(f"{hunk.parsed.header}\n{hunk.parsed.body}")
     file_block = f"# File summary\n{file_summary}"
     if file_outline:
         file_block += f"\n\n# File outline (deterministic — tree-sitter, head side)\n{file_outline}"
     hunk_text = f"# File\npath: {fp.path}\nlang: {fp.ann.lang or ''}\n\n# Hunk\n{numbered}"
-    if surrounding:
-        hunk_text += f"\n\n# Surrounding head source (post-image line numbers)\n{surrounding}"
     return [
         f"# PR overview\n{overview_json}",
         CachePoint(),
@@ -139,7 +136,6 @@ async def run_hunk_pass(
     repo_tools: RepoTools,
     model: str,
     file_outline: str = "",
-    surrounding: str = "",
     cache: CacheStore | None = None,
     trace_dir: Path | None = None,
 ) -> dict[str, Any]:
@@ -147,7 +143,7 @@ async def run_hunk_pass(
         _HUNK,
         client=client,
         agent=make_hunk_agent(client.model),
-        user_content=format_hunk_prompt(fp, hunk, overview_json, file_summary, file_outline, surrounding),
+        user_content=format_hunk_prompt(fp, hunk, overview_json, file_summary, file_outline),
         system=HUNK_SYSTEM,
         model=model,
         cache_inputs=(
@@ -157,7 +153,6 @@ async def run_hunk_pass(
             hunk.parsed.header,
             hunk.parsed.body,
             file_outline,
-            surrounding,
         ),
         deps=repo_tools,
         model_settings=_HUNK_CACHE_SETTINGS,
