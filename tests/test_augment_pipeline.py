@@ -687,8 +687,9 @@ def test_hunk_trace_path_stays_flat_when_the_header_holds_a_path() -> None:
     path = _hunk_trace_path(Path("/trace"), fp, hunk)
 
     assert path is not None
+    # `Path.name` is a single component by construction, so asserting no
+    # "/" in it proves nothing — the parent is what shows it stayed flat.
     assert path.parent == Path("/trace")
-    assert "/" not in path.name[len("hunk-") :]
     assert path.name.endswith(".json")
 
 
@@ -849,3 +850,33 @@ async def test_removed_symbols_reach_the_hunk_prompt(tmp_path: Path) -> None:
     for tool, text in canned.prompts:
         if tool == "submit_annotations":
             assert "# Removed by this change" not in text
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        # The whitelist collapses every non-ASCII character, so same-length
+        # siblings sanitise identically...
+        ("docs/zh/入门.md", "docs/zh/安装.md"),
+        # ...as do ASCII specials...
+        ("src/foo bar.py", "src/foo(bar.py"),
+        # ...and a separator against the character replacing it.
+        ("a/b.py", "a_b.py"),
+    ],
+)
+def test_trace_names_do_not_collide_after_sanitising(left: str, right: str) -> None:
+    """A collision silently drops one trace, under-reporting the run's
+    token accounting — the failure this naming exists to prevent."""
+    from semantic_code_review.augment.trace_adapter import trace_filename
+
+    header = "@@ -1,4 +1,6 @@"
+    assert trace_filename("hunk", left, header) != trace_filename("hunk", right, header)
+
+
+def test_trace_name_keeps_its_pass_prefix() -> None:
+    """`usage.py` buckets a trace by the first path component."""
+    from semantic_code_review.augment.trace_adapter import trace_filename
+    from semantic_code_review.augment.usage import _pass_name
+
+    for prefix in ("hunk", "fold", "overview", "extra-review"):
+        assert _pass_name(trace_filename(prefix, "a/b.py", "tag")) == prefix

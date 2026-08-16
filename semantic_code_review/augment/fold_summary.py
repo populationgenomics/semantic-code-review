@@ -32,6 +32,7 @@ from ..cache.store import CacheStore
 from .agents import Client
 from .pass_ import PassMeta, run_pass
 from .schemas import AnnotatedDiff, FoldDescription
+from .trace_adapter import trace_filename
 
 log = logging.getLogger(__name__)
 
@@ -433,7 +434,6 @@ def _trace_path(
 ) -> Path | None:
     if trace_dir is None:
         return None
-    safe_file = file_path.replace("/", "_")
     if context == "right":
         rs, re_ = right_range or (0, 0)
         tag = f"r{rs}_{re_}"
@@ -444,4 +444,4 @@ def _trace_path(
         rs, re_ = right_range or (0, 0)
         ls, le = left_range or (0, 0)
         tag = f"b_r{rs}_{re_}_l{ls}_{le}"
-    return trace_dir / f"fold-{safe_file}-{tag}.json"
+    return trace_dir / trace_filename("fold", file_path, tag)

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -36,6 +35,7 @@ from .agents import Client, make_batch_agent, make_hunk_agent
 from .pass_ import PassMeta, run_pass
 from .prompts import HUNK_BATCH_SYSTEM, HUNK_SYSTEM
 from .tools import TOOL_FUNCTIONS, RepoTools
+from .trace_adapter import trace_filename
 
 log = logging.getLogger(__name__)
 
@@ -229,9 +229,6 @@ def format_hunk_prompt(
     ]
 
 
-_UNSAFE_IN_FILENAME = re.compile(r"[^A-Za-z0-9._-]")
-
-
 def _hunk_trace_path(
     trace_dir: Path | None,
     fp: AnnotatedFile,
@@ -249,10 +246,8 @@ def _hunk_trace_path(
     """
     if trace_dir is None:
         return None
-    safe_file = _UNSAFE_IN_FILENAME.sub("_", fp.path)
     header = hunk.parsed.header.replace("+", "p").replace("-", "m")
-    safe_hunk = _UNSAFE_IN_FILENAME.sub("_", header)
-    return trace_dir / f"hunk-{safe_file}-{safe_hunk[:40]}.json"
+    return trace_dir / trace_filename("hunk", fp.path, header)
 
 
 async def run_hunk_pass(
@@ -349,9 +344,8 @@ def format_batch_prompt(
 def _batch_trace_path(trace_dir: Path | None, fp: AnnotatedFile, indices: Sequence[int]) -> Path | None:
     if trace_dir is None:
         return None
-    safe_file = _UNSAFE_IN_FILENAME.sub("_", fp.path)
     span = f"{indices[0]}_{indices[-1]}" if indices else "empty"
-    return trace_dir / f"hunk-batch-{safe_file}-{span}.json"
+    return trace_dir / trace_filename("hunk-batch", fp.path, span)
 
 
 async def run_batch_pass(

@@ -37,7 +37,9 @@ The shape:
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -376,3 +378,34 @@ def submit_args_from_result(result: Any) -> dict[str, Any]:
     """Extract the validated output as a dict that `apply_*_to_diff` can consume."""
     output = result.output
     return output.model_dump(by_alias=True)
+
+
+#: Characters kept verbatim in a trace filename. A whitelist rather than
+#: a blacklist of separators: a `@@` header carries git's section text,
+#: which routinely holds a path, and any separator surviving into the
+#: name makes the trace a nested file (the writer `mkdir -p`s, so it
+#: lands in a stray directory rather than failing) where the usage scan
+#: used not to find it.
+_UNSAFE_IN_FILENAME = re.compile(r"[^A-Za-z0-9._-]")
+
+#: Readable stem length before the digest. Long enough to identify the
+#: trace at a glance, short enough to stay well inside NAME_MAX.
+_TRACE_STEM_MAX = 80
+
+
+def trace_filename(prefix: str, *parts: str) -> str:
+    """Flat, collision-free filename for one trace.
+
+    `prefix` must be the pass name (`usage.py` buckets a trace by it).
+
+    The readable stem is lossy — the whitelist collapses every non-ASCII
+    character, so `docs/zh/入门.md` and `docs/zh/安装.md` sanitise
+    identically, as do `foo bar.py` and `foo(bar.py`. Two such traces
+    would land on one path and the second would overwrite the first,
+    under-reporting the run's token accounting by exactly the silent
+    amount this naming exists to prevent. The digest of the unsanitised
+    identity keeps them apart.
+    """
+    stem = _UNSAFE_IN_FILENAME.sub("_", "-".join(parts))[:_TRACE_STEM_MAX]
+    digest = hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()[:8]
+    return f"{prefix}-{stem}-{digest}.json"
