@@ -20,7 +20,9 @@ and both update with no other edits.
 from __future__ import annotations
 
 import inspect
+import logging
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -33,6 +35,8 @@ from pydantic_ai.tools import Tool
 
 from .. import git_ops, structural
 from . import source_cache
+
+log = logging.getLogger(__name__)
 
 TOOL_RESULT_CAP_BYTES = 20 * 1024
 
@@ -455,14 +459,53 @@ def _exported_methods() -> list[tuple[str, Callable]]:
     return out
 
 
+PURPOSE_PARAM = "purpose"
+
+_PURPOSE_DOC = (
+    "purpose: What you are trying to establish with this call, in one\n"
+    "    short clause (e.g. 'find where RepoTools is imported'). Recorded\n"
+    "    for diagnostics, not used to answer the query."
+)
+
+#: A Google-style `Args:` header, captured with its indent.
+_ARGS_HEADER = re.compile(r"^([ \t]*)Args:[ \t]*$", re.MULTILINE)
+
+
+def _docstring_with_purpose(doc: str) -> str:
+    """Add `purpose` to a tool docstring's `Args:` section.
+
+    pydantic-ai reads parameter descriptions out of the docstring via
+    griffe, and griffe honours only the *last* `Args:` section. Appending
+    a second one therefore silently drops the descriptions of every real
+    parameter, so `purpose` is inserted into the existing section
+    instead. Indentation must match the section's own, or griffe stops
+    recognising the entries and every description is lost.
+    """
+    match = _ARGS_HEADER.search(doc)
+    if match is None:
+        return f"{doc.rstrip()}\n\n    Args:\n        {_PURPOSE_DOC}\n    "
+    indent = f"{match.group(1)}    "
+    entry = "\n".join(f"{indent}{line}" if line else "" for line in _PURPOSE_DOC.split("\n"))
+    insert_at = match.end() + 1
+    return f"{doc[:insert_at]}{entry}\n{doc[insert_at:]}"
+
+
 def _make_tool_fn(method_name: str, method: Callable) -> Callable:
     """Wrap a `RepoTools` method as a pydantic-ai-compatible tool function.
 
-    The returned callable takes `RunContext[RepoTools]` followed by the
-    method's parameters (minus `self`), and forwards to the matching
-    method on `ctx.deps`. Name, docstring, signature, and annotations
-    are copied so pydantic-ai's introspection produces the same schema
-    a hand-written wrapper would.
+    The returned callable takes `RunContext[RepoTools]` followed by a
+    `purpose` string and the method's parameters (minus `self`), and
+    forwards to the matching method on `ctx.deps`. Name, docstring,
+    signature, and annotations are copied so pydantic-ai's introspection
+    produces the same schema a hand-written wrapper would.
+
+    `purpose` is injected here rather than added to each `RepoTools`
+    method because the tool surface is derived by introspection: one
+    insertion covers every tool on both the SDK and MCP paths. It is
+    stripped before the call — the method never sees it. It exists so a
+    trace shows the *reason* for each call, which is what distinguishes a
+    productive investigation from a loop that rephrases the same question
+    (observed: 50 calls, zero exact repeats, 4 distinct paths).
     """
     sig = inspect.signature(method)
     method_params = list(sig.parameters.values())[1:]  # drop self
@@ -471,24 +514,38 @@ def _make_tool_fn(method_name: str, method: Callable) -> Callable:
         inspect.Parameter.POSITIONAL_OR_KEYWORD,
         annotation=RunContext[RepoTools],
     )
+    purpose_param = inspect.Parameter(
+        PURPOSE_PARAM,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        annotation=str,
+    )
     new_sig = sig.replace(
-        parameters=[ctx_param, *method_params],
+        parameters=[ctx_param, purpose_param, *method_params],
         return_annotation=str,
     )
 
     async def fn(ctx: RunContext[RepoTools], **kwargs: Any) -> str:
+        purpose = kwargs.pop(PURPOSE_PARAM, "")
+        log.info("tool %s(%s) — %s", method_name, _arg_summary(kwargs), purpose or "(no purpose given)")
         return getattr(ctx.deps, method_name)(**kwargs)
 
     fn.__name__ = method_name
     fn.__qualname__ = method_name
-    fn.__doc__ = method.__doc__
+    fn.__doc__ = _docstring_with_purpose(method.__doc__ or "")
     fn.__signature__ = new_sig  # type: ignore[attr-defined]
     annotations: dict[str, Any] = {
-        p.name: p.annotation for p in (ctx_param, *method_params) if p.annotation is not inspect.Parameter.empty
+        p.name: p.annotation
+        for p in (ctx_param, purpose_param, *method_params)
+        if p.annotation is not inspect.Parameter.empty
     }
     annotations["return"] = str
     fn.__annotations__ = annotations
     return fn
+
+
+def _arg_summary(kwargs: dict[str, Any]) -> str:
+    """Compact one-line rendering of tool args for the log."""
+    return ", ".join(f"{k}={v!r}" for k, v in kwargs.items() if v is not None)
 
 
 TOOL_FUNCTIONS: list = [_make_tool_fn(n, m) for n, m in _exported_methods()]
@@ -531,8 +588,12 @@ def mcp_dispatch(repo_tools: RepoTools, name: str, args: dict[str, Any]) -> str:
     method = getattr(repo_tools, name, None)
     if not callable(method) or not getattr(method, _TOOL_EXPORT_ATTR, False):
         return f"error: unknown tool {name!r}"
+    # `purpose` is advertised on the schema for diagnostics and is not a
+    # parameter of the underlying method; strip it before dispatch.
+    call_args = {k: v for k, v in args.items() if k != PURPOSE_PARAM}
+    log.info("tool %s(%s) — %s", name, _arg_summary(call_args), args.get(PURPOSE_PARAM) or "(no purpose given)")
     try:
         # Exported tool methods return str; getattr erases that to object.
-        return cast("str", method(**args))
+        return cast("str", method(**call_args))
     except TypeError as e:
         return f"error: bad args for {name}: {e}"

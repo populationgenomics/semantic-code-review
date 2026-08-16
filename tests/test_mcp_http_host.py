@@ -79,14 +79,16 @@ async def test_lists_the_repo_tool_surface(host: mcp_http_host.McpHttpHost) -> N
 
 async def test_calls_a_tool_and_fires_on_tool(host: mcp_http_host.McpHttpHost, calls: list[tuple[str, dict]]) -> None:
     async with _session(host.url, host.token) as session:
-        result = await session.call_tool("read_file", {"path": "a.py"})
+        result = await session.call_tool("read_file", {"purpose": "read the fixture", "path": "a.py"})
     assert "def foo" in _first_text(result)
-    assert calls == [("read_file", {"path": "a.py"})]
+    # the observer sees the rationale too — that is what makes a tool-call
+    # feed readable as an investigation rather than a list of reads
+    assert calls == [("read_file", {"purpose": "read the fixture", "path": "a.py"})]
 
 
 async def test_outline_returns_json(host: mcp_http_host.McpHttpHost) -> None:
     async with _session(host.url, host.token) as session:
-        result = await session.call_tool("outline", {"path": "a.py"})
+        result = await session.call_tool("outline", {"purpose": "list the definitions", "path": "a.py"})
     assert '"foo"' in _first_text(result)
 
 

@@ -146,3 +146,54 @@ def test_mcp_dispatch(repo: RepoTools) -> None:
     out = mcp_dispatch(repo, "read_file", {"path": "a.py"})
     assert "def foo" in out
     assert "unknown tool" in mcp_dispatch(repo, "nonexistent", {})
+
+
+# --- tool-call rationale ---------------------------------------------------
+
+
+def test_every_tool_requires_a_purpose(repo: RepoTools) -> None:
+    """A trace that shows only calls can't distinguish investigation from
+    a loop rephrasing the same question — the reason has to be recorded."""
+    from semantic_code_review.augment.tools import mcp_tool_schemas
+
+    for schema in mcp_tool_schemas():
+        props = schema["inputSchema"].get("properties", {})
+        assert "purpose" in props, schema["name"]
+        assert "purpose" in schema["inputSchema"].get("required", []), schema["name"]
+
+
+def test_injecting_purpose_keeps_every_other_parameter_described(repo: RepoTools) -> None:
+    """`purpose` goes *into* the docstring's `Args:` section, not after it.
+
+    griffe honours only the last `Args:` section, so appending a second
+    one silently strips the descriptions of every real parameter from
+    both the SDK and MCP schemas — a degraded tool surface that no
+    assertion about `purpose` itself would catch.
+    """
+    from semantic_code_review.augment.tools import mcp_tool_schemas
+
+    for schema in mcp_tool_schemas():
+        props = schema["inputSchema"].get("properties", {})
+        undescribed = sorted(name for name, spec in props.items() if not spec.get("description"))
+        assert not undescribed, f"{schema['name']}: undescribed parameters {undescribed}"
+
+
+def test_purpose_is_stripped_before_dispatch(repo: RepoTools) -> None:
+    """It is diagnostics only — the underlying method never sees it."""
+    out = mcp_dispatch(repo, "read_file", {"purpose": "check the helper", "path": "a.py"})
+    assert "def foo" in out
+    assert "error" not in out
+
+
+def test_dispatch_without_a_purpose_still_works(repo: RepoTools) -> None:
+    """Absent rationale is a diagnostics gap, not a failed read."""
+    assert "def foo" in mcp_dispatch(repo, "read_file", {"path": "a.py"})
+
+
+def test_purpose_is_logged_with_the_call(repo: RepoTools, caplog) -> None:
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="semantic_code_review.augment.tools"):
+        mcp_dispatch(repo, "grep", {"purpose": "locate the foo definition", "pattern": "foo"})
+    assert "locate the foo definition" in caplog.text
+    assert "grep" in caplog.text

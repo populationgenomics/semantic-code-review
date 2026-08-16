@@ -239,9 +239,10 @@ def test_changed_symbols_empty_when_base_equals_head(repo: RepoTools) -> None:
     assert delta == {"added": [], "removed": [], "modified": []}
 
 
-def test_changed_symbols_takes_no_args() -> None:
+def test_changed_symbols_takes_no_query_args() -> None:
+    """`purpose` is on every tool for diagnostics; it is not a query arg."""
     schemas = {s["name"]: s for s in mcp_tool_schemas()}
-    assert schemas["changed_symbols"]["inputSchema"].get("required", []) == []
+    assert schemas["changed_symbols"]["inputSchema"].get("required", []) == ["purpose"]
 
 
 def test_compute_symbol_delta_returns_typed_object(diff_repo: RepoTools) -> None:
