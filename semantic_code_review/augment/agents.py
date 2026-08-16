@@ -24,7 +24,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.output import ToolOutput
 
 from .prompts import HUNK_SYSTEM, OVERVIEW_SYSTEM
-from .schemas import HunkAnnotations, OverviewSubmission
+from .schemas import BatchAnnotations, HunkAnnotations, OverviewSubmission
 from .tools import TOOL_FUNCTIONS, RepoTools
 
 
@@ -131,3 +131,22 @@ class Client:
             if callable(close):
                 # Dynamic probe: getattr erases the type, so pyright can't see the coroutine.
                 await close()  # pyright: ignore[reportGeneralTypeIssues]
+
+
+def make_batch_agent(model: str | Model, system: str) -> Agent[RepoTools, BatchAnnotations]:
+    """Agent for the batched per-hunk pass — several hunks from one file.
+
+    `system` is the fully-assembled instruction text, not a suffix: the
+    per-file context (overview, summary, outline) is part of it, because
+    the system prompt is the region the CLI backend caches. Output is
+    constrained via `ToolOutput(BatchAnnotations, name='submit_annotations')`,
+    keeping the submit-tool name identical to the single-hunk pass so the
+    trace and cache surfaces don't fork.
+    """
+    return Agent(
+        model=model,
+        deps_type=RepoTools,
+        output_type=ToolOutput(BatchAnnotations, name="submit_annotations"),
+        instructions=system,
+        tools=TOOL_FUNCTIONS,
+    )
