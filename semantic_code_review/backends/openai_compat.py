@@ -9,7 +9,7 @@ from __future__ import annotations
 import typer
 
 from ..augment.agents import Client
-from .base import Backend, resolve_api_key
+from .base import Backend, resolve_api_key, supports_native_output_with_tools
 
 
 class OpenAICompatBackend(Backend):
@@ -31,13 +31,14 @@ class OpenAICompatBackend(Backend):
         from pydantic_ai.models.openai import OpenAIChatModel
         from pydantic_ai.providers.openai import OpenAIProvider
 
+        m = OpenAIChatModel(
+            model_name=model,
+            provider=OpenAIProvider(base_url=bdef.base_url, api_key=api_key),
+        )
         return Client(
-            model=OpenAIChatModel(
-                model_name=model,
-                provider=OpenAIProvider(base_url=bdef.base_url, api_key=api_key),
-            ),
+            model=m,
             request_limit=self.request_limit,
-            native_output=True,
+            native_output=supports_native_output_with_tools(m),
         )
 
 

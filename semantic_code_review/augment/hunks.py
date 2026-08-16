@@ -82,15 +82,28 @@ _HUNK_CACHE_SETTINGS: dict[str, Any] = {
     "anthropic_cache_instructions": True,  # system prompt block
     "anthropic_cache_tool_definitions": True,  # tools/<RepoTools>
     "anthropic_cache_messages": True,  # rolling breakpoint on the latest turn
-    # Adaptive thinking, with the summary returned rather than omitted.
-    # On Opus 4.7+ leaving `thinking` unset means the model does not think
-    # at all — so every SDK-backend hunk had been annotated with reasoning
-    # off, while the CLI backend got Claude Code's own. `display` defaults
-    # to "omitted", which streams empty thinking blocks; "summarized" is
-    # what makes a trace show *why* a pass investigated the way it did,
-    # which is otherwise only reconstructible from the tool-call sequence.
+}
+
+# Adaptive thinking, with the summary returned rather than omitted.
+# Leaving `thinking` unset means the model does not think at all — so
+# every SDK-backend hunk had been annotated with reasoning off, while the
+# CLI backend got Claude Code's own. `display="summarized"` is what makes
+# a trace show *why* a pass investigated the way it did, otherwise only
+# reconstructible from the tool-call sequence.
+#
+# Applied only alongside native structured output: Anthropic rejects
+# thinking combined with the forced tool choice `ToolOutput` produces, so
+# a model that cannot do native output must not be asked to think either.
+_THINKING_SETTINGS: dict[str, Any] = {
     "anthropic_thinking": {"type": "adaptive", "display": "summarized"},
 }
+
+
+def _hunk_model_settings(client: Client) -> dict[str, Any]:
+    """Model settings for a per-hunk call against `client`."""
+    if not client.native_output:
+        return _HUNK_CACHE_SETTINGS
+    return {**_HUNK_CACHE_SETTINGS, **_THINKING_SETTINGS}
 
 
 def format_removed_symbols(removed: Sequence[ChangedSymbol]) -> str:
@@ -214,7 +227,7 @@ async def run_hunk_pass(
             removed_symbols,
         ),
         deps=repo_tools,
-        model_settings=_HUNK_CACHE_SETTINGS,
+        model_settings=_hunk_model_settings(client),
         cache=cache,
         trace_path=_hunk_trace_path(trace_dir, fp, hunk),
         cache_request={
@@ -320,7 +333,7 @@ async def run_batch_pass(
             *(h.parsed.body for _, h in hunks),
         ),
         deps=repo_tools,
-        model_settings=_HUNK_CACHE_SETTINGS,
+        model_settings=_hunk_model_settings(client),
         cache=cache,
         trace_path=_batch_trace_path(trace_dir, fp, indices),
         cache_request={"file": fp.path, "hunk_indices": indices},

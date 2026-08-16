@@ -137,10 +137,14 @@ def test_cli_backends_keep_the_submit_tool() -> None:
     """The CLI driver builds `--json-schema` from
     `model_request_parameters.output_tools[0]` and raises when it is
     empty, so the subprocess path cannot use native output."""
+    from pydantic_ai.output import ToolOutput
+
     from semantic_code_review.augment.agents import make_hunk_agent
 
     agent = make_hunk_agent("anthropic:claude-opus-4-8", native_output=False)
-    assert "ToolOutput" in type(agent.output_type).__name__ or hasattr(agent.output_type, "name")
+    # `NativeOutput` also takes a `name=`, so a `hasattr(..., "name")`
+    # check passes for either mode and asserts nothing.
+    assert isinstance(agent.output_type, ToolOutput)
 
 
 def test_native_output_is_what_lets_the_sdk_path_think() -> None:

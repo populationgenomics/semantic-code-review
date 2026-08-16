@@ -17,7 +17,7 @@ import os
 import typer
 
 from ..augment.agents import Client
-from .base import Backend, resolve_api_key
+from .base import Backend, resolve_api_key, supports_native_output_with_tools
 
 _DEFAULT_GEMINI_API_MODEL = "gemini-2.5-pro"
 
@@ -35,21 +35,19 @@ class GoogleSdkBackend(Backend):
             # from the environment.
             from pydantic_ai.providers.google_cloud import GoogleCloudProvider
 
+            m = GoogleModel(model_name=gem_model, provider=GoogleCloudProvider())
             return Client(
-                model=GoogleModel(
-                    model_name=gem_model,
-                    provider=GoogleCloudProvider(),
-                ),
+                model=m,
                 request_limit=self.request_limit,
-                native_output=True,
+                native_output=supports_native_output_with_tools(m),
             )
 
         api_key = self._resolve_key()
+        m = GoogleModel(model_name=gem_model, provider=GoogleProvider(api_key=api_key))
         return Client(
-            model=GoogleModel(
-                model_name=gem_model,
-                provider=GoogleProvider(api_key=api_key),
-            ),
+            model=m,
+            request_limit=self.request_limit,
+            native_output=supports_native_output_with_tools(m),
         )
 
     def _resolve_key(self) -> str:
