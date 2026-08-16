@@ -96,9 +96,12 @@ async def augment_run_dir(
     Batching exists because on the claude-cli backend nothing in the user
     prompt is cached, so a file's summary and outline are re-paid on every
     one of its hunks; a batch sends them once. Hunks a batch fails to
-    answer for fall back to one call each, so a bad batch costs no more
-    than the hunks it covered.
+    answer for fall back to one call each, so a fully-failed batch costs
+    1 + N calls — the wasted batch carried every hunk body — and a
+    partial one 1 + |missing|. Off by default; see ADR 0005.
     """
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
     if client is None:
         # Default to the Anthropic SDK path via pydantic-ai. Callers that
         # need a different backend (CLI, Gemini, tests) construct the
@@ -418,7 +421,9 @@ async def augment_run_dir(
     # fresh line, emit the human-readable summary to stderr so the
     # one-liner doesn't fight the meter's redraw window.
     backend_tag = "subprocess" if client.is_subprocess_backend else "sdk"
-    summary = f"scr augment: backend={backend_tag} model={model} hunks={len(tasks)} ok={stats.ok} failed={stats.failed}"
+    summary = (
+        f"scr augment: backend={backend_tag} model={model} hunks={len(queued)} ok={stats.ok} failed={stats.failed}"
+    )
     usage_summary = usage.write_usage_summary(run_dir)
     if usage_summary is not None:
         summary += " " + usage.format_summary_line(usage_summary)

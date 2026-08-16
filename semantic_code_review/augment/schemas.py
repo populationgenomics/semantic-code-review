@@ -241,7 +241,7 @@ class ParsedDiff(BaseModel):
 # ---------------------------------------------------------------------------
 # Annotation payloads — what the LLM emits per pass.
 #
-# `OverviewSubmission` and `HunkAnnotations` are the wire format of
+# `OverviewSubmission` and `HunkSubmission` are the wire format of
 # `submit_overview` / `submit_annotations`. Their JSON schemas (via
 # `model_json_schema`) replace the hand-written tool input_schemas in
 # `prompts.py`, giving us one source of truth for "what we ask the model

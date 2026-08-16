@@ -4,9 +4,10 @@ Bump `PROMPT_VERSION` when a prompt changes — the cache layer keys on
 it so a bump forces a full re-run.
 
 The wire format the model emits is constrained by the Pydantic models
-in `schemas.py` (`OverviewSubmission`, `HunkAnnotations`) via
-pydantic-ai's `output_type=ToolOutput(...)`. The prompts describe
-*what* fields to populate; the schema enforces *how* they're shaped.
+in `schemas.py` (`OverviewSubmission`, `HunkSubmission`) via
+pydantic-ai's `output_type` — `NativeOutput` where the model supports
+it, `ToolOutput` otherwise. The prompts describe *what* fields to
+populate; the schema enforces *how* they're shaped.
 """
 
 from __future__ import annotations

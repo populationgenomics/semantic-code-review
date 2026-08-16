@@ -233,7 +233,9 @@ async def test_hunk_prompt_carries_the_file_outline(tmp_path: Path) -> None:
 
 
 async def test_overview_prompt_has_no_hunk_seeds(tmp_path: Path) -> None:
-    """The outline is per-hunk; the overview pass works from headers alone."""
+    """The outline is per-file — memoised once and shared by the file's
+    hunks, which is why it sits inside the cached prefix. The overview
+    pass works from headers alone."""
     run = _make_run_dir(tmp_path)
     backend, canned = _make_canned_backend(
         overview_args={"summary": "s", "themes": [], "files": [{"path": "f.py", "summary": "fs"}]},
@@ -880,3 +882,15 @@ def test_trace_name_keeps_its_pass_prefix() -> None:
 
     for prefix in ("hunk", "fold", "overview", "extra-review"):
         assert _pass_name(trace_filename(prefix, "a/b.py", "tag")) == prefix
+
+
+@pytest.mark.parametrize("size", [0, -4])
+async def test_a_nonsense_batch_size_is_rejected(tmp_path: Path, size: int) -> None:
+    """`max(1, batch_size)` silently turned these into "batching off"."""
+    run = _make_run_dir(tmp_path)
+    backend, _canned = _make_canned_backend(
+        overview_args={"summary": "s", "themes": [], "files": []},
+        hunk_args_list=[],
+    )
+    with pytest.raises(ValueError, match="batch_size must be >= 1"):
+        await augment_run_dir(run, model="t", concurrency=8, client=backend, cache=None, batch_size=size)
