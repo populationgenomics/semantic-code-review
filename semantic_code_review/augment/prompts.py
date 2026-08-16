@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from .schemas import SMELL_TAGS_TEXT
 
-PROMPT_VERSION = "p16"
+PROMPT_VERSION = "p17"
 
 
 # Field guidance shared by the single-hunk and batched forms of the
@@ -106,6 +106,12 @@ HUNK_SYSTEM = (
     "You have tools to read OTHER files in the head worktree and at the base SHA, to "
     "grep, to list directories, and to check git history. Use them when the hunk depends "
     "on code outside this file; skip them if the hunk is self-contained.\n\n"
+    "`grep`, `read_file`, `list_dir` and the outline all search the HEAD worktree — the code "
+    "as it is AFTER this change. Anything the change removes is not there. When a "
+    "`# Removed by this change` section is present it names exactly what went, with base-side "
+    "line ranges: read those with `read_file_at` against the base SHA. An empty grep result "
+    "for a removed symbol is the expected answer, not a bad query — do not rephrase the "
+    "search to try again.\n\n"
     f"{_ANNOTATION_FIELDS}"
 )
 
@@ -145,5 +151,11 @@ HUNK_BATCH_SYSTEM = (
     "grep, to list directories, and to check git history. Use them when a hunk depends "
     "on code outside this file; skip them when it is self-contained. One investigation "
     "can serve several hunks — don't repeat a read you already did for this file.\n\n"
+    "`grep`, `read_file`, `list_dir` and the outline all search the HEAD worktree — the code "
+    "as it is AFTER this change. Anything the change removes is not there. When a "
+    "`# Removed by this change` section is present it names exactly what went, with base-side "
+    "line ranges: read those with `read_file_at` against the base SHA. An empty grep result "
+    "for a removed symbol is the expected answer, not a bad query — do not rephrase the "
+    "search to try again.\n\n"
     f"{_ANNOTATION_FIELDS}"
 )

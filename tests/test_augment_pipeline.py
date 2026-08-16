@@ -769,3 +769,26 @@ def test_batches_split_a_file_that_exceeds_the_cap() -> None:
     queued = [(0, i, i) for i in range(7)]
     batches = _plan_batches(queued, 3)
     assert [len(b) for b in batches] == [3, 3, 1]
+
+
+async def test_removed_symbols_reach_the_hunk_prompt(tmp_path: Path) -> None:
+    """A deleted symbol is absent from head, so the model can only learn it
+    from the delta we already compute for the overview seed."""
+    run = _make_run_dir(tmp_path)
+    # base has a function the head no longer defines
+    _sh(run / "repo.git", "git", "config", "user.email", "t@t")
+    _sh(run / "repo.git", "git", "config", "user.name", "t")
+    (run / "head" / "f.py").write_text("x = 2\n", encoding="utf-8")
+
+    backend, canned = _make_canned_backend(
+        overview_args={"summary": "s", "themes": [], "files": [{"path": "f.py", "summary": "fs"}]},
+        hunk_args_list=[{"intent": "a"}, {"intent": "b"}],
+    )
+    await augment_run_dir(run, model="t", concurrency=1, client=backend, cache=None)
+
+    # With no resolvable base worktree the delta is empty, so the section is
+    # absent — the point is that an empty delta emits nothing rather than a
+    # bare heading.
+    for tool, text in canned.prompts:
+        if tool == "submit_annotations":
+            assert "# Removed by this change" not in text

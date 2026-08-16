@@ -31,6 +31,7 @@ from ..augment.schemas import (
 )
 from ..cache.store import CacheStore
 from ..format import linenos
+from ..structural import ChangedSymbol
 from .agents import Client, make_batch_agent, make_hunk_agent
 from .pass_ import PassMeta, run_pass
 from .prompts import HUNK_BATCH_SYSTEM, HUNK_SYSTEM
@@ -84,12 +85,36 @@ _HUNK_CACHE_SETTINGS: dict[str, Any] = {
 }
 
 
+def format_removed_symbols(removed: Sequence[ChangedSymbol]) -> str:
+    """Render the symbols this change deletes from a file, base-side.
+
+    Every tool we expose searches the head worktree, so a symbol the
+    change removes returns nothing from `grep`, `read_file`, or the
+    outline seed. The model cannot tell "empty because it was deleted"
+    from "empty because my pattern was wrong", and rephrases: one
+    observed hunk spent 50 tool calls — zero exact repeats, four distinct
+    paths — hunting for three symbols this commit had removed. Naming
+    them, with their base-side spans, answers that question up front.
+    """
+    if not removed:
+        return ""
+    lines = [
+        "# Removed by this change (base side — these are NOT in the head worktree, "
+        "so `grep`/`read_file` will not find them; use `read_file_at` with the base SHA)"
+    ]
+    for sym in removed:
+        label = sym.signature or f"{sym.kind} {sym.qualified_name}"
+        lines.append(f"{label}  (base {sym.range.start_line}-{sym.range.end_line})")
+    return "\n".join(lines)
+
+
 def format_hunk_prompt(
     fp: AnnotatedFile,
     hunk: AnnotatedHunk,
     overview_json: str,
     file_summary: str,
     file_outline: str = "",
+    removed_symbols: str = "",
 ) -> list[UserContent]:
     """Assemble the user-prompt blocks for one hunk call.
 
@@ -112,6 +137,8 @@ def format_hunk_prompt(
     file_block = f"# File summary\n{file_summary}"
     if file_outline:
         file_block += f"\n\n# File outline (deterministic — tree-sitter, head side)\n{file_outline}"
+    if removed_symbols:
+        file_block += f"\n\n{removed_symbols}"
     hunk_text = f"# File\npath: {fp.path}\nlang: {fp.ann.lang or ''}\n\n# Hunk\n{numbered}"
     return [
         f"# PR overview\n{overview_json}",
@@ -158,6 +185,7 @@ async def run_hunk_pass(
     repo_tools: RepoTools,
     model: str,
     file_outline: str = "",
+    removed_symbols: str = "",
     cache: CacheStore | None = None,
     trace_dir: Path | None = None,
 ) -> dict[str, Any]:
@@ -165,7 +193,7 @@ async def run_hunk_pass(
         _HUNK,
         client=client,
         agent=make_hunk_agent(client.model),
-        user_content=format_hunk_prompt(fp, hunk, overview_json, file_summary, file_outline),
+        user_content=format_hunk_prompt(fp, hunk, overview_json, file_summary, file_outline, removed_symbols),
         system=HUNK_SYSTEM,
         model=model,
         cache_inputs=(
@@ -175,6 +203,7 @@ async def run_hunk_pass(
             hunk.parsed.header,
             hunk.parsed.body,
             file_outline,
+            removed_symbols,
         ),
         deps=repo_tools,
         model_settings=_HUNK_CACHE_SETTINGS,
@@ -209,6 +238,7 @@ def format_batch_prompt(
     hunks: Sequence[tuple[int, AnnotatedHunk]],
     file_summary: str,
     file_outline: str = "",
+    removed_symbols: str = "",
 ) -> list[UserContent]:
     """User-prompt blocks for a batched call: file context, then each hunk.
 
@@ -227,6 +257,8 @@ def format_batch_prompt(
         file_block += f"\n\n# File summary\n{file_summary}"
     if file_outline:
         file_block += f"\n\n# File outline (deterministic — tree-sitter, head side)\n{file_outline}"
+    if removed_symbols:
+        file_block += f"\n\n{removed_symbols}"
     blocks = [file_block]
     for index, hunk in hunks:
         numbered = linenos.number_for_prompt(f"{hunk.parsed.header}\n{hunk.parsed.body}")
@@ -252,6 +284,7 @@ async def run_batch_pass(
     repo_tools: RepoTools,
     model: str,
     file_outline: str = "",
+    removed_symbols: str = "",
     cache: CacheStore | None = None,
     trace_dir: Path | None = None,
 ) -> dict[str, Any]:
@@ -266,7 +299,7 @@ async def run_batch_pass(
         _HUNK_BATCH,
         client=client,
         agent=make_batch_agent(client.model, system),
-        user_content=format_batch_prompt(fp, hunks, file_summary, file_outline),
+        user_content=format_batch_prompt(fp, hunks, file_summary, file_outline, removed_symbols),
         system=system,
         model=model,
         cache_inputs=(
@@ -274,6 +307,7 @@ async def run_batch_pass(
             fp.path,
             file_summary,
             file_outline,
+            removed_symbols,
             *(h.parsed.header for _, h in hunks),
             *(h.parsed.body for _, h in hunks),
         ),

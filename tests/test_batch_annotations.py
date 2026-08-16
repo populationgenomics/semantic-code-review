@@ -176,3 +176,63 @@ def test_batch_system_contains_the_one_entry_per_hunk_contract() -> None:
     system = format_batch_system("{}")
     assert "EXACTLY ONE entry per block" in system
     assert "hunk_index" in system
+
+
+# --- removed-symbol seed ---------------------------------------------------
+
+
+def _removed(name: str = "mod._mcp_config_for", start: int = 159, end: int = 196):
+    from semantic_code_review.structural import ChangedSymbol, SymbolRange
+
+    return ChangedSymbol(
+        path="pkg/mod.py",
+        kind="function",
+        name=name.rsplit(".", maxsplit=1)[-1],
+        qualified_name=name,
+        range=SymbolRange(start_line=start, end_line=end, start_col=0, end_col=0),
+        signature=f"def {name.rsplit('.', maxsplit=1)[-1]}(self)",
+    )
+
+
+def test_removed_symbols_names_what_head_cannot_show() -> None:
+    """Every tool searches head, so a deleted symbol returns empty from all
+    of them — indistinguishable from a bad query unless we say so."""
+    from semantic_code_review.augment.hunks import format_removed_symbols
+
+    text = format_removed_symbols([_removed()])
+    assert "NOT in the head worktree" in text
+    assert "read_file_at" in text
+    assert "base 159-196" in text
+    assert "_mcp_config_for" in text
+
+
+def test_no_removed_symbols_emits_no_section() -> None:
+    from semantic_code_review.augment.hunks import format_removed_symbols
+
+    assert format_removed_symbols([]) == ""
+
+
+def test_removed_section_rides_with_the_file_context_in_both_forms() -> None:
+    from semantic_code_review.augment.hunks import (
+        format_batch_prompt,
+        format_hunk_prompt,
+        format_removed_symbols,
+    )
+
+    fp, outline = _file()
+    removed = format_removed_symbols([_removed()])
+    _idx, hunk = _hunk(0)
+
+    single = "".join(b for b in format_hunk_prompt(fp, hunk, "{}", "s", outline, removed) if isinstance(b, str))
+    batch = format_batch_prompt(fp, [_hunk(0)], "s", outline, removed)[0]
+    for prompt in (single, batch):
+        assert "# Removed by this change" in prompt
+
+
+def test_both_system_prompts_explain_head_versus_base_search() -> None:
+    """The rephrase loop came from not knowing empty was the real answer."""
+    from semantic_code_review.augment.prompts import HUNK_BATCH_SYSTEM, HUNK_SYSTEM
+
+    for prompt in (HUNK_SYSTEM, HUNK_BATCH_SYSTEM):
+        assert "HEAD worktree" in prompt
+        assert "do not rephrase" in prompt
