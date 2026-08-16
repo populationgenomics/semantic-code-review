@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic_ai import Agent
+from pydantic_ai.usage import UsageLimits
 
 from ..cache.store import CacheStore
 from .agents import Client
@@ -90,10 +91,16 @@ async def run_pass(
                 _write_cache_hit_marker(trace_path, meta.name, entry)
             return entry["response"]
 
+    # Bound the agentic loop. The CLI drivers get this from `--max-turns`;
+    # SDK backends have no equivalent, so without a limit here a pass that
+    # cannot answer its question keeps investigating until pydantic-ai's
+    # default ceiling — losing the hunk after spending the most on it.
+    usage_limits = UsageLimits(request_limit=client.request_limit) if client.request_limit else None
     async with agent.iter(
         user_content,
         deps=deps,
         model_settings=model_settings,
+        usage_limits=usage_limits,
     ) as agent_run:
         try:
             async for _ in agent_run:
