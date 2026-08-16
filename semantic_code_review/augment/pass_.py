@@ -16,6 +16,7 @@ case that most needs one.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from dataclasses import dataclass
@@ -136,6 +137,7 @@ async def run_pass(
                 attempt + 1,
                 _GRAMMAR_RETRIES,
             )
+            _preserve_attempt_trace(trace_path, attempt + 1)
             await asyncio.sleep(_GRAMMAR_BACKOFF_SECONDS * (attempt + 1))
     return await _drive_agent(
         meta,
@@ -151,6 +153,22 @@ async def run_pass(
         trace_path=trace_path,
         cache_request=cache_request,
     )
+
+
+def _preserve_attempt_trace(trace_path: Path | None, attempt: int) -> None:
+    """Move a failed attempt's trace aside so the retry doesn't erase it.
+
+    Every attempt drives a fresh `agent.iter`, so a retry re-runs and
+    re-bills the whole tool loop, and it writes to the same path. Left
+    alone the successful attempt overwrites the failed one and
+    `usage.json` — which is derived from these files alone — reports a
+    hunk that cost two loops as having cost one.
+    """
+    if trace_path is None or not trace_path.exists():
+        return
+    kept = trace_path.with_name(f"{trace_path.stem}-attempt{attempt}{trace_path.suffix}")
+    with contextlib.suppress(OSError):
+        trace_path.replace(kept)
 
 
 async def _drive_agent(
