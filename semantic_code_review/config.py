@@ -115,10 +115,11 @@ class BackendDef:
     max_turns: Annotated[
         int | None,
         (
-            "Cap on the CLI's internal tool-loop turns per augment call. "
-            "Only meaningful for cli backends, where each turn re-reads the "
-            "accumulated context and so dominates per-hunk cost. None keeps "
-            "the driver default; check usage.json's `turns` before lowering."
+            "Cap on the tool loop per augment call: CLI turns on cli "
+            "backends, model requests on SDK backends. It matters most on "
+            "cli backends, where each turn re-reads the accumulated context "
+            "and so dominates per-hunk cost. None keeps the default 20; "
+            "check usage.json's `turns` before lowering."
         ),
     ] = None
 

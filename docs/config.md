@@ -88,13 +88,22 @@ Defines a backend or overrides a builtin. Keys:
 | `api_key_env` | string | env var the key is read from |
 | `api_key_command` | list or string | argv that prints the key (`["gh","auth","token"]` or `"gh auth token"`, shlex-split). Run with `shell=False`. |
 | `description` | string | shown in `scr init` / `scr config show` |
-| `max_turns` | int ≥ 1 | cap on the CLI's internal tool-loop turns per augment call (`claude-cli` only; default 20) |
+| `max_turns` | int ≥ 1 | cap on the tool loop per augment call — CLI turns on `claude-cli`, model requests on SDK backends (default 20) |
 
-`max_turns` is the main cost lever on `claude-cli`: the subprocess runs its
-whole tool loop internally and every turn re-reads the accumulated context,
-so per-hunk cost scales with loop depth rather than with hunk size. Check
-the `turns` distribution in a run's `usage.json` before lowering it — a cap
-below what a hunk needs turns into a failed hunk, not a cheaper one.
+`max_turns` bounds the tool loop on every backend, but the two transports
+count different units: on `claude-cli` it is `--max-turns`, the subprocess's
+own internal turns, and on SDK backends it is pydantic-ai's request limit,
+which counts model requests for the whole pass (so it includes the final
+structured-output request and any output-validation retry). The numbers are
+close — 20 requests is roughly 19 tool round-trips — but they are not the
+same counter.
+
+It is the main cost lever on `claude-cli`, where the subprocess re-reads the
+accumulated context every turn, so per-hunk cost scales with loop depth
+rather than hunk size. Check the `turns` distribution in a run's
+`usage.json` before lowering it — a cap below what a hunk needs turns into a
+failed hunk, not a cheaper one. Left unset, SDK backends would otherwise
+fall through to pydantic-ai's own 50-request ceiling.
 
 Credential resolution for a backend: `$api_key_env` (from the shell, a
 loaded `.env`, or `[env]`) > `api_key_command`. `claude-cli` needs no key;
