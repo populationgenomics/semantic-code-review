@@ -41,6 +41,7 @@ class GoogleSdkBackend(Backend):
                     provider=GoogleCloudProvider(),
                 ),
                 request_limit=self.request_limit,
+                native_output=True,
             )
 
         api_key = self._resolve_key()

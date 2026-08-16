@@ -230,10 +230,11 @@ def test_partial_trace_captures_tool_calls_and_error(tmp_path: Path) -> None:
 
 
 def test_response_falls_back_for_unknown_part_types(tmp_path: Path) -> None:
-    """Parts the adapter doesn't render specifically (ThinkingPart and
-    similar) still leave a class-name + repr trace so a misbehaving
-    model run's output is inspectable."""
-    from pydantic_ai.messages import ThinkingPart
+    """Parts the adapter doesn't render specifically still leave a
+    class-name + repr trace so a misbehaving model run's output is
+    inspectable. (ThinkingPart used to be one of these; it is now
+    captured in full — see the test below.)"""
+    from pydantic_ai.messages import NativeToolCallPart
 
     messages = [
         ModelRequest(
@@ -241,7 +242,7 @@ def test_response_falls_back_for_unknown_part_types(tmp_path: Path) -> None:
             timestamp=_ts(),
         ),
         ModelResponse(
-            parts=[ThinkingPart(content="let me think about this carefully")],
+            parts=[NativeToolCallPart(tool_name="web_search", args={"q": "x"})],
             usage=RequestUsage(input_tokens=5, output_tokens=2),
             model_name="m",
             finish_reason="tool_calls",
@@ -261,8 +262,8 @@ def test_response_falls_back_for_unknown_part_types(tmp_path: Path) -> None:
     trace = json.loads(trace_path.read_text())
     blocks = trace["iterations"][0]["response"]["content"]
     assert len(blocks) == 1
-    assert blocks[0]["type"] == "ThinkingPart"
-    assert "let me think" in blocks[0]["repr"]
+    assert blocks[0]["type"] == "NativeToolCallPart"
+    assert "web_search" in blocks[0]["repr"]
 
 
 def test_response_captures_malformed_tool_call_args(tmp_path: Path) -> None:
@@ -329,3 +330,39 @@ def test_partial_trace_no_error_field_when_no_error(tmp_path: Path) -> None:
     trace = json.loads(trace_path.read_text())
     assert "error" not in trace
     assert trace["result"]["submit_args"] == {"intent": "ok"}
+
+
+def test_thinking_is_captured_in_full_not_as_a_repr(tmp_path: Path) -> None:
+    """With `display: summarized`, thinking is the model's own account of
+    why it investigated the way it did — the one thing a trace of bare
+    tool calls cannot show. A truncated repr would defeat the point."""
+    from pydantic_ai.messages import ThinkingPart
+
+    reasoning = "The hunk removes set_repo_tools; grep on head will be empty, so read base." * 40
+    messages = [
+        ModelRequest(parts=[UserPromptPart(content="go", timestamp=_ts())], timestamp=_ts()),
+        ModelResponse(
+            parts=[
+                ThinkingPart(content=reasoning),
+                ToolCallPart(tool_name="submit_annotations", args={"intent": "x"}, tool_call_id="c1"),
+            ],
+            usage=RequestUsage(input_tokens=1, output_tokens=1),
+            model_name="test-model",
+            finish_reason="tool_calls",
+            timestamp=_ts(),
+        ),
+    ]
+    out = tmp_path / "t.json"
+    write_pydantic_ai_trace(
+        _FakeResult(messages=messages, output=_FakeOutput({"intent": "x"})),
+        trace_path=out,
+        model="m",
+        system="s",
+        tool_names=[],
+        submit_tool="submit_annotations",
+    )
+    blocks = json.loads(out.read_text())["iterations"][0]["response"]["content"]
+    thinking = [b for b in blocks if b["type"] == "thinking"]
+    assert len(thinking) == 1
+    assert thinking[0]["thinking"] == reasoning  # in full, not truncated
+    assert "ThinkingPart(" not in json.dumps(blocks)  # not the repr fallback

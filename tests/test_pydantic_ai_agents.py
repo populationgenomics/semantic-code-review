@@ -16,7 +16,7 @@ from semantic_code_review.augment.agents import (
     make_hunk_agent,
     make_overview_agent,
 )
-from semantic_code_review.augment.schemas import HunkAnnotations, OverviewSubmission
+from semantic_code_review.augment.schemas import HunkSubmission, OverviewSubmission
 from semantic_code_review.augment.tools import TOOL_FUNCTIONS, RepoTools
 
 
@@ -47,7 +47,9 @@ def test_overview_agent_has_no_repo_tools() -> None:
 
 def test_hunk_agent_factory_wires_output_type() -> None:
     agent = make_hunk_agent("anthropic:claude-opus-4-7")
-    assert agent.output_type.output is HunkAnnotations
+    # The pass asks for the submission shape, not the storage shape:
+    # `fold_descriptions` is written later by the fold-summary pass.
+    assert agent.output_type.output is HunkSubmission
     assert agent.output_type.name == "submit_annotations"
 
 
@@ -92,7 +94,7 @@ def test_hunk_agent_runs_with_test_model(tmp_path) -> None:
     )
     with agent.override(model=test_model):
         result = agent.run_sync("# Hunk", deps=deps)
-    assert isinstance(result.output, HunkAnnotations)
+    assert isinstance(result.output, HunkSubmission)
     assert result.output.intent == "noop"
 
 
@@ -126,3 +128,40 @@ def test_set_mcp_endpoint_gated_by_model_instance() -> None:
     # _StubModel isn't a pydantic-ai Model, so the isinstance() gate blocks
     # the proxy — CLI Models cover the live path.
     assert seen == []
+
+
+# --- output mechanism per backend ------------------------------------------
+
+
+def test_cli_backends_keep_the_submit_tool() -> None:
+    """The CLI driver builds `--json-schema` from
+    `model_request_parameters.output_tools[0]` and raises when it is
+    empty, so the subprocess path cannot use native output."""
+    from semantic_code_review.augment.agents import make_hunk_agent
+
+    agent = make_hunk_agent("anthropic:claude-opus-4-8", native_output=False)
+    assert "ToolOutput" in type(agent.output_type).__name__ or hasattr(agent.output_type, "name")
+
+
+def test_native_output_is_what_lets_the_sdk_path_think() -> None:
+    """Anthropic rejects thinking and output tools in one request, so a
+    pass that wants reasoning has to constrain output natively."""
+    from pydantic_ai.output import NativeOutput
+
+    from semantic_code_review.augment.agents import make_hunk_agent
+
+    agent = make_hunk_agent("anthropic:claude-opus-4-8", native_output=True)
+    assert isinstance(agent.output_type, NativeOutput)
+
+
+def test_batch_agent_honours_the_same_switch() -> None:
+    from pydantic_ai.output import NativeOutput
+
+    from semantic_code_review.augment.agents import make_batch_agent
+
+    assert isinstance(
+        make_batch_agent("anthropic:claude-opus-4-8", "sys", native_output=True).output_type, NativeOutput
+    )
+    assert not isinstance(
+        make_batch_agent("anthropic:claude-opus-4-8", "sys", native_output=False).output_type, NativeOutput
+    )

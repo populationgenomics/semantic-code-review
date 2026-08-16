@@ -249,9 +249,14 @@ class ParsedDiff(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class HunkAnnotations(BaseModel):
-    """Wire format of `submit_annotations` and the per-hunk annotation
-    block carried on `AnnotatedHunk.ann`.
+class HunkSubmission(BaseModel):
+    """What the per-hunk pass asks the model for.
+
+    Split from `HunkAnnotations` so the output schema carries only fields
+    the model is meant to fill. `fold_descriptions` is storage, written
+    later by the fold-summary pass — asking for it here put a nested
+    model and its enum into every hunk's output grammar for a field the
+    prompt explicitly told the model to leave empty.
     """
 
     intent: str = Field(description="1-2 sentences of MOTIVE, not mechanics.")
@@ -272,16 +277,25 @@ class HunkAnnotations(BaseModel):
     refs: list[Ref] = Field(default_factory=list)
     confidence: int | None = Field(default=None, ge=0, le=100)
     line_notes: list[LineNote] = Field(default_factory=list)
+
+
+class HunkAnnotations(HunkSubmission):
+    """The per-hunk annotation block carried on `AnnotatedHunk.ann`.
+
+    `HunkSubmission` plus the fold summaries, which are not produced by
+    the per-hunk pass: the review server fires a focused call on first
+    fold-close and writes the result back here (see
+    :mod:`semantic_code_review.augment.fold_summary`). The diff format
+    and the viewer both read them from this field.
+    """
+
     fold_descriptions: list[FoldDescription] = Field(
         default_factory=list,
-        description=(
-            "One short sentence per indent fold region containing changes. "
-            "Match each region's new_start/new_count exactly."
-        ),
+        description="Filled by the fold-summary pass, not the per-hunk pass.",
     )
 
 
-class BatchHunkAnnotations(HunkAnnotations):
+class BatchHunkAnnotations(HunkSubmission):
     """One hunk's annotations inside a batched `submit_annotations` call.
 
     `hunk_index` is the hunk's 0-based position **within the file**, the
