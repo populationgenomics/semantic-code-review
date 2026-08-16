@@ -26,6 +26,7 @@ from . import mcp_http_host, skip, source_cache, usage
 from .agents import Client
 from .hunks import (
     build_hunk_annotations,
+    format_removed_symbols,
     overview_to_prompt_json,
     run_batch_pass,
     run_hunk_pass,
@@ -269,6 +270,19 @@ async def augment_run_dir(
                 for fi, _hi, _ord in queued:
                     if fi not in file_outlines:
                         file_outlines[fi] = repo_tools.outline_seed(diff.files[fi].path)
+            # Symbols this change deletes, per file. Every tool searches the
+            # head worktree, so without this a hunk that removes code sends
+            # the model hunting for symbols that are gone — it cannot tell an
+            # empty result from a bad query, and rephrases instead of
+            # concluding. The delta is already computed for the overview seed.
+            removed_by_file: dict[int, str] = {}
+            if symbol_delta is not None:
+                by_path: dict[str, list] = {}
+                for sym in symbol_delta.removed:
+                    by_path.setdefault(sym.path, []).append(sym)
+                for fi, _hi, _ord in queued:
+                    if fi not in removed_by_file:
+                        removed_by_file[fi] = format_removed_symbols(by_path.get(diff.files[fi].path, []))
             # batch_size <= 1 keeps the original one-call-per-hunk path
             # rather than routing through a batch of one: the batched form
             # has its own wire format and system prompt, so "batching off"
@@ -292,6 +306,7 @@ async def augment_run_dir(
                             on_event,
                             file_spans,
                             file_outlines.get(batch[0][0], ""),
+                            removed_by_file.get(batch[0][0], ""),
                         )
                     )
                     for batch in _plan_batches(queued, batch_size)
@@ -317,6 +332,7 @@ async def augment_run_dir(
                             on_event,
                             file_spans.get(fi, ([], [])),
                             file_outlines.get(fi, ""),
+                            removed_by_file.get(fi, ""),
                         )
                     )
                     for fi, hi, ord_idx in queued
@@ -462,6 +478,7 @@ async def _augment_one_batch(
     on_event: OnEvent | None,
     file_spans: dict[int, tuple[list, list]],
     file_outline: str,
+    removed_symbols: str,
 ) -> None:
     """Annotate one file's batch in a single call; retry the remainder singly.
 
@@ -498,6 +515,7 @@ async def _augment_one_batch(
                 repo_tools=rt,
                 model=model,
                 file_outline=file_outline,
+                removed_symbols=removed_symbols,
                 cache=cache,
                 trace_dir=trace_dir,
             )
@@ -562,6 +580,7 @@ async def _augment_one_batch(
             on_event,
             file_spans.get(fi, ([], [])),
             file_outline,
+            removed_symbols,
         )
 
 
@@ -583,6 +602,7 @@ async def _augment_one_hunk(
     on_event: OnEvent | None,
     fold_spans: tuple[list, list],
     file_outline: str,
+    removed_symbols: str,
 ) -> None:
     fp = diff.files[fi]
     hunk = fp.hunks[hi]
@@ -611,6 +631,7 @@ async def _augment_one_hunk(
                 repo_tools=rt,
                 model=model,
                 file_outline=file_outline,
+                removed_symbols=removed_symbols,
                 cache=cache,
                 trace_dir=trace_dir,
             )
