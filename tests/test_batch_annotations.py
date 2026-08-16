@@ -194,22 +194,68 @@ def _removed(name: str = "mod._mcp_config_for", start: int = 159, end: int = 196
     )
 
 
+def _delta(removed=(), added=()):
+    from semantic_code_review.structural import SymbolDelta
+
+    return SymbolDelta(removed=list(removed), added=list(added))
+
+
 def test_removed_symbols_names_what_head_cannot_show() -> None:
     """Every tool searches head, so a deleted symbol returns empty from all
     of them — indistinguishable from a bad query unless we say so."""
     from semantic_code_review.augment.hunks import format_removed_symbols
 
-    text = format_removed_symbols([_removed()])
+    text = format_removed_symbols(_delta(removed=[_removed()]), path="pkg/mod.py", base_sha="abc123")
     assert "NOT in the head worktree" in text
     assert "read_file_at" in text
+    assert "abc123" in text  # the SHA to read at, not just the instruction
     assert "base 159-196" in text
     assert "_mcp_config_for" in text
+
+
+def test_removals_from_other_files_are_named_too() -> None:
+    """The hunk that motivated the seed deleted *references* to symbols
+    defined elsewhere; a per-file list gives it nothing at all."""
+    from semantic_code_review.augment.hunks import format_removed_symbols
+
+    text = format_removed_symbols(_delta(removed=[_removed()]), path="pkg/other.py", base_sha="abc123")
+    assert "Removed elsewhere in this change" in text
+    assert "_mcp_config_for" in text
+    assert "pkg/mod.py" in text
+
+
+def test_a_moved_symbol_is_not_reported_as_removed() -> None:
+    """A per-path set-diff calls a move a removal. Saying it is gone —
+    next to a prompt telling the model not to re-search — earns a
+    confidently wrong annotation on an ordinary refactor."""
+    from semantic_code_review.augment.hunks import format_removed_symbols
+
+    gone = _removed()
+    arrived = gone.model_copy(update={"path": "pkg/new_home.py"})
+    text = format_removed_symbols(_delta(removed=[gone], added=[arrived]), path="pkg/mod.py", base_sha="s")
+
+    assert "Moved, not removed" in text
+    assert "pkg/mod.py -> pkg/new_home.py" in text
+    assert "NOT in the head worktree" not in text
+
+
+def test_the_seed_is_capped() -> None:
+    """It rides in every hunk prompt for the file; a wholesale deletion
+    uncapped measured ~62k tokens per hunk."""
+    from semantic_code_review.augment.hunks import _REMOVED_SEED_MAX, format_removed_symbols
+
+    many = [_removed(name=f"mod.gone_{i}") for i in range(_REMOVED_SEED_MAX * 3)]
+    text = format_removed_symbols(_delta(removed=many), path="pkg/mod.py", base_sha="s")
+
+    assert "list truncated" in text
+    assert sum(1 for line in text.splitlines() if line.startswith("def gone_")) == _REMOVED_SEED_MAX
 
 
 def test_no_removed_symbols_emits_no_section() -> None:
     from semantic_code_review.augment.hunks import format_removed_symbols
 
-    assert format_removed_symbols([]) == ""
+    assert format_removed_symbols(_delta(), path="pkg/mod.py", base_sha="s") == ""
+    assert format_removed_symbols(None, path="pkg/mod.py", base_sha="s") == ""
 
 
 def test_removed_section_rides_with_the_file_context_in_both_forms() -> None:
@@ -220,13 +266,13 @@ def test_removed_section_rides_with_the_file_context_in_both_forms() -> None:
     )
 
     fp, outline = _file()
-    removed = format_removed_symbols([_removed()])
+    removed = format_removed_symbols(_delta(removed=[_removed()]), path="pkg/mod.py", base_sha="s")
     _idx, hunk = _hunk(0)
 
     single = "".join(b for b in format_hunk_prompt(fp, hunk, "{}", "s", outline, removed) if isinstance(b, str))
     batch = format_batch_prompt(fp, [_hunk(0)], "s", outline, removed)[0]
     for prompt in (single, batch):
-        assert "# Removed by this change" in prompt
+        assert "# Removed from this file" in prompt
 
 
 def test_both_system_prompts_explain_head_versus_base_search() -> None:

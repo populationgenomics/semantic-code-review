@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from .schemas import SMELL_TAGS_TEXT
 
-PROMPT_VERSION = "p18"
+PROMPT_VERSION = "p19"
 
 
 # Field guidance shared by the single-hunk and batched forms of the
@@ -100,12 +100,15 @@ HUNK_SYSTEM = (
     "The prompt already carries `# File outline` — every definition in the head-side "
     "file, with its declared signature and line range — so you don't have to fetch it. "
     "Read it before reaching for a tool.\n\n"
-    "You have tools to read OTHER files in the head worktree and at the base SHA, to "
+    "You have tools to read files in the head worktree and at the base SHA, to "
     "grep, to list directories, and to check git history. Use them when the hunk depends "
-    "on code outside this file; skip them if the hunk is self-contained.\n\n"
+    "on code outside the diff; skip them if the hunk is self-contained. The outline gives "
+    "signatures and line ranges but no bodies — `read_file` with that range is how you "
+    "read the body of an enclosing function in this same file.\n\n"
     "`grep`, `read_file`, `list_dir` and the outline all search the HEAD worktree — the code "
     "as it is AFTER this change. Anything the change removes is not there. When a "
-    "`# Removed by this change` section is present it names exactly what went, with base-side "
+    "`# Removed from this file` or `# Removed elsewhere in this change` section is "
+    "present it names exactly what went, with base-side "
     "line ranges: read those with `read_file_at` against the base SHA. An empty grep result "
     "for a removed symbol is the expected answer, not a bad query — do not rephrase the "
     "search to try again.\n\n"
@@ -144,13 +147,14 @@ HUNK_BATCH_SYSTEM = (
     "The section below carries the PR overview. The user prompt opens with this file's "
     "summary and `# File outline` — every definition in the head-side file with its "
     "declared signature and line range. Read both before reaching for a tool.\n\n"
-    "You have tools to read OTHER files in the head worktree and at the base SHA, to "
+    "You have tools to read files in the head worktree and at the base SHA, to "
     "grep, to list directories, and to check git history. Use them when a hunk depends "
-    "on code outside this file; skip them when it is self-contained. One investigation "
+    "on code outside the diff; skip them when it is self-contained. One investigation "
     "can serve several hunks — don't repeat a read you already did for this file.\n\n"
     "`grep`, `read_file`, `list_dir` and the outline all search the HEAD worktree — the code "
     "as it is AFTER this change. Anything the change removes is not there. When a "
-    "`# Removed by this change` section is present it names exactly what went, with base-side "
+    "`# Removed from this file` or `# Removed elsewhere in this change` section is "
+    "present it names exactly what went, with base-side "
     "line ranges: read those with `read_file_at` against the base SHA. An empty grep result "
     "for a removed symbol is the expected answer, not a bad query — do not rephrase the "
     "search to try again.\n\n"
