@@ -284,12 +284,13 @@ async def augment_run_dir(
             # concluding. The delta is already computed for the overview seed.
             removed_by_file: dict[int, str] = {}
             if symbol_delta is not None:
-                by_path: dict[str, list] = {}
-                for sym in symbol_delta.removed:
-                    by_path.setdefault(sym.path, []).append(sym)
                 for fi, _hi, _ord in queued:
                     if fi not in removed_by_file:
-                        removed_by_file[fi] = format_removed_symbols(by_path.get(diff.files[fi].path, []))
+                        removed_by_file[fi] = format_removed_symbols(
+                            symbol_delta,
+                            path=diff.files[fi].path,
+                            base_sha=diff.pr.base_sha,
+                        )
             # batch_size <= 1 keeps the original one-call-per-hunk path
             # rather than routing through a batch of one: the batched form
             # has its own wire format and system prompt, so "batching off"

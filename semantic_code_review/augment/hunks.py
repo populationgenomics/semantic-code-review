@@ -16,6 +16,7 @@ from typing import Any
 from pydantic_ai import CachePoint
 from pydantic_ai.messages import UserContent
 
+from .. import structural
 from ..augment.schemas import (
     AnnotatedDiff,
     AnnotatedFile,
@@ -31,7 +32,6 @@ from ..augment.schemas import (
 )
 from ..cache.store import CacheStore
 from ..format import linenos
-from ..structural import ChangedSymbol
 from .agents import Client, make_batch_agent, make_hunk_agent
 from .pass_ import PassMeta, run_pass
 from .prompts import HUNK_BATCH_SYSTEM, HUNK_SYSTEM
@@ -106,27 +106,86 @@ def _hunk_model_settings(client: Client) -> dict[str, Any]:
     return {**_HUNK_CACHE_SETTINGS, **_THINKING_SETTINGS}
 
 
-def format_removed_symbols(removed: Sequence[ChangedSymbol]) -> str:
-    """Render the symbols this change deletes from a file, base-side.
+#: Entries rendered per section before truncating. A wholesale file
+#: deletion can remove thousands of symbols, and this seed rides in
+#: every hunk prompt for the file — uncapped, one measured case reached
+#: ~62k tokens per hunk, which is the cost blowup the seed exists to
+#: avoid paying in tool calls.
+_REMOVED_SEED_MAX = 40
+
+
+def format_removed_symbols(
+    delta: structural.SymbolDelta | None,
+    *,
+    path: str,
+    base_sha: str,
+) -> str:
+    """Render what this change deletes, for one file's hunk prompt.
 
     Every tool we expose searches the head worktree, so a symbol the
     change removes returns nothing from `grep`, `read_file`, or the
     outline seed. The model cannot tell "empty because it was deleted"
     from "empty because my pattern was wrong", and rephrases: one
     observed hunk spent 50 tool calls — zero exact repeats, four distinct
-    paths — hunting for three symbols this commit had removed. Naming
-    them, with their base-side spans, answers that question up front.
+    paths — hunting for three symbols this commit had removed.
+
+    Three sections, because three different questions get asked. Symbols
+    gone from *this* file, with base-side spans and the base SHA to read
+    them at. Symbols gone from *elsewhere in the change*, because a hunk
+    that deletes call sites is looking for a definition in another file —
+    the case that motivated the seed, and the one a per-file list misses.
+    And symbols that only *moved*, which a per-path set-diff reports as
+    removed even though they are still in the head worktree; telling the
+    model to stop searching for those would earn a confidently wrong
+    annotation on an ordinary refactor.
     """
-    if not removed:
+    if delta is None:
         return ""
-    lines = [
-        "# Removed by this change (base side — these are NOT in the head worktree, "
-        "so `grep`/`read_file` will not find them; use `read_file_at` with the base SHA)"
-    ]
-    for sym in removed:
-        label = sym.signature or f"{sym.kind} {sym.qualified_name}"
-        lines.append(f"{label}  (base {sym.range.start_line}-{sym.range.end_line})")
-    return "\n".join(lines)
+    added_by_name: dict[str, str] = {sym.qualified_name: sym.path for sym in delta.added}
+    here: list[str] = []
+    moved: list[str] = []
+    elsewhere: list[str] = []
+    for sym in delta.removed:
+        destination = added_by_name.get(sym.qualified_name)
+        if destination is not None and destination != sym.path:
+            moved.append(f"{sym.kind} {sym.qualified_name}: {sym.path} -> {destination}")
+        elif sym.path == path:
+            label = sym.signature or f"{sym.kind} {sym.qualified_name}"
+            here.append(f"{label}  (base {sym.range.start_line}-{sym.range.end_line})")
+        else:
+            elsewhere.append(f"{sym.kind} {sym.qualified_name}  ({sym.path})")
+
+    sections: list[str] = []
+    if here:
+        sections.append(
+            "\n".join(
+                [
+                    f"# Removed from this file (base side — NOT in the head worktree, so "
+                    f"`grep`/`read_file` will not find them; read them with "
+                    f"`read_file_at(sha={base_sha!r}, ...)`)",
+                    *_capped(here),
+                ]
+            )
+        )
+    if elsewhere:
+        sections.append("\n".join(["# Removed elsewhere in this change (same caveat)", *_capped(elsewhere)]))
+    if moved:
+        sections.append(
+            "\n".join(
+                [
+                    "# Moved, not removed — these ARE in the head worktree at the new path",
+                    *_capped(moved),
+                ]
+            )
+        )
+    return "\n\n".join(sections)
+
+
+def _capped(entries: list[str]) -> list[str]:
+    if len(entries) <= _REMOVED_SEED_MAX:
+        return entries
+    dropped = len(entries) - _REMOVED_SEED_MAX
+    return [*entries[:_REMOVED_SEED_MAX], f"... and {dropped} more (list truncated)"]
 
 
 def format_hunk_prompt(
