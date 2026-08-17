@@ -333,7 +333,7 @@ function attachBlockThreads(opts: {
   anchorEl: HTMLElement; file: string; side: "old" | "new";
   startLine: number; endLine: number;
 }): void {
-  _removeReviewerCommentRowsAfter(opts.anchorEl);
+  _removeReviewerCommentRowsInRange(opts.file, opts.side, opts.startLine, opts.endLine);
   const inRange = _store.getAll().filter((c) => {
     if (c.file !== opts.file || c.side !== opts.side) return false;
     const ln = _displayLine(c);
@@ -569,6 +569,7 @@ function _buildThreadRow(
     content: container,
     onInsert: (elRoot) => {
       elRoot.dataset.threadId = thread.id;
+      elRoot.dataset.anchorKey = _anchorKey(anchor);
       if (ingestedThread) elRoot.classList.add("annot-comment-ingested");
       if (resolved) elRoot.classList.add("annot-comment-resolved");
       if (resolved && !expanded) elRoot.classList.add("annot-comment-collapsed");
@@ -602,7 +603,7 @@ function _buildResolvedHeader(
 interface Anchor { file: string; side: "old" | "new"; line: number; }
 
 function _refreshForAnchor(anchorRowEl: HTMLElement, anchor: Anchor): void {
-  _removeReviewerCommentRowsAfter(anchorRowEl);
+  _removeReviewerCommentRowsFor(anchor);
   const relevant = _commentsFor(anchor.file, anchor.side, anchor.line);
   const threads = _buildThreads(relevant);
   for (const thread of threads) {
@@ -631,20 +632,54 @@ function _removeAnnotationByDerivedId(derivedId: string): void {
   ).forEach((el) => el.remove());
 }
 
-function _removeReviewerCommentRowsAfter(anchorRowEl: HTMLElement): void {
-  let n: ChildNode | null = anchorRowEl.nextSibling;
-  while (n) {
-    const next = n.nextSibling;
-    const el = n as HTMLElement;
-    const isReviewerCommentRow = n.nodeType === 1
-      && el.classList.contains("row-annotation")
-      && el.classList.contains("annot-comment")
-      && !el.classList.contains("annot-editor")
-      && (el.dataset.threadId || el.dataset.commentId);
-    if (!isReviewerCommentRow) break;
-    Annotations.detach(el);
-    n = next;
-  }
+/** Remove the comment rows already rendered for `anchor`.
+ *
+ *  Keyed rather than positional. Every annotation inserts itself
+ *  directly after its anchor row, so an LLM line-note — or the
+ *  `.row-placeholder` a side-by-side shadow anchor adds — can sit
+ *  between the anchor and its comment rows. A sibling walk that
+ *  stopped at the first non-comment row then removed nothing, and
+ *  every later `renderAll()` appended another copy of every comment
+ *  on that line. */
+function _removeReviewerCommentRowsFor(anchor: Anchor): void {
+  const key = _anchorKey(anchor);
+  document
+    .querySelectorAll<HTMLElement>(
+      `.row-annotation.annot-comment[data-anchor-key="${_cssAttrEscape(key)}"]`,
+    )
+    .forEach((el) => {
+      if (el.classList.contains("annot-editor")) return;
+      Annotations.detach(el);
+    });
+}
+
+/** Rendered-mode blocks host every thread whose line falls in the
+ *  block's range, so their sweep is by range rather than by one line.
+ *  Same reason as the keyed single-anchor sweep: position is not a
+ *  reliable handle on which rows belong to this block. */
+function _removeReviewerCommentRowsInRange(
+  file: string, side: "old" | "new", startLine: number, endLine: number,
+): void {
+  document
+    .querySelectorAll<HTMLElement>(".row-annotation.annot-comment[data-anchor-key]")
+    .forEach((el) => {
+      if (el.classList.contains("annot-editor")) return;
+      const [f, sd, ln] = (el.dataset.anchorKey || "").split("|");
+      const n = Number(ln);
+      if (f !== file || sd !== side || Number.isNaN(n)) return;
+      if (n < startLine || n > endLine) return;
+      Annotations.detach(el);
+    });
+}
+
+function _anchorKey(anchor: Anchor): string {
+  return `${anchor.file}|${anchor.side}|${anchor.line}`;
+}
+
+/** Escape a value for use inside a CSS attribute selector. Paths carry
+ *  `/`, `.` and can carry quotes. */
+function _cssAttrEscape(value: string): string {
+  return value.replace(/["\\]/g, "\\$&");
 }
 
 export const Comments = {
