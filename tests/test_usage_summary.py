@@ -44,10 +44,13 @@ def _usage(inp: int = 0, out: int = 0, read: int = 0, write: int = 0) -> dict[st
 
 
 def test_totals_sum_every_pass(tmp_path: Path) -> None:
+    """`input_tokens` is inclusive of both cached portions, so the total
+    is input + output. Adding the cache figures back counts every cached
+    token twice."""
     trace_dir = tmp_path / "trace"
     _write(trace_dir, "overview.json", _trace(usages=[_usage(inp=100, out=50)]))
-    _write(trace_dir, "hunk-a.py-1.json", _trace(usages=[_usage(inp=10, read=200, write=30)]))
-    _write(trace_dir, "hunk-b.py-2.json", _trace(usages=[_usage(inp=20, read=400, write=30)]))
+    _write(trace_dir, "hunk-a.py-1.json", _trace(usages=[_usage(inp=240, read=200, write=30)]))
+    _write(trace_dir, "hunk-b.py-2.json", _trace(usages=[_usage(inp=450, read=400, write=30)]))
 
     summary = usage.summarize_trace_dir(trace_dir)
 
@@ -55,7 +58,7 @@ def test_totals_sum_every_pass(tmp_path: Path) -> None:
         "calls": 3,
         "cache_hits": 0,
         "failed": 0,
-        "input_tokens": 130,
+        "input_tokens": 790,
         "output_tokens": 50,
         "cache_read_tokens": 600,
         "cache_write_tokens": 60,
@@ -270,3 +273,26 @@ async def test_a_retried_attempt_keeps_the_failed_attempt_s_trace(
     summary = usage.summarize_trace_dir(tmp_path)
     assert summary["totals"]["input_tokens"] == 2100  # both attempts, not just the winner
     assert summary["passes"]["hunk"]["calls"] == 2
+
+
+def test_cli_envelope_usage_matches_the_sdk_convention() -> None:
+    """Anthropic's envelope reports `input_tokens` excluding the cached
+    portions; `RequestUsage.input_tokens` includes them. Passing the raw
+    value through made a CLI run look half the size of an SDK one that
+    carried identical content."""
+    from semantic_code_review.backends._cli_driver import _usage_from_envelope
+
+    u = _usage_from_envelope(
+        {
+            "usage": {
+                "input_tokens": 2,
+                "output_tokens": 10,
+                "cache_creation_input_tokens": 8000,
+                "cache_read_input_tokens": 1000,
+            }
+        }
+    )
+
+    assert u.input_tokens == 9002
+    assert u.cache_write_tokens == 8000
+    assert u.cache_read_tokens == 1000
