@@ -16,6 +16,7 @@ preflight `gh` once at the CLI boundary (`fetch.preflight_gh`).
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import sys
@@ -89,6 +90,11 @@ class PostResult:
     review_id: int
     review_url: str
     posted: int
+    #: `source_id -> upstream node id` for each comment that landed.
+    #: The caller marks these posted in the store; without it they stay
+    #: `source="local"` and the next post sends them again, duplicating
+    #: them into a second review.
+    posted_node_ids: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 # Public alias kept so callers that catch posting failures by name

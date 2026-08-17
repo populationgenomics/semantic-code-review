@@ -20,6 +20,7 @@ project's GitHub I/O.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from collections.abc import Iterable
@@ -27,6 +28,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .. import git_ops
+from . import anchors
 from .github import GhError, PostedComment, PostResult, comments_to_github
 
 log = logging.getLogger(__name__)
@@ -245,24 +247,46 @@ mutation($rid: ID!, $path: String!, $line: Int!, $side: DiffSide!, $body: String
 """
 
 
+_ADD_REVIEW_THREAD_FILE = """
+mutation($rid: ID!, $path: String!, $body: String!) {
+  addPullRequestReviewThread(input: {
+    pullRequestReviewId: $rid,
+    path: $path,
+    body: $body,
+    subjectType: FILE
+  }) { thread { id } }
+}
+"""
+
+
 def add_review_thread(
     review_id: str,
     path: str,
-    line: int,
-    side: str,
+    line: int | None,
+    side: str | None,
     body: str,
 ) -> str:
-    """Append a new line-anchored thread to a pending review."""
-    data = _gh_graphql(
-        _ADD_REVIEW_THREAD,
-        {
-            "rid": review_id,
-            "path": path,
-            "line": int(line),
-            "side": side,
-            "body": body,
-        },
-    )
+    """Append a new thread to a pending review.
+
+    `line is None` posts a file-level thread. The two forms are
+    mutually exclusive: passing a line alongside `subjectType: FILE`
+    returns a null thread with no error, as does any line outside a
+    diff hunk — which is why callers resolve anchors up front
+    (`anchors.resolve`) rather than discovering it here.
+    """
+    if line is None:
+        data = _gh_graphql(_ADD_REVIEW_THREAD_FILE, {"rid": review_id, "path": path, "body": body})
+    else:
+        data = _gh_graphql(
+            _ADD_REVIEW_THREAD,
+            {
+                "rid": review_id,
+                "path": path,
+                "line": int(line),
+                "side": side or "RIGHT",
+                "body": body,
+            },
+        )
     tid = ((data.get("addPullRequestReviewThread") or {}).get("thread") or {}).get("id")
     if not tid:
         raise GhError("addPullRequestReviewThread returned no thread id")
@@ -337,6 +361,45 @@ def submit_review(
 # ---------------------------------------------------------------------------
 
 
+_PENDING_REVIEW_COMMENTS = """
+query($rid: ID!) {
+  node(id: $rid) {
+    ... on PullRequestReview {
+      comments(first: 100) { nodes { path line body } }
+    }
+  }
+}
+"""
+
+
+def _comment_key(c: PostedComment) -> tuple[str, int | None, str]:
+    """Identity used to spot a comment already in a pending review.
+
+    Body is included because the same line legitimately takes more than
+    one comment; path+line alone would drop the second.
+    """
+    return (c.path or "", c.line, c.body.strip())
+
+
+def existing_thread_keys(review_id: str) -> set[tuple[str, int | None, str]]:
+    """Keys of the comments a pending review already holds.
+
+    A post that fails partway leaves its successes behind, and GitHub
+    allows only one pending review per user per PR — so the retry finds
+    and reuses that review. Without this it appends duplicates of
+    everything that already succeeded.
+    """
+    try:
+        data = _gh_graphql(_PENDING_REVIEW_COMMENTS, {"rid": review_id})
+    except GhError:
+        # Reconciliation is best-effort: failing to read the existing
+        # review should not block posting, it just risks a duplicate.
+        log.warning("could not read existing pending review %s; posting without dedupe", review_id)
+        return set()
+    nodes = (((data.get("node") or {}).get("comments") or {}).get("nodes")) or []
+    return {(str(n.get("path") or ""), n.get("line"), str(n.get("body") or "").strip()) for n in nodes}
+
+
 def post_review_via_graphql(
     repo: str,
     number: int,
@@ -344,6 +407,7 @@ def post_review_via_graphql(
     *,
     event: str = "COMMENT",
     body: str = "",
+    diff_text: str | None = None,
 ) -> PostResult:
     """Submit a review composed from ``comments``, using GraphQL.
 
@@ -366,11 +430,44 @@ def post_review_via_graphql(
     if not posted:
         raise GhError("no postable comments after mapping (all entries malformed?)")
 
+    # Resolve every anchor before creating anything. An unpostable line
+    # used to be discovered mid-loop, after N-1 comments had already been
+    # written into a review that was then left unsubmitted.
+    if diff_text is not None:
+        ranges = anchors.postable_ranges(diff_text)
+        resolved: list[PostedComment] = []
+        for c in posted:
+            if c.is_reply or c.path is None or c.line is None:
+                resolved.append(c)
+                continue
+            a = anchors.resolve(c.path, c.line, c.side or "RIGHT", ranges)
+            if a.note:
+                log.warning("comment on %s:%s — %s", c.path, c.line, a.note)
+            resolved.append(dataclasses.replace(c, line=a.line, side=a.side, body=anchors.with_note(c.body, a.note)))
+        posted = resolved
+
     state = query_pr_review_state(repo, number)
     review_id = state.pending_review_id
     reused_pending = review_id is not None
     if review_id is None:
         review_id = create_pending_review(state.pr_node_id, body=body)
+    else:
+        # Reusing a pending review: drop comments it already carries.
+        # Appending blindly is how a failed post, retried, turns three
+        # comments into six.
+        already = existing_thread_keys(review_id)
+        if already:
+            before = len(posted)
+            posted = [c for c in posted if _comment_key(c) not in already]
+            if len(posted) < before:
+                log.info(
+                    "reusing pending review %s: %d of %d comment(s) already present, skipping them",
+                    review_id,
+                    before - len(posted),
+                    before,
+                )
+            if not posted:
+                log.info("every comment is already in the pending review; submitting as-is")
     if reused_pending and body:
         # Reusing a pending review: we can't easily set its body
         # (PUT-style mutation exists but is rarely useful here).
@@ -389,16 +486,21 @@ def post_review_via_graphql(
         review_id,
         "reused pending" if reused_pending else "newly created",
     )
+    node_ids: dict[str, str] = {}
     for i, c in enumerate(posted, start=1):
         try:
             if c.is_reply:
                 assert c.in_reply_to_node_id is not None  # narrow for type-checker
-                add_review_comment_reply(review_id, c.in_reply_to_node_id, c.body)
+                nid = add_review_comment_reply(review_id, c.in_reply_to_node_id, c.body)
+                if c.source_id:
+                    node_ids[c.source_id] = nid
             else:
                 assert c.path is not None
                 assert c.line is not None
                 assert c.side is not None
-                add_review_thread(review_id, c.path, c.line, c.side, c.body)
+                nid = add_review_thread(review_id, c.path, c.line, c.side, c.body)
+                if c.source_id:
+                    node_ids[c.source_id] = nid
         except GhError:
             # _gh_graphql already logged the gh output + variables; add the
             # position so "added 1..i-1, failed on i/total" is explicit —
@@ -419,6 +521,7 @@ def post_review_via_graphql(
         review_id=int(submitted.get("databaseId") or 0),
         review_url=str(submitted.get("url") or ""),
         posted=len(posted),
+        posted_node_ids=node_ids,
     )
 
 
@@ -427,6 +530,7 @@ __all__ = [
     "add_review_comment_reply",
     "add_review_thread",
     "create_pending_review",
+    "existing_thread_keys",
     "post_review_via_graphql",
     "query_pr_review_state",
     "submit_review",

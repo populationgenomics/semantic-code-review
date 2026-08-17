@@ -162,7 +162,13 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
             _err(f"scr pr: no new local comments to post; comments are in {run_dir / 'comments.json'}.")
             return 0 if result.clean else 2
         try:
-            posted = post_review_via_graphql(opts.repo, number, mapped)
+            posted = post_review_via_graphql(
+                opts.repo,
+                number,
+                mapped,
+                diff_text=(run_dir / "raw.diff").read_text(encoding="utf-8"),
+            )
+            CommentStore(run_dir / "comments.json").mark_posted(posted.posted_node_ids)
         except GhError as e:
             _err(f"scr pr: posting failed: {e}")
             _err(f"comments are still in {run_dir / 'comments.json'} — re-run with --no-augment to retry.")
@@ -304,7 +310,12 @@ def _build_post_callback(
         selected = set(selected_ids)
         filtered = [c for c in all_comments if c.source != "local" or c.id in selected]
         mapped = comments_to_github(filtered)
-        return post_review_via_graphql(repo, number, mapped)
+        # The raw diff is what GitHub will thread against; anchors are
+        # resolved to it before anything is written.
+        raw_diff = (run_dir / "raw.diff").read_text(encoding="utf-8")
+        result = post_review_via_graphql(repo, number, mapped, diff_text=raw_diff)
+        store.mark_posted(result.posted_node_ids)
+        return result
 
     return post
 
