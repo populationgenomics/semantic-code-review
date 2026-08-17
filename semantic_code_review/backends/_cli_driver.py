@@ -158,12 +158,25 @@ def _redact_argv(argv: list[str]) -> list[str]:
 
 
 def _usage_from_envelope(envelope: dict[str, Any]) -> RequestUsage:
+    """Normalise the CLI envelope's usage to pydantic-ai's convention.
+
+    Anthropic reports `input_tokens` *excluding* the cached portions, and
+    the envelope passes that through. `RequestUsage.input_tokens` is
+    inclusive of both cache reads and writes — that is what
+    `RequestUsage.extract` produces on the SDK path — so the raw value
+    has to have them added back. Left raw, any consumer summing input +
+    cache_read + cache_write gets the right answer here and a
+    double-counted one on SDK backends, which is exactly the trap
+    `usage.py` fell into.
+    """
     usage_src = envelope.get("usage") or {}
+    cache_write = int(usage_src.get("cache_creation_input_tokens", 0) or 0)
+    cache_read = int(usage_src.get("cache_read_input_tokens", 0) or 0)
     return RequestUsage(
-        input_tokens=int(usage_src.get("input_tokens", 0) or 0),
+        input_tokens=int(usage_src.get("input_tokens", 0) or 0) + cache_write + cache_read,
         output_tokens=int(usage_src.get("output_tokens", 0) or 0),
-        cache_write_tokens=int(usage_src.get("cache_creation_input_tokens", 0) or 0),
-        cache_read_tokens=int(usage_src.get("cache_read_input_tokens", 0) or 0),
+        cache_write_tokens=cache_write,
+        cache_read_tokens=cache_read,
     )
 
 

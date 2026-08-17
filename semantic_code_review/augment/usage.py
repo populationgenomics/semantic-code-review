@@ -83,7 +83,20 @@ class _PassAccumulator:
 
     @property
     def total_tokens(self) -> int:
-        return self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_write_tokens
+        """Tokens the request actually carried.
+
+        `input_tokens` already includes both cached portions, so adding
+        them again counts every cached token twice — which reported SDK
+        backends at roughly 2x their real usage while leaving the CLI
+        (whose driver passed Anthropic's cache-exclusive figure straight
+        through) correct, and made the two look incomparable.
+        """
+        return self.input_tokens + self.output_tokens
+
+    @property
+    def uncached_input_tokens(self) -> int:
+        """Input billed at the full rate — cache reads and writes are cheaper."""
+        return max(0, self.input_tokens - self.cache_read_tokens - self.cache_write_tokens)
 
     def summary(self) -> dict[str, Any]:
         out: dict[str, Any] = {
