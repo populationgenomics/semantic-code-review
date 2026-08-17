@@ -198,7 +198,7 @@ stable only within one build of a given diff — not across diffs.
 **Rendered mode**
 A second body renderer for `.md` files (ADR 0004), switched in by a
 per-file toggle in the file header. The text-diff renderer
-(`_renderDiffRows`, `hunk_layout.py`, the [[collapsible-region]] model)
+(`_renderDiffRows`, `hunk_layout.py`, the [[collapsible-region]] model)  <!-- posting-anchor probe -->
 stays untouched and authoritative — it owns "what changed", hunks,
 segments, and comment anchoring; rendered mode answers only "does the
 finished prose read well". It is a separate renderer, not a feature on
