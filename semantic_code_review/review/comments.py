@@ -118,6 +118,33 @@ class CommentStore:
             self._flush_locked()
             return c
 
+    def mark_posted(self, node_ids: dict[str, str]) -> int:
+        """Convert local comments that reached GitHub into ingested ones.
+
+        A posted comment *is* an upstream comment; leaving it
+        `source="local"` means the next post sends it again, which
+        duplicates it into a second review. Flipping `source` also makes
+        it read-only, matching every other comment that exists upstream.
+
+        Unknown ids are ignored — a comment deleted between posting and
+        write-back is not an error. Returns how many were marked.
+        """
+        if not node_ids:
+            return 0
+        with self._lock:
+            marked = 0
+            for cid, node_id in node_ids.items():
+                existing = self._items.get(cid)
+                if existing is None or existing.source != "local":
+                    continue
+                data = existing.model_dump()
+                data.update({"source": "github", "node_id": node_id, "updated_at": time.time()})
+                self._items[cid] = Comment.model_validate(data)
+                marked += 1
+            if marked:
+                self._flush_locked()
+            return marked
+
     def delete(self, comment_id: str) -> bool:
         with self._lock:
             existing = self._items.get(comment_id)

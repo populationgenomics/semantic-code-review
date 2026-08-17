@@ -57,6 +57,8 @@ class _GhSequence:
                     variables[k] = v
         # Pick the operation by looking for known mutation/query names.
         op = "query"
+        if "PullRequestReview" in query and "comments(first: 100)" in query:
+            op = "pendingReviewComments"
         for name in (
             "addPullRequestReviewThread",
             "addPullRequestReviewComment",
@@ -329,6 +331,8 @@ def test_post_reuses_existing_pending_review_and_skips_create(monkeypatch) -> No
             }
         },
     )
+    # Reusing a pending review reconciles against what it already holds.
+    seq.expect("pendingReviewComments", {"data": {"node": {"comments": {"nodes": []}}}})
     seq.expect(
         "addPullRequestReviewThread",
         {
@@ -352,7 +356,12 @@ def test_post_reuses_existing_pending_review_and_skips_create(monkeypatch) -> No
 
     ops = [op for op, _ in seq.calls]
     assert "addPullRequestReview" not in ops
-    assert ops == ["query", "addPullRequestReviewThread", "submitPullRequestReview"]
+    assert ops == [
+        "query",
+        "pendingReviewComments",  # reconcile before appending
+        "addPullRequestReviewThread",
+        "submitPullRequestReview",
+    ]
     # The thread mutation targeted the existing pending review id.
     thread_vars = next(v for op, v in seq.calls if op == "addPullRequestReviewThread")
     assert thread_vars["rid"] == "PRR_pending"
@@ -466,3 +475,103 @@ def test_post_raises_when_no_postable_comments() -> None:
         with pytest.raises(gh_rest.GhError, match="no postable"):
             gh_gql.post_review_via_graphql("o/r", 1, [])
     assert run_mock.call_count == 0
+
+
+def test_retry_does_not_duplicate_comments_already_in_the_pending_review(monkeypatch) -> None:
+    """A post that fails partway leaves its successes in a pending
+    review, and GitHub allows only one pending review per user per PR —
+    so the retry reuses it. Appending blindly turned three comments into
+    four, with the failing one still missing.
+    """
+    seq = _GhSequence()
+    seq.expect(
+        "query",
+        {
+            "data": {
+                "viewer": {"login": "alice"},
+                "repository": {
+                    "pullRequest": {
+                        "id": "PR_kw1",
+                        "reviews": {"nodes": [{"id": "PRR_pending", "author": {"login": "alice"}}]},
+                    }
+                },
+            }
+        },
+    )
+    seq.expect(
+        "pendingReviewComments",
+        {"data": {"node": {"comments": {"nodes": [{"path": "a.py", "line": 3, "body": "already there"}]}}}},
+    )
+    seq.expect("addPullRequestReviewThread", {"data": {"addPullRequestReviewThread": {"thread": {"id": "TH2"}}}})
+    seq.expect(
+        "submitPullRequestReview",
+        {"data": {"submitPullRequestReview": {"pullRequestReview": {"databaseId": 9, "url": ""}}}},
+    )
+
+    cs = [
+        gh_rest.PostedComment(body="already there", path="a.py", line=3, side="RIGHT"),
+        gh_rest.PostedComment(body="the new one", path="a.py", line=4, side="RIGHT"),
+    ]
+    with patch("semantic_code_review.git_ops.subprocess.run", side_effect=seq):
+        gh_gql.post_review_via_graphql("o/r", 1, cs)
+
+    threads = [v for op, v in seq.calls if op == "addPullRequestReviewThread"]
+    assert len(threads) == 1, "the comment already present must not be posted again"
+    assert threads[0]["body"] == "the new one"
+
+
+def test_an_out_of_hunk_comment_is_moved_and_says_so(monkeypatch) -> None:
+    """GitHub returns a null thread for a line outside the diff, so the
+    comment would be silently lost."""
+    seq = _GhSequence()
+    seq.expect(
+        "query",
+        {
+            "data": {
+                "viewer": {"login": "alice"},
+                "repository": {"pullRequest": {"id": "PR_kw1", "reviews": {"nodes": []}}},
+            }
+        },
+    )
+    seq.expect("addPullRequestReview", {"data": {"addPullRequestReview": {"pullRequestReview": {"id": "PRR_new"}}}})
+    seq.expect("addPullRequestReviewThread", {"data": {"addPullRequestReviewThread": {"thread": {"id": "TH1"}}}})
+    seq.expect(
+        "submitPullRequestReview",
+        {"data": {"submitPullRequestReview": {"pullRequestReview": {"databaseId": 3, "url": ""}}}},
+    )
+
+    diff = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -118,4 +118,5 @@\n+x\n"
+    cs = [gh_rest.PostedComment(body="meta comment", path="a.py", line=117, side="RIGHT")]
+    with patch("semantic_code_review.git_ops.subprocess.run", side_effect=seq):
+        gh_gql.post_review_via_graphql("o/r", 1, cs, diff_text=diff)
+
+    v = next(v for op, v in seq.calls if op == "addPullRequestReviewThread")
+    assert v["line"] == "118"
+    assert "moved to 118" in v["body"]
+
+
+def test_post_reports_which_local_comments_landed(monkeypatch) -> None:
+    """The caller marks these posted; without the mapping they stay
+    local and the next post duplicates them into a second review."""
+    seq = _GhSequence()
+    seq.expect(
+        "query",
+        {
+            "data": {
+                "viewer": {"login": "alice"},
+                "repository": {"pullRequest": {"id": "PR_kw1", "reviews": {"nodes": []}}},
+            }
+        },
+    )
+    seq.expect("addPullRequestReview", {"data": {"addPullRequestReview": {"pullRequestReview": {"id": "PRR_new"}}}})
+    seq.expect("addPullRequestReviewThread", {"data": {"addPullRequestReviewThread": {"thread": {"id": "TH_a"}}}})
+    seq.expect(
+        "submitPullRequestReview",
+        {"data": {"submitPullRequestReview": {"pullRequestReview": {"databaseId": 5, "url": ""}}}},
+    )
+
+    cs = [gh_rest.PostedComment(body="x", path="a.py", line=1, side="RIGHT", source_id="c1")]
+    with patch("semantic_code_review.git_ops.subprocess.run", side_effect=seq):
+        result = gh_gql.post_review_via_graphql("o/r", 1, cs)
+
+    assert result.posted_node_ids == {"c1": "TH_a"}
