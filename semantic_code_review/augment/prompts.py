@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from .schemas import SMELL_TAGS_TEXT
 
-PROMPT_VERSION = "p21"
+PROMPT_VERSION = "p22"
 
 
 # Field guidance shared by the single-hunk and batched forms of the
@@ -101,6 +101,13 @@ HUNK_SYSTEM = (
     "The prompt already carries `# File outline` — every definition in the head-side "
     "file, with its declared signature and line range — so you don't have to fetch it. "
     "Read it before reaching for a tool.\n\n"
+    "`references` answers 'is this still used', 'who calls this', 'did that removal "
+    "leave anything behind' — the commonest question there is, and the one grep is "
+    "worst at. It reads the code structurally, so comments, strings, substrings of "
+    "longer names and the definition itself are all excluded, and it knows "
+    "`np.array(x)` uses `numpy` even though the word `numpy` appears only in the "
+    "import. Zero use sites is a real answer, not a failed search. Reach for it "
+    "before grep whenever the question is about usage rather than text.\n\n"
     "`changed_symbols` answers the question grep cannot. It is a set-diff of the "
     "base against the head, so it is the only way to see what the change REMOVED — "
     "grep searches head, where removed code no longer exists. It returns structure, "
@@ -159,6 +166,13 @@ HUNK_BATCH_SYSTEM = (
     "The section below carries the PR overview. The user prompt opens with this file's "
     "summary and `# File outline` — every definition in the head-side file with its "
     "declared signature and line range. Read both before reaching for a tool.\n\n"
+    "`references` answers 'is this still used', 'who calls this', 'did that removal "
+    "leave anything behind' — the commonest question there is, and the one grep is "
+    "worst at. It reads the code structurally, so comments, strings, substrings of "
+    "longer names and the definition itself are all excluded, and it knows "
+    "`np.array(x)` uses `numpy` even though the word `numpy` appears only in the "
+    "import. Zero use sites is a real answer, not a failed search. Reach for it "
+    "before grep whenever the question is about usage rather than text.\n\n"
     "`changed_symbols` answers the question grep cannot. It is a set-diff of the "
     "base against the head, so it is the only way to see what the change REMOVED — "
     "grep searches head, where removed code no longer exists. It returns structure, "

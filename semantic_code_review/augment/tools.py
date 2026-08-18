@@ -22,6 +22,7 @@ from __future__ import annotations
 import inspect
 import logging
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -34,6 +35,7 @@ from pydantic_ai import RunContext
 from pydantic_ai.tools import Tool
 
 from .. import git_ops, structural
+from ..structural import references as structural_references
 from . import source_cache
 
 log = logging.getLogger(__name__)
@@ -348,6 +350,88 @@ class RepoTools:
             return _cap(git_ops.grep_at(self.repo_git, pattern, sha, path_glob, max_hits))
         except git_ops.GitError as e:
             return f"error: {e}"
+
+    @_tool
+    def references(self, name: str, path_glob: str | None = None, max_hits: int = 50) -> str:
+        """Where `name` is actually *used* in the head worktree.
+
+        Use this for "is X still referenced", "who calls X", "did that
+        removal leave anything behind" — the questions a text search
+        answers badly. Unlike `grep` this reads the code structurally,
+        so comments, strings, substrings of longer names and the
+        definition itself are all excluded, and `numpy` is reported as
+        used by `np.array(x)` even though the text `numpy` appears only
+        in the import.
+
+        Name-based, not scope-resolved: two distinct `helper`s in one
+        file are indistinguishable. A file that will not parse falls
+        back to a text search for that file and is flagged inline —
+        both sides come from git, so a parse failure is itself worth
+        knowing about.
+
+        Returns `path:line: kind: text`, plus a total. Empty means no
+        use sites, which for a removed symbol is a real answer.
+
+        Args:
+            name: Bare symbol name — `helper`, `RepoTools`, `np`.
+            path_glob: Restrict to matching files (e.g. 'src/**/*.py').
+            max_hits: Maximum use sites to return.
+        """
+        found = self._reference_candidates(name, path_glob)
+        if isinstance(found, str):
+            return found
+        by_file: dict[str, list[str]] = found
+        lines: list[str] = []
+        degraded: list[str] = []
+        total = 0
+        for rel, text_hits in by_file.items():
+            full = self.head_worktree / rel
+            try:
+                source = full.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            try:
+                refs = structural_references.references(source, rel, name)
+            except structural_references.ParseFailed:
+                # Fall back to the text hits we already have for this
+                # file, and say so — an unparseable file in a diff is a
+                # signal, not something to quietly drop.
+                degraded.append(rel)
+                for hit in text_hits:
+                    total += 1
+                    if len(lines) < max_hits:
+                        lines.append(f"{hit}  (text match; {rel} did not parse)")
+                continue
+            for r in refs:
+                total += 1
+                if len(lines) < max_hits:
+                    lines.append(f"{rel}:{r.line}: {r.kind}: {r.text}")
+        head = f"{total} use site(s) of {name!r}" + (f", showing {len(lines)}" if total > len(lines) else "")
+        body = "\n".join(lines)
+        if degraded:
+            body += ("\n" if body else "") + (
+                f"note: {len(degraded)} file(s) did not parse; their hits above are text matches: "
+                + ", ".join(sorted(degraded)[:5])
+            )
+        return _cap(f"{head}\n{body}" if body else head)
+
+    def _reference_candidates(self, name: str, path_glob: str | None) -> dict[str, list[str]] | str:
+        """Candidate files mapped to their raw text hits.
+
+        A text search first, so a repo-wide question does not parse the
+        whole repo. grep over-reports — it sees comments, strings and
+        substrings — and the parse then filters. The raw hits are kept
+        so a file that fails to parse can still contribute them.
+        """
+        raw = self.grep(rf"\b{re.escape(name)}\b", path_glob, max_hits=500)
+        if raw.startswith("error:"):
+            return raw
+        out: dict[str, list[str]] = {}
+        for line in raw.splitlines():
+            rel = line.split(":", 1)[0]
+            if rel:
+                out.setdefault(rel, []).append(line)
+        return out
 
     # --- listing ----------------------------------------------------------
 
