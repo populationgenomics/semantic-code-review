@@ -250,8 +250,8 @@ class RepoTools:
         return structural.merge(deltas)
 
     @_tool
-    def changed_symbols(self) -> str:
-        """Deterministic structural delta of the whole diff, as JSON.
+    def changed_symbols(self, path: str | None = None) -> str:
+        """Deterministic structural delta of the diff, as JSON.
 
         Compares the base commit against the head worktree for every
         changed file in a supported language, returning
@@ -263,11 +263,27 @@ class RepoTools:
         and the line `range` on its live side (head for added/modified,
         base for removed). Changed files in unsupported languages are
         silently absent.
+
+        This is the whole-PR symbol inventory the hunk prompt no longer
+        carries inline: on a large diff it ran to tens of thousands of
+        characters and was re-sent with every hunk, while any one hunk
+        needed a handful of entries.
+
+        Args:
+            path: Restrict to symbols in this file. Omit for the whole
+                diff, which is what you want when chasing a symbol whose
+                definition moved or was deleted from another file.
         """
         try:
             delta = self.compute_symbol_delta()
         except git_ops.GitError as e:
             return f"error: {e}"
+        if path is not None:
+            delta = structural.SymbolDelta(
+                added=[s for s in delta.added if s.path == path],
+                removed=[s for s in delta.removed if s.path == path],
+                modified=[s for s in delta.modified if s.path == path],
+            )
         return _cap(delta.model_dump_json())
 
     # --- search -----------------------------------------------------------
