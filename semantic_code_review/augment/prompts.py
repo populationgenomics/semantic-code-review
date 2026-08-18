@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from .schemas import SMELL_TAGS_TEXT
 
-PROMPT_VERSION = "p22"
+PROMPT_VERSION = "p23"
 
 
 # Field guidance shared by the single-hunk and batched forms of the
@@ -101,6 +101,10 @@ HUNK_SYSTEM = (
     "The prompt already carries `# File outline` — every definition in the head-side "
     "file, with its declared signature and line range — so you don't have to fetch it. "
     "Read it before reaching for a tool.\n\n"
+    "The `# PR overview` block carries `base_sha`. That is the revision to pass to "
+    "`read_file_at` and `grep_at` when you need the pre-change tree — relative "
+    "revisions like `HEAD~1` will not resolve, because the repository is a shallow "
+    "fetch of base and head with no parents.\n\n"
     "`references` answers 'is this still used', 'who calls this', 'did that removal "
     "leave anything behind' — the commonest question there is, and the one grep is "
     "worst at. It reads the code structurally, so comments, strings, substrings of "
@@ -166,6 +170,10 @@ HUNK_BATCH_SYSTEM = (
     "The section below carries the PR overview. The user prompt opens with this file's "
     "summary and `# File outline` — every definition in the head-side file with its "
     "declared signature and line range. Read both before reaching for a tool.\n\n"
+    "The `# PR overview` block carries `base_sha`. That is the revision to pass to "
+    "`read_file_at` and `grep_at` when you need the pre-change tree — relative "
+    "revisions like `HEAD~1` will not resolve, because the repository is a shallow "
+    "fetch of base and head with no parents.\n\n"
     "`references` answers 'is this still used', 'who calls this', 'did that removal "
     "leave anything behind' — the commonest question there is, and the one grep is "
     "worst at. It reads the code structurally, so comments, strings, substrings of "

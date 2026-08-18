@@ -308,3 +308,38 @@ def test_hunk_caching_stays_within_anthropics_breakpoint_budget() -> None:
         if _HUNK_CACHE_SETTINGS.get(key)
     )
     assert in_prompt + from_settings <= 4
+
+
+def test_the_overview_block_carries_the_base_sha() -> None:
+    """`read_file_at` and `grep_at` need it and had no way to learn it.
+
+    Measured over one sweep: `read_file_at` errored on 31% of calls and
+    `grep_at` returned empty on 95%, because the model guessed `HEAD~1`
+    — which cannot resolve in a depth-1 fetch. Every call that used the
+    real base SHA succeeded.
+    """
+    import json
+
+    from semantic_code_review.augment.hunks import overview_to_prompt_json
+    from semantic_code_review.augment.schemas import AnnotatedDiff, Overview, PRInfo
+
+    diff = AnnotatedDiff(
+        version="1",
+        pr=PRInfo(pr_url="", base_sha="deadbeefcafe", head_sha="head", model="m"),
+        files=[],
+        overview=Overview(summary="s"),
+    )
+
+    payload = json.loads(overview_to_prompt_json(diff, include_symbols=False))
+
+    assert payload["base_sha"] == "deadbeefcafe"
+
+
+def test_both_prompts_say_relative_revisions_will_not_resolve() -> None:
+    """Naming the field is not enough — the model reached for `HEAD~1`
+    unprompted, so the shallow-fetch constraint has to be explicit."""
+    from semantic_code_review.augment.prompts import HUNK_BATCH_SYSTEM, HUNK_SYSTEM
+
+    for prompt in (HUNK_SYSTEM, HUNK_BATCH_SYSTEM):
+        assert "base_sha" in prompt
+        assert "HEAD~1" in prompt

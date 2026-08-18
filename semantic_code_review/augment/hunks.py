@@ -540,6 +540,14 @@ def overview_to_prompt_json(diff: AnnotatedDiff, *, include_symbols: bool = True
     if not isinstance(diff.overview, Overview):
         return "{}"
     payload: dict[str, Any] = {
+        # The tools that read the pre-change tree (`read_file_at`,
+        # `grep_at`) need this and had no way to learn it: measured over
+        # one sweep, `read_file_at` errored on 31% of calls and `grep_at`
+        # came back empty on 95%, because the model guessed `HEAD~1` — a
+        # revision that cannot resolve in a depth-1 fetch. It rides here
+        # rather than in the per-hunk block because it is constant for
+        # the run, so it stays inside the cached prefix.
+        "base_sha": diff.pr.base_sha,
         "summary": diff.overview.summary,
         "themes": list(diff.overview.themes),
         "callgraph_edges": [e.model_dump(by_alias=True) for e in diff.overview.callgraph_edges],

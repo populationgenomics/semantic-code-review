@@ -99,7 +99,10 @@ class RepoTools:
     def read_file_at(self, sha: str, path: str, start_line: int | None = None, end_line: int | None = None) -> str:
         """Read a file at a specific commit SHA (e.g. the PR base).
 
-        Use for pre-change content.
+        Use for pre-change content. The base SHA is in the `# PR
+        overview` block as `base_sha` — pass that. Relative revisions
+        (`HEAD~1`, `HEAD^`) do not resolve here: the repository is a
+        shallow fetch of base and head only, with no parents.
 
         Args:
             sha: Commit SHA.
@@ -342,7 +345,10 @@ class RepoTools:
 
         Args:
             pattern: Pattern to search for.
-            sha: Commit to search at — the PR base SHA for pre-change code.
+            sha: Commit to search at. Use `base_sha` from the `# PR
+                overview` block; relative revisions (`HEAD~1`, `HEAD^`)
+                do not resolve, as the repository is a shallow fetch of
+                base and head with no parents.
             path_glob: Restrict to matching files (e.g. 'src/**/*.py').
             max_hits: Maximum matches to return.
         """
