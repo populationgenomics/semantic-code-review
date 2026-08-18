@@ -202,3 +202,45 @@ def test_purpose_is_logged_with_the_call(repo: RepoTools, caplog) -> None:
         mcp_dispatch(repo, "grep", {"purpose": "locate the foo definition", "pattern": "foo"})
     assert "locate the foo definition" in caplog.text
     assert "grep" in caplog.text
+
+
+# --- searching the pre-change tree ------------------------------------------
+
+
+def test_grep_at_finds_code_the_change_removed(repo: RepoTools) -> None:
+    """`grep` searches head, so deleted code returns empty — and empty
+    reads the same as a bad pattern, which is what loops a search."""
+    root = repo.head_worktree
+    (root / "doomed.py").write_text("def doomed():\n    return 'gone'\n")
+    _sh(root, "git", "-c", "user.email=t@t", "-c", "user.name=t", "add", ".")
+    _sh(root, "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "add")
+    base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    (root / "doomed.py").unlink()
+    _sh(root, "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-am", "remove")
+
+    assert "doomed" not in repo.grep("def doomed")
+    at_base = repo.grep_at("def doomed", base)
+    assert "doomed.py" in at_base
+    assert "def doomed" in at_base
+
+
+def test_grep_at_strips_the_revision_prefix(repo: RepoTools) -> None:
+    """Output must match `grep`'s `path:line:text` so the two are
+    interchangeable to a reader."""
+    out = repo.grep_at("foo", repo.head_sha)
+    assert out
+    for line in out.splitlines():
+        assert not line.startswith(repo.head_sha)
+        assert line.split(":")[0].endswith(".py")
+
+
+def test_grep_at_no_match_is_empty_not_an_error(repo: RepoTools) -> None:
+    assert repo.grep_at("nothing-matches-this", repo.head_sha) == ""
+
+
+def test_grep_at_is_on_both_tool_surfaces(repo: RepoTools) -> None:
+    from semantic_code_review.augment.tools import mcp_tool_schemas
+
+    assert "grep_at" in {s["name"] for s in mcp_tool_schemas()}
+    out = mcp_dispatch(repo, "grep_at", {"purpose": "find it", "pattern": "foo", "sha": repo.head_sha})
+    assert "a.py" in out

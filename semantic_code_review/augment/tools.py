@@ -326,6 +326,29 @@ class RepoTools:
         except git_ops.GitError as e:
             return f"error: {e}"
 
+    @_tool
+    def grep_at(self, pattern: str, sha: str, path_glob: str | None = None, max_hits: int = 50) -> str:
+        """Search the repository at a commit — use this for removed code.
+
+        `grep` searches the head worktree, i.e. the code as it is AFTER
+        the change, so anything the change deleted is not there and the
+        search comes back empty. That empty result is indistinguishable
+        from a bad pattern, which is what sends a search into a loop.
+        Pass the base SHA here to search the pre-change tree instead.
+
+        Same `path:line:text` output as `grep`.
+
+        Args:
+            pattern: Pattern to search for.
+            sha: Commit to search at — the PR base SHA for pre-change code.
+            path_glob: Restrict to matching files (e.g. 'src/**/*.py').
+            max_hits: Maximum matches to return.
+        """
+        try:
+            return _cap(git_ops.grep_at(self.repo_git, pattern, sha, path_glob, max_hits))
+        except git_ops.GitError as e:
+            return f"error: {e}"
+
     # --- listing ----------------------------------------------------------
 
     @_tool

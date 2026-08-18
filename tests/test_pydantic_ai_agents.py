@@ -64,6 +64,7 @@ def test_hunk_agent_registers_repo_tools() -> None:
         "symbol_at",
         "changed_symbols",
         "grep",
+        "grep_at",
         "list_dir",
         "git_log",
     }
