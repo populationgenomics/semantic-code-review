@@ -239,7 +239,7 @@ async def augment_run_dir(
             mcp_host.start()
             client.set_mcp_endpoint(mcp_host.mcp_config())
 
-        overview_json = overview_to_prompt_json(diff)
+        overview_json = overview_to_prompt_json(diff, include_symbols=False)
 
         # Per-file definition spans, parsed once from the worktrees, so the
         # per-hunk SSE re-emits below carry symbol-aware `fold_regions`

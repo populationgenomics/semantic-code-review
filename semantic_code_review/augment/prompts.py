@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from .schemas import SMELL_TAGS_TEXT
 
-PROMPT_VERSION = "p19"
+PROMPT_VERSION = "p20"
 
 
 # Field guidance shared by the single-hunk and batched forms of the
@@ -101,6 +101,12 @@ HUNK_SYSTEM = (
     "The prompt already carries `# File outline` — every definition in the head-side "
     "file, with its declared signature and line range — so you don't have to fetch it. "
     "Read it before reaching for a tool.\n\n"
+    "The `# PR overview` block carries the change's summary and themes only. The "
+    "full inventory of what this change added, modified and removed — every symbol, "
+    "with its file, signature and line range — is not in the prompt: call "
+    "`changed_symbols` for it, with `path` to scope it to one file or without to "
+    "search the whole change. Reach for it when the hunk turns on something defined "
+    "elsewhere, or when a name it references has moved or gone.\n\n"
     "You have tools to read files in the head worktree and at the base SHA, to "
     "grep, to list directories, and to check git history. Use them when the hunk depends "
     "on code outside the diff; skip them if the hunk is self-contained. The outline gives "
@@ -148,6 +154,12 @@ HUNK_BATCH_SYSTEM = (
     "The section below carries the PR overview. The user prompt opens with this file's "
     "summary and `# File outline` — every definition in the head-side file with its "
     "declared signature and line range. Read both before reaching for a tool.\n\n"
+    "The `# PR overview` block carries the change's summary and themes only. The "
+    "full inventory of what this change added, modified and removed — every symbol, "
+    "with its file, signature and line range — is not in the prompt: call "
+    "`changed_symbols` for it, with `path` to scope it to one file or without to "
+    "search the whole change. Reach for it when the hunk turns on something defined "
+    "elsewhere, or when a name it references has moved or gone.\n\n"
     "You have tools to read files in the head worktree and at the base SHA, to "
     "grep, to list directories, and to check git history. Use them when a hunk depends "
     "on code outside the diff; skip them when it is self-contained. One investigation "

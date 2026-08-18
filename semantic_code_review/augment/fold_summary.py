@@ -329,7 +329,7 @@ async def apply_fold_summary_to_run(
         run_dir=run_dir,
         file_path=fp.path,
         file_summary=(fp.ann.summary or "").strip(),
-        overview_json=overview_to_prompt_json(diff),
+        overview_json=overview_to_prompt_json(diff, include_symbols=False),
         context=context,
         right_range=right_range,
         left_range=left_range,
