@@ -281,7 +281,11 @@ def test_both_system_prompts_explain_head_versus_base_search() -> None:
 
     for prompt in (HUNK_SYSTEM, HUNK_BATCH_SYSTEM):
         assert "HEAD worktree" in prompt
-        assert "do not rephrase" in prompt
+        assert "Do not rephrase" in prompt
+        # The alternatives have to be named at the point of decision —
+        # the model reaches for grep 394 times to changed_symbols' once.
+        assert "grep_at" in prompt
+        assert "changed_symbols" in prompt
 
 
 def test_hunk_caching_stays_within_anthropics_breakpoint_budget() -> None:

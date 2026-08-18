@@ -145,6 +145,27 @@ def grep(cwd: Path, pattern: str, path_glob: str | None, max_hits: int) -> str:
     return stdout
 
 
+def grep_at(cwd: Path, pattern: str, sha: str, path_glob: str | None, max_hits: int) -> str:
+    """``git grep`` against a commit rather than the working tree.
+
+    The head worktree has no trace of what a change removed, so a search
+    for deleted code there comes back empty — and an empty result reads
+    the same as a bad pattern. Searching the base commit answers the
+    question directly.
+
+    Output has git's ``<sha>:path:line:text`` shape; the revision prefix
+    is stripped so it matches :func:`grep`. rc=1 (no matches) is success.
+    """
+    args = ["grep", "-n", "-I", "--max-count", str(max_hits), "-e", pattern, sha]
+    if path_glob:
+        args += ["--", path_glob]
+    rc, stdout, stderr = git_capture(cwd, *args)
+    if rc not in (0, 1):
+        raise GitError(f"git grep at {sha} failed: {stderr.strip()}")
+    prefix = f"{sha}:"
+    return "\n".join(line.removeprefix(prefix) for line in stdout.splitlines())
+
+
 def init_dir(target: Path) -> None:
     """``git init <target>`` — create an empty repo at ``target``.
 
