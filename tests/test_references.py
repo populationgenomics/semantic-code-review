@@ -137,3 +137,37 @@ def test_a_qualified_call_on_an_unrelated_module_is_not_a_use() -> None:
 
     assert refs.references(src, "x.py", "helper") == []
     assert refs.references(src, "x.py", "numpy") == []
+
+
+def test_the_total_counts_every_matching_file(tmp_path: Path) -> None:
+    """Narrowing used a line-oriented grep whose output is capped at
+    20 KB, so on a common identifier most matching files were never
+    parsed — while the header still read as a definite total."""
+    root = tmp_path / "wt"
+    root.mkdir()
+    for i in range(60):
+        (root / f"m{i:02d}.py").write_text("def go():\n" + "    helper()\n" * 12)
+    _sh(root, "git", "init", "-q", "-b", "main")
+    _sh(root, "git", "-c", "user.email=t@t", "-c", "user.name=t", "add", ".")
+    _sh(root, "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "i")
+    rt = RepoTools(head_worktree=root, repo_git=root, base_sha="HEAD", head_sha="HEAD")
+
+    assert rt.references("helper").startswith("720 use site(s)")
+
+
+def test_a_truncated_candidate_set_is_reported_as_a_lower_bound(tmp_path: Path) -> None:
+    """A cap is fine; a cap presented as an exact count is not."""
+    root = tmp_path / "wt"
+    root.mkdir()
+    for i in range(12):
+        (root / f"m{i:02d}.py").write_text("def go():\n    helper()\n")
+    _sh(root, "git", "init", "-q", "-b", "main")
+    _sh(root, "git", "-c", "user.email=t@t", "-c", "user.name=t", "add", ".")
+    _sh(root, "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "i")
+    rt = RepoTools(head_worktree=root, repo_git=root, base_sha="HEAD", head_sha="HEAD")
+    rt.REFERENCE_FILE_CAP = 4
+
+    out = rt.references("helper")
+
+    assert out.startswith("4+ use site(s)")
+    assert "lower bound" in out

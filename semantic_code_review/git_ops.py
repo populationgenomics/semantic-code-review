@@ -145,6 +145,23 @@ def grep(cwd: Path, pattern: str, path_glob: str | None, max_hits: int) -> str:
     return stdout
 
 
+def grep_files(cwd: Path, pattern: str, path_glob: str | None, max_files: int) -> list[str]:
+    """Paths of tracked files containing `pattern` — ``git grep -l``.
+
+    A file list rather than matching lines: a caller narrowing a set of
+    candidates to parse needs only the names, and the line-oriented form
+    blows past an output cap on any common identifier, silently dropping
+    files past the cut.
+    """
+    args = ["grep", "-l", "-I", "-e", pattern]
+    if path_glob:
+        args += ["--", path_glob]
+    rc, stdout, stderr = git_capture(cwd, *args)
+    if rc not in (0, 1):
+        raise GitError(f"git grep -l failed: {stderr.strip()}")
+    return [line.strip() for line in stdout.splitlines() if line.strip()][:max_files]
+
+
 def grep_at(cwd: Path, pattern: str, sha: str, path_glob: str | None, max_hits: int) -> str:
     """``git grep`` against a commit rather than the working tree.
 

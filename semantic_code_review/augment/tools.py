@@ -22,7 +22,6 @@ from __future__ import annotations
 import inspect
 import logging
 import os
-import re
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -383,14 +382,11 @@ class RepoTools:
             path_glob: Restrict to matching files (e.g. 'src/**/*.py').
             max_hits: Maximum use sites to return.
         """
-        found = self._reference_candidates(name, path_glob)
-        if isinstance(found, str):
-            return found
-        by_file: dict[str, list[str]] = found
+        candidates, truncated = self._reference_candidates(name, path_glob)
         lines: list[str] = []
         degraded: list[str] = []
         total = 0
-        for rel, text_hits in by_file.items():
+        for rel in candidates:
             full = self.head_worktree / rel
             try:
                 source = full.read_text(encoding="utf-8", errors="replace")
@@ -399,11 +395,15 @@ class RepoTools:
             try:
                 refs = structural_references.references(source, rel, name)
             except structural_references.ParseFailed:
-                # Fall back to the text hits we already have for this
-                # file, and say so — an unparseable file in a diff is a
-                # signal, not something to quietly drop.
+                # Fall back to a text search of just this file, and say
+                # so — an unparseable file in a diff is a signal, not
+                # something to quietly drop.
                 degraded.append(rel)
-                for hit in text_hits:
+                try:
+                    hits = git_ops.grep(self.head_worktree, name, rel, max_hits)
+                except git_ops.GitError:
+                    hits = ""
+                for hit in hits.splitlines():
                     total += 1
                     if len(lines) < max_hits:
                         lines.append(f"{hit}  (text match; {rel} did not parse)")
@@ -413,6 +413,11 @@ class RepoTools:
                 if len(lines) < max_hits:
                     lines.append(f"{rel}:{r.line}: {r.kind}: {r.text}")
         head = f"{total} use site(s) of {name!r}" + (f", showing {len(lines)}" if total > len(lines) else "")
+        if truncated:
+            head = (
+                f"{total}+ use site(s) of {name!r} across the first {len(candidates)} matching files"
+                f" — more files matched than were parsed, so this is a lower bound"
+            )
         body = "\n".join(lines)
         if degraded:
             body += ("\n" if body else "") + (
@@ -421,23 +426,40 @@ class RepoTools:
             )
         return _cap(f"{head}\n{body}" if body else head)
 
-    def _reference_candidates(self, name: str, path_glob: str | None) -> dict[str, list[str]] | str:
-        """Candidate files mapped to their raw text hits.
+    #: Candidate files parsed for one `references` call. A cap so a
+    #: pathological identifier cannot parse an entire monorepo; when it
+    #: bites, the tool says so rather than reporting a confident total.
+    REFERENCE_FILE_CAP = 400
 
-        A text search first, so a repo-wide question does not parse the
-        whole repo. grep over-reports — it sees comments, strings and
-        substrings — and the parse then filters. The raw hits are kept
-        so a file that fails to parse can still contribute them.
+    def _reference_candidates(self, name: str, path_glob: str | None) -> tuple[list[str], bool]:
+        """Files worth parsing, and whether the list was truncated.
+
+        A file-name search rather than a line search: the line-oriented
+        form is capped at 20 KB of output, which on a common identifier
+        silently dropped most matching files while the caller went on to
+        report a definite total.
         """
-        raw = self.grep(rf"\b{re.escape(name)}\b", path_glob, max_hits=500)
-        if raw.startswith("error:"):
-            return raw
-        out: dict[str, list[str]] = {}
-        for line in raw.splitlines():
-            rel = line.split(":", 1)[0]
-            if rel:
-                out.setdefault(rel, []).append(line)
-        return out
+        limit = self.REFERENCE_FILE_CAP + 1
+        if _HAS_RIPGREP:
+            # Mirrors `grep`'s backend choice: ripgrep sees the whole
+            # worktree, `git grep` only tracked files.
+            args = ["rg", "--files-with-matches", "-e", name]
+            if path_glob:
+                args += ["--glob", path_glob]
+            args.append(str(self.head_worktree))
+            proc = subprocess.run(args, capture_output=True, text=True, check=False)
+            if proc.returncode not in (0, 1):
+                return [], False
+            prefix = str(self.head_worktree) + os.sep
+            found = [ln.removeprefix(prefix) for ln in proc.stdout.splitlines() if ln.strip()][:limit]
+        else:
+            try:
+                found = git_ops.grep_files(self.head_worktree, name, path_glob, limit)
+            except git_ops.GitError:
+                return [], False
+        if len(found) > self.REFERENCE_FILE_CAP:
+            return found[: self.REFERENCE_FILE_CAP], True
+        return found, False
 
     # --- listing ----------------------------------------------------------
 
