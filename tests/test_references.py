@@ -95,8 +95,21 @@ def test_the_tool_reports_absence_plainly(repo: RepoTools) -> None:
     assert repo.references("nonexistent_symbol").startswith("0 use site(s)")
 
 
-def test_an_unparseable_file_degrades_to_text_and_says_so(repo: RepoTools) -> None:
+@pytest.mark.parametrize("has_ripgrep", [True, False])
+def test_an_unparseable_file_degrades_to_text_and_says_so(
+    repo: RepoTools, monkeypatch: pytest.MonkeyPatch, has_ripgrep: bool
+) -> None:
+    """Parametrised over the search backend: ripgrep sees the whole
+    worktree, `git grep` only tracked files. CI has no ripgrep, so a
+    fixture that left the file uncommitted passed locally and failed
+    there.
+    """
+    from semantic_code_review.augment import tools as tools_mod
+
+    monkeypatch.setattr(tools_mod, "_HAS_RIPGREP", has_ripgrep)
     (repo.head_worktree / "broken.py").write_text("def oops(:\n    np\n")
+    _sh(repo.head_worktree, "git", "-c", "user.email=t@t", "-c", "user.name=t", "add", ".")
+    _sh(repo.head_worktree, "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "broken")
 
     out = repo.references("np")
 
