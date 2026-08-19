@@ -153,6 +153,14 @@ function attach(opts: AttachOptions): AnnotationHandle {
     insertAfter(placeholder, opts.shadowAnchor);
   }
 
+  // An annotation is never visible while its anchor row is not: attaching
+  // under a collapsed row (comments replay after folds.ts has restored the
+  // fold state) starts hidden, and setAnchorVisible reveals it later.
+  if (isHidden(opts.anchor)) {
+    row.style.display = "none";
+    if (placeholder) placeholder.style.display = "none";
+  }
+
   const state: AnnotState = {
     anchor: opts.anchor,
     column,
@@ -224,6 +232,45 @@ function setBoxContent(box: HTMLElement, body: Node | string): void {
 
 function reflow(anchor: HTMLElement | null | undefined): void {
   if (anchor) scheduleReflow(anchor);
+}
+
+// Show or hide every annotation anchored to `anchor` (and each one's
+// shadow placeholder), for callers that collapse anchor rows — a fold,
+// say. An annotation under a hidden anchor has nothing to point at and
+// no measurable column, so it travels with its anchor.
+function setAnchorVisible(anchor: HTMLElement, visible: boolean): void {
+  for (const row of annotationsOf(anchor)) {
+    const state = (row as AnnotatedElement).__scrAnnot!;
+    row.style.display = visible ? "" : "none";
+    if (state.placeholder) state.placeholder.style.display = visible ? "" : "none";
+  }
+  // Geometry taken while the anchor had no layout box is meaningless; the
+  // arrow needs a fresh measurement now the anchor is back.
+  if (visible) scheduleReflow(anchor);
+}
+
+// The annotation rows for one anchor. `attach` inserts each row directly
+// after the anchor, so they form a contiguous run of annotation and
+// placeholder rows ending at the next code row.
+function annotationsOf(anchor: HTMLElement): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  let node: Element | null = anchor.nextElementSibling;
+  while (node) {
+    const el = node as HTMLElement;
+    const state = (el as AnnotatedElement).__scrAnnot;
+    if (state && el.classList.contains("row-annotation")) {
+      if (state.anchor !== anchor) break;
+      out.push(el);
+    } else if (!el.classList.contains("row-placeholder")) {
+      break;
+    }
+    node = node.nextElementSibling;
+  }
+  return out;
+}
+
+function isHidden(el: HTMLElement): boolean {
+  return el.style.display === "none";
 }
 
 function reflowAll(): void {
@@ -317,16 +364,17 @@ function sizeAnnotArrow(annotRow: HTMLElement): void {
   if (boxH <= 0) return;
 
   const anchor = state.anchor;
+  const cellRect = rectProvider(cell);
+  const anchorRect = anchorRowRect(anchor);
+  // No layout box on the anchor (collapsed by a fold, or not yet mounted):
+  // every measurement below would read zero and park the arrow at the far
+  // left. Keep the last known geometry and wait for a reflow that can see it.
+  if (!anchorRect) return;
   // The arrow's top should rise to the anchor row's BOTTOM edge, not
   // its midline — sourcing the arrow from the bottom of the row cell
   // keeps it clear of the code text itself and reads as "this points
   // at the line above me" rather than "this crosses into that line".
-  let topOverrun = ARROW_MIN_OVERRUN;
-  const cellRect = rectProvider(cell);
-  const anchorRect = anchorRowRect(anchor);
-  if (anchorRect) {
-    topOverrun = Math.max(ARROW_MIN_OVERRUN, cellRect.top - anchorRect.bottom);
-  }
+  const topOverrun = Math.max(ARROW_MIN_OVERRUN, cellRect.top - anchorRect.bottom);
   const totalH = topOverrun + boxH;
   const midY = topOverrun + boxH / 2;
 
@@ -537,6 +585,7 @@ export const Annotations = {
   detach,
   reflow,
   reflowAll,
+  setAnchorVisible,
   watchViewport,
   charRectInRow,
   // Test-only hook; not part of the public API contract but exposed

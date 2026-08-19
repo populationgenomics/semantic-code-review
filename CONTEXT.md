@@ -105,6 +105,12 @@ time a region is collapsed, then persisted in the
 first hunk — a stable home pending a schema migration that lifts
 fold descriptions up to `AnnotatedFile`.
 
+Whether a region is collapsed is viewer-runtime state living on the
+region record (`FoldRegion._folded`), not in `RenderState.overrides`
+and not in the URL hash: `folds.ts` re-derives row visibility from it
+on every attach, so a region fold survives a re-render but not a
+reload.
+
 **Segment**
 An LLM-produced semantic sub-slice of a [[hunk]]: a contiguous run of
 the hunk's changed lines the per-hunk pass groups by intent.

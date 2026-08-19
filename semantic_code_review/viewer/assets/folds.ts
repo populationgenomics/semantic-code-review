@@ -8,6 +8,12 @@
 // whose body spans a hunk boundary collapse the right rows in
 // every container because each row carries its own DOM refs.
 //
+// Collapse state lives on the region record (`FoldRegion._folded`),
+// not in the DOM: chevrons are rebuilt on every attach and render.ts
+// caches `.diff` elements across renders, so row visibility is
+// re-derived from the flags (`_applyFoldState`) rather than inherited
+// from whatever the reused elements carried.
+//
 // First time the reviewer collapses a region whose summary is
 // empty, this module fires `POST /fold-summary` against the live
 // review server. The response writes back into the region object
@@ -33,6 +39,7 @@ interface DetectedRegion {
 }
 
 interface AttachedFold {
+  region: FoldRegion;
   marker: SVGElement;
   foldHandle: AnnotationHandle | null;
 }
@@ -46,8 +53,8 @@ interface FoldRequestAddress {
 }
 
 interface FoldFileState {
-  handles: AnnotationHandle[];
-  chevrons: SVGElement[];
+  rows: RowWithEls[];
+  folds: AttachedFold[];
 }
 
 const _FILE_FOLD_STATE: Record<string, FoldFileState> = Object.create(null);
@@ -98,11 +105,9 @@ function _isRowContentEmpty(rowEl: HTMLElement | undefined | null): boolean {
 function _teardownFileFolds(fileId: string): void {
   const s = _FILE_FOLD_STATE[fileId];
   if (!s) return;
-  for (const h of s.handles) {
-    try { h.remove(); } catch (_) { /* ignore */ }
-  }
-  for (const c of s.chevrons) {
-    try { c.remove(); } catch (_) { /* ignore */ }
+  for (const f of s.folds) {
+    try { f.foldHandle?.remove(); } catch (_) { /* ignore */ }
+    try { f.marker.remove(); } catch (_) { /* ignore */ }
   }
   delete _FILE_FOLD_STATE[fileId];
 }
@@ -454,12 +459,49 @@ function _setFoldBoxContent(
   foldHandle.resize();
 }
 
+// Row visibility, chevron direction and summary-row visibility for a whole
+// file, derived from every region's `_folded` flag. Regions nest, so a row
+// is hidden when *any* enclosing region is folded, and a region's summary
+// shows only when the region is folded and its header row survived its
+// enclosing regions.
+function _applyFoldState(state: FoldFileState): void {
+  const hidden: boolean[] = new Array(state.rows.length).fill(false);
+  for (const f of state.folds) {
+    if (!f.region._folded) continue;
+    for (let i = f.region.body_start_idx; i <= f.region.body_end_idx; i++) {
+      hidden[i] = true;
+    }
+  }
+  for (let i = 0; i < state.rows.length; i++) {
+    const want = hidden[i] ? "none" : "";
+    for (const el of [state.rows[i].oldEl, state.rows[i].newEl]) {
+      if (!el || el.style.display === want) continue;
+      el.style.display = want;
+      // Line notes and comment threads hang off the row they annotate,
+      // so they collapse with it.
+      Annotations.setAnchorVisible(el, !hidden[i]);
+    }
+  }
+  // Runs after the row pass: a nested region's summary hangs off a header
+  // row inside the enclosing region's body, so setAnchorVisible above
+  // would otherwise reveal a summary whose own region is open.
+  for (const f of state.folds) {
+    f.marker.classList.toggle("open", !f.region._folded);
+    if (!f.foldHandle) continue;
+    const show = !!f.region._folded && !hidden[f.region.header_idx];
+    f.foldHandle.element.style.display = show ? "" : "none";
+    if (f.foldHandle.placeholder) {
+      f.foldHandle.placeholder.style.display = show ? "" : "none";
+    }
+    if (show) f.foldHandle.resize();
+  }
+}
+
 function _attachOneFold(
-  rows: RowWithEls[], region: FoldRegion, fileIdx: number,
+  state: FoldFileState, region: FoldRegion, fileIdx: number,
 ): AttachedFold | null {
-  const bodyStart = region.body_start_idx;
-  const bodyEnd = region.body_end_idx;
-  if (bodyStart > bodyEnd) return null;
+  const rows = state.rows;
+  if (region.body_start_idx > region.body_end_idx) return null;
 
   const headerRow = rows[region.header_idx];
   if (!headerRow) return null;
@@ -496,27 +538,13 @@ function _attachOneFold(
       if (box) box.classList.add("missing");
       if (pending && box) box.classList.add("pending");
     }
-    foldHandle.element.style.display = "none";
-    if (foldHandle.placeholder) foldHandle.placeholder.style.display = "none";
   }
 
   marker.addEventListener("click", (e) => {
     e.stopPropagation();
-    const nowOpen = marker.classList.toggle("open");
-    for (let i = bodyStart; i <= bodyEnd; i++) {
-      const r = rows[i];
-      if (!r) continue;
-      if (r.oldEl) r.oldEl.style.display = nowOpen ? "" : "none";
-      if (r.newEl) r.newEl.style.display = nowOpen ? "" : "none";
-    }
-    if (foldHandle) {
-      foldHandle.element.style.display = nowOpen ? "none" : "";
-      if (foldHandle.placeholder) {
-        foldHandle.placeholder.style.display = nowOpen ? "none" : "";
-      }
-      if (!nowOpen) foldHandle.resize();
-    }
-    if (!nowOpen && !region.summary && foldHandle
+    region._folded = !region._folded;
+    _applyFoldState(state);
+    if (region._folded && !region.summary && foldHandle
         && _canRequestFoldSummary(fileIdx, region)) {
       _requestFoldSummary(fileIdx, region, foldHandle);
     }
@@ -525,7 +553,7 @@ function _attachOneFold(
 
   const contentCell = anchor && (anchor.children[1] as HTMLElement | undefined);
   if (contentCell) contentCell.prepend(marker);
-  return { marker, foldHandle };
+  return { region, marker, foldHandle };
 }
 
 function attachFileFolds(fileEl: HTMLElement, file: FileBlock): void {
@@ -535,16 +563,14 @@ function attachFileFolds(fileEl: HTMLElement, file: FileBlock): void {
   if (rows.length === 0) return;
   const syms = file.fold_symbols || { head: [], base: [] };
   const detected = _computeFoldRegions(rows, syms.head, syms.base);
-  const handles: AnnotationHandle[] = [];
-  const chevrons: SVGElement[] = [];
+  const state: FoldFileState = { rows, folds: [] };
   for (const det of detected) {
     const region = _upsertFoldRegion(file, det, rows);
-    const attached = _attachOneFold(rows, region, fileIdx);
-    if (!attached) continue;
-    if (attached.foldHandle) handles.push(attached.foldHandle);
-    if (attached.marker) chevrons.push(attached.marker);
+    const attached = _attachOneFold(state, region, fileIdx);
+    if (attached) state.folds.push(attached);
   }
-  _FILE_FOLD_STATE[file.id] = { handles, chevrons };
+  _FILE_FOLD_STATE[file.id] = state;
+  _applyFoldState(state);
 }
 
 // The single runtime surface. boot.ts calls attachFileFolds on
