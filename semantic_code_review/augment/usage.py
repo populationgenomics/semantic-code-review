@@ -73,7 +73,11 @@ class _PassAccumulator:
             self.output_tokens += usage.get("output_tokens", 0)
             self.cache_read_tokens += usage.get("cache_read_input_tokens", 0)
             self.cache_write_tokens += usage.get("cache_creation_input_tokens", 0)
-            call_total += sum(usage.get(k, 0) for k in _USAGE_KEYS)
+            # Same convention as `total_tokens`: `input_tokens` already
+            # includes both cached portions, so adding them again would
+            # report a per-call figure roughly double the run total on
+            # the very line that prints both.
+            call_total += usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
             # Only CLI backends report turns; SDK per-turn detail is the
             # iteration list itself.
             turns = (response.get("provider_details") or {}).get("num_turns")
@@ -114,14 +118,6 @@ class _PassAccumulator:
         if self.turns:
             out["turns"] = _distribution(self.turns)
         return out
-
-
-_USAGE_KEYS = (
-    "input_tokens",
-    "output_tokens",
-    "cache_read_input_tokens",
-    "cache_creation_input_tokens",
-)
 
 
 def _distribution(values: Iterable[int]) -> dict[str, int]:
