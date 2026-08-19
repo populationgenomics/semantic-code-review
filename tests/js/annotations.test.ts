@@ -295,6 +295,85 @@ describe("setContent", () => {
   });
 });
 
+describe("anchor visibility", () => {
+  // Mirrors the browser: nothing inside a `display: none` row has a
+  // layout box, so its rect — and any Range inside it — is all zeros.
+  function installFoldAwareRects(): void {
+    const zero = { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0, toJSON() { return this; } } as DOMRect;
+    const box = (x: number, y: number, w: number, h: number): DOMRect => ({
+      x, y, width: w, height: h, top: y, left: x, right: x + w, bottom: y + h,
+      toJSON() { return this; },
+    } as DOMRect);
+    const collapsed = (n: Node | null): boolean => {
+      for (let el = n; el; el = el.parentNode) {
+        if (el.nodeType === 1 && (el as HTMLElement).style.display === "none") return true;
+      }
+      return false;
+    };
+    Annotations._setRectProvider((target: Element | Range) => {
+      if (target instanceof Range) {
+        if (collapsed(target.startContainer)) return zero;
+        return box(50 + target.startOffset * 10, 100, 10, 20);
+      }
+      const el = target as Element;
+      if (collapsed(el)) return zero;
+      if (el.classList.contains("cell-lineno")) return box(0, 100, 50, 20);
+      if (el.classList.contains("cell-content")) return box(50, 100, 200, 20);
+      if (el.classList.contains("cell-annotation")) return box(50, 200, 200, 40);
+      if (el.classList.contains("annot-box")) return box(60, 200, 150, 30);
+      if (el.classList.contains("row-annotation")) return box(50, 200, 200, 40);
+      return zero;
+    });
+  }
+
+  test("a collapsed anchor leaves the arrow geometry alone", async () => {
+    installFoldAwareRects();
+    const fx = makeHunkFixture([{ old: "    x = 1", new: "    x = 2" }]);
+    const handle = Annotations.attach({
+      anchor: fx.new[0], shadowAnchor: fx.old[0], variant: "note",
+      content: "note", column: { mode: "absolute", value: 3 },
+    });
+    await flushRaf();
+    const svg = handle.element.querySelector<SVGSVGElement>("svg")!;
+    const marginL = svg.style.marginLeft;
+    expect(parseFloat(marginL)).toBeGreaterThan(20);
+
+    // A fold collapses the anchor row. Measuring it now reads zeros, which
+    // would park the arrow at the far left of the annotation cell.
+    fx.new[0].style.display = "none";
+    Annotations.reflowAll();
+    expect(svg.style.marginLeft).toBe(marginL);
+  });
+
+  test("setAnchorVisible travels the annotation and its placeholder with the anchor", () => {
+    const fx = makeHunkFixture([{ old: "left", new: "right" }]);
+    const handle = Annotations.attach(baseOpts(fx.new[0], { shadowAnchor: fx.old[0] }));
+    Annotations.setAnchorVisible(fx.new[0], false);
+    expect(handle.element.style.display).toBe("none");
+    expect(handle.placeholder!.style.display).toBe("none");
+    Annotations.setAnchorVisible(fx.new[0], true);
+    expect(handle.element.style.display).toBe("");
+    expect(handle.placeholder!.style.display).toBe("");
+  });
+
+  test("setAnchorVisible leaves another anchor's annotations alone", () => {
+    const fx = makeHunkFixture([{ old: "a", new: "a" }, { old: "b", new: "b" }]);
+    const first = Annotations.attach(baseOpts(fx.new[0]));
+    const second = Annotations.attach(baseOpts(fx.new[1]));
+    Annotations.setAnchorVisible(fx.new[0], false);
+    expect(first.element.style.display).toBe("none");
+    expect(second.element.style.display).toBe("");
+  });
+
+  test("attaching under a collapsed anchor starts hidden", () => {
+    const fx = makeHunkFixture([{ old: "left", new: "right" }]);
+    fx.new[0].style.display = "none";
+    const handle = Annotations.attach(baseOpts(fx.new[0], { shadowAnchor: fx.old[0] }));
+    expect(handle.element.style.display).toBe("none");
+    expect(handle.placeholder!.style.display).toBe("none");
+  });
+});
+
 describe("charRectInRow", () => {
   test("returns a rect for a valid character index", () => {
     Annotations._setRectProvider((target: Element | Range) => {

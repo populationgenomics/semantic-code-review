@@ -475,9 +475,16 @@ function _applyFoldState(state: FoldFileState): void {
   for (let i = 0; i < state.rows.length; i++) {
     const want = hidden[i] ? "none" : "";
     for (const el of [state.rows[i].oldEl, state.rows[i].newEl]) {
-      if (el) el.style.display = want;
+      if (!el || el.style.display === want) continue;
+      el.style.display = want;
+      // Line notes and comment threads hang off the row they annotate,
+      // so they collapse with it.
+      Annotations.setAnchorVisible(el, !hidden[i]);
     }
   }
+  // Runs after the row pass: a nested region's summary hangs off a header
+  // row inside the enclosing region's body, so setAnchorVisible above
+  // would otherwise reveal a summary whose own region is open.
   for (const f of state.folds) {
     f.marker.classList.toggle("open", !f.region._folded);
     if (!f.foldHandle) continue;

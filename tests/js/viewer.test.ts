@@ -1665,6 +1665,43 @@ describe("lazy fold summaries", () => {
     expect(summary.style.display).not.toBe("none");
   });
 
+  test("annotations inside a collapsed region travel with the code they annotate", async () => {
+    // A line note on the fold's body row, and a reviewer comment on the
+    // same line — the comment replays after every render, so it also
+    // exercises the attach-under-a-collapsed-anchor path.
+    const withNote = dataWithFold();
+    (withNote.files![0].hunks as Array<Record<string, unknown>>)[0].line_notes =
+      [{ line: 2, body: "watch out" }];
+    await bootViewer(withNote, {
+      comments: [{
+        id: "local-1", file: "a.py", side: "new", line: 2,
+        body: "mine", created_at: 1, updated_at: 1, source: "local",
+      }],
+    });
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expandHunk();
+    const note = (): HTMLElement => document.querySelector(".row-annotation.annot-note") as HTMLElement;
+    const comment = (): HTMLElement => document.querySelector(".row-annotation.annot-comment") as HTMLElement;
+    expect(note()).not.toBeNull();
+    expect(comment()).not.toBeNull();
+
+    clickEl(document.querySelector(".fold-chev") as SVGElement);
+    expect(note().style.display).toBe("none");
+    expect(comment().style.display).toBe("none");
+
+    // A re-render replays the comment rows; the region is still collapsed,
+    // so the fresh row must not come back visible over hidden code.
+    const fileHeader = (): HTMLElement => document.querySelector(".file-header") as HTMLElement;
+    fileHeader().click();
+    fileHeader().click();
+    expect(note().style.display).toBe("none");
+    expect(comment().style.display).toBe("none");
+
+    clickEl(document.querySelector(".fold-chev") as SVGElement);
+    expect(note().style.display).not.toBe("none");
+    expect(comment().style.display).not.toBe("none");
+  });
+
   test("unfolding an outer region leaves a folded inner region collapsed", async () => {
     // `class Foo:` at indent 0 wrapping `def bar():` at indent 4: the
     // indent detector emits one region per header, and the inner
