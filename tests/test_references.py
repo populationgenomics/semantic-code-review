@@ -184,3 +184,19 @@ def test_a_truncated_candidate_set_is_reported_as_a_lower_bound(tmp_path: Path) 
 
     assert out.startswith("4+ use site(s)")
     assert "lower bound" in out
+
+
+@pytest.mark.parametrize("has_ripgrep", [True, False])
+def test_an_untracked_file_is_searched(repo: RepoTools, monkeypatch: pytest.MonkeyPatch, has_ripgrep: bool) -> None:
+    """`scr review` on a dirty tree symlinks head/ at the working
+    directory, so a file the reviewer has not staged is still part of
+    what they are reviewing. Plain `git grep` sees tracked files only.
+    """
+    from semantic_code_review.augment import tools as tools_mod
+
+    monkeypatch.setattr(tools_mod, "_HAS_RIPGREP", has_ripgrep)
+    (repo.head_worktree / "unstaged.py").write_text("import numpy as np\n\nx = np.array([1])\n")
+
+    out = repo.references("np")
+
+    assert "unstaged.py" in out

@@ -136,7 +136,11 @@ def grep(cwd: Path, pattern: str, path_glob: str | None, max_hits: int) -> str:
     """Tracked-files grep via ``git grep``. Treats rc=1 (no matches) as
     success and returns an empty string. Other non-zero exits raise.
     """
-    args = ["grep", "-n", "-I", "--max-count", str(max_hits), "-e", pattern]
+    # `--untracked`: a dirty-tree review symlinks head/ at the working
+    # directory, so a file the reviewer has not staged yet is still part
+    # of what they are reviewing. Without it this backend silently sees
+    # a different worktree than the ripgrep one.
+    args = ["grep", "-n", "-I", "--untracked", "--max-count", str(max_hits), "-e", pattern]
     if path_glob:
         args += ["--", path_glob]
     rc, stdout, stderr = git_capture(cwd, *args)
@@ -146,14 +150,14 @@ def grep(cwd: Path, pattern: str, path_glob: str | None, max_hits: int) -> str:
 
 
 def grep_files(cwd: Path, pattern: str, path_glob: str | None, max_files: int) -> list[str]:
-    """Paths of tracked files containing `pattern` — ``git grep -l``.
+    """Paths of files containing `pattern` — ``git grep -l --untracked``.
 
     A file list rather than matching lines: a caller narrowing a set of
     candidates to parse needs only the names, and the line-oriented form
     blows past an output cap on any common identifier, silently dropping
     files past the cut.
     """
-    args = ["grep", "-l", "-I", "-e", pattern]
+    args = ["grep", "-l", "-I", "--untracked", "-e", pattern]
     if path_glob:
         args += ["--", path_glob]
     rc, stdout, stderr = git_capture(cwd, *args)
