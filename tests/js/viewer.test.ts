@@ -1633,6 +1633,73 @@ describe("lazy fold summaries", () => {
     const box = document.querySelector(".annot-box");
     expect(box?.textContent).toBe("remote summary");
   });
+
+  /** Diff rows of the (only) hunk, excluding annotation + placeholder rows. */
+  function codeRows(): HTMLElement[] {
+    return Array.from(document.querySelectorAll<HTMLElement>(
+      ".hunk .half-new .row:not(.row-annotation):not(.row-placeholder)",
+    ));
+  }
+
+  test("a collapsed region survives the re-render a file fold/unfold triggers", async () => {
+    await bootViewer(dataWithFold());
+    expandHunk();
+    clickEl(document.querySelector(".fold-chev") as SVGElement);
+    expect(codeRows()[1].style.display).toBe("none");
+
+    // Fold the whole file, then unfold it: both are full re-renders, and
+    // the hunk's `.diff` is served from the rendered-diff cache with the
+    // collapsed rows still hidden.
+    const fileHeader = (): HTMLElement => document.querySelector(".file-header") as HTMLElement;
+    fileHeader().click();
+    expect(document.querySelector(".file")?.classList.contains("folded")).toBe(true);
+    fileHeader().click();
+
+    // Row visibility, chevron direction and the summary row all agree
+    // that the region is still collapsed.
+    expect(codeRows()[0].style.display).not.toBe("none");
+    expect(codeRows()[1].style.display).toBe("none");
+    const marker = document.querySelector(".fold-chev") as SVGElement;
+    expect(marker.classList.contains("open")).toBe(false);
+    const summary = document.querySelector(".row-annotation.annot-fold") as HTMLElement;
+    expect(summary.style.display).not.toBe("none");
+  });
+
+  test("unfolding an outer region leaves a folded inner region collapsed", async () => {
+    // `class Foo:` at indent 0 wrapping `def bar():` at indent 4: the
+    // indent detector emits one region per header, and the inner
+    // region's body is a subset of the outer's.
+    await bootViewer(makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 1, dels: 1, summary: "ok", head_lines: null,
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock("H0_0", "ok", {
+          rows: [
+            { kind: "ctx", old_line: 1, new_line: 1, old_text: "class Foo:", new_text: "class Foo:" },
+            { kind: "ctx", old_line: 2, new_line: 2, old_text: "    def bar():", new_text: "    def bar():" },
+            { kind: "pair", old_line: 3, new_line: 3, old_text: "        x = 1", new_text: "        x = 2" },
+          ],
+        })],
+      }],
+    }));
+    expandHunk();
+    const chevrons = Array.from(document.querySelectorAll(".fold-chev"));
+    expect(chevrons).toHaveLength(2);
+    const [outer, inner] = chevrons;
+
+    clickEl(inner);                                    // collapse def bar()
+    expect(codeRows()[2].style.display).toBe("none");
+    clickEl(outer);                                    // collapse class Foo
+    expect(codeRows()[1].style.display).toBe("none");
+    clickEl(outer);                                    // expand class Foo
+
+    // The inner region is still folded, so its body stays hidden.
+    expect(codeRows()[1].style.display).not.toBe("none");
+    expect(codeRows()[2].style.display).toBe("none");
+    expect((inner as SVGElement).classList.contains("open")).toBe(false);
+  });
 });
 
 describe("review console", () => {

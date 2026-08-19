@@ -222,6 +222,11 @@ interface FoldRegion {
    *  an echoing SSE event doesn't stomp the in-flight fetch handler's
    *  DOM update. */
   _inflight?: boolean;
+  /** Viewer-runtime only (not on the wire): the reviewer collapsed this
+   *  region. Lives on the region record (not in the DOM) because the
+   *  chevrons and the `.diff` rows are rebuilt/reused across renders;
+   *  folds.ts re-derives every row's visibility from this flag. */
+  _folded?: boolean;
 }
 
 // --- Sidebar groups ---------------------------------------------------------
