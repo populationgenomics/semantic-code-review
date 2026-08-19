@@ -495,9 +495,14 @@ def post_review_via_graphql(
                 if c.source_id:
                     node_ids[c.source_id] = nid
             else:
-                assert c.path is not None
-                assert c.line is not None
-                assert c.side is not None
+                if c.path is None:
+                    raise GhError(f"comment has neither a reply target nor a path: {c.body[:60]!r}")
+                # `line`/`side` are None for a file-level thread — the
+                # degradation `anchors.resolve` produces for a comment
+                # GitHub cannot anchor to a line. Asserting them
+                # not-None here made that path unreachable, and an
+                # AssertionError is not a GhError, so the caller's
+                # partial-post diagnostic never ran either.
                 nid = add_review_thread(review_id, c.path, c.line, c.side, c.body)
                 if c.source_id:
                     node_ids[c.source_id] = nid

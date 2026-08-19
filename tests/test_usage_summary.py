@@ -296,3 +296,15 @@ def test_cli_envelope_usage_matches_the_sdk_convention() -> None:
     assert u.input_tokens == 9002
     assert u.cache_write_tokens == 8000
     assert u.cache_read_tokens == 1000
+
+
+def test_per_call_uses_the_same_convention_as_the_run_total(tmp_path: Path) -> None:
+    """One line prints both figures. `input_tokens` already includes the
+    cached portions, so summing all four made the per-call number about
+    double the total it sat next to."""
+    _write(tmp_path / "trace", "hunk-a.py-1.json", _trace(usages=[_usage(inp=10000, out=500, read=9000)]))
+
+    summary = usage.summarize_trace_dir(tmp_path / "trace")
+
+    assert summary["totals"]["total_tokens"] == 10500
+    assert summary["passes"]["hunk"]["per_call"]["median"] == 10500

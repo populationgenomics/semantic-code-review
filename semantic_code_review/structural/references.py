@@ -84,11 +84,26 @@ def python_bindings(source: str) -> dict[str, str]:
     return out
 
 
+def _aliases_for(bindings: dict[str, str], name: str) -> set[str]:
+    """Local names that stand for `name`.
+
+    `import numpy as np` binds `np` to `numpy`, so a question about
+    `numpy` has to look for `np`. Without this the tool answers zero for
+    the very example the hunk prompt cites.
+    """
+    out = {name}
+    for local, target in bindings.items():
+        if target == name or target.split(".")[0] == name or target.rsplit(".", 1)[-1] == name:
+            out.add(local)
+    return out
+
+
 def _python_references(source: str, name: str) -> list[Reference]:
     try:
         tree = ast.parse(source)
     except SyntaxError as e:
         raise ParseFailed(str(e)) from e
+    wanted = _aliases_for(python_bindings(source), name)
     lines = source.splitlines()
     out: list[Reference] = []
     seen: set[tuple[int, int]] = set()
@@ -103,15 +118,21 @@ def _python_references(source: str, name: str) -> list[Reference]:
 
     for node in ast.walk(tree):
         # A load of the bare name: `helper(x)`, `CONST + 1`, `C()`.
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id == name:
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in wanted:
             add(node, "name")
-        # `np.array(x)` — credit the root, which is what "is numpy still
-        # used" turns on and what the tags query loses.
         elif isinstance(node, ast.Attribute):
+            # `mod.helper()` is a use of `helper`. This repo's own style
+            # mandates `import module` + `module.symbol`, so crediting
+            # only the root made most cross-module references invisible
+            # — and the prompt tells the model a zero here is reliable.
+            if node.attr in wanted:
+                add(node, "attribute")
+            # `np.array(x)` is also a use of `np` (and so of `numpy`),
+            # which is what "is this import still used" turns on.
             root: ast.AST = node
             while isinstance(root, ast.Attribute):
                 root = root.value
-            if isinstance(root, ast.Name) and root.id == name:
+            if isinstance(root, ast.Name) and root.id in wanted:
                 add(root, "attribute")
     return sorted(out, key=lambda r: r.line)
 
@@ -137,7 +158,10 @@ def _tags_references(source: str, lang_name: str, name: str) -> list[Reference]:
             # `foo.bar(x)` — so match on the identifiers inside its
             # head rather than the raw text. That covers the callee, a
             # dotted receiver, and a `new`-prefixed construction alike.
-            head = text.split("(", 1)[0]
+            # The capture is sometimes just `()` (a method call on an
+            # expression), leaving an empty head; fall back to the whole
+            # captured text so the callee is still seen.
+            head = text.split("(", 1)[0] or text
             if name in _IDENTIFIER.findall(head):
                 out.append(Reference(line=node.start_point[0] + 1, kind=kind, text=text.splitlines()[0][:120]))
     return sorted(out, key=lambda r: r.line)

@@ -575,3 +575,39 @@ def test_post_reports_which_local_comments_landed(monkeypatch) -> None:
         result = gh_gql.post_review_via_graphql("o/r", 1, cs)
 
     assert result.posted_node_ids == {"c1": "TH_a"}
+
+
+def test_a_file_level_anchor_is_posted_rather_than_crashing(monkeypatch) -> None:
+    """`anchors.resolve` demotes an unpostable comment to `line=None`,
+    and `add_review_thread` accepts that — but an assert in the posting
+    loop made the path unreachable. An AssertionError is not a GhError,
+    so the caller's partial-post handling never ran and the draft review
+    was orphaned.
+    """
+    seq = _GhSequence()
+    seq.expect(
+        "query",
+        {
+            "data": {
+                "viewer": {"login": "alice"},
+                "repository": {"pullRequest": {"id": "PR_kw1", "reviews": {"nodes": []}}},
+            }
+        },
+    )
+    seq.expect("addPullRequestReview", {"data": {"addPullRequestReview": {"pullRequestReview": {"id": "PRR_new"}}}})
+    seq.expect("addPullRequestReviewThread", {"data": {"addPullRequestReviewThread": {"thread": {"id": "TH_f"}}}})
+    seq.expect(
+        "submitPullRequestReview",
+        {"data": {"submitPullRequestReview": {"pullRequestReview": {"databaseId": 4, "url": ""}}}},
+    )
+
+    # The only hunk is far away, so the comment demotes to file level.
+    diff = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -198,3 +198,4 @@\n+x\n"
+    cs = [gh_rest.PostedComment(body="general remark", path="a.py", line=500, side="RIGHT")]
+    with patch("semantic_code_review.git_ops.subprocess.run", side_effect=seq):
+        result = gh_gql.post_review_via_graphql("o/r", 1, cs, diff_text=diff)
+
+    v = next(v for op, v in seq.calls if op == "addPullRequestReviewThread")
+    assert "line" not in v, "a file-level thread must not carry a line"
+    assert "outside the diff" in v["body"]
+    assert result.posted == 1

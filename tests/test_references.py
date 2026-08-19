@@ -109,3 +109,31 @@ def test_references_is_on_both_tool_surfaces(repo: RepoTools) -> None:
 
     assert "references" in {s["name"] for s in mcp_tool_schemas()}
     assert "use site(s)" in mcp_dispatch(repo, "references", {"purpose": "check np", "name": "np"})
+
+
+def test_a_qualified_call_is_a_use_of_the_attribute() -> None:
+    """`docs/style/python.md` mandates `import module` + `module.symbol`,
+    so crediting only the root made most cross-module references
+    invisible — while the prompt tells the model a zero here is reliable.
+    """
+    src = "import anchors\nfrom pkg import mod\n\ndef f():\n    return anchors.postable_ranges(1) + mod.helper()\n"
+
+    assert len(refs.references(src, "x.py", "postable_ranges")) == 1
+    assert len(refs.references(src, "x.py", "helper")) == 1
+    assert len(refs.references(src, "x.py", "anchors")) == 1
+
+
+def test_an_import_alias_resolves_to_the_module_it_binds() -> None:
+    """The example both hunk prompts cite: `np.array(x)` uses `numpy`
+    even though the word `numpy` appears only in the import."""
+    src = "import numpy as np\n\ndef f(x):\n    return np.array(x)\n"
+
+    assert len(refs.references(src, "x.py", "numpy")) == 1
+    assert len(refs.references(src, "x.py", "np")) == 1
+
+
+def test_a_qualified_call_on_an_unrelated_module_is_not_a_use() -> None:
+    src = "import other\n\ndef f():\n    return other.something()\n"
+
+    assert refs.references(src, "x.py", "helper") == []
+    assert refs.references(src, "x.py", "numpy") == []
