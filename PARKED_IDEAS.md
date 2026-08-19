@@ -159,6 +159,19 @@ ordering. Summarised here so they appear in the same backlog.
     cron / manual-dispatch GHA design is fully specced and could be
     revived if the cadence picks up.
 
+25. **Skipped files should cost the reviewer nothing.** A file matched by
+    `skip_globs` (`uv.lock`, generated code) still renders a file
+    overview and one row per hunk, each reading "(no intent — may need
+    re-run)" — which reads as a failure rather than a deliberate skip.
+    Two changes, either or both: drop the per-file overview for skipped
+    files entirely, since "Generated / lock file — not analysed" is the
+    whole story; and start anything not reviewed fully folded, so a
+    2,000-line lockfile refresh occupies one line. The unannotated-hunk
+    placeholder text is doing double duty for "we chose not to" and "the
+    pass failed", and those want different wording.
+    Touches `augment/skip.py` (`SKIP_SUMMARY`), `viewer/build_json.py`
+    (fold defaults) and the hunk-row placeholder in the viewer.
+
 ## Pointers
 
 - `semantic_code_review/review/runner.py` — `serve_review` is the natural
