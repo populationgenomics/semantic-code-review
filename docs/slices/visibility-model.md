@@ -48,14 +48,24 @@ survives; each names a `HiddenSpan` today and would read as its opposite.
 
 ---
 
-## Slice 1 — Rename
+## Slice 1 — Rename *(done, 6879d59)*
 
-Mechanical, no behaviour change: `CodeFold` and `HiddenSpan` throughout,
-`folds.ts` included. Do this first — every later slice reads wrong
-against the old names, and #9 has already added two more uses.
+Narrower than first scoped. Of ~135 "fold" identifiers, 113 already mean
+a `>`-marker region — `FoldRegion`, `fold_regions`, `FoldDescription`,
+`/fold-summary`, `submit_fold_summary` — and are correct under the new
+vocabulary. Renaming those would churn the sidecar format, the SSE event
+names and an LLM-facing tool name for nothing.
 
-**Done when:** no identifier names a hiding mechanism "fold" unless it is
-a `CodeFold`; suite green; zero behaviour delta.
+What was misnamed is the global collapse *level*: `FoldMode` ->
+`CollapseLevel`, `_state.fold` -> `_state.collapseLevel`, `_isFolded` ->
+`_isHidden`, `_toggleFold` -> `_toggleHidden`, `_setGlobalFold` ->
+`_setCollapseLevel`, `_defaultHunkFolded` -> `_defaultHunkHidden`.
+
+The `fold=` hash key is left alone: Slice 4 deletes it.
+
+`HiddenSpan` does not appear yet — it is introduced by Slice 3, which is
+where the primitive actually exists. Renaming to a type that has no
+definition would have been theatre.
 
 ## Slice 2 — Spans become absolute
 
