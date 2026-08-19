@@ -7,6 +7,7 @@ with grep. These are the cases where that is the wrong instrument.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -95,7 +96,17 @@ def test_the_tool_reports_absence_plainly(repo: RepoTools) -> None:
     assert repo.references("nonexistent_symbol").startswith("0 use site(s)")
 
 
-@pytest.mark.parametrize("has_ripgrep", [True, False])
+_BACKENDS = [
+    pytest.param(
+        True,
+        marks=pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed"),
+        id="ripgrep",
+    ),
+    pytest.param(False, id="git-grep"),
+]
+
+
+@pytest.mark.parametrize("has_ripgrep", _BACKENDS)
 def test_an_unparseable_file_degrades_to_text_and_says_so(
     repo: RepoTools, monkeypatch: pytest.MonkeyPatch, has_ripgrep: bool
 ) -> None:
@@ -186,7 +197,7 @@ def test_a_truncated_candidate_set_is_reported_as_a_lower_bound(tmp_path: Path) 
     assert "lower bound" in out
 
 
-@pytest.mark.parametrize("has_ripgrep", [True, False])
+@pytest.mark.parametrize("has_ripgrep", _BACKENDS)
 def test_an_untracked_file_is_searched(repo: RepoTools, monkeypatch: pytest.MonkeyPatch, has_ripgrep: bool) -> None:
     """`scr review` on a dirty tree symlinks head/ at the working
     directory, so a file the reviewer has not staged is still part of
