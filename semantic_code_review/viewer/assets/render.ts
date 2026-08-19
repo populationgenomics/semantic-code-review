@@ -1,11 +1,11 @@
-// Diff renderer + fold-state machinery.
+// Diff renderer + collapse-state machinery.
 //
 // Owns the layout pass that turns DATA into the on-page DOM: PR
 // panel, file blocks, hunk headers, the side-by-side row grid, gap
-// chips for unchanged context, segment-folded summaries, refs, smell
-// pills. Carries the fold state too (STATE.fold / overrides /
+// chips for unchanged context, CodeFold summaries, refs, smell
+// pills. Carries the collapse state too (STATE.collapseLevel / overrides /
 // renderedDiffs cache) because all of that exists to feed the
-// renderer, and binds the user inputs that drive it (fold-slider
+// renderer, and binds the user inputs that drive it (collapse-level slider
 // buttons, keyboard 1-4, hash sync).
 //
 // Other modules attach to surfaces this module creates:
@@ -26,14 +26,17 @@ import { blockDiff, matchRanges, wrapRanges, type CharRange } from "./text_highl
 
 // --- Module state --------------------------------------------------------
 
-type FoldMode = "files" | "hunks" | "segments" | "off";
+type CollapseLevel = "files" | "hunks" | "segments" | "off";
 
 interface RenderState {
-  fold: FoldMode;
+  // The global collapse *level*, not a fold: it sets the default for
+  // hunk and file hiding, and for `CodeFold`s at the "segments" level.
+  // See docs/slices/visibility-model.md for the vocabulary.
+  collapseLevel: CollapseLevel;
   overrides: Record<string, boolean>;
   renderedDiffs: Record<string, HTMLElement>;
   // Ephemeral: reveal the focused hunks' code (set when a sidebar pill is
-  // clicked, cleared the moment the fold-level slider is touched). Kept
+  // clicked, cleared the moment the collapse-level slider is touched). Kept
   // out of `overrides` on purpose — a stored per-hunk override would leak
   // an expanded hunk into the unfiltered view once the filter clears.
   focusReveal: boolean;
@@ -47,7 +50,7 @@ let _smells: Record<string, SmellCatalogueEntry> = {};
 // DOM. See setSymbolSearch / sidebar's active-pill callback.
 let _symbolSearch: string | null = null;
 const _state: RenderState = {
-  fold: "hunks",
+  collapseLevel: "hunks",
   overrides: Object.create(null),
   renderedDiffs: Object.create(null),
   focusReveal: true,
@@ -57,12 +60,12 @@ const _state: RenderState = {
 
 /** Wire input handlers + restore state from URL hash + run initial
  *  render. Called once at boot from viewer.js. Resets the rendered-
- *  diff cache + fold overrides so a re-boot (tests, future hot
+ *  diff cache + collapse overrides so a re-boot (tests, future hot
  *  reload) starts fresh. */
 function renderInit(data: ViewerData): void {
   _data = data;
   _smells = data.smells_catalogue || {};
-  _state.fold = "hunks";
+  _state.collapseLevel = "hunks";
   _state.overrides = Object.create(null);
   _state.renderedDiffs = Object.create(null);
   _state.focusReveal = true;
@@ -136,7 +139,7 @@ function repaintHunkHeader(hunkId: string): void {
   const f = _data.files && _data.files[fi];
   const h = f && f.hunks && f.hunks[hi];
   if (!h) return;
-  const folded = _isFolded(h.id, _defaultHunkFolded());
+  const folded = _isHidden(h.id, _defaultHunkHidden());
   const fresh = _renderHunkHeader(h, folded, f);
   oldHdr.replaceWith(fresh);
 }
@@ -149,23 +152,23 @@ function clearRenderedDiffCache(hunkId: string): void {
 
 // --- Fold state ---------------------------------------------------------
 
-function _defaultFileFolded(): boolean    { return _state.fold === "files"; }
-function _defaultHunkFolded(): boolean    { return _state.fold === "files" || _state.fold === "hunks"; }
-function _defaultSegmentFolded(): boolean { return _state.fold !== "off"; }
+function _defaultFileHidden(): boolean    { return _state.collapseLevel === "files"; }
+function _defaultHunkHidden(): boolean    { return _state.collapseLevel === "files" || _state.collapseLevel === "hunks"; }
+function _defaultSegmentFolded(): boolean { return _state.collapseLevel !== "off"; }
 
-function _isFolded(id: string, fallback: boolean): boolean {
+function _isHidden(id: string, fallback: boolean): boolean {
   return Object.prototype.hasOwnProperty.call(_state.overrides, id)
     ? _state.overrides[id] : fallback;
 }
 
-function _toggleFold(id: string, currentDefault: boolean): void {
-  const current = _isFolded(id, currentDefault);
+function _toggleHidden(id: string, currentDefault: boolean): void {
+  const current = _isHidden(id, currentDefault);
   _state.overrides[id] = !current;
   render();
 }
 
-function _setGlobalFold(fold: FoldMode): void {
-  _state.fold = fold;
+function _setCollapseLevel(fold: CollapseLevel): void {
+  _state.collapseLevel = fold;
   _state.overrides = Object.create(null);
   // The slider is authoritative: fold every hunk (focused or not) to this
   // level, so focus-reveal stops forcing the focused hunks open.
@@ -303,7 +306,7 @@ function _renderFile(f: FileBlock): HTMLElement | null {
   const div = _el("div", "file");
   if (liveIds !== null) div.classList.add("filtered");
   div.dataset.id = f.id;
-  const folded = _isFolded(f.id, _defaultFileFolded());
+  const folded = _isHidden(f.id, _defaultFileHidden());
   div.classList.toggle("folded", folded);
   div.appendChild(_renderFileHeader(f, folded));
   if (!folded) {
@@ -380,7 +383,7 @@ function _renderFileHeader(f: FileBlock, folded: boolean): HTMLElement {
     hdr.appendChild(badge);
   }
   if (Rendered.isMarkdown(f)) hdr.appendChild(_renderMdToggle(f));
-  hdr.addEventListener("click", () => _toggleFold(f.id, folded));
+  hdr.addEventListener("click", () => _toggleHidden(f.id, folded));
   return hdr;
 }
 
@@ -540,7 +543,7 @@ function _renderHunk(h: HunkBlock, f: FileBlock, reveal = false): HTMLElement {
   div.dataset.id = h.id;
   // reveal (focus) forces the hunk fully open — code, not summaries — but
   // an explicit fold override the reviewer set still wins.
-  const folded = _isFolded(h.id, reveal ? false : _defaultHunkFolded());
+  const folded = _isHidden(h.id, reveal ? false : _defaultHunkHidden());
   div.classList.toggle("folded", folded);
   div.appendChild(_renderHunkHeader(h, folded, f));
   if (!folded) {
@@ -548,7 +551,7 @@ function _renderHunk(h: HunkBlock, f: FileBlock, reveal = false): HTMLElement {
     // `off` or a reveal. A hunk with no segments folds as one synthetic
     // segment spanning it, so every hunk behaves uniformly at this level.
     const segs = _displaySegments(h);
-    const anyOpen = segs.some((s) => _isFolded(s.id, _defaultSegmentFolded()) === false);
+    const anyOpen = segs.some((s) => _isHidden(s.id, _defaultSegmentFolded()) === false);
     if (!reveal && _defaultSegmentFolded() && !anyOpen) {
       const list = _el("div", "seg-list");
       for (const s of segs) list.appendChild(_renderSegmentFolded(s, f));
@@ -649,7 +652,7 @@ function _renderHunkHeader(h: HunkBlock, folded: boolean, f: FileBlock): HTMLEle
     e.stopPropagation();
     // Flip the visible state — `folded` is the actual current state
     // (respecting reveal + overrides), not just the level default.
-    _toggleFold(h.id, folded);
+    _toggleHidden(h.id, folded);
   });
   return hdr;
 }
@@ -668,7 +671,7 @@ function _renderSegmentFolded(s: SegmentBlock, f: FileBlock): HTMLElement {
     e.stopPropagation();
     // A rendered summary is always in the folded state; clicking opens it
     // (which, in step b, reveals the whole hunk's code).
-    _toggleFold(s.id, true);
+    _toggleHidden(s.id, true);
   });
   return div;
 }
@@ -882,7 +885,7 @@ function _clearSymbolHits(code: HTMLElement): void {
 function _updateSliderButtons(): void {
   document.querySelectorAll(".fold-slider button").forEach((b) => {
     const btn = b as HTMLElement;
-    btn.classList.toggle("active", btn.dataset.fold === _state.fold);
+    btn.classList.toggle("active", btn.dataset.fold === _state.collapseLevel);
   });
 }
 
@@ -912,7 +915,7 @@ function _updateStatus(): void {
 }
 
 function _syncHash(): void {
-  const parts = [`fold=${_state.fold}`];
+  const parts = [`fold=${_state.collapseLevel}`];
   for (const [id, folded] of Object.entries(_state.overrides)) {
     parts.push(`${id}=${folded ? "f" : "o"}`);
   }
@@ -928,7 +931,7 @@ function _restoreHash(): void {
   for (const kv of h.split("&")) {
     const [k, v] = kv.split("=");
     if (k === "fold" && ["files", "hunks", "segments", "off"].includes(v)) {
-      _state.fold = v as FoldMode;
+      _state.collapseLevel = v as CollapseLevel;
     } else if (k && v != null) {
       _state.overrides[k] = (v === "f");
     }
@@ -941,10 +944,10 @@ function _onKeydown(e: KeyboardEvent): void {
   if (tag === "input" || tag === "textarea") return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   switch (e.key) {
-    case "1": _setGlobalFold("files"); e.preventDefault(); break;
-    case "2": _setGlobalFold("hunks"); e.preventDefault(); break;
-    case "3": _setGlobalFold("segments"); e.preventDefault(); break;
-    case "4": _setGlobalFold("off"); e.preventDefault(); break;
+    case "1": _setCollapseLevel("files"); e.preventDefault(); break;
+    case "2": _setCollapseLevel("hunks"); e.preventDefault(); break;
+    case "3": _setCollapseLevel("segments"); e.preventDefault(); break;
+    case "4": _setCollapseLevel("off"); e.preventDefault(); break;
     case "?": _toggleHelp(); e.preventDefault(); break;
     case "Escape": _closeHelp(); break;
   }
@@ -963,8 +966,8 @@ function _wireInputs(): void {
   document.querySelectorAll(".fold-slider button").forEach((b) => {
     const btn = b as HTMLElement;
     btn.addEventListener("click", () => {
-      const f = btn.dataset.fold as FoldMode | undefined;
-      if (f) _setGlobalFold(f);
+      const f = btn.dataset.fold as CollapseLevel | undefined;
+      if (f) _setCollapseLevel(f);
     });
   });
   const reset = document.getElementById("reset-btn");

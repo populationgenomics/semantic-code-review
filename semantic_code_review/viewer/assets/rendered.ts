@@ -100,7 +100,7 @@ function foldLevel(fileId: string): MdFoldLevel {
 
 /** Set one file's rendered-mode fold level and repaint. Clears that
  *  file's ephemeral reveal state — the level is authoritative, same as
- *  the text-mode slider's `_setGlobalFold`. */
+ *  the text-mode slider's `_setCollapseLevel`. */
 function setFoldLevel(fileId: string, level: MdFoldLevel): void {
   _foldLevel[fileId] = level;
   delete _reveal[fileId];
