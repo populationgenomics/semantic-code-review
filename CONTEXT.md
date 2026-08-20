@@ -140,6 +140,38 @@ clears the marks.
 Both ledgers persist, as [[view-state]]: a reload restores the reveals
 along with the hides.
 
+A hide is not an erasure: whatever stands in a span's place is headed by
+the span's [[manifest]].
+
+**Manifest**
+The list of notes a hide covers, rendered at the head of whatever stands
+in its place (`viewer/assets/manifest.ts`, ADR 0006). Two columns, old
+and new, of line number plus the note's first line; the colour sidebar on
+each entry carries its kind, matching the expanded view's palette — amber
+for a [[reviewer-comment]], blue for an LLM line note.
+
+What is listed:
+
+- **Unresolved reviewer comments**, one entry per thread at its root.
+  Local and ingested alike: what matters is that a human owns it, not
+  where it came from, so a comment promoted from an LLM annotation counts
+  and the annotation it replaced does not.
+- **LLM line notes** that no comment has replaced.
+- **Not** resolved threads (`thread_resolved` on the thread root), and
+  **not** a `CodeFold`'s generated summary — a summary describes hidden
+  content and is redundant once that content is hidden again.
+
+Entries are **not navigable** — clicking one neither scrolls to nor
+reveals its line — and the list is **not bounded**.
+
+Which notes a hide covers comes from the span store
+(`Visibility.covering`), so a manifest can only be built for a hide that
+is in place. Two stand-ins are not one span and take a line range
+instead: a hunk body rendered as a `seg-list` (a `segment` span is a
+binary switch on the body, not a hide of its own lines, so the hunk's
+base side and context rows belong to no span), and the inert band that
+names the unchanged lines a file without `head_lines` cannot show.
+
 **Fold region**
 A collapsible structural region in the viewer — the `> def foo(): …`
 chevron. Addressed by `(file_idx, context, right_start..right_end,
@@ -169,7 +201,9 @@ a region does not change which regions exist.
 Collapsing one is a [[hidden-span]] over that same address; the renderer
 drops the rows it covers and keeps the region's first rendered line as
 the header the chevron hangs off. The one row index left is that header,
-recomputed by `_placeRegion` on every render.
+recomputed by `_placeRegion` on every render. Under it hang the summary
+and the region's [[manifest]] — minus any note on the header line
+itself, which is still on screen with its own comment row.
 
 Summaries are produced on demand by the fold-summary pass the first
 time a region is collapsed, then persisted in the
@@ -211,7 +245,14 @@ file no live hunk touches is dropped from the render.
 Chip or diff is a [[hidden-span]] of kind `context`, seeded per region as
 the renderer lays it out and identified by the region's own line extent.
 Clicking the chip removes the span, clicking "× collapse" puts it back;
-both go through a re-render, so a reveal survives every later one. The
+both go through a re-render, so a reveal survives every later one. A chip
+carries the region's [[manifest]] under its label.
+
+A file with no `head_lines` has no context rows to stand a chip in front
+of. Between two hunks the renderer puts an inert `.gap-absent` band there
+instead — no span, nothing to expand — naming how many lines are missing
+and carrying the notes that sit on them. Slice 6's `/file-text` makes
+those lines fetchable and the band a real region. The
 filter is *not* in the span model — it decides which hunks are live and
 therefore what a region covers, and its demoted hunks' rows render inside
 an expanded region regardless of the [[fold-level]].
@@ -386,6 +427,9 @@ materialise, read-only, carrying `author`, `in_reply_to_id`,
 `commit_id`, `html_url`, and provider-rendered `body_html`. Posting a
 local comment resolves it through an [[anchor]] first, then converts it
 to an ingested one.
+
+A comment whose line is hidden is not gone: it appears as an entry in the
+[[manifest]] of the hide covering it, unless its thread is resolved.
 
 Named `ReviewerComment` in TypeScript and `Comment` in Python —
 the TS name is qualified because `lib.dom.Comment` (a `Node`

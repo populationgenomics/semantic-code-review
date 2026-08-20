@@ -255,14 +255,81 @@ model, and switching it to `sessionStorage` would trade a real if small
 behaviour (reopen the URL in a fresh tab within one run and the filter
 comes back) for consistency. The author's call, not this slice's.
 
-## Slice 5 — The manifest
+## Slice 5 — The manifest *(done, 3716bbe)*
 
-Two-column list at the head of a hide. Colour sidebar by kind. Resolved
-comments and generated summaries excluded.
+Every hide is headed by the notes it covers: a two-column list (old /
+new) of line number plus the note's first line, colour-sidebar'd by kind,
+in `viewer/assets/manifest.ts`. Five places render one — a collapsed
+file, a collapsed hunk, a hunk folded to its `seg-list`, a collapsed
+context chip, and a collapsed `CodeFold` (as an annotation under the
+header row the chevron sits on). Entries are inert and the list is
+unbounded, both as decided.
 
-**Done when:** collapsing a file shows its unresolved comments as
-one-line entries with line numbers, and no collapsed state anywhere
-produces a gutter discontinuity.
+In: unresolved reviewer comments, one entry per thread at its root,
+local and ingested alike — a comment promoted from an LLM annotation is
+still a comment. Out: resolved threads (read from the root, so a local
+reply cannot re-open one), the annotation a comment replaced, and
+generated fold summaries.
+
+**LLM line notes are in**, under their own colour. They were the part
+the plan left optional, and they cost nothing: they already hang off a
+hunk by absolute line, which is the manifest's address. Hunk- and
+segment-level *smells* are not in — they are not line-anchored, and the
+chrome that stands in for a hidden hunk already carries them.
+
+Four things the plan and the ADR did not settle:
+
+- **A `segment` span cannot answer what the seg-list hides.** Slice 3
+  made it a binary switch on the hunk body rather than a hide of its own
+  lines, and it carries no base side at all, so while every segment is
+  collapsed the hunk's context rows and its whole base side are covered
+  by no span while nothing renders them. The seg-list therefore gets one
+  manifest for the hunk's whole extent, by line range rather than by
+  span — `Manifest.inRange` alongside `Manifest.under`. Giving segment
+  spans real ranges would not have fixed it: the rows between segments
+  belong to none of them.
+- **A collapsed `CodeFold` keeps one line on screen**, so a note on that
+  line is listed *and* rendered. The fold's manifest drops the header
+  line for that reason.
+- **The manifest needs a repaint when the comment store lands.** It is
+  built during `render()`, and `/comments` resolves after the first
+  paint — a hide already in place at boot (the default level, or restored
+  view state) would head an empty list forever. `Comments`' `onChange`
+  now re-renders as well as refreshing the sidebar counts.
+- **The viewer test harness's footer had diverged from `index.html`**,
+  omitting `#status-counts`. `_updateStatus` fell back to writing
+  `textContent` on the footer itself, which wipes the console bar
+  mounted there. Harmless until a render happened after `Console.init`,
+  which the comment-store repaint made routine.
+
+**The gutter claim was already true, for a reason the plan did not
+give.** Every collapse kind stands something in the skipped lines' place
+— a file or hunk header, a segment summary row, a gap chip, and for a
+`CodeFold` the header line the chevron hangs off. Between two hunks it is
+the next hunk's own `@@` header that accounts for the step, which is why
+a file with no `head_lines` (nothing to build a chip's rows from) does
+not read as a jump either. `tests/js/viewer.test.ts` pins all of it with
+a walker that reads one side's gutter in DOM order and reports a step
+nothing accounts for; the walker is itself tested against a
+hand-built discontinuity, or it would pass vacuously.
+
+**One case is still false, and it is Slice 6's.** A file with no
+`head_lines` under an active sidebar filter: expanding the region that
+swallowed the demoted hunks splices their rows together with the
+unchanged context between them missing and no row to say so. There is no
+`HiddenSpan` there either, so the notes on those lines have nowhere to
+appear. Both go away when `/file-text` supplies the context. In the
+unfiltered case — the common one, and the one that carries ingested
+comments on unchanged lines of an over-cap file — an inert
+`.gap-absent` band now names the missing lines and hosts their notes.
+
+**Testing.** `tests/js/manifest.test.ts` settles what belongs in a
+manifest without a document: the resolved/reply/promotion rules, the
+side-tagging, that a hide not in the store lists nothing, and that the
+list is unbounded. The renderer's claims sit in `viewer.test.ts` — seven
+manifest tests and nine gutter tests. All seven manifest tests fail
+against 414f835; of the gutter tests only the two about a file with no
+shipped content do, because the rest were already true.
 
 ## Slice 6 — `/file-text` as the content source
 
