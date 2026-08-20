@@ -3,26 +3,27 @@
 The *why* is [ADR 0006](../adr/0006-one-visibility-model.md);
 this file holds the order.
 
-Three mechanisms currently decide whether a line renders, with three
-different identities, three persistence tiers and no shared rule:
+Three mechanisms decided whether a line renders, with three different
+identities, three persistence tiers and no shared rule:
 
 | | identity | survives re-render | survives reload |
 |---|---|---|---|
-| `> ` marker collapse | span of absolute file lines (slice 2; was *rendered row indices*) | since #9 | no |
-| file / hunk header collapse | stable id (`H0_1`) | yes | yes, URL hash |
-| unchanged context outside a hunk | none — pure DOM | no | no |
+| `> ` marker collapse | span of absolute file lines (slice 2; was *rendered row indices*) | since slice 3 | slice 4 |
+| file / hunk header collapse | stable id (`H0_1`) | yes | slice 4 (was: URL hash) |
+| unchanged context outside a hunk | span of absolute file lines (slice 3; was *none — pure DOM*) | since slice 3 | slice 4 |
 
 The first was keyed on something the user can move: revealing context
 changed the rendered row array, `_computeFoldRegions` derived different
 spans, and the record holding the collapse state was orphaned (#10).
 Slice 2 re-derived the span from file content, so the record stays put.
-The third still has no record at all, so any `render()` — a top-bar
-click, an SSE hunk patch, a filter change — silently reverts it.
+The third had no record at all, so any `render()` — a top-bar click, an
+SSE hunk patch, a filter change — silently reverted it.
 
-The target: **one primitive, one rule.** A hidden span is named, has an
-owner, and visibility is the complement of the union. Presentation stays
-polymorphic — a `CodeFold` shows a summary row, a hunk shows its `@@`
-header, a context gap shows a chip — but nothing else differs.
+The target, reached in slice 3: **one primitive, one rule.** A hidden
+span is named, has an owner, and visibility is the complement of the
+union. Presentation stays polymorphic — a `CodeFold` shows a summary row,
+a hunk shows its `@@` header, a context gap shows a chip — but nothing
+else differs.
 
 ## Vocabulary
 
@@ -125,19 +126,78 @@ Detection is O(rows x definition spans) over the whole file, so it is
 memoised per `FileBlock`, invalidated when an SSE `hunk` event swaps a
 `HunkBlock`.
 
-## Slice 3 — One visibility function
+## Slice 3 — One visibility function *(done, 260fc26, c4c78ad)*
 
-All three sources become `HiddenSpan`s; visibility is the complement of
-their union, computed from state with no DOM read. Retires the
-chip↔expansion DOM swap and the per-row `display` writes.
+All three sources are `HiddenSpan`s in `viewer/assets/visibility.ts`;
+visibility is the complement of their union, from state, with no DOM
+read. The chip↔expansion swap and the per-row `display` writes are gone
+— a region renders as a chip or as its rows depending on whether its
+span is present, and the renderer simply does not emit the rows a
+collapsed `CodeFold` covers.
 
-**Done when:** every hide/reveal/fold interaction is unit-testable
-without a rendered document, and `render()` no longer loses reveal state.
+**The bulk-action rule, which the ADR left to this slice.** A span
+carries an *owner*, and a bulk action retracts only what it asserted.
+Picking a level drops every `level`-owned span and re-seeds at the new
+depth; `user` spans (a click) and `gap` spans (a region's context) are
+untouched. So `uv.lock` folded away by hand survives "off", while a hunk
+the reviewer expanded is folded back by the next level pick — the level
+stays authoritative over its own hides without being a reset. Reset is
+the one control that drops everything.
+
+The mechanism the ADR floated — *bulk actions scoped to visible items
+only* — was not needed. Scoping by owner is the same guarantee with no
+dependence on what happens to be on screen, and it is what makes the
+level idempotent: pressing "2" twice must re-fold, which a
+visible-items-only rule cannot express.
+
+Two ledgers per file make that work: `spans` (hidden now) and `marks`
+(every id ever asserted, and by whom). Seeding a marked id is a no-op,
+which is how a reveal survives the renderer re-seeding the same gap on
+every render *and* survives a bulk action. It also expresses "the
+reviewer opened this" without a negative record — the absence the ADR
+says a reveal must be.
+
+Four things the plan and the ADR did not settle:
+
+- **The filter is a fourth hiding mechanism, and it stays outside the
+  model.** Demoting a non-live hunk into a region is not a `HiddenSpan`:
+  its rows render inside an expanded region regardless of level, because
+  the region — not the absent hunk header — is what stands in for them.
+  Folding it into the union would have left the reviewer expanding a
+  chip and seeing only context, with no affordance for the changes.
+- **A `CodeFold`'s presentation eats one of its own lines.** The span is
+  the definition's whole extent; the renderer keeps the run's first
+  *rendered* line as the header the chevron and summary hang off. That
+  reproduces today's behaviour where a hunk starts mid-definition, and
+  it is the only place a hidden line is still drawn.
+- **The `fold=` hash lost its per-item entries.** A span set does not fit
+  `id=f|o` pairs, and an expansion is now the absence of a record.
+  Per-item collapse therefore stops surviving a reload until slice 4
+  restores it properly; the level still round-trips.
+- **The wire's detection row indices are gone** (`header_idx` /
+  `body_start_idx` / `body_end_idx`), as slice 2 said they would be.
+  They stay inside `_FoldRegion` and the cross-language fixture.
+
+Detection now reads `FileRows.sourceRows` — the rows a container covers,
+folded ones included. Without it a collapsed fold on a file with no
+`head_lines` detected itself out of existence and could not be reopened.
+
+**Testing.** `tests/js/visibility.test.ts` drives the span algebra with
+no rendered document, which is the slice's done-condition: the union and
+its complement, reveal surviving a re-seed, nesting, every bulk-action
+case, and `planRows`. Three things still need a document, because they
+are claims about the renderer rather than the state — a revealed gap
+surviving a repaint, a `CodeFold` surviving its file's collapse/reopen
+cycle, and the `uv.lock` case end to end; those sit in `viewer.test.ts`
+and each fails against the pre-slice viewer.
+
+PR #9 is now fully superseded: its `_folded` lived on the region record,
+which no longer holds collapse state.
 
 ## Slice 4 — Per-tab persistence
 
-`sessionStorage`, keyed by run; `fold=` and the per-hunk overrides leave
-the URL hash so there is one source of truth.
+`sessionStorage`, keyed by run; `fold=` leaves the URL hash (slice 3
+already dropped the per-item entries) so there is one source of truth.
 
 **Done when:** reload restores collapse state, two tabs are independent,
 and no view state rides in the URL.
@@ -177,9 +237,7 @@ and on the base side; `head_lines` is gone from the viewer payload.
 
 ## Open
 
-- **PR #9** — *residual; expected to close unmerged once Slice 3 lands.*
-  It stores collapse state on the region record keyed by span. Slice 2
-  fixed the span rather than replacing the record, so its `_folded`
-  would now land on a key that holds — but Slice 3 replaces the record
-  with a `HiddenSpan`, so rewriting its row-derived tests to land it
-  first buys one slice of life.
+- **PR #9** — *residual; close unmerged.* It stores collapse state on the
+  region record keyed by span. Slice 3 landed the collapse as a
+  `HiddenSpan` instead, so the record it hangs `_folded` off no longer
+  holds any collapse state; there is nothing left of it to salvage.

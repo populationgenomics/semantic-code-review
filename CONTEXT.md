@@ -98,10 +98,44 @@ Built per [[hunk]] server-side by `hunk_layout.build_rows` (consecutive
 
 Three row sequences coexist and must not be confused: a hunk's own rows;
 the *rendered* rows, meaning whatever a given render actually put on
-screen (this grows as the reviewer reveals context); and the *whole-file*
-row stream `folds.ts` synthesises from `head_lines` to detect
-[[fold-region]]s. An index into any of them is presentation, never
-identity — durable addresses use absolute file lines.
+screen (this grows as the reviewer reveals context and shrinks as they
+collapse a [[fold-region]]); and the *whole-file* row stream `folds.ts`
+synthesises from `head_lines` to detect [[fold-region]]s. An index into
+any of them is presentation, never identity — durable addresses use
+absolute file lines.
+
+**Hidden span**
+The viewer's one hiding primitive (`viewer/assets/visibility.ts`, ADR
+0006). A `HiddenSpan` has an id, an owner, a kind, and side-tagged
+absolute 1-indexed line ranges (`right` in head/`<path>`, `left` in
+base/`<path>`, either nullable). A line is visible iff no span covers it
+— visibility is the complement of the union, answerable from state with
+no DOM read. Every hide is one: a [[fold-region]] collapse (`codefold`),
+a file / hunk / segment header collapse, and the unchanged context a
+[[collapsible-region]] stands in for (`context`). Reveal is the removal
+of a span, so a re-render reproduces it, and dropping an outer span
+leaves the spans nested inside it standing.
+
+`kind` picks the presentation the renderer puts in the span's place — a
+chip, a `@@` header, a segment summary row; for a `codefold` the run's
+first rendered line, kept as the header the chevron and summary box hang
+off (`Visibility.planRows`).
+
+`owner` decides what may retract it, which is what makes a bulk action
+not a reset:
+
+- `level` — asserted by the [[fold-level]]. Picking a level drops every
+  level-owned span *and* its mark, then re-seeds at the new depth.
+- `user` — asserted by a click. Only another click, or Reset, retracts
+  it. A lockfile folded away by hand therefore survives "off".
+- `gap` — a [[collapsible-region]]'s context, seeded by the renderer as
+  it lays each region out. Also survives a level change.
+
+Each file keeps two ledgers: `spans` (what is hidden now) and `marks`
+(every id ever asserted, and by whom). Seeding a marked id is a no-op —
+that is what makes a reveal outlive both the renderer's per-render
+re-seed and a bulk action. `Visibility.reset()` is the only thing that
+clears the marks.
 
 **Fold region**
 A collapsible structural region in the viewer — the `> def foo(): …`
@@ -125,11 +159,14 @@ detected over — and the viewer detects over the whole-file row stream,
 not the rendered rows, so revealing context around a hunk does not move
 the address. A file shipped without `head_lines` (binary, deleted,
 generated, or over `build_json._HEAD_LINES_CAP`) has no such stream and
-still detects over the rendered rows. The row indices a region occupies
-are per-render presentation, recomputed by `_placeRegion` on every
-render; the wire also carries the server's own detection indices
-(`header_idx` / `body_start_idx` / `body_end_idx`), which the viewer
-ignores.
+detects over the rendered containers' `sourceRows` instead — the rows
+they cover, including any a collapsed fold is holding down, so folding
+a region does not change which regions exist.
+
+Collapsing one is a [[hidden-span]] over that same address; the renderer
+drops the rows it covers and keeps the region's first rendered line as
+the header the chevron hangs off. The one row index left is that header,
+recomputed by `_placeRegion` on every render.
 
 Summaries are produced on demand by the fold-summary pass the first
 time a region is collapsed, then persisted in the
@@ -168,6 +205,14 @@ other hunk *demotes*, folded together with its surrounding context into
 one region whose expansion shows those changes inline with no header. A
 file no live hunk touches is dropped from the render.
 
+Chip or diff is a [[hidden-span]] of kind `context`, seeded per region as
+the renderer lays it out and identified by the region's own line extent.
+Clicking the chip removes the span, clicking "× collapse" puts it back;
+both go through a re-render, so a reveal survives every later one. The
+filter is *not* in the span model — it decides which hunks are live and
+therefore what a region covers, and its demoted hunks' rows render inside
+an expanded region regardless of the [[fold-level]].
+
 Distinct from [[fold-region]]: a fold region is a structural collapse of
 a definition or indented block (chevrons + the fold-summary pass), which
 may straddle hunks and revealed context; a collapsible region is the
@@ -182,20 +227,27 @@ shows each [[hunk]]'s [[segment]] summaries (a segment-less hunk folds as
 one synthetic whole-hunk segment, so every hunk behaves uniformly);
 `hunks` shows hunk headers; `files` shows file headers.
 
-Per-item exceptions live in `RenderState.overrides` — a reviewer
-expanding/collapsing one file/hunk/segment; an override wins over the
-level default. Picking a level (`_setCollapseLevel`) is authoritative: it
-clears every override, folding the whole tree to that depth, including a
-filter's focused hunks.
+The level is not consulted per item: it *seeds* one `level`-owned
+[[hidden-span]] per file / hunk / segment at that depth, and the renderer
+reads the spans. Picking a level (`_setCollapseLevel`) is authoritative
+over those and nothing else — it drops every level-owned span and
+re-seeds, so a hunk the reviewer expanded folds back, while a hide the
+reviewer asserted by hand and a gap they revealed both stand. A node that
+arrives later (segments off an SSE hunk patch) is seeded at the current
+level by `syncLevel`, which every `render()` calls.
 
 Focus reveal (`RenderState.focusReveal`) is a separate *ephemeral* bit,
-not an override: set when a sidebar pill is clicked
+not a span: set when a sidebar pill is clicked
 (`Render.applyFilterChange`), cleared the moment the slider is touched.
 While set, the filter's live hunks render open (code shown) regardless of
-level — so clicking a symbol shows its code — but because it isn't a
-stored override it never leaks an expanded hunk back into the unfiltered
-view. Fold toggles flip the actually-visible state, so one click collapses
-a focus-revealed hunk rather than no-op'ing against the level default.
+level — so clicking a symbol shows its code — but because no span moved
+it never leaks an expanded hunk back into the unfiltered view. It
+suppresses only *level*-owned hides; one the reviewer set by hand wins.
+Fold toggles flip the actually-visible state, so one click collapses a
+focus-revealed hunk rather than no-op'ing.
+
+The URL hash carries `fold=<level>` and nothing else; slice 4 of the
+visibility-model work moves view state to `sessionStorage` and drops it.
 
 **Viewer data**
 The in-memory runtime data structure served as `/data.json` by the
@@ -209,7 +261,8 @@ Distinct from the [[augmented-diff]] sidecar in three ways: (1) it
 includes pre-rendered [[row]] layout (the diff's two-column structure
 expanded into row objects) which the sidecar leaves implicit; (2) it
 carries transient runtime flags (`pending` while the augment pass is
-still streaming; `_failed` / `_inflight` on hunks and fold regions)
+still streaming; `_failed` on hunks, `_inflight` / `_summaryFailed` on
+fold regions)
 that have no place on the persisted sidecar; (3) it ships file
 *content* the diff never mentions — `FileBlock.head_lines`, the whole
 post-image, null for binary / deleted / generated files and for any
