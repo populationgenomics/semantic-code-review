@@ -2408,6 +2408,47 @@ describe("file content arrives asynchronously", () => {
     expect(fileEl("F0").querySelectorAll(".gap-expansion")).toHaveLength(1);
   });
 
+  test("context after a pure deletion pairs the sides right", async () => {
+    // Git writes a zero-count side as the line *before* the hunk
+    // (`@@ -10,3 +9,0 @@` deletes base 10-12 after head line 9), so
+    // reading the header literally resumes the head side one line early
+    // and pairs every later context row against the wrong base line.
+    const base = Array.from({ length: 20 }, (_, i) => `l${i + 1}`);
+    const head = base.filter((_, i) => i < 9 || i > 11);
+    serveFileSides("F0", base, head);
+    presetCollapseLevel("off");
+    await bootViewer(makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 0, dels: 3, summary: "",
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock("H0_0", "drop three", {
+          old_start: 10, old_count: 3, new_start: 9, new_count: 0,
+          rows: [10, 11, 12].map((n) => ({
+            kind: "del", old_line: n, new_line: null,
+            old_text: `l${n}`, new_text: "",
+          })),
+        })],
+      }],
+    }));
+
+    // Expand the run below the deletion.
+    const chips = fileEl("F0").querySelectorAll<HTMLElement>(".gap-chip");
+    chips[chips.length - 1].click();
+    const rows = Array.from(
+      fileEl("F0").querySelectorAll(".gap-expansion:last-of-type .half-new > .row"),
+    ).map((r) => [
+      (r as HTMLElement & { _scrPair?: HTMLElement })._scrPair!
+        .querySelector(".cell-lineno-old")!.textContent,
+      r.querySelector(".cell-lineno-new")!.textContent,
+    ]);
+
+    // Head 10 is base 13: the three deleted lines are behind it.
+    expect(rows[0]).toEqual(["13", "10"]);
+    expect(rows[rows.length - 1]).toEqual(["20", "17"]);
+  });
+
   test("a file the route cannot serve is not asked twice", async () => {
     // A failed or empty answer is an answer: re-requesting on every
     // render would be one fetch per repaint for the rest of the session.

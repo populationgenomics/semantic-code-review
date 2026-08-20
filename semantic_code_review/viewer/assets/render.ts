@@ -444,11 +444,12 @@ function _renderFileBody(
   // (ephemeral); the fold-level slider clears the flag and takes over.
   const reveal = liveIds !== null && _state.focusReveal;
   for (const h of f.hunks.filter(isLive)) {
-    flush(h.new_start - 1, emittedLive ? "between" : "top");
+    const b = FileText.hunkBounds(h);
+    flush(b.firstNew - 1, emittedLive ? "between" : "top");
     body.appendChild(_renderHunk(h, f, headed, notes, reveal));
     emittedLive = true;
-    curNew = h.new_start + h.new_count;
-    curOld = h.old_start + h.old_count;
+    curNew = b.nextNew;
+    curOld = b.nextOld;
   }
   flush(FileText.tailEnd(f.id, curNew, curOld), "bottom");
 }
@@ -604,12 +605,13 @@ function _regionPieces(
     cn = upTo;
   };
   for (const h of hunks) {
-    gapTo(h.new_start);
+    const b = FileText.hunkBounds(h);
+    gapTo(b.firstNew);
     const hr = h.rows || [];
     const hm = _blockMarks(hr);
     for (let i = 0; i < hr.length; i++) { rows.push(hr[i]); marks.push(hm[i]); }
-    cn = h.new_start + h.new_count;
-    co = h.old_start + h.old_count;
+    cn = b.nextNew;
+    co = b.nextOld;
   }
   if (newEnd !== null) gapTo(newEnd + 1);
   closeRows();

@@ -189,10 +189,11 @@ function _fileRowStream(file: FileBlock): RowBlock[] | null {
   let cn = 1;
   let co = 1;
   for (const h of file.hunks || []) {
-    for (const r of FileText.contextRows(file.id, cn, h.new_start, co)) rows.push(r);
+    const b = FileText.hunkBounds(h);
+    for (const r of FileText.contextRows(file.id, cn, b.firstNew, co)) rows.push(r);
     for (const r of h.rows || []) rows.push(r);
-    cn = h.new_start + h.new_count;
-    co = h.old_start + h.old_count;
+    cn = b.nextNew;
+    co = b.nextOld;
   }
   const end = FileText.tailEnd(file.id, cn, co);
   if (end !== null) {

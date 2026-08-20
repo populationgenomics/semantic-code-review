@@ -192,6 +192,28 @@ function _lines(fileId: string): { lines: string[]; side: "old" | "new" } | null
   return null;
 }
 
+/** Where a hunk starts and resumes on each side, in absolute lines.
+ *
+ *  Not `start + count`: git writes a zero-count side as *the line
+ *  before* the hunk — a pure deletion of base 10-12 after head line 9 is
+ *  `@@ -10,3 +9,0 @@`, so the head side resumes at 10, not at 9. Reading
+ *  the header literally there misnumbers every synthesised context row
+ *  from the hunk to the end of the file, pairing head lines against the
+ *  wrong base ones.
+ */
+function hunkBounds(h: HunkBlock): {
+  firstNew: number; firstOld: number; nextNew: number; nextOld: number;
+} {
+  const firstNew = h.new_count > 0 ? h.new_start : h.new_start + 1;
+  const firstOld = h.old_count > 0 ? h.old_start : h.old_start + 1;
+  return {
+    firstNew,
+    firstOld,
+    nextNew: h.new_count > 0 ? h.new_start + h.new_count : firstNew,
+    nextOld: h.old_count > 0 ? h.old_start + h.old_count : firstOld,
+  };
+}
+
 /** Unchanged context rows for `[fromNew, toNew)` on the head side,
  *  running from `fromOld` on the base side. Empty when the file has no
  *  content — the caller stands a band in their place rather than
@@ -232,6 +254,7 @@ function tailEnd(fileId: string, curNew: number, curOld: number): number | null 
 
 export const FileText = {
   init,
+  hunkBounds,
   reset,
   request,
   load,
