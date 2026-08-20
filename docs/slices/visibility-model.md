@@ -5,15 +5,16 @@ different identities, three persistence tiers and no shared rule:
 
 | | identity | survives re-render | survives reload |
 |---|---|---|---|
-| `> ` marker collapse | span of *rendered row indices* | since #9 | no |
+| `> ` marker collapse | span of absolute file lines (slice 2; was *rendered row indices*) | since #9 | no |
 | file / hunk header collapse | stable id (`H0_1`) | yes | yes, URL hash |
 | unchanged context outside a hunk | none — pure DOM | no | no |
 
-The first is keyed on something the user can move: revealing context
-changes the rendered row array, `_computeFoldRegions` derives different
-spans, and the record holding the collapse state is orphaned (#10). The
-third has no record at all, so any `render()` — a top-bar click, an SSE
-hunk patch, a filter change — silently reverts it.
+The first was keyed on something the user can move: revealing context
+changed the rendered row array, `_computeFoldRegions` derived different
+spans, and the record holding the collapse state was orphaned (#10).
+Slice 2 re-derived the span from file content, so the record stays put.
+The third still has no record at all, so any `render()` — a top-bar
+click, an SSE hunk patch, a filter change — silently reverts it.
 
 The target: **one primitive, one rule.** A hidden span is named, has an
 owner, and visibility is the complement of the union. Presentation stays
@@ -67,20 +68,59 @@ The `fold=` hash key is left alone: Slice 4 deletes it.
 where the primitive actually exists. Renaming to a type that has no
 definition would have been theatre.
 
-## Slice 2 — Spans become absolute
+## Slice 2 — Spans become absolute *(done, 39bdbb3, e103074)*
 
-`CodeFold` detection expressed in side-tagged absolute file lines and
-derived from file content, not from the rendered row array. Nothing
-visible changes; the record simply stops moving when context is
-revealed.
+Two halves, and the plan mis-weighted them.
 
-Inherits `_HEAD_LINES_CAP` (5,000 lines) and head-side-only content
-until Slice 6 — so it fixes #10 for most files and not for the largest,
-which must be stated in the code rather than discovered.
+**Symbol-snapped regions** were the easy half as scoped, but they turned
+out to need a *Python* change, not just a viewer one. Both detectors read
+a snapped region's ranges off the rows rather than off the
+`FoldSymbolSpan` they had already snapped to, so a definition addressed
+itself differently depending on how much of it the rows covered. Fixing
+only the viewer would have desynced it from the server's wire
+`fold_regions` and from the persisted `FoldDescription`s keyed on the
+same tuple, silently dropping every re-seeded summary. `compute_fold_regions`
+and `_computeFoldRegions` now both take the declared span. The
+cross-language fixture needed no edits — it only ever exercised
+whole-definition hunks, where the two agreed by accident.
 
-**Done when:** detecting twice under different reveal states yields
-identical spans; #10's repro (reveal, fold, fold file, unfold file)
-preserves the collapse.
+**Indentation regions** were the hard half, as expected. Detection runs
+over a whole-file row stream synthesised from `head_lines` plus the
+hunks' own rows, so the algorithm is unchanged and only its input is
+reveal-independent. Rendered rows are used for placement alone.
+
+Presentation moved off the record entirely: `header_idx` /
+`body_start_idx` / `body_end_idx` are no longer read or written by the
+viewer, which re-places each region against the current render.
+They stay on the wire (the server still emits them) — slice 3 retires
+them.
+
+Two things the plan got wrong:
+
+- **"Nothing visible changes" is not quite true.** A block the hunk
+  truncates now folds to its real end rather than the last visible row,
+  and a definition present on only one side is addressed on that side
+  alone instead of picking up a row-derived range on the other. Both
+  are the intended correction, not regressions, but they are visible.
+  `/fold-summary` also now sends the whole definition's line range, so
+  its prompts carry more content than before.
+- **#10's repro cannot be demonstrated end-to-end on this branch.**
+  Collapse state is still DOM-only here; it is PR #9 that puts `_folded`
+  on the record, and any `render()` — including collapsing a file —
+  discards a DOM-only collapse regardless of span identity. What slice 2
+  fixes is the mechanism underneath: the record is re-matched rather
+  than orphaned across a reveal, which is what makes #9's `_folded` (and
+  today's `summary`) survive. The tests assert exactly that.
+
+Files with no `head_lines` — generated, binary, deleted, or over
+`_HEAD_LINES_CAP` (5,000 lines) — still detect over the rendered rows,
+#10 included. That is an explicit, commented branch in `folds.ts`, not a
+silent fallback. Slice 6 removes it along with the cap and the
+head-side-only limit.
+
+Detection is O(rows x definition spans) over the whole file, so it is
+memoised per `FileBlock`, invalidated when an SSE `hunk` event swaps a
+`HunkBlock`.
 
 ## Slice 3 — One visibility function
 
@@ -134,10 +174,11 @@ and on the base side; `head_lines` is gone from the viewer payload.
 
 ## Open
 
-- **PR #9** stores collapse state on the region record keyed by span —
-  the model Slice 2 replaces. It is a strict improvement on today and
-  green, so it can land as a stepping stone, but its tests encode the
-  superseded semantics. Decide before Slice 3, not during.
+- **PR #9** stores collapse state on the region record keyed by span.
+  Slice 2 fixed the span rather than replacing the record, so #9's
+  `_folded` now lands on a key that holds; its tests still encode
+  row-derived spans and would need rewriting on top. Decide before
+  Slice 3, not during.
 - **This plan has no ADR yet.** The decision record for the visibility
   model is owed; per `docs/adr/README.md` the ADR holds the *why* and
   this file holds the order.
