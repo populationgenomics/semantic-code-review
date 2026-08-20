@@ -195,7 +195,7 @@ function _upsertFoldRegion(
 }
 
 function _anyChangesInRange(
-  rows: RowWithEls[], start: number, end: number,
+  rows: RowBlock[], start: number, end: number,
 ): boolean {
   for (let i = start; i <= end; i++) {
     const k = rows[i].kind;
@@ -218,7 +218,7 @@ function _rowIndent(row: RowBlock): number {
   return ind;
 }
 
-function _indentRawRegions(rows: RowWithEls[]): Array<[number, number]> {
+function _indentRawRegions(rows: RowBlock[]): Array<[number, number]> {
   const indents = rows.map(_rowIndent);
   const nextNonBlank = (i: number): number | null => {
     for (let j = i + 1; j < indents.length; j++) {
@@ -249,7 +249,7 @@ function _indentRawRegions(rows: RowWithEls[]): Array<[number, number]> {
 // line number into one side's tree — new_line into head spans (ctx /
 // pair / ins rows), else old_line into base spans (del-only rows).
 function _rowSymbols(
-  row: RowWithEls, headSpans: FoldSymbolSpan[], baseSpans: FoldSymbolSpan[],
+  row: RowBlock, headSpans: FoldSymbolSpan[], baseSpans: FoldSymbolSpan[],
 ): FoldSymbolSpan[] {
   let line: number | null;
   let spans: FoldSymbolSpan[];
@@ -261,16 +261,42 @@ function _rowSymbols(
     .sort((a, b) => a.depth - b.depth);
 }
 
-// `(headerIdx, bodyEndIdx, qualifiedName, kind)` snapped to definition
-// spans, plus the set of row indices inside any definition. Every
-// definition with >=1 present row becomes a region from its first to its
-// last present row carrying that definition's identity; nested defs nest
-// because a row carries its whole enclosing chain.
-type RawRegion = [number, number, string | null, string | null];
+// A detected region before its side addresses are resolved.
+// `rightRange` / `leftRange` are the definition's own declared line span
+// on that side, present only on a symbol-snapped region (and only for a
+// side whose tree actually holds the definition). An indentation-fallback
+// region carries neither: its extent is knowable only from the rows it
+// was detected over.
+interface RawRegion {
+  headerIdx: number;
+  bodyEndIdx: number;
+  qualifiedName: string | null;
+  kind: string | null;
+  rightRange: [number, number] | null;
+  leftRange: [number, number] | null;
+}
 
+// `qualified_name` -> that definition's declared (start, end) lines;
+// first occurrence wins, matching the first-seen region ordering.
+function _spanRanges(spans: FoldSymbolSpan[]): Map<string, [number, number]> {
+  const out = new Map<string, [number, number]>();
+  for (const s of spans) {
+    if (!out.has(s.qualified_name)) out.set(s.qualified_name, [s.start_line, s.end_line]);
+  }
+  return out;
+}
+
+// Regions snapped to definition spans, plus the set of row indices inside
+// any definition. Every definition with >=1 present row becomes a region
+// from its first to its last present row carrying that definition's
+// identity; nested defs nest because a row carries its whole enclosing
+// chain. Addresses come from the definition's declared span, never from
+// the rows — a row-derived address moves when context is revealed.
 function _symbolRawRegions(
-  rows: RowWithEls[], headSpans: FoldSymbolSpan[], baseSpans: FoldSymbolSpan[],
+  rows: RowBlock[], headSpans: FoldSymbolSpan[], baseSpans: FoldSymbolSpan[],
 ): { raw: RawRegion[]; covered: Set<number> } {
+  const headRanges = _spanRanges(headSpans);
+  const baseRanges = _spanRanges(baseSpans);
   const runs = new Map<string, [number, number]>();
   const kinds = new Map<string, string>();
   const order: string[] = [];
@@ -290,18 +316,26 @@ function _symbolRawRegions(
   }
   const raw: RawRegion[] = order.map((qn) => {
     const run = runs.get(qn)!;
-    return [run[0], run[1], qn, kinds.get(qn)!];
+    return {
+      headerIdx: run[0], bodyEndIdx: run[1],
+      qualifiedName: qn, kind: kinds.get(qn)!,
+      rightRange: headRanges.get(qn) ?? null,
+      leftRange: baseRanges.get(qn) ?? null,
+    };
   });
   return { raw, covered };
 }
 
+// Detect regions over a row sequence. A snapped region is addressed by
+// its definition's declared span, so it reads the same whichever rows it
+// was detected over; an indentation region has no such span and is
+// addressed by the rows. Mirrors `compute_fold_regions` in
+// viewer/hunk_layout.py — see tests/fixtures/fold_regions_cases.json.
 function _computeFoldRegions(
-  rows: RowWithEls[],
+  rows: RowBlock[],
   headSpans: FoldSymbolSpan[] = [],
   baseSpans: FoldSymbolSpan[] = [],
 ): DetectedRegion[] {
-  // Uniform shape: [headerIdx, bodyEndIdx, qualifiedName|null, kind|null].
-  // Indentation regions carry no symbol.
   let raw: RawRegion[];
   if (headSpans.length || baseSpans.length) {
     const sym = _symbolRawRegions(rows, headSpans, baseSpans);
@@ -313,20 +347,30 @@ function _computeFoldRegions(
           for (let j = h; j <= e; j++) if (sym.covered.has(j)) return false;
           return true;
         })
-        .map(([h, e]): RawRegion => [h, e, null, null]),
+        .map(([h, e]): RawRegion => _indentRawRegion(h, e)),
     );
   } else {
-    raw = _indentRawRegions(rows).map(([h, e]): RawRegion => [h, e, null, null]);
+    raw = _indentRawRegions(rows).map(([h, e]): RawRegion => _indentRawRegion(h, e));
   }
-  raw.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  raw.sort((a, b) => a.headerIdx - b.headerIdx || a.bodyEndIdx - b.bodyEndIdx);
   const regions: DetectedRegion[] = [];
-  for (const [header_idx, body_end, qualified_name, kind] of raw) {
+  for (const rr of raw) {
+    const header_idx = rr.headerIdx, body_end = rr.bodyEndIdx;
     const body_start = header_idx + 1;
     if (body_start > body_end) continue;
-    const right_start = _firstLine(rows, header_idx, body_end, "new_line");
-    const right_end = _lastLine(rows, header_idx, body_end, "new_line");
-    const left_start = _firstLine(rows, header_idx, body_end, "old_line");
-    const left_end = _lastLine(rows, header_idx, body_end, "old_line");
+    const snapped = rr.qualifiedName !== null;
+    const right_start = snapped
+      ? (rr.rightRange ? rr.rightRange[0] : null)
+      : _firstLine(rows, header_idx, body_end, "new_line");
+    const right_end = snapped
+      ? (rr.rightRange ? rr.rightRange[1] : null)
+      : _lastLine(rows, header_idx, body_end, "new_line");
+    const left_start = snapped
+      ? (rr.leftRange ? rr.leftRange[0] : null)
+      : _firstLine(rows, header_idx, body_end, "old_line");
+    const left_end = snapped
+      ? (rr.leftRange ? rr.leftRange[1] : null)
+      : _lastLine(rows, header_idx, body_end, "old_line");
     const hasChanges = _anyChangesInRange(rows, header_idx, body_end);
     let context: FoldContext;
     if (right_start != null && left_start != null && hasChanges) context = "both";
@@ -335,14 +379,21 @@ function _computeFoldRegions(
     regions.push({
       header_idx, body_start_idx: body_start, body_end_idx: body_end,
       context, right_start, right_end, left_start, left_end,
-      qualified_name, kind,
+      qualified_name: rr.qualifiedName, kind: rr.kind,
     });
   }
   return regions;
 }
 
+function _indentRawRegion(headerIdx: number, bodyEndIdx: number): RawRegion {
+  return {
+    headerIdx, bodyEndIdx,
+    qualifiedName: null, kind: null, rightRange: null, leftRange: null,
+  };
+}
+
 function _firstLine(
-  rows: RowWithEls[], start: number, end: number, attr: "new_line" | "old_line",
+  rows: RowBlock[], start: number, end: number, attr: "new_line" | "old_line",
 ): number | null {
   for (let j = start; j <= end; j++) {
     const v = rows[j][attr];
@@ -352,7 +403,7 @@ function _firstLine(
 }
 
 function _lastLine(
-  rows: RowWithEls[], start: number, end: number, attr: "new_line" | "old_line",
+  rows: RowBlock[], start: number, end: number, attr: "new_line" | "old_line",
 ): number | null {
   for (let j = end; j >= start; j--) {
     const v = rows[j][attr];

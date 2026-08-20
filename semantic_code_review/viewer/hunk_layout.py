@@ -50,7 +50,10 @@ class _FoldRegion:
 
     `qualified_name` / `kind` carry the identity of the definition the
     region snapped to (e.g. "Foo.bar" / "function"); both are None for an
-    indentation-fallback region, which has no symbol behind it.
+    indentation-fallback region, which has no symbol behind it. A snapped
+    region's line ranges are the definition's declared span, so they are
+    the same whichever rows happened to be detected over; only an
+    indentation region's ranges are read off the rows.
     """
 
     header_idx: int
@@ -64,6 +67,25 @@ class _FoldRegion:
     has_changes: bool
     qualified_name: str | None
     kind: str | None
+
+
+@dataclass
+class _RawRegion:
+    """A detected region before its side addresses are resolved.
+
+    `right_range` / `left_range` are the definition's own declared line
+    span on that side, present only on a symbol-snapped region (and only
+    for a side whose tree actually holds the definition). An
+    indentation-fallback region carries neither: its extent is knowable
+    only from the rows it was detected over.
+    """
+
+    header_idx: int
+    body_end_idx: int
+    qualified_name: str | None
+    kind: str | None
+    right_range: tuple[int, int] | None = None
+    left_range: tuple[int, int] | None = None
 
 
 @dataclass
@@ -258,21 +280,38 @@ def _row_symbols(
     return enc
 
 
+def _span_ranges(spans: list[dict[str, Any]]) -> dict[str, tuple[int, int]]:
+    """`qualified_name` -> that definition's declared `(start, end)` lines.
+
+    First occurrence wins, matching the first-seen ordering the region
+    builder uses elsewhere.
+    """
+    out: dict[str, tuple[int, int]] = {}
+    for s in spans:
+        out.setdefault(s["qualified_name"], (s["start_line"], s["end_line"]))
+    return out
+
+
 def _symbol_raw_regions(
     rows: list[_Row],
     head_spans: list[dict[str, Any]],
     base_spans: list[dict[str, Any]],
-) -> tuple[list[tuple[int, int, str | None, str | None]], set[int]]:
-    """`(header_idx, body_end_idx, qualified_name, kind)` snapped to spans.
+) -> tuple[list[_RawRegion], set[int]]:
+    """Raw regions snapped to definition spans, plus their covered rows.
 
     Every definition with at least one present row becomes a region whose
     header is its first present row and whose body runs to its last present
-    row — clamped to the rows in `rows` — carrying that definition's
-    `qualified_name` and `kind`. Nested definitions nest because a row
-    carries its whole enclosing chain. Also returns the set of row indices
-    that fall inside any definition, so the caller can fall back to
+    row — clamped to the rows in `rows`. Nested definitions nest because a
+    row carries its whole enclosing chain. Also returns the set of row
+    indices that fall inside any definition, so the caller can fall back to
     indentation folds for the uncovered runs.
+
+    The region's *addresses* come from the definition's own declared span
+    on each side, never from the rows: a row-derived address moves when
+    the viewer reveals more context around the same definition.
     """
+    head_ranges = _span_ranges(head_spans)
+    base_ranges = _span_ranges(base_spans)
     runs: dict[str, list[int]] = {}  # qualified_name -> [first_idx, last_idx]
     kinds: dict[str, str] = {}  # qualified_name -> kind
     order: list[str] = []  # first-seen order, for determinism
@@ -288,7 +327,17 @@ def _symbol_raw_regions(
                 order.append(qn)
             else:
                 run[1] = i
-    out: list[tuple[int, int, str | None, str | None]] = [(runs[qn][0], runs[qn][1], qn, kinds[qn]) for qn in order]
+    out = [
+        _RawRegion(
+            header_idx=runs[qn][0],
+            body_end_idx=runs[qn][1],
+            qualified_name=qn,
+            kind=kinds[qn],
+            right_range=head_ranges.get(qn),
+            left_range=base_ranges.get(qn),
+        )
+        for qn in order
+    ]
     return out, covered
 
 
@@ -306,35 +355,42 @@ def compute_fold_regions(
     unavailable worktree — every region is indentation-based, byte-identical
     to the pre-symbol output. The algorithm mirrors the viewer's JS
     implementation so the line ranges line up deterministically.
+
+    A snapped region is addressed by its definition's declared span; an
+    indentation region has no such span and is addressed by the rows it
+    was detected over.
     """
     head_spans = head_spans or []
     base_spans = base_spans or []
-    # Uniform shape: (header_idx, body_end_idx, qualified_name|None, kind|None).
-    # Indentation regions carry no symbol.
-    raw: list[tuple[int, int, str | None, str | None]]
+    raw: list[_RawRegion]
     if head_spans or base_spans:
         raw, covered = _symbol_raw_regions(rows, head_spans, base_spans)
         # Keep an indentation region only where no row it spans is already
         # covered by a definition — the snapped region owns that stretch.
         raw += [
-            (h, e, None, None) for h, e in _indent_raw_regions(rows) if not any(j in covered for j in range(h, e + 1))
+            _RawRegion(h, e, None, None)
+            for h, e in _indent_raw_regions(rows)
+            if not any(j in covered for j in range(h, e + 1))
         ]
     else:
-        raw = [(h, e, None, None) for h, e in _indent_raw_regions(rows)]
+        raw = [_RawRegion(h, e, None, None) for h, e in _indent_raw_regions(rows)]
 
     regions: list[_FoldRegion] = []
-    for header_idx, body_end, qualified_name, kind in sorted(
-        raw,
-        key=lambda r: (r[0], r[1]),
-    ):
+    for rr in sorted(raw, key=lambda r: (r.header_idx, r.body_end_idx)):
+        header_idx, body_end = rr.header_idx, rr.body_end_idx
+        qualified_name, kind = rr.qualified_name, rr.kind
         body_start = header_idx + 1
         if body_start > body_end:
             continue
         has_changes = any(rows[j].kind in ("ins", "del", "pair") for j in range(header_idx, body_end + 1))
-        right_start = _first_side_line(rows, header_idx, body_end, "right")
-        right_end = _last_side_line(rows, header_idx, body_end, "right")
-        left_start = _first_side_line(rows, header_idx, body_end, "left")
-        left_end = _last_side_line(rows, header_idx, body_end, "left")
+        if qualified_name is not None:
+            right_start, right_end = rr.right_range or (None, None)
+            left_start, left_end = rr.left_range or (None, None)
+        else:
+            right_start = _first_side_line(rows, header_idx, body_end, "right")
+            right_end = _last_side_line(rows, header_idx, body_end, "right")
+            left_start = _first_side_line(rows, header_idx, body_end, "left")
+            left_end = _last_side_line(rows, header_idx, body_end, "left")
         # context picks the addressing axis(es). Pair regions (both
         # sides populated and the diff straddles changed content) are
         # addressed as "both" so the server can produce a diff-style
