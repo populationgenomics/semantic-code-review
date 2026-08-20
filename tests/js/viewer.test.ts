@@ -284,7 +284,6 @@ function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
       adds: 1, dels: 1,
       summary: "",
       symbols: { added: [], modified: [], removed: [] },
-      head_lines: null,
       hunks: [makeHunkBlock("H0_0")],
     }],
     groups: [],
@@ -363,7 +362,7 @@ describe("pending boot", () => {
     await bootViewer(makeData({
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "",
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0"), makeHunkBlock("H0_1")],
       }],
@@ -390,13 +389,13 @@ describe("pending boot", () => {
       files: [
         {
           id: "F0", path: "uv.lock", status: "generated", language: "",
-          adds: 0, dels: 0, summary: "", head_lines: null,
+          adds: 0, dels: 0, summary: "",
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H0_0"), makeHunkBlock("H0_1")],
         },
         {
           id: "F1", path: "a.py", status: "modified", language: "python",
-          adds: 0, dels: 0, summary: "", head_lines: null,
+          adds: 0, dels: 0, summary: "",
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H1_0")],
         },
@@ -462,7 +461,7 @@ describe("streaming events", () => {
     await bootViewer(makeData({
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "",
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0"), makeHunkBlock("H0_1")],
       }],
@@ -497,13 +496,13 @@ describe("streaming events", () => {
       files: [
         {
           id: "F0", path: "a.py", status: "modified", language: "python",
-          adds: 0, dels: 0, summary: "", head_lines: null,
+          adds: 0, dels: 0, summary: "",
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H0_0", "alpha"), makeHunkBlock("H0_1", "beta")],
         },
         {
           id: "F1", path: "b.py", status: "modified", language: "python",
-          adds: 0, dels: 0, summary: "", head_lines: null,
+          adds: 0, dels: 0, summary: "",
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H1_0", "gamma")],
         },
@@ -542,7 +541,7 @@ describe("streaming events", () => {
   test("by-file axis groups into a directory tree: compress, sort, and subtree filter", async () => {
     const mkFile = (id: string, p: string, hid: string): Record<string, unknown> => ({
       id, path: p, status: "modified", language: "python",
-      adds: 0, dels: 0, summary: "", head_lines: null,
+      adds: 0, dels: 0, summary: "",
       symbols: { added: [], modified: [], removed: [] },
       hunks: [makeHunkBlock(hid)],
     });
@@ -664,7 +663,7 @@ describe("streaming events", () => {
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "",
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "alpha"), makeHunkBlock("H0_1", "beta")],
       }],
@@ -701,7 +700,7 @@ describe("streaming events", () => {
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "",
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "", {
           rows: [
@@ -741,7 +740,7 @@ describe("streaming events", () => {
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "",
         symbols: { added: [], modified: [], removed: [] },
         hunks: [
           makeHunkBlock("H0_0", "alpha"),
@@ -921,7 +920,7 @@ describe("LLM observation → comment promotion", () => {
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "",
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "real intent", {
           line_notes: [{ line: 2, body: "consider using Path" }],
@@ -978,7 +977,7 @@ describe("LLM observation → comment promotion", () => {
       },
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "",
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "real intent", {
           smells: [{ tag: "perf", note: "tight loop in hot path" }],
@@ -1023,7 +1022,7 @@ describe("LLM observation → comment promotion", () => {
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "",
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "", {
           line_notes: [{ line: 1, body: "old observation" }],
@@ -1061,13 +1060,13 @@ describe("sidebar comment counts", () => {
       files: [
         {
           id: "F0", path: "a.py", status: "modified", language: "python",
-          adds: 0, dels: 0, summary: "", head_lines: null,
+          adds: 0, dels: 0, summary: "",
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H0_0")],
         },
         {
           id: "F1", path: "b.py", status: "modified", language: "python",
-          adds: 0, dels: 0, summary: "", head_lines: null,
+          adds: 0, dels: 0, summary: "",
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H1_0")],
         },
@@ -1697,8 +1696,8 @@ describe("lazy fold summaries", () => {
     expect(body.file_idx).toBe(0);
     expect(body.right_start).toBe(1);
     // Fold ends at the row before the dedenter; that row is the blank
-    // line (row 4 of head_lines). Matches Python's compute_fold_regions
-    // — the algorithm doesn't crop trailing blanks.
+    // line 4. Matches Python's compute_fold_regions — the algorithm
+    // doesn't crop trailing blanks.
     expect(body.right_end).toBe(4);
   });
 
@@ -1820,13 +1819,13 @@ describe("lazy fold summaries", () => {
       files: [
         {
           id: "F0", path: "src/a.py", status: "modified", language: "python",
-          adds: 1, dels: 1, summary: "", head_lines: null,
+          adds: 1, dels: 1, summary: "",
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H0_0", "real change")],
         },
         {
           id: "F1", path: "uv.lock", status: "modified", language: "",
-          adds: 1, dels: 1, summary: "", head_lines: null,
+          adds: 1, dels: 1, summary: "",
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H1_0", "regenerated")],
         },
@@ -2425,13 +2424,13 @@ describe("view state survives a reload, per tab", () => {
       files: [
         {
           id: "F0", path: "src/a.py", status: "modified", language: "python",
-          adds: 1, dels: 1, summary: "", head_lines: null,
+          adds: 1, dels: 1, summary: "",
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H0_0", "real change")],
         },
         {
           id: "F1", path: "uv.lock", status: "modified", language: "",
-          adds: 1, dels: 1, summary: "", head_lines: null,
+          adds: 1, dels: 1, summary: "",
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H1_0", "regenerated")],
         },
@@ -2730,7 +2729,7 @@ describe("rendered markdown mode", () => {
       pending: false,
       files: [{
         id: "F0", path: "docs/x.md", status: "modified", language: "markdown",
-        adds: 1, dels: 1, summary: "", head_lines: null,
+        adds: 1, dels: 1, summary: "",
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0")],
       }],

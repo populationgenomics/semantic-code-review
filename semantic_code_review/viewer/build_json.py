@@ -29,9 +29,6 @@ from ..augment.schemas import (
 from ..format.parse import parse_raw_diff
 from .hunk_layout import build_hunk_viewer_block
 
-#: cap — files with more than this many lines don't bundle head_lines.
-_HEAD_LINES_CAP = 5000
-
 
 def build_viewer_json(
     diff: AnnotatedDiff,
@@ -54,7 +51,7 @@ def build_viewer_json(
             }
             for tag, d in SMELL_CATALOGUE.items()
         },
-        "files": [_file_block(f, i, head_dir, file_syms[i]) for i, f in enumerate(diff.files)],
+        "files": [_file_block(f, i, file_syms[i]) for i, f in enumerate(diff.files)],
         "groups": _group_blocks(diff),
         "symbols": _symbol_blocks(diff, file_syms),
     }
@@ -418,7 +415,6 @@ def _pr_block(diff: AnnotatedDiff, meta: dict[str, Any]) -> dict[str, Any]:
 def _file_block(
     f: AnnotatedFile,
     idx: int,
-    head_dir: Path | None,
     syms: _FileSymbols,
 ) -> dict[str, Any]:
     head_spans = _fold_spans(syms.head)
@@ -426,7 +422,6 @@ def _file_block(
     hunks = [build_hunk_viewer_block(h, idx, hi, head_spans, base_spans) for hi, h in enumerate(f.hunks)]
     adds = sum(h["adds"] for h in hunks)
     dels = sum(h["dels"] for h in hunks)
-    head_lines = _load_head_lines(f, head_dir)
     ann = f.ann
     return {
         "id": f"F{idx}",
@@ -439,33 +434,8 @@ def _file_block(
         "summary": ann.summary,
         "symbols": ann.symbols.model_dump() if ann.symbols else {"added": [], "modified": [], "removed": []},
         "fold_symbols": {"head": _fold_spans(syms.head), "base": _fold_spans(syms.base)},
-        "head_lines": head_lines,
         "hunks": hunks,
     }
-
-
-def _load_head_lines(f: AnnotatedFile, head_dir: Path | None) -> list[str] | None:
-    """Return the full head-file content split into lines, or None if we skip.
-
-    Skipped when: no head_dir available, file is GENERATED/BINARY, head file
-    doesn't exist (e.g. deleted file), or the file is over the size cap.
-    """
-    if head_dir is None:
-        return None
-    role = f.ann.role
-    if role is not None and role.value in ("generated", "binary", "deleted"):
-        return None
-    path = head_dir / f.path
-    if not path.exists() or not path.is_file():
-        return None
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    lines = text.splitlines()
-    if len(lines) > _HEAD_LINES_CAP:
-        return None
-    return lines
 
 
 # Maps a file extension to a highlight.js language *registered in the

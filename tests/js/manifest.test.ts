@@ -28,7 +28,6 @@ function makeFile(hunks: HunkBlock[] = [makeHunk("H0_0")]): FileBlock {
     language: "python", adds: 1, dels: 1, summary: "",
     symbols: { added: [], modified: [], removed: [] },
     fold_symbols: { head: [], base: [] },
-    head_lines: null,
     hunks,
   };
 }

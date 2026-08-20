@@ -100,11 +100,9 @@ interface FileBlock {
   symbols: FileSymbols;
   /** Flattened tree-sitter definition spans per side, for symbol-aware
    *  folding. Empty lists for an unsupported language / unavailable
-   *  worktree. Inert in slice 1 — no consumer yet. */
+   *  worktree. The file's *content* is not here: the viewer fetches it
+   *  from `/file-text` on demand (file_text.ts). */
   fold_symbols: FoldSymbols;
-  /** Full post-image content split into lines, or null when not
-   *  shipped (large file, deleted/binary/generated, etc.). */
-  head_lines: string[] | null;
   hunks: HunkBlock[];
 }
 

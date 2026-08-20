@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from semantic_code_review.review import server as review_server
 from semantic_code_review.review.comments import Comment, format_markdown
 from semantic_code_review.review.server import ReviewServer
 
@@ -1172,7 +1173,7 @@ def test_serve_review_serves_pending_then_streams_and_finalises(tmp_path: Path) 
     assert "r" in result_box
 
 
-# --- /file-text (rendered markdown mode) -------------------------------
+# --- /file-text (rendered markdown mode + the text diff's content) -----
 
 
 def _file_text_server(tmp_path: Path, files: list[dict]) -> ReviewServer:
@@ -1245,6 +1246,48 @@ def test_file_text_bad_index(tmp_path: Path) -> None:
         srv.stop()
     assert oor.value.code == 404
     assert bad.value.code == 400
+
+
+def test_file_text_serves_a_file_over_the_old_head_lines_cap(tmp_path: Path) -> None:
+    """Size is bounded by the route, not by the payload.
+
+    `FileBlock.head_lines` used to carry content and stopped at 5,000
+    lines; the viewer reads `/file-text` instead (ADR 0006 slice 6), so a
+    file that long is served in full and keeps its folds and gap chips.
+    """
+    (tmp_path / "head").mkdir()
+    body = "".join(f"line {i}\n" for i in range(6000))
+    (tmp_path / "head" / "big.py").write_text(body)
+    srv = _file_text_server(tmp_path, [{"id": "F0", "path": "big.py", "old_path": None, "status": "added"}])
+    try:
+        code, payload = _request(srv.url() + "/file-text?file_idx=0")
+    finally:
+        srv.stop()
+    assert code == 200
+    assert payload["head"] == body
+
+
+def test_file_text_over_the_cap_is_null_not_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A side over the cap comes back null.
+
+    Null is the load-bearing part: the viewer reads it as "no content"
+    and stands a band in the unchanged lines' place. An empty string
+    would read as an empty file — every fold detected out of existence
+    and every gap silently zero lines long.
+    """
+    monkeypatch.setattr(review_server, "_FILE_TEXT_CAP_BYTES", 16)
+    (tmp_path / "base").mkdir()
+    (tmp_path / "head").mkdir()
+    (tmp_path / "base" / "a.py").write_text("small\n")
+    (tmp_path / "head" / "a.py").write_text("x" * 64 + "\n")
+    srv = _file_text_server(tmp_path, [{"id": "F0", "path": "a.py", "old_path": None, "status": "modified"}])
+    try:
+        code, payload = _request(srv.url() + "/file-text?file_idx=0")
+    finally:
+        srv.stop()
+    assert code == 200
+    assert payload["head"] is None
+    assert payload["base"] == "small\n"
 
 
 def test_file_text_path_traversal_refused(tmp_path: Path) -> None:

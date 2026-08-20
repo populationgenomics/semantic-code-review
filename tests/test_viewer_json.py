@@ -394,6 +394,51 @@ def test_fold_symbols_empty_for_unsupported_language(tmp_path: Path) -> None:
     assert data["files"][0]["fold_symbols"] == {"head": [], "base": []}
 
 
+# --- file content is not in the payload ------------------------------------
+
+
+def test_file_block_ships_no_file_content(tmp_path: Path) -> None:
+    """A file block carries the diff and the definition spans, never the
+    file's text.
+
+    The viewer fetches content per file from `/file-text` (ADR 0006 slice
+    6), which is what removes the old 5,000-line cap on it and the
+    head-side-only limit. A payload that carried it as well would be the
+    whole diff's text over the wire before the first paint.
+    """
+    (tmp_path / "raw.diff").write_text(
+        "diff --git a/a.py b/a.py\nindex 0123456..89abcde 100644\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "meta.json").write_text(
+        json.dumps(
+            {
+                "title": "Edit a",
+                "author": {"login": "t"},
+                "url": "",
+                "baseRefOid": "aaa",
+                "headRefOid": "bbb",
+            }
+        ),
+        encoding="utf-8",
+    )
+    base = tmp_path / "base"
+    head = tmp_path / "head"
+    base.mkdir()
+    head.mkdir()
+    # Well under the cap that used to apply, and still not shipped.
+    (base / "a.py").write_text("old\n", encoding="utf-8")
+    (head / "a.py").write_text("new\n", encoding="utf-8")
+
+    block = build_pending_viewer_json(tmp_path)["files"][0]
+
+    assert "head_lines" not in block
+    # Nothing else smuggles it either: the only text in a file block is
+    # the diff's own rows.
+    outside_hunks = {k: v for k, v in block.items() if k != "hunks"}
+    assert "new" not in json.dumps(outside_hunks)
+
+
 # --- syntax-highlighting language map --------------------------------------
 
 # Canonical languages registered in the vendored highlight.js build

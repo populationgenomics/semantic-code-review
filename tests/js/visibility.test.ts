@@ -28,7 +28,6 @@ function makeFile(id: string, path: string, hunks: HunkBlock[]): FileBlock {
     adds: 1, dels: 1, summary: "",
     symbols: { added: [], modified: [], removed: [] },
     fold_symbols: { head: [], base: [] },
-    head_lines: null,
     hunks,
   };
 }
