@@ -1,5 +1,8 @@
 # Slices — One visibility model
 
+The *why* is [ADR 0006](../adr/0006-one-visibility-model.md);
+this file holds the order.
+
 Three mechanisms currently decide whether a line renders, with three
 different identities, three persistence tiers and no shared rule:
 
@@ -180,6 +183,3 @@ and on the base side; `head_lines` is gone from the viewer payload.
   would now land on a key that holds — but Slice 3 replaces the record
   with a `HiddenSpan`, so rewriting its row-derived tests to land it
   first buys one slice of life.
-- **This plan has no ADR yet.** The decision record for the visibility
-  model is owed; per `docs/adr/README.md` the ADR holds the *why* and
-  this file holds the order.
