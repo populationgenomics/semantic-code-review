@@ -1,6 +1,6 @@
 # ADR 0006 — One visibility model
 
-- Status: Accepted (slices 1–4 implemented; 5–6 pending)
+- Status: Accepted (implemented)
 - Date: 2026-08-20
 
 ## Context
