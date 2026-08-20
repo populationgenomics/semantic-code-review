@@ -1170,6 +1170,10 @@ body {
   text-align: left;
   cursor: default;
 }
+/* One side only: a single column parked in its own half, so the text
+   gets that half's full width instead of the list floating against an
+   empty one. */
+.manifest-only-old, .manifest-only-new { grid-template-columns: minmax(0, 1fr); }
 .manifest-col { min-width: 0; }
 .manifest-entry {
   display: flex;
@@ -1201,15 +1205,12 @@ body {
 
 /* Inside a diff, a manifest is annotation content rather than a block of
  * its own: the box already carries the padding and the border. */
-.diff .annot-manifest .annot-box {
-  max-height: none;
-  font-style: normal;
-  background: none;
-  border: none;
-  box-shadow: none;
-  padding: 0;
-}
-.diff .annot-manifest .annot-box .manifest { padding: 2px 0 0; }
+.diff .annot-manifest .annot-box { max-height: none; font-style: normal; }
+.diff .annot-manifest .annot-box .manifest { padding: 0; }
+/* The box tracks the list: a one-sided manifest shrinks onto its half so
+   the border wraps the entries rather than half a row of nothing. */
+.diff .annot-manifest .annot-box:has(.manifest-only-new) { margin-left: 50%; }
+.diff .annot-manifest .annot-box:has(.manifest-only-old) { margin-right: 50%; }
 
 /* --- Status bar ----------------------------------------------------------- */
 /* `position: sticky; bottom: 0` only pins relative to a scrolling

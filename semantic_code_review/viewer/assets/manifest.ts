@@ -149,15 +149,17 @@ function _el(tag: string, className: string, text?: string): HTMLElement {
  *  note (the common case — the caller renders nothing).
  *
  *  Position is the side: left column is base, right is head, matching
- *  the grid the notes sit over. The columns are therefore unlabelled and
- *  both are always emitted — a one-sided hide leaves its opposite column
- *  empty, which is the cue, and a label would only repeat it.
+ *  the grid the notes sit over, so the columns carry no labels. A
+ *  one-sided hide emits only its own column and is marked
+ *  `manifest-only-<side>`, which the stylesheet uses to park the list in
+ *  that half rather than leave the other half blank.
  */
 function render(entries: ManifestNote[]): HTMLElement | null {
   if (entries.length === 0) return null;
-  const wrap = _el("div", "manifest");
-  wrap.appendChild(_column("old", entries));
-  wrap.appendChild(_column("new", entries));
+  const sides = (["old", "new"] as const).filter((s) => entries.some((n) => n.side === s));
+  const only = sides.length === 1 ? ` manifest-only-${sides[0]}` : "";
+  const wrap = _el("div", `manifest${only}`);
+  for (const s of sides) wrap.appendChild(_column(s, entries));
   // Not navigable, and not a way to open what it stands in for: the
   // chrome a manifest sits inside (a segment row, a gap chip) toggles on
   // click, and an entry is not that click.

@@ -215,24 +215,27 @@ describe("manifest columns", () => {
   const note = (side: "old" | "new", line: number, text: string): ManifestNote =>
     ({ kind: "comment", side, line, text });
 
-  test("both columns are always emitted, in old/new order and unlabelled", () => {
+  test("both sides: two unlabelled columns in old/new order", () => {
+    const el = Manifest.render([note("new", 12, "head"), note("old", 9, "base")])!;
+    expect(el.querySelectorAll(".manifest-col-label").length).toBe(0);
+    expect(Array.from(el.querySelectorAll(".manifest-col")).map((c) => c.className))
+      .toEqual(["manifest-col manifest-col-old", "manifest-col manifest-col-new"]);
+    expect(el.className).toBe("manifest");
+  });
+
+  test("head-side only: one column, marked so the stylesheet parks it right", () => {
     const el = Manifest.render([note("new", 12, "head-side only")])!;
     const cols = el.querySelectorAll(".manifest-col");
-    expect(cols.length).toBe(2);
-    expect(el.querySelectorAll(".manifest-col-label").length).toBe(0);
-    expect(Array.from(cols).map((c) => c.className))
-      .toEqual(["manifest-col manifest-col-old", "manifest-col manifest-col-new"]);
+    expect(cols.length).toBe(1);
+    expect(cols[0].classList.contains("manifest-col-new")).toBe(true);
+    expect(el.classList.contains("manifest-only-new")).toBe(true);
   });
 
-  test("a head-side note lands in the right column and the left stays empty", () => {
-    const el = Manifest.render([note("new", 12, "head-side only")])!;
-    expect(el.querySelector(".manifest-col-old")!.children.length).toBe(0);
-    expect(el.querySelector(".manifest-col-new")!.textContent).toContain("head-side only");
-  });
-
-  test("a base-side note lands in the left column", () => {
+  test("base-side only: one column, marked so the stylesheet parks it left", () => {
     const el = Manifest.render([note("old", 9, "deleted line")])!;
-    expect(el.querySelector(".manifest-col-old")!.textContent).toContain("deleted line");
-    expect(el.querySelector(".manifest-col-new")!.children.length).toBe(0);
+    const cols = el.querySelectorAll(".manifest-col");
+    expect(cols.length).toBe(1);
+    expect(cols[0].classList.contains("manifest-col-old")).toBe(true);
+    expect(el.classList.contains("manifest-only-old")).toBe(true);
   });
 });
