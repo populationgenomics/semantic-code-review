@@ -21,7 +21,9 @@
 // records every span id ever asserted and who asserted it. Seeding a
 // marked id is a no-op, which is what makes a reveal stick: the renderer
 // re-seeds every gap it lays out on every render, and a bulk action
-// forgets only the marks it owns.
+// forgets only the marks it owns. Both ledgers persist — view_state.ts
+// puts the pair in `sessionStorage` so a reload restores the reveals as
+// well as the hides.
 
 // --- Types ----------------------------------------------------------------
 
@@ -81,9 +83,26 @@ interface FileState {
   marks: Map<string, SpanOwner>;
 }
 
+/** One file's two ledgers, flattened for persistence. `marks` is a
+ *  superset of the spans' ids: an id it carries that `spans` does not is
+ *  a reveal, and dropping it on the way to storage would let the next
+ *  render re-seed the span the reviewer opened. */
+export interface FileSnapshot {
+  fileId: string;
+  spans: HiddenSpan[];
+  marks: [string, SpanOwner][];
+}
+
 // --- Store ----------------------------------------------------------------
 
 const _files = new Map<string, FileState>();
+
+// Bumped by every mutation that changes the ledgers, so a caller that
+// persists the store can tell a render that moved something from the
+// many that did not. `syncLevel` re-seeds every level span on every
+// render and must not register as a change, which is why `seed` and
+// `reveal` bump conditionally.
+let _revision = 0;
 
 function _state(fileId: string): FileState {
   let s = _files.get(fileId);
@@ -94,9 +113,16 @@ function _state(fileId: string): FileState {
   return s;
 }
 
+/** A counter over ledger mutations. Only its equality across two reads
+ *  is meaningful. */
+function revision(): number {
+  return _revision;
+}
+
 /** Drop every span and every mark. The Reset button, and boot. */
 function reset(): void {
   _files.clear();
+  _revision++;
 }
 
 /** Assert a span the reviewer asked for. Re-marks the id with this
@@ -106,6 +132,7 @@ function hide(span: HiddenSpan): void {
   const s = _state(span.fileId);
   s.spans.set(span.id, span);
   s.marks.set(span.id, span.owner);
+  _revision++;
 }
 
 /** Assert a span unless its id has been asserted before. The renderer
@@ -116,12 +143,36 @@ function seed(span: HiddenSpan): void {
   if (s.marks.has(span.id)) return;
   s.spans.set(span.id, span);
   s.marks.set(span.id, span.owner);
+  _revision++;
 }
 
 /** Reveal: remove the span. The mark stays, recording that this id has
  *  been decided, so no re-seed puts it back. */
 function reveal(fileId: string, id: string): void {
-  _state(fileId).spans.delete(id);
+  if (_state(fileId).spans.delete(id)) _revision++;
+}
+
+/** Both ledgers of every file, as plain data. */
+function snapshot(): FileSnapshot[] {
+  return Array.from(_files.entries()).map(([fileId, s]) => ({
+    fileId,
+    spans: Array.from(s.spans.values()),
+    marks: Array.from(s.marks.entries()),
+  }));
+}
+
+/** Replace the whole store with a snapshot. Total, not a merge: a
+ *  partial restore would leave a reveal's mark behind without its
+ *  file's other state. */
+function restore(files: FileSnapshot[]): void {
+  _files.clear();
+  for (const f of files) {
+    _files.set(f.fileId, {
+      spans: new Map(f.spans.map((s) => [s.id, s])),
+      marks: new Map(f.marks),
+    });
+  }
+  _revision++;
 }
 
 /** Flip a span's presence. Returns the new hidden state. */
@@ -154,6 +205,7 @@ function dropOwned(owner: SpanOwner): void {
       if (o !== owner) continue;
       s.marks.delete(id);
       s.spans.delete(id);
+      _revision++;
     }
   }
 }
@@ -360,6 +412,9 @@ function syncLevel(data: ViewerData, level: CollapseLevel): void {
 
 export const Visibility = {
   reset,
+  revision,
+  snapshot,
+  restore,
   hide,
   seed,
   reveal,

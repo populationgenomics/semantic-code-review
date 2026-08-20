@@ -242,6 +242,56 @@ describe("nodes that arrive later take the current level", () => {
   });
 });
 
+describe("the store serialises for persistence", () => {
+  test("a snapshot restores into an identical store", () => {
+    const f = SRC();
+    Visibility.hide(Visibility.fileSpan(f, "user"));
+    Visibility.seed(Visibility.hunkSpan(f, f.hunks[0], "level"));
+    const before = Visibility.snapshot();
+
+    Visibility.reset();
+    expect(Visibility.spansOf(f.id)).toHaveLength(0);
+    Visibility.restore(before);
+
+    expect(Visibility.snapshot()).toEqual(before);
+    expect(Visibility.isHidden(f.id, Visibility.fileSpanId(f.id))).toBe(true);
+    expect(Visibility.markOwner(f.id, Visibility.hunkSpanId("H0_0"))).toBe("level");
+  });
+
+  test("a restored reveal stays revealed under a re-seed", () => {
+    // The marks ledger carries the reveal; a snapshot that dropped it
+    // would let the next render's seed hide the gap again.
+    const f = SRC();
+    const gap = Visibility.contextSpan(f.id, { start: 1, end: 9 }, { start: 1, end: 9 });
+    Visibility.seed(gap);
+    Visibility.reveal(f.id, gap.id);
+
+    Visibility.restore(Visibility.snapshot());
+
+    Visibility.seed(gap);
+    expect(Visibility.isHidden(f.id, gap.id)).toBe(false);
+  });
+
+  test("the revision moves only when a ledger does", () => {
+    const f = SRC();
+    const span = Visibility.hunkSpan(f, f.hunks[0], "level");
+    Visibility.seed(span);
+    const seeded = Visibility.revision();
+
+    // What every render does: re-seed everything the level asserts.
+    Visibility.seed(span);
+    Visibility.seed(span);
+    expect(Visibility.revision()).toBe(seeded);
+
+    Visibility.reveal(f.id, span.id);
+    expect(Visibility.revision()).not.toBe(seeded);
+    // Revealing what is already revealed is not a change either.
+    const revealed = Visibility.revision();
+    Visibility.reveal(f.id, span.id);
+    expect(Visibility.revision()).toBe(revealed);
+  });
+});
+
 describe("planRows drops what a CodeFold is holding down", () => {
   const rows = [row(10, 10), row(11, 11), row(12, 12), row(13, 13)];
 
