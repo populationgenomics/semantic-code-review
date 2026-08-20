@@ -2,8 +2,8 @@
 // per-file toggle switches to for `.md` files, leaving the text-diff
 // renderer (render.ts) untouched.
 //
-// Slice 2: two-pane, block-level delta. Flipping a `.md` file fetches
-// its full base+head source from /file-text (lazily, cached per file),
+// Slice 2: two-pane, block-level delta. Flipping a `.md` file loads its
+// full base+head source (file_text.ts, the lazy /file-text route),
 // parses both sides to top-level blocks, classifies each block from the
 // existing line diff, and lays the aligned block-pairs out as max-height
 // grid rows: base rendered left, head rendered right, changed base
@@ -26,22 +26,17 @@
 // carries its source line via the markdown-it token map, so a comment on
 // a block round-trips unchanged (comments.ts owns the editor/store).
 //
-// This module owns rendered-mode state (which files are flipped, the
-// source cache) and the async fetch; render.ts consults isMarkdown /
-// isOn and delegates the body to renderBody. The toggle handler fetches
+// This module owns rendered-mode state — which files are flipped, the
+// per-file fold level and reveals; the source itself is file_text.ts's,
+// shared with the text diff. render.ts consults isMarkdown / isOn and
+// delegates the body to renderBody. The toggle handler fetches
 // then repaints via a callback rather than importing render.ts, keeping
 // the dependency one-way (render.ts → rendered.ts).
 
 import { Comments } from "./comments";
+import { FileText } from "./file_text";
 import { Markdown, type HeadingInfo, type RenderedBlock } from "./markdown";
 import { blockDiff, wrapRanges } from "./text_highlight";
-
-interface FileText {
-  file_idx: number;
-  path: string;
-  base: string | null;
-  head: string | null;
-}
 
 // Rendered-mode fold ladder (ADR 0004 slice 3). `runs` (the default)
 // collapses contiguous runs of unchanged blocks; `sections` also
@@ -64,18 +59,13 @@ const _FOLD_LADDER: ReadonlyArray<{ level: MdFoldLevel; label: string; title: st
 const _BLEED = 1;
 const _MIN_RUN = 3;
 
-// Prefixed onto the /file-text fetch; the same session-endpoint boot.ts
-// resolves for the other back-channel routes. Empty string = same origin.
-let _endpoint = "";
 // Full re-render, injected by boot (Render.render). Fold-level changes
 // and chevron reveals repaint through this rather than importing
 // render.ts, keeping the dependency one-way (render.ts → rendered.ts).
 let _rerender: () => void = () => {};
-// File ids (F<idx>) currently flipped to rendered mode.
+// File ids (F<idx>) currently flipped to rendered mode. The source
+// itself lives in file_text.ts — the text diff reads the same cache.
 const _on = new Set<string>();
-// Lazy per-file source cache, keyed by file id. Populated on first flip;
-// never invalidated (the base/head worktrees are pinned for the run).
-const _cache: Record<string, FileText> = Object.create(null);
 
 // Per-file fold level, keyed by file id; absent → the `runs` default.
 const _foldLevel: Record<string, MdFoldLevel> = Object.create(null);
@@ -89,8 +79,7 @@ const _reveal: Record<string, Record<string, { top: number; bottom: number }>> =
 // expand). Same ephemeral lifetime as _reveal.
 const _sectionOpen: Record<string, Set<string>> = Object.create(null);
 
-function init(endpoint: string, rerender?: () => void): void {
-  _endpoint = endpoint;
+function init(rerender?: () => void): void {
   if (rerender) _rerender = rerender;
 }
 
@@ -130,36 +119,20 @@ async function toggle(f: FileBlock, rerender: () => void): Promise<void> {
     rerender();
     return;
   }
-  if (!_cache[f.id]) {
-    try {
-      _cache[f.id] = await _fetchText(f);
-    } catch (e) {
-      console.warn("rendered-mode: /file-text fetch failed, staying in text mode", e);
-      return;
-    }
+  try {
+    await FileText.load(f);
+  } catch (e) {
+    console.warn("rendered-mode: /file-text fetch failed, staying in text mode", e);
+    return;
   }
   _on.add(f.id);
   rerender();
 }
 
-async function _fetchText(f: FileBlock): Promise<FileText> {
-  const idx = _fileIdx(f);
-  const r = await fetch(`${_endpoint}/file-text?file_idx=${idx}`, { cache: "no-store" });
-  if (!r.ok) throw new Error(`GET /file-text -> ${r.status}`);
-  return (await r.json()) as FileText;
-}
-
-/** Recover the file index from the "F<idx>" id build_json assigns. */
-function _fileIdx(f: FileBlock): number {
-  const n = Number.parseInt(f.id.replace(/^F/, ""), 10);
-  if (Number.isNaN(n)) throw new Error(`unexpected file id ${f.id}`);
-  return n;
-}
-
 /** Render the file's rendered-mode body into `body`. Requires the
  *  source to be cached (toggle guarantees it before flipping on). */
 function renderBody(body: HTMLElement, f: FileBlock): void {
-  const text = _cache[f.id];
+  const text = FileText.get(f.id);
   const base = text ? text.base : null;
   const head = text ? text.head : null;
   const container = _el("div", "rendered-md");

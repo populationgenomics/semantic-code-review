@@ -20,11 +20,13 @@
 // manifest of the notes it covers (manifest.ts, ADR 0006), so a comment
 // inside a folded file still says where it is. Every run of lines this
 // module skips leaves something standing in its place too — a chip, a
-// `@@` header, a chevron — so the line-number gutter never steps
-// silently. The one gap left is a file with no `head_lines` under a
-// filter: an expanded region there splices two demoted hunks together
-// with the context between them missing, and there is no row to say so
-// until slice 6 makes that context fetchable.
+// `@@` header, a chevron, or the inert band naming lines the viewer has
+// no text for — so the line-number gutter never steps silently.
+//
+// The unchanged lines a chip stands in front of are not in the diff: the
+// renderer synthesises them from the file's own source, which arrives
+// after first paint (file_text.ts). Until it does — and permanently, for
+// a file the route cannot serve — those runs render as the band.
 //
 // Other modules attach to surfaces this module creates:
 //   - sidebar.ts mutates pill state but reads from .file / .hunk
@@ -36,6 +38,7 @@
 import { Annotations } from "./annotations";
 import { Comments } from "./comments";
 import { FileRows } from "./file_rows";
+import { FileText } from "./file_text";
 import { Folds } from "./folds";
 import { Manifest, type ManifestNote } from "./manifest";
 import { Progress } from "./progress";
@@ -100,6 +103,9 @@ function renderInit(data: ViewerData): void {
   _state.savedRevision = -1;
   _state.savedLevel = null;
   Visibility.reset();
+  // File ids are position-derived, so a second boot in the same page
+  // would read the previous diff's text under F0.
+  FileText.reset();
   _wireInputs();
   // A restored store already holds the level's spans *and* its marks, so
   // seeding over the top would re-hide what the reviewer had expanded.
@@ -376,6 +382,10 @@ function _renderFile(f: FileBlock): HTMLElement | null {
       Rendered.renderBody(body, f);
       div.appendChild(body);
     } else {
+      // Lay the body out against whatever content has arrived, and ask
+      // for it if this is the first render that needed it. The arrival
+      // repaints (boot wires FileText's callback to render).
+      FileText.request(f);
       const overview = _renderFileOverview(f);
       if (overview) body.appendChild(overview);
       // One header per collapsed CodeFold across the whole body: a fold
@@ -402,7 +412,6 @@ function _renderFileBody(
   headed: Set<string>, notes: ManifestNote[],
 ): void {
   const isLive = (h: HunkBlock): boolean => liveIds === null || liveIds.has(h.id);
-  const total = f.head_lines ? f.head_lines.length : null;
   let curNew = 1;
   let curOld = 1;
   let emittedLive = false;
@@ -411,14 +420,24 @@ function _renderFileBody(
     const demoted = f.hunks.filter(
       (h) => !isLive(h) && h.new_start >= curNew && (endNew === null || h.new_start <= endNew),
     );
-    const { rows, marks } = _regionRows(f, curNew, endNew, curOld, demoted);
-    if (rows.length === 0) {
-      if (position === "between" && endNew !== null && endNew >= curNew) {
-        body.appendChild(_renderAbsentContext(curNew, endNew, curOld, notes));
+    const pieces = _regionPieces(f, curNew, endNew, curOld, demoted);
+    for (let i = 0; i < pieces.length; i++) {
+      const piece = pieces[i];
+      // Only the outermost pieces inherit the flush's position: an
+      // absent band or a chip in the middle of one reads as "between".
+      const pos = i === 0 ? position
+        : i === pieces.length - 1 && position === "bottom" ? "bottom" : "between";
+      if ("absent" in piece) {
+        // Only between two rendered things: at the head or the foot of a
+        // file nothing precedes or follows the missing lines, so there
+        // is no step in the gutter for the band to account for.
+        if (pos === "between") {
+          body.appendChild(_renderAbsentContext(piece.absent, notes));
+        }
+        continue;
       }
-      return;
+      _renderRegion(body, f, { position: pos, ...piece }, headed, notes);
     }
-    _renderRegion(body, f, { position, rows, marks }, headed, notes);
   };
 
   // Just after a sidebar pill click, reveal the focused hunks' code
@@ -431,36 +450,34 @@ function _renderFileBody(
     curNew = h.new_start + h.new_count;
     curOld = h.old_start + h.old_count;
   }
-  flush(total, "bottom");
+  flush(FileText.tailEnd(f.id, curNew, curOld), "bottom");
 }
 
-/** The band standing in for unchanged lines between two hunks that the
- *  payload carries no text for — `head_lines` is null for a binary,
- *  deleted or generated file and for anything over `_HEAD_LINES_CAP`.
+/** The band standing in for unchanged lines the viewer has no text for:
+ *  `/file-text` has not answered yet, or it served neither side — a
+ *  binary file, or one over the route's 2 MB per-side cap.
  *
  *  Inert, and no `HiddenSpan`: there are no rows to reveal, so an expand
  *  chip would open onto nothing and a span would be a record no click
- *  could retract. The next hunk's `@@` header already accounts for the
- *  step in the gutter; what it does not do is say those lines exist, or
- *  give the notes sitting on them anywhere to appear — an ingested
- *  comment on unchanged context in a 6,000-line file would otherwise be
- *  nowhere in the page. Slice 6's `/file-text` makes the lines fetchable
- *  and this band a real gap.
+ *  could retract. What it adds over rendering nothing is that the lines
+ *  are named, and that the notes sitting on them have somewhere to
+ *  appear — an ingested comment on unchanged context in a file the route
+ *  cannot serve would otherwise be nowhere in the page.
  */
 function _renderAbsentContext(
-  startNew: number, endNew: number, startOld: number, notes: ManifestNote[],
+  range: AbsentRange, notes: ManifestNote[],
 ): HTMLElement {
-  const count = endNew - startNew + 1;
+  const count = range.endNew - range.startNew + 1;
   const band = _el("div", "gap-chip gap-absent");
-  band.title = "This file's contents were not shipped to the viewer, so these"
-    + " lines cannot be expanded.";
+  band.title = "The viewer has no text for these lines, so they cannot be"
+    + " expanded.";
   const word = count === 1 ? "line" : "lines";
   band.innerHTML = `<span class="gap-icon">⋯</span>`
     + `<span class="gap-label">${count} unchanged ${word} (not loaded)</span>`;
   return _withManifest(band, Manifest.inRange(
     notes,
-    { start: startNew, end: endNew },
-    { start: startOld, end: startOld + count - 1 },
+    { start: range.startNew, end: range.endNew },
+    { start: range.startOld, end: range.startOld + count - 1 },
   ));
 }
 
@@ -535,37 +552,68 @@ interface DiffRegion {
   marks: (_RowMarks | undefined)[];
 }
 
-/** The row stream for a region: unchanged context (from head_lines)
- *  interleaved with the demoted hunks' own rows, in file order. `newEnd`
- *  bounds the trailing context; null (no head_lines) skips context
- *  entirely, leaving just the hunk rows. */
-function _regionRows(
-  f: FileBlock, newStart: number, newEnd: number | null, oldStart: number, hunks: HunkBlock[],
-): { rows: RowBlock[]; marks: (_RowMarks | undefined)[] } {
-  const rows: RowBlock[] = [];
-  const marks: (_RowMarks | undefined)[] = [];
-  const hl = f.head_lines;
+/** A run of unchanged lines with no text behind it, so nothing can be
+ *  rendered for them but the band. */
+interface AbsentRange {
+  startNew: number;
+  endNew: number;
+  startOld: number;
+}
+
+type RegionPiece =
+  | { rows: RowBlock[]; marks: (_RowMarks | undefined)[] }
+  | { absent: AbsentRange };
+
+/** What the renderer puts between two live hunks: unchanged context
+ *  interleaved with the demoted hunks' own rows, in file order.
+ *
+ *  One piece while the file's content is there to fill the gaps — the
+ *  whole run is one expandable region. Without content a gap cannot be
+ *  filled, so the run *breaks* at it: the region either side stands on
+ *  its own and a band names the lines in between. Splicing the two
+ *  hunks' rows together instead is what stepped the gutter silently
+ *  under a filter (slice 5), and left the notes on those lines nowhere.
+ *
+ *  `newEnd` bounds the trailing context; null (an unbounded tail, i.e. no
+ *  content at all) ends the run at the last hunk row. */
+function _regionPieces(
+  f: FileBlock, newStart: number, newEnd: number | null, oldStart: number,
+  hunks: HunkBlock[],
+): RegionPiece[] {
+  const pieces: RegionPiece[] = [];
+  let rows: RowBlock[] = [];
+  let marks: (_RowMarks | undefined)[] = [];
   let cn = newStart;
   let co = oldStart;
-  const ctxTo = (upTo: number): void => {
-    if (!hl) return;
-    while (cn < upTo) {
-      const t = hl[cn - 1] ?? "";
-      rows.push({ kind: "ctx", old_line: co, new_line: cn, old_text: t, new_text: t });
-      marks.push(undefined);
-      co++; cn++;
+  const closeRows = (): void => {
+    if (rows.length === 0) return;
+    pieces.push({ rows, marks });
+    rows = [];
+    marks = [];
+  };
+  const gapTo = (upTo: number): void => {
+    if (upTo <= cn) return;
+    const ctx = FileText.contextRows(f.id, cn, upTo, co);
+    if (ctx.length === 0) {
+      closeRows();
+      pieces.push({ absent: { startNew: cn, endNew: upTo - 1, startOld: co } });
+    } else {
+      for (const r of ctx) { rows.push(r); marks.push(undefined); }
     }
+    co += upTo - cn;
+    cn = upTo;
   };
   for (const h of hunks) {
-    ctxTo(h.new_start);
-    const hm = _blockMarks(h.rows || []);
+    gapTo(h.new_start);
     const hr = h.rows || [];
+    const hm = _blockMarks(hr);
     for (let i = 0; i < hr.length; i++) { rows.push(hr[i]); marks.push(hm[i]); }
     cn = h.new_start + h.new_count;
     co = h.old_start + h.old_count;
   }
-  if (hl && newEnd !== null) ctxTo(newEnd + 1);
-  return { rows, marks };
+  if (newEnd !== null) gapTo(newEnd + 1);
+  closeRows();
+  return pieces;
 }
 
 /** The span standing for one region. Its id is the region's own extent,
@@ -645,7 +693,7 @@ function _renderRegionExpansion(
   );
   // The file-level fold walker (folds.ts) recovers the row stream + DOM
   // elements from the container.
-  FileRows.record(container, { rows, oldEls, newEls, sourceRows: region.rows });
+  FileRows.record(container, { rows, oldEls, newEls });
   container.appendChild(diff);
   return container;
 }
@@ -836,7 +884,7 @@ function _renderHunkDiff(
   _attachLineNotes(oldEls, newEls, rows, h.line_notes || [], h.id, file.path);
   // Record the rows this render actually emitted so folds.ts can build a
   // unified row stream across the hunk and adjacent expanded context.
-  FileRows.record(diff, { rows, oldEls, newEls, sourceRows: allRows });
+  FileRows.record(diff, { rows, oldEls, newEls });
   if (cacheable) _state.renderedDiffs[h.id] = diff;
   return diff;
 }

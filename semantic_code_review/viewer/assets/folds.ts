@@ -6,11 +6,11 @@
 //   Identity is a side-tagged span of absolute file lines —
 //   `(context, right_start..right_end, left_start..left_end)` — and is
 //   detected from the *file's own content*: the definition spans in
-//   `fold_symbols` plus a whole-file row stream synthesised from
-//   `head_lines`. It therefore does not move when the reviewer reveals
-//   context, which is what keeps the persistent `FoldRegion` record —
-//   and the summary and collapse state hanging off it — attached to the
-//   region the reviewer folded (#10).
+//   `fold_symbols` plus a whole-file row stream synthesised from the
+//   source `/file-text` served (file_text.ts). It therefore does not
+//   move when the reviewer reveals context, which is what keeps the
+//   persistent `FoldRegion` record — and the summary and collapse state
+//   hanging off it — attached to the region the reviewer folded (#10).
 //
 //   Presentation is the row the chevron hangs off in *this* render,
 //   recomputed by `_placeRegion` every time `attachFileFolds` runs.
@@ -36,6 +36,7 @@
 //
 import { Annotations, type AnnotationHandle } from "./annotations";
 import { FileRows, type RowWithEls } from "./file_rows";
+import { FileText } from "./file_text";
 import { Manifest, type ManifestNote } from "./manifest";
 import { Visibility } from "./visibility";
 
@@ -139,20 +140,13 @@ function _teardownFileFolds(fileId: string): void {
 // construction time), and flatten into one indexable list so folds can
 // straddle hunks and adjacent gap-context.
 //
-// Two streams come back. `placed` is what the render put on screen, and
-// is where a chevron can hang. `source` adds back the rows collapsed
-// folds are holding down — the fallback detector reads it, so which
-// regions a file has does not depend on which of them are folded.
-interface CollectedRows {
-  placed: RowWithEls[];
-  source: RowBlock[];
-}
-
-function _collectFileRows(fileEl: HTMLElement): CollectedRows {
+// These are the rows this render put on screen, which is where a chevron
+// can hang — never the detection input. What a file's regions *are*
+// comes from its content, so it does not depend on what is on screen.
+function _collectFileRows(fileEl: HTMLElement): RowWithEls[] {
   const body = fileEl.querySelector(".file-body");
-  if (!body) return { placed: [], source: [] };
+  if (!body) return [];
   const placed: RowWithEls[] = [];
-  const source: RowBlock[] = [];
   for (const child of Array.from(body.children) as HTMLElement[]) {
     const cls = child.classList;
     let container: HTMLElement | null = null;
@@ -170,9 +164,8 @@ function _collectFileRows(fileEl: HTMLElement): CollectedRows {
         oldEl: entry.oldEls[i], newEl: entry.newEls[i],
       });
     }
-    for (const r of entry.sourceRows) source.push(r);
   }
-  return { placed, source };
+  return placed;
 }
 
 // The file's whole row stream: unchanged head context interleaved with
@@ -181,43 +174,38 @@ function _collectFileRows(fileEl: HTMLElement): CollectedRows {
 // absolute line spans that identify them) are the same no matter which
 // part of the file is currently rendered.
 //
-// Returns null when the payload carries no head content: `head_lines` is
-// null for generated / binary / deleted files and for any file over
-// build_json's `_HEAD_LINES_CAP` (5,000 lines). Those files fall back to
-// detecting over the rendered containers' own rows, so their regions
-// still move when the reviewer reveals context (#10). Folding one does
-// not move them: the fallback reads `FileRows`' `sourceRows`, which keep
-// the rows a collapsed fold is holding down.
-// Slice 6 replaces `head_lines` with the lazy `/file-text` route and
-// removes both the cap and the head-side-only limit.
+// Returns null when the file has no content to read: `/file-text` has
+// not answered yet, or it served neither side (a binary file, or one
+// over the route's 2 MB per-side cap). No content means no *new* fold is
+// offered — a region detected off the rendered rows would move when the
+// reviewer revealed context, which is #10, and offering it would be a
+// fix that works everywhere except where it silently does not. A
+// `CodeFold` the reviewer already collapsed needs none of this: its
+// `HiddenSpan` describes itself and the renderer honours it at first
+// paint, before any of this has run.
 function _fileRowStream(file: FileBlock): RowBlock[] | null {
-  const hl = file.head_lines;
-  if (!hl) return null;
+  if (!FileText.hasContent(file.id)) return null;
   const rows: RowBlock[] = [];
   let cn = 1;
   let co = 1;
-  const ctxTo = (upTo: number): void => {
-    while (cn < upTo) {
-      const t = hl[cn - 1] ?? "";
-      rows.push({ kind: "ctx", old_line: co, new_line: cn, old_text: t, new_text: t });
-      co++; cn++;
-    }
-  };
   for (const h of file.hunks || []) {
-    ctxTo(h.new_start);
+    for (const r of FileText.contextRows(file.id, cn, h.new_start, co)) rows.push(r);
     for (const r of h.rows || []) rows.push(r);
     cn = h.new_start + h.new_count;
     co = h.old_start + h.old_count;
   }
-  ctxTo(hl.length + 1);
+  const end = FileText.tailEnd(file.id, cn, co);
+  if (end !== null) {
+    for (const r of FileText.contextRows(file.id, cn, end + 1, co)) rows.push(r);
+  }
   return rows;
 }
 
 // Detection is O(rows x definition spans) over the whole file, so it is
 // memoised per FileBlock and only re-run when the content it reads
 // changes: an SSE `hunk` event swaps the HunkBlock object (DataStore
-// .replaceHunk), which the identity check below catches. The fallback
-// path is deliberately not cached — it is reveal-dependent.
+// .replaceHunk), which the identity check below catches. A file whose
+// content has not landed is not cached — the next render re-asks.
 interface DetectionCache {
   hunks: HunkBlock[];
   regions: DetectedRegion[];
@@ -225,12 +213,10 @@ interface DetectionCache {
 
 const _DETECTION_CACHE = new WeakMap<FileBlock, DetectionCache>();
 
-function _detectFileRegions(
-  file: FileBlock, fallbackRows: RowBlock[],
-): DetectedRegion[] {
-  const syms = file.fold_symbols || { head: [], base: [] };
+function _detectFileRegions(file: FileBlock): DetectedRegion[] {
   const stream = _fileRowStream(file);
-  if (stream === null) return _computeFoldRegions(fallbackRows, syms.head, syms.base);
+  if (stream === null) return [];
+  const syms = file.fold_symbols || { head: [], base: [] };
   const hunks = file.hunks || [];
   const cached = _DETECTION_CACHE.get(file);
   if (cached
@@ -717,11 +703,11 @@ function attachFileFolds(
 ): void {
   _teardownFileFolds(file.id);
   const fileIdx = Number(file.id.replace("F", ""));
-  const { placed: rows, source } = _collectFileRows(fileEl);
+  const rows = _collectFileRows(fileEl);
   if (rows.length === 0) return;
   const handles: AnnotationHandle[] = [];
   const chevrons: SVGElement[] = [];
-  for (const det of _detectFileRegions(file, source)) {
+  for (const det of _detectFileRegions(file)) {
     const collapsed = Visibility.isHidden(
       file.id, Visibility.codeFoldSpanId(file.id, det),
     );

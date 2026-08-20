@@ -11,6 +11,7 @@ import { Comments } from "./comments";
 import { Console } from "./console";
 import { DataStore, type FoldRegionAddress } from "./data_store";
 import { DebugDrawer } from "./debug_drawer";
+import { FileText } from "./file_text";
 import { PostModal } from "./post_modal";
 import { Progress } from "./progress";
 import { Render } from "./render";
@@ -68,9 +69,14 @@ function boot(): void {
     // (ephemeral focus-reveal) — driven from render.ts.
     onFilterChange: () => Render.applyFilterChange(),
   });
-  // lazy /file-text backing for the md toggle; the callback repaints on
-  // rendered-mode fold-level changes and chip reveals.
-  Rendered.init(SESSION_ENDPOINT, () => Render.render());
+  // The lazy /file-text route backs both renderers: the markdown
+  // toggle's source and the text diff's unchanged context + CodeFold
+  // detection. Content arrives after first paint, so an arrival is a
+  // repaint (one per batch, coalesced in file_text.ts).
+  FileText.init(SESSION_ENDPOINT, () => Render.render());
+  // The callback repaints on rendered-mode fold-level changes and chip
+  // reveals.
+  Rendered.init(() => Render.render());
   Render.init(DATA);       // wires hash + keyboard + initial paint
   Progress.init(DATA);
   installPrHeader(DATA);

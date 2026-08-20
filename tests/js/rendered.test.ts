@@ -3,6 +3,7 @@
 // head-only body render (ADR 0004 slice 1).
 
 import { describe, test, expect, vi, beforeEach } from "vitest";
+import { FileText } from "../../semantic_code_review/viewer/assets/file_text";
 import {
   Rendered, _plan, _outline, _reveal, _sectionOpen, _diffLines, _classify, _align,
   type BlockPair, type PlanItem,
@@ -22,7 +23,10 @@ function mockFileText(body: { base: string | null; head: string | null }): void 
 }
 
 beforeEach(() => {
-  Rendered.init("");
+  Rendered.init();
+  // The source itself is file_text.ts's, shared with the text diff.
+  FileText.init("", () => undefined);
+  FileText.reset();
 });
 
 describe("Rendered.isMarkdown", () => {
@@ -436,7 +440,7 @@ describe("Rendered.renderBody — fold chip DOM", () => {
 
     const body = document.createElement("div");
     // Repaint into the same element so the chevron click re-renders.
-    Rendered.init("", () => { body.innerHTML = ""; Rendered.renderBody(body, f); });
+    Rendered.init(() => { body.innerHTML = ""; Rendered.renderBody(body, f); });
     Rendered.renderBody(body, f);
 
     const chip = body.querySelector(".rmd-fold");
@@ -457,7 +461,7 @@ describe("Rendered.renderBody — fold chip DOM", () => {
     await flip(f, { base: doc, head: doc });
 
     const body = document.createElement("div");
-    Rendered.init("", () => { body.innerHTML = ""; Rendered.renderBody(body, f); });
+    Rendered.init(() => { body.innerHTML = ""; Rendered.renderBody(body, f); });
     Rendered.renderBody(body, f);
 
     const ladder = body.querySelector(".rmd-ladder");
@@ -479,7 +483,7 @@ describe("Rendered.renderBody — fold chip DOM", () => {
     await flip(f, { base: doc, head: doc });
 
     const body = document.createElement("div");
-    Rendered.init("", () => { body.innerHTML = ""; Rendered.renderBody(body, f); });
+    Rendered.init(() => { body.innerHTML = ""; Rendered.renderBody(body, f); });
     Rendered.renderBody(body, f);
 
     // One outline entry for the single heading; the run is collapsed.

@@ -8,9 +8,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { describe, test, expect, beforeEach } from "vitest";
+import { describe, test, expect, beforeEach, vi } from "vitest";
 import { Folds, _computeFoldRegions } from "../../semantic_code_review/viewer/assets/folds";
 import { FileRows } from "../../semantic_code_review/viewer/assets/file_rows";
+import { FileText } from "../../semantic_code_review/viewer/assets/file_text";
 import { Visibility } from "../../semantic_code_review/viewer/assets/visibility";
 
 interface FoldCase {
@@ -71,7 +72,29 @@ const NO_REPAINT = (): void => undefined;
 
 beforeEach(() => {
   Visibility.reset();
+  FileText.init("", () => undefined);
+  FileText.reset();
 });
+
+/** Put a file's source behind the `/file-text` route the detector reads
+ *  it through. `sides` picks which sides the route serves — "base" is a
+ *  file whose head side it has none of (a deletion, or a head over its
+ *  2 MB cap), which is the case `head_lines` structurally could not
+ *  cover. */
+async function _serve(
+  file: FileBlock, lines: string[], sides: "both" | "head" | "base" = "both",
+): Promise<void> {
+  const text = lines.join("\n");
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
+    JSON.stringify({
+      file_idx: 0, path: file.path,
+      base: sides === "head" ? null : text,
+      head: sides === "base" ? null : text,
+    }),
+    { status: 200 },
+  ));
+  await FileText.load(file);
+}
 
 function _rowEl(text: string): HTMLElement {
   const el = document.createElement("div");
@@ -170,7 +193,6 @@ function _makeFile(overrides: Partial<FileBlock> = {}): FileBlock {
     adds: 1, dels: 1, summary: "",
     symbols: { added: [], modified: [], removed: [] },
     fold_symbols: { head: SPANS, base: SPANS },
-    head_lines: HEAD_LINES,
     hunks: [{
       id: "H0_0", header: "@@ -6,3 +6,3 @@",
       old_start: 6, old_count: 3, new_start: 6, new_count: 3,
@@ -209,8 +231,9 @@ function _attachRevealed(file: FileBlock): void {
 }
 
 describe("CodeFold spans are absolute and reveal-invariant", () => {
-  test("a region is addressed by its definition's span, not by the visible rows", () => {
+  test("a region is addressed by its definition's span, not by the visible rows", async () => {
     const file = _makeFile();
+    await _serve(file, HEAD_LINES);
     _attachUnrevealed(file);
     // `Foo` (3..9) and `Foo.bar` (4..9) are addressed whole even though
     // only lines 6..8 are on screen. `other` (11..12) has no visible row,
@@ -218,8 +241,9 @@ describe("CodeFold spans are absolute and reveal-invariant", () => {
     expect(_addresses(file)).toEqual(["both:3-9:3-9", "both:4-9:4-9"]);
   });
 
-  test("revealing context leaves the existing addresses — and records — alone", () => {
+  test("revealing context leaves the existing addresses — and records — alone", async () => {
     const file = _makeFile();
+    await _serve(file, HEAD_LINES);
     _attachUnrevealed(file);
     const records = file.hunks.flatMap((h) => h.fold_regions);
     // Whatever hangs off a record — the fold summary today, the collapse
@@ -229,9 +253,10 @@ describe("CodeFold spans are absolute and reveal-invariant", () => {
     document.body.innerHTML = "";
     _attachRevealed(file);
 
-    // `other` becomes foldable because it is now on screen; the two
-    // regions that were already there keep their addresses and, more to
-    // the point, their record objects.
+    // The regions do not change — detection reads the file, not the
+    // screen — and `other`, off screen before, keeps the address it had.
+    // What matters is that the two existing ones keep their record
+    // objects.
     expect(_addresses(file)).toEqual(["both:3-9:3-9", "both:4-9:4-9", "right:11-12:11-12"]);
     const after = file.hunks.flatMap((h) => h.fold_regions);
     expect(after[0]).toBe(records[0]);
@@ -239,8 +264,9 @@ describe("CodeFold spans are absolute and reveal-invariant", () => {
     expect(after[0].summary).toBe("sets up Foo");
   });
 
-  test("#10's repro — reveal, fold, collapse the file, reopen it — keeps the record", () => {
+  test("#10's repro — reveal, fold, collapse the file, reopen it — keeps the record", async () => {
     const file = _makeFile();
+    await _serve(file, HEAD_LINES);
     // Reveal the context around the hunk, then fold `Foo`.
     _attachRevealed(file);
     const folded = file.hunks[0].fold_regions[0];
@@ -258,22 +284,61 @@ describe("CodeFold spans are absolute and reveal-invariant", () => {
     expect(file.hunks[0].fold_regions[0].summary).toBe("collapsed by the reviewer");
   });
 
-  test("no head content: detection falls back to the rendered rows", () => {
-    // `head_lines` is null for generated / binary / deleted files and for
-    // anything over build_json's 5,000-line cap. Folds still work there —
-    // they are just row-derived, and still move when context is revealed.
-    const file = _makeFile({ head_lines: null, fold_symbols: { head: [], base: [] } });
+  test("no content: no fold is offered rather than one that moves", () => {
+    // The route serves neither side of a binary file, and neither side of
+    // one over its 2 MB cap; nothing has answered yet at first paint. A
+    // region detected off the rendered rows instead would be addressed
+    // differently the moment the reviewer revealed context — #10 — so
+    // none is offered at all.
+    const file = _makeFile({ fold_symbols: { head: [], base: [] } });
     Folds.attachFileFolds(
       _mountFile(file.id, [{ kind: "hunk", rows: _contextRows(3, 9) }]), file,
       [], NO_REPAINT,
     );
-    // Two nested indentation regions (`class Foo:` and `def bar`), both
-    // addressed off the rows rather than off a definition span.
-    expect(_addresses(file)).toEqual(["right:3-9:3-9", "right:4-9:4-9"]);
+    expect(_addresses(file)).toEqual([]);
+    expect(document.querySelectorAll(".fold-chev")).toHaveLength(0);
+  });
+
+  test("a hide already in place is honoured before any content arrives", () => {
+    // The ordering claim behind making detection asynchronous (ADR 0006):
+    // a persisted `HiddenSpan` describes itself, so restoring one needs no
+    // detection — only *offering* a new fold does. The renderer drops the
+    // rows the span covers (visibility.ts's `planRows`); this is the
+    // detector's half — it neither trips over the span nor re-derives it.
+    const file = _makeFile();
+    const address = {
+      context: "both" as FoldContext,
+      right_start: 3, right_end: 9, left_start: 3, left_end: 9,
+    };
+    Visibility.hide(Visibility.codeFoldSpan(file.id, address, "user"));
+
+    Folds.attachFileFolds(
+      _mountFile(file.id, [{ kind: "hunk", rows: HUNK_ROWS }]), file, [], NO_REPAINT,
+    );
+
+    expect(Visibility.isHidden(file.id, Visibility.codeFoldSpanId(file.id, address)))
+      .toBe(true);
+    expect(_addresses(file)).toEqual([]);
+  });
+
+  test("the base side alone carries detection when head is unserved", async () => {
+    // The head-side-only limit `head_lines` imposed: a file the route
+    // serves no head side for — one whose head is over the 2 MB cap, or
+    // absent — had no content stream at all and fell back to the rendered
+    // rows. Unchanged context is the same text on both sides, so the base
+    // side answers the same question: `other` (11..12) is detected here
+    // only because the *file* says it is there.
+    const file = _makeFile();
+    await _serve(file, HEAD_LINES, "base");
+    _attachRevealed(file);
+
+    expect(_addresses(file)).toEqual([
+      "both:3-9:3-9", "both:4-9:4-9", "right:11-12:11-12",
+    ]);
   });
 });
 
-describe("indentation folds are detected from head content, not the rendered rows", () => {
+describe("indentation folds are detected from file content, not the rendered rows", () => {
   // No definition spans (unsupported language, or no worktree), so every
   // region is indentation-derived — the half that genuinely needs file
   // content. A hunk truncates `def bar`'s body at line 8; the file runs
@@ -295,8 +360,9 @@ describe("indentation folds are detected from head content, not the rendered row
     return f;
   }
 
-  test("the address covers the whole block even where the hunk stops short", () => {
+  test("the address covers the whole block even where the hunk stops short", async () => {
     const file = _file();
+    await _serve(file, HEAD_LINES);
     Folds.attachFileFolds(_mountFile(file.id, [{ kind: "hunk", rows }]), file, [], NO_REPAINT);
     // Both blocks run to line 10 — the indent detector closes a block on
     // the row before the next line at or below its own indent, and line 10
@@ -304,8 +370,9 @@ describe("indentation folds are detected from head content, not the rendered row
     expect(_addresses(file)).toEqual(["both:3-10:3-10", "both:4-10:4-10"]);
   });
 
-  test("revealing context around the hunk does not move it", () => {
+  test("revealing context around the hunk does not move it", async () => {
     const file = _file();
+    await _serve(file, HEAD_LINES);
     Folds.attachFileFolds(_mountFile(file.id, [{ kind: "hunk", rows }]), file, [], NO_REPAINT);
     const before = file.hunks.flatMap((h) => h.fold_regions);
     before[before.length - 1].summary = "bar's body";
