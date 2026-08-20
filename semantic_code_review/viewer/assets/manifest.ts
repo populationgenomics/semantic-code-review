@@ -117,9 +117,9 @@ function under(fileId: string, spanId: string, all: ManifestNote[]): ManifestNot
  *    switch on the body rather than a hide of its own lines (slice 3),
  *    so while every segment is collapsed the hunk's context rows and its
  *    whole base side are covered by no span and rendered by nothing.
- *  - The band standing in for unchanged context on a file that ships no
- *    `head_lines`. There are no rows to reveal, so there is no span
- *    either — Slice 6's `/file-text` turns it into a real gap.
+ *  - The band standing in for unchanged context on a file `/file-text`
+ *    serves no content for (over `_FILE_TEXT_CAP_BYTES`, or binary).
+ *    There are no rows to reveal, so there is no span either.
  */
 function inRange(
   all: ManifestNote[], right: LineRange | null, left: LineRange | null,
