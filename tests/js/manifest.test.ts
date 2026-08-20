@@ -210,3 +210,31 @@ describe("a manifest is what one hide covers", () => {
     expect(Manifest.under(f.id, Visibility.fileSpanId(f.id), many)).toHaveLength(30);
   });
 });
+
+describe("manifest columns", () => {
+  const note = (side: "old" | "new", line: number, text: string): ManifestNote =>
+    ({ kind: "comment", side, line, text });
+
+  test("a one-sided hide renders one full-width column, still labelled", () => {
+    const el = Manifest.render([note("new", 12, "head-side only")])!;
+    expect(el.classList.contains("manifest-one-side")).toBe(true);
+    const cols = el.querySelectorAll(".manifest-col");
+    expect(cols.length).toBe(1);
+    expect(cols[0].querySelector(".manifest-col-label")!.textContent).toBe("new");
+  });
+
+  test("notes on both sides keep two columns in old/new order", () => {
+    const el = Manifest.render([note("new", 12, "head"), note("old", 9, "base")])!;
+    expect(el.classList.contains("manifest-one-side")).toBe(false);
+    const labels = Array.from(el.querySelectorAll(".manifest-col-label"))
+      .map((n) => n.textContent);
+    expect(labels).toEqual(["old", "new"]);
+  });
+
+  test("an old-only hide renders the base side, not an empty head column", () => {
+    const el = Manifest.render([note("old", 9, "deleted line")])!;
+    const cols = el.querySelectorAll(".manifest-col");
+    expect(cols.length).toBe(1);
+    expect(cols[0].classList.contains("manifest-col-old")).toBe(true);
+  });
+});
