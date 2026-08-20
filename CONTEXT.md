@@ -88,8 +88,9 @@ per hunk (`HunkAnnotations`); the [[viewer-data]] addresses each
 hunk by a stable id of the form `"H<file_idx>_<hunk_idx>"`.
 
 **Fold region**
-A collapsible region within a [[hunk]] in the viewer. Addressed by
-`(file_idx, context, right_range, left_range)`:
+A collapsible structural region in the viewer — the `> def foo(): …`
+chevron. Addressed by `(file_idx, context, right_range, left_range)`,
+where the ranges are absolute 1-indexed file lines:
 
 - `context = "right"` — unchanged-context fold (collapses lines that
   exist in the post-image only). Pure-context folds are the common
@@ -98,6 +99,14 @@ A collapsible region within a [[hunk]] in the viewer. Addressed by
   removed in post).
 - `context = "both"` — straddles changed content; the LLM sees a
   unified-diff view of the region.
+
+The address is the region's identity: what a detected region is matched
+against, what `/fold-summary` asks for, and what the sidecar stores. It
+is derived from file content on both sides — the definition's own
+`fold_symbols` span, or indentation over the whole file — never from the
+rows on screen, so revealing context around a hunk does not move it. The
+row indices a region occupies are per-render presentation, recomputed
+each time the viewer places a region onto the rows it just rendered.
 
 Summaries are produced on demand by the fold-summary pass the first
 time a region is collapsed, then persisted in the
@@ -136,15 +145,16 @@ other hunk *demotes*, folded together with its surrounding context into
 one region whose expansion shows those changes inline with no header. A
 file no live hunk touches is dropped from the render.
 
-Distinct from [[fold-region]]: a fold region is an indent-based collapse
-*within* a rendered hunk (chevrons + the fold-summary pass); a
-collapsible region is the between-/around-hunk expand chip that stands in
-for context and, under a filter, demoted hunks.
+Distinct from [[fold-region]]: a fold region is a structural collapse of
+a definition or indented block (chevrons + the fold-summary pass), which
+may straddle hunks and revealed context; a collapsible region is the
+between-/around-hunk expand chip that stands in for context and, under a
+filter, demoted hunks.
 
 **Fold level**
-The viewer's global collapse depth (`RenderState.fold`, driven by the
-fold slider / keys 1–4): `files` → `hunks` → `segments` → `off`, each a
-shallower fold. Code (raw diff rows) shows only at `off`; `segments`
+The viewer's global collapse depth (`RenderState.collapseLevel`, driven
+by the fold slider / keys 1–4): `files` → `hunks` → `segments` → `off`,
+each a shallower fold. Code (raw diff rows) shows only at `off`; `segments`
 shows each [[hunk]]'s [[segment]] summaries (a segment-less hunk folds as
 one synthetic whole-hunk segment, so every hunk behaves uniformly);
 `hunks` shows hunk headers; `files` shows file headers.
