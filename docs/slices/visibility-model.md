@@ -340,7 +340,7 @@ read it. `head_lines` is gone from the payload, and with it the
 fallback. Measured on this branch's own 19-file diff (pre-augment, so
 the ratio is a ceiling): `data.json` 1,104,642 → 547,143 bytes.
 
-Five things the plan and the ADR got wrong or left open.
+Six things the plan and the ADR got wrong or left open.
 
 - **The cap moved; it did not go.** `/file-text` has its own —
   `_FILE_TEXT_CAP_BYTES`, 2 MB *per side* — and a side over it comes
@@ -379,6 +379,25 @@ Five things the plan and the ADR got wrong or left open.
   stops a re-seed undoing a reveal). What the plan does not mention is
   that the *first paint* has no gap chips either — a file's unchanged
   runs render as bands for one frame, then repaint into chips.
+
+- **"Matched by address" needed saying the other way round: a stored
+  summary is not an address.** `FoldDescription` spells an absent side
+  `0`; detection spells it `null`; `FoldRegion` structurally satisfies
+  `FoldAddress`, so nothing stopped folds.ts minting the `codefold` span
+  id off the record — which it did in two places while reading it off
+  the detected region in a third. A one-sided fold therefore got two ids
+  the moment a summary for it existed on the wire, which is the first
+  collapse plus a reload: the chevron tested one id, the click wrote the
+  other, and the region went unreopenable — rows dropped by a span no
+  affordance could retract, and the chevron itself gone because
+  `_placeRegion` will not hang one off a single row it believes to be
+  expanded. Fixed at both ends: the wire carries `null`
+  (`build_json._absent_side_as_null`), the span id comes from the
+  detected address alone, and `_addressKey` raises on a side that is
+  neither absent nor 1-indexed instead of minting a second identity.
+  Only `codefold` was exposed — it is the one kind addressed by lines
+  rather than by an id the payload hands over (`f.id`, `h.id`, `s.id`),
+  and the one whose address round-trips through a store.
 
 **The JS/Python divergence converged by deleting the second detector,
 not by giving Python the same content.** Slice 2 left Python detecting

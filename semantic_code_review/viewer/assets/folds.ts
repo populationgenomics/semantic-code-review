@@ -526,24 +526,28 @@ function _lastLine(
 // --- Attach + click ----------------------------------------------------
 
 function _canRequestFoldSummary(
-  fileIdx: number | null, region: FoldRegion,
+  fileIdx: number | null, det: DetectedRegion,
 ): boolean {
   if (fileIdx == null) return false;
-  return _foldAddress(region) !== null;
+  return _foldAddress(det) !== null;
 }
 
-function _foldAddress(region: FoldRegion): FoldRequestAddress | null {
-  const context = region.context || "right";
+// The address the request is keyed on — the detected one, which is also
+// what the returned summary is stored against and what the next run's
+// record is matched by. Only the sides `context` names are sent; the
+// server fills the rest with its own absent-side sentinel.
+function _foldAddress(det: DetectedRegion): FoldRequestAddress | null {
+  const context = det.context;
   const addr: FoldRequestAddress = { context };
   if (context === "right" || context === "both") {
-    if (region.right_start == null || region.right_end == null) return null;
-    addr.right_start = region.right_start;
-    addr.right_end = region.right_end;
+    if (det.right_start == null || det.right_end == null) return null;
+    addr.right_start = det.right_start;
+    addr.right_end = det.right_end;
   }
   if (context === "left" || context === "both") {
-    if (region.left_start == null || region.left_end == null) return null;
-    addr.left_start = region.left_start;
-    addr.left_end = region.left_end;
+    if (det.left_start == null || det.left_end == null) return null;
+    addr.left_start = det.left_start;
+    addr.left_end = det.left_end;
   }
   return addr;
 }
@@ -560,12 +564,14 @@ function _foldLabel(region: FoldRegion): string {
 // The request's whole visible effect is on the region record; the
 // placeholder is rendered from `summary` / `_inflight` / `_summaryFailed`
 // on the next paint, so nothing has to reach back into a box that a
-// re-render may already have replaced.
+// re-render may already have replaced. `det` addresses the request,
+// `region` holds the state the answer lands in.
 function _requestFoldSummary(
-  fileIdx: number, region: FoldRegion, repaint: () => void,
+  fileIdx: number, det: DetectedRegion, region: FoldRegion,
+  repaint: () => void,
 ): void {
   if (region._inflight || region.summary) return;
-  const addr = _foldAddress(region);
+  const addr = _foldAddress(det);
   if (!addr) return;
   region._inflight = true;
   region._summaryFailed = false;
@@ -596,10 +602,18 @@ function _foldBoxText(region: FoldRegion, canSummarise: boolean): string {
   return label + "(changes here; run augment to generate a description)";
 }
 
+/** Attach the chevron, the summary placeholder and the manifest to one
+ *  region's header row.
+ *
+ *  `det` is the address and therefore the identity: the span id, and the
+ *  `/fold-summary` request, come from it and from nothing else. `region`
+ *  is the summary carrier matched to that address — its own address
+ *  fields are a *record* of one, written by whatever stored it, and
+ *  reading identity off them is what gave a region two span ids. */
 function _attachOneFold(
-  rows: RowWithEls[], file: FileBlock, region: FoldRegion, headerIdx: number,
-  fileIdx: number, collapsed: boolean, notes: ManifestNote[],
-  repaint: () => void,
+  rows: RowWithEls[], file: FileBlock, det: DetectedRegion, region: FoldRegion,
+  headerIdx: number, fileIdx: number, collapsed: boolean,
+  notes: ManifestNote[], repaint: () => void,
 ): AttachedFold | null {
   const headerRow = rows[headerIdx];
   if (!headerRow) return null;
@@ -620,11 +634,11 @@ function _attachOneFold(
   // itself directly under the anchor: last attached sits nearest the
   // row, so the summary ends up between the header and the manifest.
   const manifestHandle = collapsed
-    ? _attachFoldManifest(file, region, headerRow, anchor, shadow, notes)
+    ? _attachFoldManifest(file, det, headerRow, anchor, shadow, notes)
     : null;
 
   let foldHandle: AnnotationHandle | null = null;
-  const canSummarise = _canRequestFoldSummary(fileIdx, region);
+  const canSummarise = _canRequestFoldSummary(fileIdx, det);
   if (region.summary || region.has_changes || canSummarise) {
     // The placeholder is built either way and shown only while the region
     // is collapsed, so opening and closing it needs no rebuild.
@@ -639,7 +653,7 @@ function _attachOneFold(
         box.classList.add("failed");
         box.style.cursor = "pointer";
         box.addEventListener("click", () => {
-          _requestFoldSummary(fileIdx, region, repaint);
+          _requestFoldSummary(fileIdx, det, region, repaint);
           repaint();
         });
       } else if (canSummarise) {
@@ -656,10 +670,10 @@ function _attachOneFold(
   marker.addEventListener("click", (e) => {
     e.stopPropagation();
     const nowHidden = Visibility.toggle(
-      Visibility.codeFoldSpan(file.id, region, "user"),
+      Visibility.codeFoldSpan(file.id, det, "user"),
     );
-    if (nowHidden && !region.summary && _canRequestFoldSummary(fileIdx, region)) {
-      _requestFoldSummary(fileIdx, region, repaint);
+    if (nowHidden && !region.summary && _canRequestFoldSummary(fileIdx, det)) {
+      _requestFoldSummary(fileIdx, det, region, repaint);
     }
     repaint();
   });
@@ -677,10 +691,10 @@ function _attachOneFold(
  *  here as well would say the same thing twice.
  */
 function _attachFoldManifest(
-  file: FileBlock, region: FoldRegion, headerRow: RowWithEls,
+  file: FileBlock, det: DetectedRegion, headerRow: RowWithEls,
   anchor: HTMLElement, shadow: HTMLElement, notes: ManifestNote[],
 ): AnnotationHandle | null {
-  const spanId = Visibility.codeFoldSpanId(file.id, region);
+  const spanId = Visibility.codeFoldSpanId(file.id, det);
   const hidden = Manifest.under(file.id, spanId, notes).filter(
     (n) => n.line !== (n.side === "new" ? headerRow.new_line : headerRow.old_line),
   );
@@ -709,7 +723,7 @@ function attachFileFolds(
     if (headerIdx === null) continue;   // nothing of this region is on screen
     const region = _upsertFoldRegion(file, det);
     const attached = _attachOneFold(
-      rows, file, region, headerIdx, fileIdx, collapsed, notes, repaint,
+      rows, file, det, region, headerIdx, fileIdx, collapsed, notes, repaint,
     );
     if (!attached) continue;
     if (attached.foldHandle) handles.push(attached.foldHandle);

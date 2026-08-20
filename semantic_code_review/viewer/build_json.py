@@ -514,14 +514,27 @@ def _fold_region_blocks(f: AnnotatedFile) -> list[dict[str, Any]]:
             out.append(
                 {
                     "context": fd.context,
-                    "right_start": fd.right_start,
-                    "right_end": fd.right_end,
-                    "left_start": fd.left_start,
-                    "left_end": fd.left_end,
+                    "right_start": _absent_side_as_null(fd.right_start),
+                    "right_end": _absent_side_as_null(fd.right_end),
+                    "left_start": _absent_side_as_null(fd.left_start),
+                    "left_end": _absent_side_as_null(fd.left_end),
                     "summary": fd.summary,
                 }
             )
     return out
+
+
+def _absent_side_as_null(line: int) -> int | None:
+    """Translate `FoldDescription`'s absent-side sentinel to the wire's.
+
+    Lines are 1-indexed, so `FoldDescription` spells "this side is not
+    part of the address" as `0`; the viewer spells it `null`, and a
+    `CodeFold`'s span id is built from that address. Letting the `0`
+    through gave one region two ids — the id the viewer detected and the
+    id it read back off this record — so a fold went unreopenable once a
+    summary for it had been stored.
+    """
+    return line if line > 0 else None
 
 
 def _lang_from_path(path: str) -> str:

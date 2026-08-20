@@ -1822,6 +1822,100 @@ describe("lazy fold summaries", () => {
     expect(document.body.textContent).not.toContain("x = 2");
   });
 
+  /** A file whose only `CodeFold` lives on one side: `foo` is added, so
+   *  the definition is in the head symbol tree and in no base one. The
+   *  region's address therefore has a null left side — which is where the
+   *  wire's own encoding of "absent" (`FoldDescription`'s `0`) used to
+   *  fork the identity. */
+  function rightOnlyFold(
+    foldRegions: Array<Record<string, unknown>> = [],
+  ): ViewerData {
+    serveFileSides("F0", ["a", "b"], ["a", "def foo():", "    x = 1", "    y = 2", "b"]);
+    return makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 3, dels: 0, summary: "ok",
+        symbols: { added: [], modified: [], removed: [] },
+        fold_symbols: {
+          head: [{
+            start_line: 2, end_line: 4, kind: "function",
+            qualified_name: "foo", depth: 0,
+          }],
+          base: [],
+        },
+        fold_regions: foldRegions,
+        hunks: [makeHunkBlock("H0_0", "adds foo", {
+          old_start: 1, old_count: 2, new_start: 1, new_count: 5,
+          rows: [
+            { kind: "ctx", old_line: 1, new_line: 1, old_text: "a", new_text: "a" },
+            { kind: "ins", old_line: null, new_line: 2, old_text: "", new_text: "def foo():" },
+            { kind: "ins", old_line: null, new_line: 3, old_text: "", new_text: "    x = 1" },
+            { kind: "ins", old_line: null, new_line: 4, old_text: "", new_text: "    y = 2" },
+            { kind: "ctx", old_line: 2, new_line: 5, old_text: "b", new_text: "b" },
+          ],
+        })],
+      }],
+    });
+  }
+
+  /** The record the server writes once a summary has been generated for
+   *  a one-sided fold: `FoldDescription` spells an absent side `0`, not
+   *  null. Verbatim from `/data.json` on a real run. */
+  const STORED_ONE_SIDED_SUMMARY = {
+    context: "right", right_start: 2, right_end: 4,
+    left_start: 0, left_end: 0, summary: "defines foo",
+  };
+
+  test("a stored summary does not fork a one-sided fold's identity", async () => {
+    // The summary record is matched to a detected region by address and
+    // carries its text; it is not an identity. When it was one, the two
+    // encodings of an absent side gave the same region two span ids: the
+    // chevron read one, the click wrote the other, and the fold went
+    // unreachable the first time it was collapsed — rows gone, and no
+    // affordance left to bring them back.
+    await bootViewer(rightOnlyFold([STORED_ONE_SIDED_SUMMARY]));
+    expandHunk();
+    expect(document.body.textContent).toContain("x = 1");
+
+    clickEl(foldChevron());
+
+    expect(document.body.textContent).not.toContain("x = 1");
+    // Still reopenable: one identity, so the collapse the renderer sees
+    // is the collapse the click made.
+    expect(foldChevron().classList.contains("open")).toBe(false);
+    clickEl(foldChevron());
+    expect(document.body.textContent).toContain("x = 1");
+  });
+
+  test("a one-sided fold restored from view state reopens after a reload", async () => {
+    // The reported flow. Collapsing fires `/fold-summary`, so the record
+    // above is on the wire by the next boot while the persisted span
+    // still carries the address detection derives. A click that minted
+    // its span from the record retracted nothing and hid a second span
+    // over the same lines.
+    presetCollapseLevel("off");
+    ViewState.save(RUN_ID, "off", [{
+      fileId: "F0",
+      spans: [{
+        id: "cf:F0:right:2-4:-", fileId: "F0", owner: "user",
+        kind: "codefold", right: { start: 2, end: 4 }, left: null,
+      }],
+      marks: [["cf:F0:right:2-4:-", "user"]],
+    }]);
+
+    await bootViewer(rightOnlyFold([STORED_ONE_SIDED_SUMMARY]));
+    expect(document.body.textContent).not.toContain("x = 1");
+
+    clickEl(foldChevron());
+
+    expect(document.body.textContent).toContain("x = 1");
+    // And the reveal is a removal, not a second span over the same lines:
+    // read back through the store the render pass just wrote.
+    const stored = ViewState.load(RUN_ID)!.files.find((f) => f.fileId === "F0");
+    expect(stored!.spans.filter((s) => s.kind === "codefold")).toEqual([]);
+  });
+
   test("picking a collapse level is a bulk action, not a reset", async () => {
     // The reviewer folds a lockfile away because they do not intend to
     // read it, then expands everything else. The manual fold-away must

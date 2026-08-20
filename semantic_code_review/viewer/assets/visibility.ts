@@ -68,8 +68,17 @@ export interface HiddenSpan {
   left: LineRange | null;
 }
 
-/** The side-tagged address a `CodeFold` is identified by — satisfied by
- *  both the wire `FoldRegion` and folds.ts's freshly detected regions. */
+/** The side-tagged address a `CodeFold` is identified by: what folds.ts
+ *  detected from the file's content.
+ *
+ *  Not the wire `FoldRegion`, which structurally fits but is a *record*
+ *  of an address rather than one — it comes back from a store with its
+ *  own spelling of an absent side, and minting an id from it gave one
+ *  region two. A stored summary is matched to a detected address; it
+ *  never supplies one.
+ *
+ *  Lines are 1-indexed, so a side is either both-null (absent) or a
+ *  pair of positive numbers. */
 export interface FoldAddress {
   context: FoldContext;
   right_start: number | null;
@@ -313,7 +322,26 @@ function segmentSpan(
   };
 }
 
+// A side is absent (null) or a pair of 1-indexed lines. Anything else —
+// notably a 0 sentinel from a store that spells absence that way — would
+// key as a *different* address covering the same lines, which is a span
+// the reviewer can set and never retract. Loud, because the symptom is
+// silent: rows that will not come back.
+function _checkSide(
+  start: number | null, end: number | null, side: string,
+): void {
+  if (start == null && end == null) return;
+  if (start == null || end == null || start < 1 || end < 1) {
+    throw new Error(
+      `CodeFold address: ${side} side is neither absent nor 1-indexed `
+      + `(${start}..${end})`,
+    );
+  }
+}
+
 function _addressKey(a: FoldAddress): string {
+  _checkSide(a.right_start, a.right_end, "right");
+  _checkSide(a.left_start, a.left_end, "left");
   return `${a.context}:${a.right_start ?? ""}-${a.right_end ?? ""}`
     + `:${a.left_start ?? ""}-${a.left_end ?? ""}`;
 }
@@ -324,7 +352,8 @@ function codeFoldSpanId(fileId: string, a: FoldAddress): string {
 
 /** A `CodeFold`'s span is the definition's own absolute extent — the same
  *  address the region record and `/fold-summary` are keyed on, so folding
- *  and re-detecting a region agree without a translation step. */
+ *  and re-detecting a region agree without a translation step. Pass the
+ *  detected address, never a stored record's copy of one. */
 function codeFoldSpan(
   fileId: string, a: FoldAddress, owner: SpanOwner,
 ): HiddenSpan {

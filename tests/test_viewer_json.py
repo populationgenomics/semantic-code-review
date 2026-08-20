@@ -415,6 +415,10 @@ def test_fold_regions_are_the_persisted_summaries_on_the_file() -> None:
     for a definition with no row in any hunk — the common case once
     detection reads the whole file — still comes back, where per-hunk
     detection used to drop it.
+
+    An absent side goes out as `null`, not as `FoldDescription`'s `0`:
+    the address is what a `CodeFold`'s span id is built from, and the
+    two spellings keyed the same region twice.
     """
     hunk = AnnotatedHunk(
         parsed=ParsedHunk(
@@ -446,14 +450,14 @@ def test_fold_regions_are_the_persisted_summaries_on_the_file() -> None:
             "context": "right",
             "right_start": 40,
             "right_end": 80,
-            "left_start": 0,
-            "left_end": 0,
+            "left_start": None,
+            "left_end": None,
             "summary": "the parser",
         },
         {
             "context": "left",
-            "right_start": 0,
-            "right_end": 0,
+            "right_start": None,
+            "right_end": None,
             "left_start": 5,
             "left_end": 9,
             "summary": "the old parser",
