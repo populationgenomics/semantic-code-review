@@ -100,9 +100,17 @@ Three row sequences coexist and must not be confused: a hunk's own rows;
 the *rendered* rows, meaning whatever a given render actually put on
 screen (this grows as the reviewer reveals context and shrinks as they
 collapse a [[fold-region]]); and the *whole-file* row stream `folds.ts`
-synthesises from `head_lines` to detect [[fold-region]]s. An index into
-any of them is presentation, never identity — durable addresses use
-absolute file lines.
+synthesises from the [[file-content]] the diff never mentions, to detect
+[[fold-region]]s. An index into any of them is presentation, never
+identity — durable addresses use absolute file lines.
+
+Unchanged context rows are synthesised, not shipped: the diff carries
+only what a hunk covers. A run of them is the same text on both sides by
+definition, so either side's content serves both halves — which is why a
+file the route can serve only the base of still renders its gaps. A
+zero-count hunk side is written by git as the line *before* the hunk
+(`@@ -10,3 +9,0 @@`), so the cursor either side of one comes from
+`FileText.hunkBounds`, not from `start + count`.
 
 **Hidden span**
 The viewer's one hiding primitive (`viewer/assets/visibility.ts`, ADR
@@ -170,7 +178,7 @@ is in place. Two stand-ins are not one span and take a line range
 instead: a hunk body rendered as a `seg-list` (a `segment` span is a
 binary switch on the body, not a hide of its own lines, so the hunk's
 base side and context rows belong to no span), and the inert band that
-names the unchanged lines a file without `head_lines` cannot show.
+names the unchanged lines the viewer has no [[file-content]] for.
 
 **Fold region**
 A collapsible structural region in the viewer — the `> def foo(): …`
@@ -192,11 +200,23 @@ symbol-snapped region takes the definition's own `fold_symbols` span; an
 indentation-fallback region takes the extent of the [[row]]s it was
 detected over — and the viewer detects over the whole-file row stream,
 not the rendered rows, so revealing context around a hunk does not move
-the address. A file shipped without `head_lines` (binary, deleted,
-generated, or over `build_json._HEAD_LINES_CAP`) has no such stream and
-detects over the rendered containers' `sourceRows` instead — the rows
-they cover, including any a collapsed fold is holding down, so folding
-a region does not change which regions exist.
+the address.
+
+**Detection is the viewer's alone** (ADR 0006 slice 6), because it is
+the side that knows which [[file-content]] it has. A file with none —
+the route served neither side, or has not answered yet — is offered no
+fold at all: a region read off the rendered rows would be addressed
+differently after the next reveal, which is the bug the absolute address
+exists to fix. A `CodeFold` the reviewer already collapsed needs no
+detection; its [[hidden-span]] describes itself and the renderer honours
+it at first paint, so what arrives with the content is the affordance,
+not the state.
+
+`FileBlock.fold_regions` is therefore not detection output: it is the
+run's persisted summaries as addressed records, which the viewer matches
+its own detected regions against. `hunk_layout.compute_fold_regions` is
+the reference implementation the viewer's detector is pinned against on
+`tests/fixtures/fold_regions_cases.json`, not part of the wire build.
 
 Collapsing one is a [[hidden-span]] over that same address; the renderer
 drops the rows it covers and keeps the region's first rendered line as
@@ -209,7 +229,9 @@ Summaries are produced on demand by the fold-summary pass the first
 time a region is collapsed, then persisted in the
 `augmented.scr.json` sidecar as a `FoldDescription` on the file's
 first hunk — a stable home pending a schema migration that lifts
-fold descriptions up to `AnnotatedFile`.
+fold descriptions up to `AnnotatedFile`. `/fold-summary` seeds its
+prompt with the definition the address names, read off the file's
+`fold_symbols` — the spans that address came from.
 
 **Segment**
 An LLM-produced semantic sub-slice of a [[hunk]]: a contiguous run of
@@ -248,14 +270,18 @@ Clicking the chip removes the span, clicking "× collapse" puts it back;
 both go through a re-render, so a reveal survives every later one. A chip
 carries the region's [[manifest]] under its label.
 
-A file with no `head_lines` has no context rows to stand a chip in front
-of. Between two hunks the renderer puts an inert `.gap-absent` band there
-instead — no span, nothing to expand — naming how many lines are missing
-and carrying the notes that sit on them. Slice 6's `/file-text` makes
-those lines fetchable and the band a real region. The
-filter is *not* in the span model — it decides which hunks are live and
-therefore what a region covers, and its demoted hunks' rows render inside
-an expanded region regardless of the [[fold-level]].
+A run of unchanged lines the viewer has no [[file-content]] for cannot be
+a region — there are no rows to expand and a span would be a record no
+click could retract. The renderer puts an inert `.gap-absent` band there
+instead, naming how many lines are missing and carrying the notes that
+sit on them, and the run *breaks* at it: the region either side stands on
+its own rather than the two being spliced into one whose expansion skips
+the lines in between. That happens for a file the route cannot serve, and
+for the paint before it has answered.
+
+The filter is *not* in the span model — it decides which hunks are live
+and therefore what a region covers, and its demoted hunks' rows render
+inside an expanded region regardless of the [[fold-level]].
 
 Distinct from [[fold-region]]: a fold region is a structural collapse of
 a definition or indented block (chevrons + the fold-summary pass), which
@@ -329,16 +355,18 @@ review server and consumed by the TS viewer. Defined by the
 the [[augmented-diff]] sidecar by `viewer/build_json.py` +
 `viewer/hunk_layout.py`, augmented with metadata from `meta.json`.
 
-Distinct from the [[augmented-diff]] sidecar in three ways: (1) it
+Distinct from the [[augmented-diff]] sidecar in two ways: (1) it
 includes pre-rendered [[row]] layout (the diff's two-column structure
 expanded into row objects) which the sidecar leaves implicit; (2) it
 carries transient runtime flags (`pending` while the augment pass is
 still streaming; `_failed` on hunks, `_inflight` / `_summaryFailed` on
-fold regions)
-that have no place on the persisted sidecar; (3) it ships file
-*content* the diff never mentions — `FileBlock.head_lines`, the whole
-post-image, null for binary / deleted / generated files and for any
-file over `build_json._HEAD_LINES_CAP` (5,000 lines).
+fold regions) that have no place on the persisted sidecar.
+
+What it does *not* carry is file **content**. It used to — the whole
+post-image of every file under 5,000 lines — and that is now the
+[[file-content]] route's job, fetched per file as the renderer needs it.
+The payload is the diff, its annotations, and the addresses everything
+else hangs off.
 
 Two fields are not built by `build_json.py` at all: `debug` and
 `run_id` are merged into the payload by the `/data.json` handler,
@@ -352,17 +380,43 @@ its SSE handlers translate a payload into a `DataStore` call, then ask
 the right module to repaint. `DataStore` is stateless: each mutator
 takes the `ViewerData` reference as its first argument.
 
+**File content**
+The text of a changed file, which the diff does not carry and
+[[viewer-data]] does not ship: the viewer fetches it per file from the
+review server's `/file-text?file_idx=N` route and caches it for the run
+(`viewer/assets/file_text.ts`). Both sides come back — `{base, head}`,
+read from the [[run-directory]]'s `base/` and `head/` worktrees, a
+renamed file's pre-image from its `old_path`.
+
+Two consumers, one cache: [[rendered-mode]] parses both sides to render
+prose, and the text diff needs it for everything the diff never mentions
+— the unchanged lines a [[collapsible-region]] stands in front of, and
+the whole-file [[row]] stream [[fold-region]] detection reads.
+
+**A side over `_FILE_TEXT_CAP_BYTES` (2 MB) comes back null**, as does
+one that does not exist (an added file's base) or cannot be read. Null
+is not an empty file and must never be read as one — an empty file
+detects every fold out of existence and makes every gap zero lines long.
+A file with neither side renders bands where its unchanged runs would be
+and is offered no fold. This is the only bound left on either: the
+payload's own 5,000-line cap went with `head_lines` (ADR 0006 slice 6).
+
+Content arrives **after the first paint**, which is safe because a
+[[hidden-span]] is self-describing: restoring state needs no content,
+only offering a new fold does. An arrival repaints, coalesced to one
+render per batch.
+
 **Viewer id**
 The stable per-node identity the viewer keys DOM and state on, minted in
 `build_json.py`: `F<idx>` per file (index into the diff's file list),
 `H<fileidx>_<hunkidx>` per [[hunk]], `G<i>` per overview theme group,
 `SY<i>` per [[symbol]] node ([[symbols-axis]]). The Files sidebar axis is
 the exception: it mints `BF<file_idx>` client-side in `sidebar.ts`.
-The `F<idx>` id is a file's identity everywhere client-side:
-[[rendered-mode]] keys its
-per-file state (source cache, flipped set, fold level, reveal/section
-overrides) on it and parses the index back out for the
-`/file-text?file_idx=` fetch. Ids are position-derived, so they're
+The `F<idx>` id is a file's identity everywhere client-side: the
+[[file-content]] cache is keyed on it, [[rendered-mode]] keys its
+per-file state (flipped set, fold level, reveal/section overrides) on it,
+and the index parses back out of it for the `/file-text?file_idx=`
+fetch. Ids are position-derived, so they're
 stable only within one build of a given diff — not across diffs.
 
 **Rendered mode**
@@ -374,11 +428,11 @@ segments, and comment anchoring; rendered mode answers only "does the
 finished prose read well". It is a separate renderer, not a feature on
 the existing one: nothing keyed on row objects carries over.
 
-Client-side given two inputs: the file's full base+head source (fetched
-lazily from the `/file-text` server route on first flip, cached per
-file — kept out of [[viewer-data]] so untoggled docs stay lean) and the
-existing line diff. `rendered.ts` owns the mode state (which files are
-flipped, the source cache); `markdown.ts` turns source into sanitized
+Client-side given two inputs: the file's full base+head source
+([[file-content]] — the route rendered mode was the first consumer of)
+and the existing line diff. `rendered.ts` owns the mode state (which
+files are flipped, their fold level and reveals) but not the source;
+`markdown.ts` turns source into sanitized
 HTML (markdown-it GFM → DOMPurify); `render.ts` consults
 `Rendered.isOn` and delegates the body. The dependency is one-way
 (`render.ts → rendered.ts`); the toggle repaints via a callback rather

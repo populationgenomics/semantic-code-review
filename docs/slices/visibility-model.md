@@ -119,8 +119,9 @@ Two things the plan got wrong:
 Files with no `head_lines` — generated, binary, deleted, or over
 `_HEAD_LINES_CAP` (5,000 lines) — still detect over the rendered rows,
 #10 included. That is an explicit, commented branch in `folds.ts`, not a
-silent fallback. Slice 6 removes it along with the cap and the
-head-side-only limit.
+silent fallback. Slice 6 removed it along with the cap and the
+head-side-only limit: content comes from `/file-text`, and a file with
+none offers no new fold at all.
 
 Detection is O(rows x definition spans) over the whole file, so it is
 memoised per `FileBlock`, invalidated when an SSE `hunk` event swaps a
@@ -331,24 +332,124 @@ manifest tests and nine gutter tests. All seven manifest tests fail
 against 414f835; of the gutter tests only the two about a file with no
 shipped content do, because the rest were already true.
 
-## Slice 6 — `/file-text` as the content source
+## Slice 6 — `/file-text` as the content source *(done, 8b5d4ed, e7c13a6, 024aa87, 9e74bf4)*
 
-Replace eager `head_lines` in `data.json` with the lazy route rendered
-markdown already uses. Removes the 5,000-line cap and the head-side-only
-limit, and shrinks the payload by the full text of every file.
+`file_text.ts` owns the lazy per-file fetch and cache; both renderers
+read it. `head_lines` is gone from the payload, and with it the
+5,000-line cap, the head-side-only limit and the row-derived detection
+fallback. Measured on this branch's own 19-file diff (pre-augment, so
+the ratio is a ceiling): `data.json` 1,104,642 → 547,143 bytes.
 
-Detection becomes asynchronous. That is safe because a persisted
-`HiddenSpan` is self-describing — restoring it needs no detection, only
-*offering new folds* does — so state returns at first paint and fold
-affordances arrive with the content.
+Five things the plan and the ADR got wrong or left open.
 
-**Done when:** `CodeFold`s and gap expansion work on files over the cap
-and on the base side; `head_lines` is gone from the viewer payload.
+- **The cap moved; it did not go.** `/file-text` has its own —
+  `_FILE_TEXT_CAP_BYTES`, 2 MB *per side* — and a side over it comes
+  back null. Null is load-bearing and is not an empty file: an empty
+  file detects every fold out of existence and makes every gap zero
+  lines long. `hasContent` is false for such a file and the renderer
+  stands the `.gap-absent` band in its lines' place, the same as it does
+  for a binary file and for the paint before the answer arrives.
+
+- **What the head-side-only limit actually cost is not left-addressed
+  folds.** A definition deleted in head has `del` rows *inside* a hunk,
+  which already mapped into the base spans, so those worked. What it
+  cost is a file whose **head side the route cannot serve** — over the
+  cap, or absent: it had no content stream at all. The base side answers
+  the same question, because unchanged context is by definition the same
+  text on both sides, so base now substitutes for head and such a file
+  keeps its folds and its expandable gaps.
+
+- **Slice 5's `.gap-absent` band does not go away.** `/file-text` does
+  not delete the condition, it narrows it: from "generated, binary,
+  deleted, or over 5,000 lines" to "the route served neither side, or
+  has not answered yet". Deleting the band would put the notes on those
+  lines nowhere again.
+
+- **Slice 5's filtered splice needed more than content.** With content
+  the region fills; without it, the run now *breaks* at the unfillable
+  gap — each side of it is its own region and a band names the lines
+  between — rather than splicing the demoted hunks together. The gutter
+  is honest in both cases, and the notes on the missing lines have a
+  home in both.
+
+- **The ordering claim held, with one visible cost.** `_restoreViewState`
+  runs before first paint and needs no rows; `planRows` hides a restored
+  `codefold` span with nothing detected, and nothing re-seeds a
+  `codefold` (only the level and the gaps seed, and the marks ledger
+  stops a re-seed undoing a reveal). What the plan does not mention is
+  that the *first paint* has no gap chips either — a file's unchanged
+  runs render as bands for one frame, then repaint into chips.
+
+**The JS/Python divergence converged by deleting the second detector,
+not by giving Python the same content.** Slice 2 left Python detecting
+per-hunk over rows and called converging "slice 6's job"; the ADR
+frames that as one content source. One *detector* is the better answer:
+the viewer is the side that knows which content it has, and slice 2
+already caught the two implementations silently disagreeing. So the
+server no longer detects. `FileBlock.fold_regions` is the file's
+persisted `FoldDescription`s as addressed records — the summaries the
+run has — and the viewer matches its own detected regions to them by
+address. A summary now re-seeds for an indentation region in an
+unsupported language and for a definition no hunk touches, both of which
+per-hunk detection silently dropped. `/fold-summary` resolves the
+definition for its prompt from `fold_symbols`, the spans the client's
+address came from. `hunk_layout.compute_fold_regions` survives as the
+reference implementation the viewer's detector is pinned against on the
+shared fixture, and says so.
+
+Two things fell out on the way:
+
+- Fold records used to live on `hunks[0]`, so an SSE `hunk` event
+  replacing hunk 0 destroyed every record — including a summary fetched
+  this session. They are the file's now.
+- A zero-count hunk side is written by git as the line *before* the hunk
+  (`@@ -10,3 +9,0 @@`), so `start + count` resumed the head side one line
+  early and paired every later context row against the wrong base line.
+  Pre-existing — the same arithmetic ran against `head_lines` — and now
+  in one place, `FileText.hunkBounds` (9e74bf4).
+
+**Testing.** `tests/js/file_text.test.ts` has no home: the module is a
+cache around one route, and what is worth pinning about it is what the
+renderer does with it, so the claims sit in `viewer.test.ts` and
+`folds.test.ts`. Each was checked by mutation rather than against the
+pre-slice bundle (the harness changed shape): dropping the base-side
+fallback fails the two base-side tests; splicing instead of breaking the
+run fails the three band tests; reading the hunk header literally fails
+the pure-deletion pairing test. The `/file-text` stub answers from a
+per-test registry rather than the response queue, and can be held open,
+which is how a test looks at the viewer before its content exists.
+
+## What the model does not cover
+
+With all six slices in, "one primitive, one rule" holds for every hide
+the reviewer can move. Three things sit outside it, all deliberately:
+
+- **The sidebar filter** (slice 3). Demoting a non-live hunk into a
+  region is not a `HiddenSpan`: its rows render inside an expanded
+  region regardless of level, because the region — not the absent hunk
+  header — is what stands in for them. Folding it into the union would
+  leave the reviewer expanding a chip onto context with no affordance
+  for the changes.
+- **The seg-list** (slice 5). A `segment` span is a binary switch on the
+  hunk body rather than a hide of its own lines, and carries no base
+  side, so while every segment is collapsed the hunk's context rows and
+  its whole base side are covered by no span. Its manifest is built from
+  a line range instead (`Manifest.inRange`).
+- **The sidebar's active pill** (slice 4), which persists to
+  `localStorage` keyed on `head_sha` — already-broken cross-run
+  persistence by ADR 0006's own port-0 reasoning, left alone because the
+  pill is a filter.
+
+And one bound remains: `/file-text`'s 2 MB per side. A file over it on
+both sides has no content in the viewer — no `CodeFold`s, no expandable
+gaps, bands where its unchanged runs would be. That is the honest
+failure: the alternative is a detector reading the rendered rows, which
+is #10 with better manners.
 
 ## Deferred
 
 - **Single-file view for large files**, bounding DOM size. `/file-text`
-  is the enabling piece; Slice 6 heads that way without committing to it.
+  is the enabling piece and is in place; the view is not built.
 - **Manifest navigation** — clicking an entry reveals to that line.
 - **Skipped files** (`PARKED_IDEAS.md` item 25) — a lockfile should
   collapse to one row rather than render hunks reading "(no intent — may
