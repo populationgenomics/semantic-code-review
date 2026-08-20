@@ -12,16 +12,21 @@
 //   and the summary and collapse state hanging off it — attached to the
 //   region the reviewer folded (#10).
 //
-//   Presentation is the row indices a span lands on in *this* render,
+//   Presentation is the row the chevron hangs off in *this* render,
 //   recomputed by `_placeRegion` every time `attachFileFolds` runs.
-//   Nothing durable is keyed on them.
+//   Nothing durable is keyed on it.
 //
-// `attachFileFolds(fileEl, file)` walks every visible row in the file
-// body in DOM order — across hunks and adjacent expanded context blocks
-// — places each detected region onto that row list, and attaches one
-// chevron per placed region. Folds whose body spans a hunk boundary
-// collapse the right rows in every container because each row carries
-// its own DOM refs.
+// Collapsing is a `HiddenSpan` over the region's own address, and that
+// span is the whole of the state: the renderer drops the rows it covers
+// (`Visibility.planRows`) rather than this module writing `display` on
+// them, so a re-render reproduces the collapse instead of losing it, and
+// a fold inside a folded file is still folded when the file reopens.
+//
+// `attachFileFolds(fileEl, file, repaint)` walks every row the render
+// emitted, in DOM order — across hunks and adjacent expanded context
+// blocks — finds the row each detected region's span opens on, and
+// attaches one chevron there. `repaint` is the renderer's re-render:
+// every click here moves a span and asks for one.
 //
 // First time the reviewer collapses a region whose summary is
 // empty, this module fires `POST /fold-summary` against the live
@@ -31,6 +36,7 @@
 //
 import { Annotations, type AnnotationHandle } from "./annotations";
 import { FileRows, type RowWithEls } from "./file_rows";
+import { Visibility } from "./visibility";
 
 interface DetectedRegion {
   // Indices into the row sequence detection ran over — the whole-file
@@ -49,13 +55,6 @@ interface DetectedRegion {
   // indentation-fallback region.
   qualified_name: string | null;
   kind: string | null;
-}
-
-// Where a detected region's span lands in the current render's row list.
-interface FoldPlacement {
-  headerIdx: number;
-  bodyStartIdx: number;
-  bodyEndIdx: number;
 }
 
 interface AttachedFold {
@@ -134,32 +133,44 @@ function _teardownFileFolds(fileId: string): void {
 }
 
 // Walk the file body's .diff / .gap-expansion containers in DOM order,
-// pull each one's row stream out of `FileRows` (recorded by render.ts
-// at construction time), and flatten into one indexable list so folds
-// can straddle hunks and adjacent gap-context.
-function _collectFileRows(fileEl: HTMLElement): RowWithEls[] {
+// pull each one's rows out of `FileRows` (recorded by render.ts at
+// construction time), and flatten into one indexable list so folds can
+// straddle hunks and adjacent gap-context.
+//
+// Two streams come back. `placed` is what the render put on screen, and
+// is where a chevron can hang. `source` adds back the rows collapsed
+// folds are holding down — the fallback detector reads it, so which
+// regions a file has does not depend on which of them are folded.
+interface CollectedRows {
+  placed: RowWithEls[];
+  source: RowBlock[];
+}
+
+function _collectFileRows(fileEl: HTMLElement): CollectedRows {
   const body = fileEl.querySelector(".file-body");
-  if (!body) return [];
-  const out: RowWithEls[] = [];
+  if (!body) return { placed: [], source: [] };
+  const placed: RowWithEls[] = [];
+  const source: RowBlock[] = [];
   for (const child of Array.from(body.children) as HTMLElement[]) {
     const cls = child.classList;
-    let source: HTMLElement | null = null;
+    let container: HTMLElement | null = null;
     if (cls.contains("hunk")) {
-      source = child.querySelector(".diff");
+      container = child.querySelector(".diff");
     } else if (cls.contains("gap-expansion")) {
-      source = child;
+      container = child;
     }
-    if (!source) continue;
-    const entry = FileRows.get(source);
+    if (!container) continue;
+    const entry = FileRows.get(container);
     if (!entry) continue;
     for (let i = 0; i < entry.rows.length; i++) {
-      out.push({
+      placed.push({
         ...entry.rows[i],
         oldEl: entry.oldEls[i], newEl: entry.newEls[i],
       });
     }
+    for (const r of entry.sourceRows) source.push(r);
   }
-  return out;
+  return { placed, source };
 }
 
 // The file's whole row stream: unchanged head context interleaved with
@@ -171,7 +182,10 @@ function _collectFileRows(fileEl: HTMLElement): RowWithEls[] {
 // Returns null when the payload carries no head content: `head_lines` is
 // null for generated / binary / deleted files and for any file over
 // build_json's `_HEAD_LINES_CAP` (5,000 lines). Those files fall back to
-// detecting over the rendered rows — today's behaviour, #10 included.
+// detecting over the rendered containers' own rows, so their regions
+// still move when the reviewer reveals context (#10). Folding one does
+// not move them: the fallback reads `FileRows`' `sourceRows`, which keep
+// the rows a collapsed fold is holding down.
 // Slice 6 replaces `head_lines` with the lazy `/file-text` route and
 // removes both the cap and the head-side-only limit.
 function _fileRowStream(file: FileBlock): RowBlock[] | null {
@@ -200,8 +214,8 @@ function _fileRowStream(file: FileBlock): RowBlock[] | null {
 // Detection is O(rows x definition spans) over the whole file, so it is
 // memoised per FileBlock and only re-run when the content it reads
 // changes: an SSE `hunk` event swaps the HunkBlock object (DataStore
-// .replaceHunk), which the identity check below catches. The rendered-
-// rows fallback is deliberately not cached — it is reveal-dependent.
+// .replaceHunk), which the identity check below catches. The fallback
+// path is deliberately not cached — it is reveal-dependent.
 interface DetectionCache {
   hunks: HunkBlock[];
   regions: DetectedRegion[];
@@ -210,11 +224,11 @@ interface DetectionCache {
 const _DETECTION_CACHE = new WeakMap<FileBlock, DetectionCache>();
 
 function _detectFileRegions(
-  file: FileBlock, renderedRows: RowBlock[],
+  file: FileBlock, fallbackRows: RowBlock[],
 ): DetectedRegion[] {
   const syms = file.fold_symbols || { head: [], base: [] };
   const stream = _fileRowStream(file);
-  if (stream === null) return _computeFoldRegions(renderedRows, syms.head, syms.base);
+  if (stream === null) return _computeFoldRegions(fallbackRows, syms.head, syms.base);
   const hunks = file.hunks || [];
   const cached = _DETECTION_CACHE.get(file);
   if (cached
@@ -227,23 +241,25 @@ function _detectFileRegions(
   return regions;
 }
 
-// Where a region's absolute span lands in the rows this render produced:
-// the first and last rendered row inside the span on either side. The
-// header is the first such row even when the definition's own opening
-// line is not rendered — the chevron has to hang off a row that exists.
-// Null when the span shows one row or fewer, leaving nothing to fold.
+// Which of the rows this render produced the chevron hangs off: the first
+// one inside the region's span on either side, even when the definition's
+// own opening line is not rendered — the chevron has to sit on a row that
+// exists. A collapsed region has exactly that one row on screen (the
+// renderer drops the rest), so it always places; an expanded one needs at
+// least two, or there is nothing to fold away.
 function _placeRegion(
-  det: DetectedRegion, rows: RowBlock[],
-): FoldPlacement | null {
+  det: DetectedRegion, rows: RowBlock[], collapsed: boolean,
+): number | null {
   let first = -1;
-  let last = -1;
+  let count = 0;
   for (let i = 0; i < rows.length; i++) {
     if (!_rowInRegion(rows[i], det)) continue;
     if (first < 0) first = i;
-    last = i;
+    count++;
   }
-  if (first < 0 || last <= first) return null;
-  return { headerIdx: first, bodyStartIdx: first + 1, bodyEndIdx: last };
+  if (first < 0) return null;
+  if (!collapsed && count < 2) return null;
+  return first;
 }
 
 function _rowInRegion(row: RowBlock, det: DetectedRegion): boolean {
@@ -559,17 +575,23 @@ function _foldLabel(region: FoldRegion): string {
   return `${kind}${region.qualified_name} — `;
 }
 
+// The request's whole visible effect is on the region record; the
+// placeholder is rendered from `summary` / `_inflight` / `_summaryFailed`
+// on the next paint, so nothing has to reach back into a box that a
+// re-render may already have replaced.
 function _requestFoldSummary(
-  fileIdx: number, region: FoldRegion,
-  foldHandle: AnnotationHandle,
+  fileIdx: number, region: FoldRegion, repaint: () => void,
 ): void {
   if (region._inflight || region.summary) return;
   const addr = _foldAddress(region);
   if (!addr) return;
   region._inflight = true;
-  const label = _foldLabel(region);
-  _setFoldBoxContent(foldHandle, label + "summarising…", { pending: true });
-  const retry = (): void => _requestFoldSummary(fileIdx, region, foldHandle);
+  region._summaryFailed = false;
+  const settle = (failed: boolean): void => {
+    region._inflight = false;
+    region._summaryFailed = failed;
+    repaint();
+  };
   fetch(_sessionEndpoint() + "/fold-summary", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -577,54 +599,26 @@ function _requestFoldSummary(
   })
     .then((r) => r.json().then((j: { summary?: string }) => ({ status: r.status, body: j })))
     .then(({ status, body }) => {
-      region._inflight = false;
-      if (status === 200 && body.summary) {
-        region.summary = body.summary;
-        _setFoldBoxContent(foldHandle, label + body.summary, {});
-      } else {
-        _setFoldBoxContent(
-          foldHandle, label + "(summary failed — click to retry)",
-          { failed: true }, retry,
-        );
-      }
+      if (status === 200 && body.summary) region.summary = body.summary;
+      settle(!(status === 200 && body.summary));
     })
-    .catch(() => {
-      region._inflight = false;
-      _setFoldBoxContent(
-        foldHandle, label + "(summary failed — click to retry)",
-        { failed: true }, retry,
-      );
-    });
+    .catch(() => settle(true));
 }
 
-function _setFoldBoxContent(
-  foldHandle: AnnotationHandle, text: string,
-  classes: { pending?: boolean; failed?: boolean },
-  onClick?: () => void,
-): void {
-  if (!foldHandle || !foldHandle.element) return;
-  const box = foldHandle.element.querySelector(".annot-box") as HTMLElement | null;
-  if (!box) return;
-  box.textContent = text;
-  box.classList.remove("pending", "failed");
-  if (classes.pending) box.classList.add("pending");
-  if (classes.failed) box.classList.add("failed");
-  if (onClick) {
-    const clone = box.cloneNode(true) as HTMLElement;
-    clone.style.cursor = "pointer";
-    clone.addEventListener("click", onClick);
-    box.replaceWith(clone);
-  }
-  foldHandle.resize();
+// What the collapsed placeholder says, given the region's summary state.
+function _foldBoxText(region: FoldRegion, canSummarise: boolean): string {
+  const label = _foldLabel(region);
+  if (region.summary) return label + region.summary;
+  if (region._summaryFailed) return label + "(summary failed — click to retry)";
+  if (canSummarise) return label + "summarising…";
+  return label + "(changes here; run augment to generate a description)";
 }
 
 function _attachOneFold(
-  rows: RowWithEls[], region: FoldRegion, place: FoldPlacement, fileIdx: number,
+  rows: RowWithEls[], file: FileBlock, region: FoldRegion, headerIdx: number,
+  fileIdx: number, collapsed: boolean, repaint: () => void,
 ): AttachedFold | null {
-  const bodyStart = place.bodyStartIdx;
-  const bodyEnd = place.bodyEndIdx;
-
-  const headerRow = rows[place.headerIdx];
+  const headerRow = rows[headerIdx];
   if (!headerRow) return null;
   const headerOld = headerRow.oldEl;
   const headerNew = headerRow.newEl;
@@ -635,55 +629,49 @@ function _attachOneFold(
   const anchor = side === "new" ? headerNew : headerOld;
   const shadow = side === "new" ? headerOld : headerNew;
 
-  const marker = _chev(false, "fold-chev");
+  const marker = _chev(collapsed, "fold-chev");
   marker.setAttribute("role", "button");
   marker.setAttribute("tabindex", "0");
 
   let foldHandle: AnnotationHandle | null = null;
   const canSummarise = _canRequestFoldSummary(fileIdx, region);
   if (region.summary || region.has_changes || canSummarise) {
-    // Seed the placeholder with the symbol identity (if any) followed by
-    // the summary or its pending/run-augment stand-in.
-    const label = _foldLabel(region);
-    const pending = !region.summary && canSummarise;
-    const bodyText = region.summary
-      || (canSummarise
-        ? "summarising…"
-        : "(changes here; run augment to generate a description)");
+    // The placeholder is built either way and shown only while the region
+    // is collapsed, so opening and closing it needs no rebuild.
     foldHandle = Annotations.attach({
       anchor, shadowAnchor: shadow,
-      variant: "fold", content: label + bodyText,
+      variant: "fold", content: _foldBoxText(region, canSummarise),
     });
-    if (!region.summary) {
-      const box = foldHandle.element.querySelector(".annot-box");
-      if (box) box.classList.add("missing");
-      if (pending && box) box.classList.add("pending");
+    const box = foldHandle.element.querySelector(".annot-box") as HTMLElement | null;
+    if (box && !region.summary) {
+      box.classList.add("missing");
+      if (region._summaryFailed) {
+        box.classList.add("failed");
+        box.style.cursor = "pointer";
+        box.addEventListener("click", () => {
+          _requestFoldSummary(fileIdx, region, repaint);
+          repaint();
+        });
+      } else if (canSummarise) {
+        box.classList.add("pending");
+      }
     }
-    foldHandle.element.style.display = "none";
-    if (foldHandle.placeholder) foldHandle.placeholder.style.display = "none";
+    foldHandle.element.style.display = collapsed ? "" : "none";
+    if (foldHandle.placeholder) {
+      foldHandle.placeholder.style.display = collapsed ? "" : "none";
+    }
+    if (collapsed) foldHandle.resize();
   }
 
   marker.addEventListener("click", (e) => {
     e.stopPropagation();
-    const nowOpen = marker.classList.toggle("open");
-    for (let i = bodyStart; i <= bodyEnd; i++) {
-      const r = rows[i];
-      if (!r) continue;
-      if (r.oldEl) r.oldEl.style.display = nowOpen ? "" : "none";
-      if (r.newEl) r.newEl.style.display = nowOpen ? "" : "none";
+    const nowHidden = Visibility.toggle(
+      Visibility.codeFoldSpan(file.id, region, "user"),
+    );
+    if (nowHidden && !region.summary && _canRequestFoldSummary(fileIdx, region)) {
+      _requestFoldSummary(fileIdx, region, repaint);
     }
-    if (foldHandle) {
-      foldHandle.element.style.display = nowOpen ? "none" : "";
-      if (foldHandle.placeholder) {
-        foldHandle.placeholder.style.display = nowOpen ? "none" : "";
-      }
-      if (!nowOpen) foldHandle.resize();
-    }
-    if (!nowOpen && !region.summary && foldHandle
-        && _canRequestFoldSummary(fileIdx, region)) {
-      _requestFoldSummary(fileIdx, region, foldHandle);
-    }
-    Annotations.reflow(anchor);
+    repaint();
   });
 
   const contentCell = anchor && (anchor.children[1] as HTMLElement | undefined);
@@ -691,18 +679,25 @@ function _attachOneFold(
   return { marker, foldHandle };
 }
 
-function attachFileFolds(fileEl: HTMLElement, file: FileBlock): void {
+function attachFileFolds(
+  fileEl: HTMLElement, file: FileBlock, repaint: () => void,
+): void {
   _teardownFileFolds(file.id);
   const fileIdx = Number(file.id.replace("F", ""));
-  const rows = _collectFileRows(fileEl);
+  const { placed: rows, source } = _collectFileRows(fileEl);
   if (rows.length === 0) return;
   const handles: AnnotationHandle[] = [];
   const chevrons: SVGElement[] = [];
-  for (const det of _detectFileRegions(file, rows)) {
-    const place = _placeRegion(det, rows);
-    if (!place) continue;   // nothing of this region is on screen
+  for (const det of _detectFileRegions(file, source)) {
+    const collapsed = Visibility.isHidden(
+      file.id, Visibility.codeFoldSpanId(file.id, det),
+    );
+    const headerIdx = _placeRegion(det, rows, collapsed);
+    if (headerIdx === null) continue;   // nothing of this region is on screen
     const region = _upsertFoldRegion(file, det);
-    const attached = _attachOneFold(rows, region, place, fileIdx);
+    const attached = _attachOneFold(
+      rows, file, region, headerIdx, fileIdx, collapsed, repaint,
+    );
     if (!attached) continue;
     if (attached.foldHandle) handles.push(attached.foldHandle);
     if (attached.marker) chevrons.push(attached.marker);

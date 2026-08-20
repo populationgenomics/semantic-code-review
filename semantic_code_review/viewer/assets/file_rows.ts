@@ -29,9 +29,15 @@ export interface RowWithEls extends RowBlock {
 }
 
 export interface FileRowsEntry {
+  /** The rows this render put on screen, paired with their elements. A
+   *  collapsed `CodeFold` keeps rows out of here. */
   rows: RowBlock[];
   oldEls: HTMLElement[];
   newEls: HTMLElement[];
+  /** Every row the container covers, collapsed ones included. Detection
+   *  reads this: what a file's `CodeFold`s are must not depend on which
+   *  of them are currently folded. */
+  sourceRows: RowBlock[];
 }
 
 const _storage = new WeakMap<HTMLElement, FileRowsEntry>();

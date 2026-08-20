@@ -231,6 +231,9 @@ interface FoldRegion {
    *  an echoing SSE event doesn't stomp the in-flight fetch handler's
    *  DOM update. */
   _inflight?: boolean;
+  /** Viewer-runtime only: the last POST /fold-summary for this region
+   *  failed, so the placeholder renders the retry copy. */
+  _summaryFailed?: boolean;
 }
 
 // --- Sidebar groups ---------------------------------------------------------

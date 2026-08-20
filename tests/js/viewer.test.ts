@@ -1336,6 +1336,15 @@ describe("lazy fold summaries", () => {
     (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
   }
 
+  /** The `CodeFold` chevron currently on screen. Re-queried after every
+   *  click: hide and reveal are state changes that repaint, so the node
+   *  a test clicked is not the node it should then assert on. */
+  function foldChevron(): SVGElement {
+    const el = document.querySelector(".fold-chev") as SVGElement | null;
+    if (!el) throw new Error("no .fold-chev in the document");
+    return el;
+  }
+
   function clickEl(el: Element): void {
     // jsdom's SVGElement doesn't expose .click(); the addEventListener
     // path needs a dispatched event. Bubbling so the .hunk-header's
@@ -1355,7 +1364,9 @@ describe("lazy fold summaries", () => {
     const marker = document.querySelector(".fold-chev") as SVGElement | null;
     expect(marker).not.toBeNull();
     clickEl(marker!);
-    expect(marker!.classList.contains("open")).toBe(false);
+    // The click moves a hidden span and repaints, so the chevron on
+    // screen is a fresh node rendered from the new state.
+    expect(foldChevron().classList.contains("open")).toBe(false);
 
     const foldCalls = fetchCalls.filter((c) => c.url.includes("/fold-summary"));
     expect(foldCalls).toHaveLength(1);
@@ -1486,27 +1497,20 @@ describe("lazy fold summaries", () => {
     const chevrons = document.querySelectorAll(".fold-chev");
     expect(chevrons.length).toBeGreaterThanOrEqual(1);
 
-    // Identify the row elements (one per side) we expect to hide.
     // ScrAnnotations.attach injects a .row-annotation wrapper for the
     // fold's summary box; filter it out and only count diff rows.
-    const expansionRows = document.querySelectorAll(
-      ".gap-expansion .half-new .row:not(.row-annotation)",
-    );
-    const hunkRows = document.querySelectorAll(
-      ".hunk .half-new .row:not(.row-annotation)",
-    );
-    expect(expansionRows.length).toBe(2);
-    expect(hunkRows.length).toBeGreaterThanOrEqual(1);
-    // Pre-condition: all visible.
-    expect((expansionRows[1] as HTMLElement).style.display).not.toBe("none");
-    expect((hunkRows[0] as HTMLElement).style.display).not.toBe("none");
+    const rowTexts = (sel: string): string[] =>
+      Array.from(document.querySelectorAll(`${sel} .half-new .row:not(.row-annotation)`))
+        .map((r) => r.textContent ?? "");
+    expect(rowTexts(".gap-expansion")).toHaveLength(2);
+    expect(rowTexts(".hunk").length).toBeGreaterThanOrEqual(1);
 
-    // Click the chevron — body of the fold (expansion row 2 + hunk row 1)
-    // should go to display:none. Header (expansion row 1) stays.
+    // Click the chevron — the fold's body (expansion row 2 + the hunk's
+    // pair row) is not rendered at all; the header row stays, in the
+    // container it started in.
     clickEl(chevrons[0]);
-    expect((expansionRows[0] as HTMLElement).style.display).not.toBe("none");
-    expect((expansionRows[1] as HTMLElement).style.display).toBe("none");
-    expect((hunkRows[0] as HTMLElement).style.display).toBe("none");
+    expect(rowTexts(".gap-expansion")).toEqual(["1def foo():"]);
+    expect(rowTexts(".hunk")).toEqual([]);
 
     // Fold-summary fires for the cross-stretch range (lines 1..3).
     const foldCalls = fetchCalls.filter((c) => c.url.includes("/fold-summary"));
@@ -1590,7 +1594,7 @@ describe("lazy fold summaries", () => {
 
     const marker = document.querySelector(".fold-chev") as SVGElement;
     clickEl(marker);   // collapse → POST
-    expect(marker.classList.contains("open")).toBe(false);
+    expect(foldChevron().classList.contains("open")).toBe(false);
 
     // SSE arrives for the same region with the same payload.
     lastEventSource().dispatch("fold-summary", {
@@ -1600,8 +1604,7 @@ describe("lazy fold summaries", () => {
 
     // Fold is still collapsed; the box carries the summary text from
     // the fetch handler.
-    const markerAfter = document.querySelector(".fold-chev") as SVGElement;
-    expect(markerAfter.classList.contains("open")).toBe(false);
+    expect(foldChevron().classList.contains("open")).toBe(false);
     expect(document.querySelector(".annot-box")?.textContent).toBe("wraps in try/except");
   });
 
@@ -1632,6 +1635,105 @@ describe("lazy fold summaries", () => {
     // DOM, so the new fold box's content reflects the streamed value.
     const box = document.querySelector(".annot-box");
     expect(box?.textContent).toBe("remote summary");
+  });
+
+  // --- One visibility model (ADR 0006) ------------------------------------
+  //
+  // The renderer's half of the model: what the reviewer hid or revealed is
+  // a span, so a repaint reproduces it rather than reverting to whatever
+  // the DOM happened to hold. The span algebra itself is exercised without
+  // a document in tests/js/visibility.test.ts.
+
+  function fileEl(id: string): HTMLElement {
+    const el = document.querySelector(`.file[data-id="${id}"]`) as HTMLElement | null;
+    if (!el) throw new Error(`no .file[data-id=${id}] in the document`);
+    return el;
+  }
+
+  function clickFileHeader(id: string): void {
+    (fileEl(id).querySelector(".file-header") as HTMLElement).click();
+  }
+
+  test("a revealed context gap survives a re-render", async () => {
+    await bootViewer(makeData({
+      pending: true,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 1, dels: 1, summary: "",
+        head_lines: ["l1", "l2", "l3", "l4", "l5"],
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock("H0_0", "ok", {
+          old_start: 3, old_count: 1, new_start: 3, new_count: 1,
+          rows: [{ kind: "pair", old_line: 3, new_line: 3, old_text: "l3", new_text: "L3" }],
+        })],
+      }],
+    }));
+
+    (document.querySelector(".gap-chip") as HTMLElement).click();
+    expect(document.querySelectorAll(".gap-expansion")).toHaveLength(1);
+    expect(document.body.textContent).toContain("l1");
+
+    // Any repaint at all — here the augment pass finishing — used to put
+    // the chip back, because the expansion was only ever a DOM swap.
+    lastEventSource().dispatch("done", { reason: "complete" });
+
+    expect(document.querySelectorAll(".gap-expansion")).toHaveLength(1);
+    expect(document.body.textContent).toContain("l1");
+  });
+
+  test("a CodeFold inside a file survives collapsing and reopening the file", async () => {
+    await bootViewer(dataWithFold());
+    expandHunk();
+    clickEl(foldChevron());
+    expect(foldChevron().classList.contains("open")).toBe(false);
+    expect(document.body.textContent).not.toContain("x = 2");
+
+    // Collapse the whole file over the top of it, then reopen. State is
+    // nested, not flattened: the container's collapse does not destroy
+    // what is inside it.
+    clickFileHeader("F0");
+    expect(fileEl("F0").querySelector(".file-body")).toBeNull();
+    clickFileHeader("F0");
+
+    expect(foldChevron().classList.contains("open")).toBe(false);
+    expect(document.body.textContent).not.toContain("x = 2");
+  });
+
+  test("picking a collapse level is a bulk action, not a reset", async () => {
+    // The reviewer folds a lockfile away because they do not intend to
+    // read it, then expands everything else. The manual fold-away must
+    // not blow back open.
+    await bootViewer(makeData({
+      pending: false,
+      files: [
+        {
+          id: "F0", path: "src/a.py", status: "modified", language: "python",
+          adds: 1, dels: 1, summary: "", head_lines: null,
+          symbols: { added: [], modified: [], removed: [] },
+          hunks: [makeHunkBlock("H0_0", "real change")],
+        },
+        {
+          id: "F1", path: "uv.lock", status: "modified", language: "",
+          adds: 1, dels: 1, summary: "", head_lines: null,
+          symbols: { added: [], modified: [], removed: [] },
+          hunks: [makeHunkBlock("H1_0", "regenerated")],
+        },
+      ],
+    }));
+
+    clickFileHeader("F1");
+    expect(fileEl("F1").classList.contains("folded")).toBe(true);
+
+    (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+
+    // Everything else opened to code; the lockfile is still shut.
+    expect(fileEl("F0").querySelectorAll(".diff .row").length).toBeGreaterThan(0);
+    expect(fileEl("F1").classList.contains("folded")).toBe(true);
+    expect(fileEl("F1").querySelector(".file-body")).toBeNull();
+
+    // Reset is the one control that retracts it.
+    (document.getElementById("reset-btn") as HTMLElement).click();
+    expect(fileEl("F1").classList.contains("folded")).toBe(false);
   });
 });
 

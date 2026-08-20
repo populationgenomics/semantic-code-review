@@ -120,10 +120,9 @@ export const DataStore = {
    *  Outcomes:
    *    "applied"   — summary written; caller should re-render.
    *    "noop"      — same summary already present; nothing to do.
-   *    "inflight"  — region's own local POST is racing this; caller
-   *                  must NOT re-render (the in-flight handler owns
-   *                  the DOM update, and a re-render would pop the
-   *                  user's just-closed fold back open).
+   *    "inflight"  — region's own local POST is racing this; the
+   *                  in-flight handler repaints when it settles, so
+   *                  the caller has nothing to do.
    *    "not-found" — the address doesn't match any region. */
   applyFoldSummary(
     data: ViewerData, addr: FoldRegionAddress, summary: string,

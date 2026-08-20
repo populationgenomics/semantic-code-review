@@ -11,7 +11,6 @@ import { Comments } from "./comments";
 import { Console } from "./console";
 import { DataStore, type FoldRegionAddress } from "./data_store";
 import { DebugDrawer } from "./debug_drawer";
-import { Folds } from "./folds";
 import { PostModal } from "./post_modal";
 import { Progress } from "./progress";
 import { Render } from "./render";
@@ -255,16 +254,10 @@ function applyFoldSummary(payload: SseFoldSummaryEvent): void {
   };
   const outcome = DataStore.applyFoldSummary(DATA, addr, payload.summary);
   if (outcome !== "applied") return;
-  // Cross-tab path: the resolved region tells us which hunk hosts it
-  // so we can replace just that hunk's DOM, then re-attach folds over
-  // the freshly-rendered rows.
-  const resolved = DataStore.findFoldRegion(DATA, addr);
-  if (!resolved) return;
-  Render.renderHunkReplace(resolved.file, resolved.hostHunkIdx);
-  const fileEl = document.querySelector(
-    '.file[data-id="' + _cssEscape(resolved.file.id) + '"]',
-  ) as HTMLElement | null;
-  if (fileEl) Folds.attachFileFolds(fileEl, resolved.file);
+  // The summary lives on the region record and the collapse lives in the
+  // span store, so a plain repaint picks the new text up without
+  // disturbing what the reviewer has folded.
+  Render.render();
 }
 
 function finaliseStreaming(): void {
@@ -272,13 +265,4 @@ function finaliseStreaming(): void {
   // Hide the progress strip — only useful while streaming.
   Progress.finalise();
   Render.render();
-}
-
-// Minimal CSS.escape polyfill — only needed because some older
-// browsers ship without `CSS.escape`. File and hunk ids are simple
-// ASCII identifiers, so escaping is a defensive measure.
-function _cssEscape(s: string): string {
-  const w = window as unknown as { CSS?: { escape?: (s: string) => string } };
-  if (w.CSS && typeof w.CSS.escape === "function") return w.CSS.escape(s);
-  return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => "\\" + c);
 }
