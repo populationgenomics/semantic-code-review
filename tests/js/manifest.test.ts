@@ -215,26 +215,24 @@ describe("manifest columns", () => {
   const note = (side: "old" | "new", line: number, text: string): ManifestNote =>
     ({ kind: "comment", side, line, text });
 
-  test("a one-sided hide renders one full-width column, still labelled", () => {
+  test("both columns are always emitted, in old/new order and unlabelled", () => {
     const el = Manifest.render([note("new", 12, "head-side only")])!;
-    expect(el.classList.contains("manifest-one-side")).toBe(true);
     const cols = el.querySelectorAll(".manifest-col");
-    expect(cols.length).toBe(1);
-    expect(cols[0].querySelector(".manifest-col-label")!.textContent).toBe("new");
+    expect(cols.length).toBe(2);
+    expect(el.querySelectorAll(".manifest-col-label").length).toBe(0);
+    expect(Array.from(cols).map((c) => c.className))
+      .toEqual(["manifest-col manifest-col-old", "manifest-col manifest-col-new"]);
   });
 
-  test("notes on both sides keep two columns in old/new order", () => {
-    const el = Manifest.render([note("new", 12, "head"), note("old", 9, "base")])!;
-    expect(el.classList.contains("manifest-one-side")).toBe(false);
-    const labels = Array.from(el.querySelectorAll(".manifest-col-label"))
-      .map((n) => n.textContent);
-    expect(labels).toEqual(["old", "new"]);
+  test("a head-side note lands in the right column and the left stays empty", () => {
+    const el = Manifest.render([note("new", 12, "head-side only")])!;
+    expect(el.querySelector(".manifest-col-old")!.children.length).toBe(0);
+    expect(el.querySelector(".manifest-col-new")!.textContent).toContain("head-side only");
   });
 
-  test("an old-only hide renders the base side, not an empty head column", () => {
+  test("a base-side note lands in the left column", () => {
     const el = Manifest.render([note("old", 9, "deleted line")])!;
-    const cols = el.querySelectorAll(".manifest-col");
-    expect(cols.length).toBe(1);
-    expect(cols[0].classList.contains("manifest-col-old")).toBe(true);
+    expect(el.querySelector(".manifest-col-old")!.textContent).toContain("deleted line");
+    expect(el.querySelector(".manifest-col-new")!.children.length).toBe(0);
   });
 });

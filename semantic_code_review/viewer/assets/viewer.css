@@ -1152,7 +1152,9 @@ body {
 /* --- Manifest of a hide (ADR 0006) --------------------------------------- */
 /* Every collapsed thing is headed by the notes it covers, so hiding a
  * range never erases the reviewer's own. Two columns because which side
- * a note sits on is half of where it is; the colour sidebar on each
+ * a note sits on is half of where it is, and position carries that —
+ * left is base, right is head, so the columns need no labels and an
+ * empty one is itself the cue; the colour sidebar on each
  * entry carries its kind, matching the palette of the expanded view
  * (amber comment, blue LLM annotation). Entries are inert — not
  * navigable, by ADR 0006 — so nothing here takes a pointer cursor. */
@@ -1168,15 +1170,7 @@ body {
   text-align: left;
   cursor: default;
 }
-.manifest-one-side { grid-template-columns: minmax(0, 1fr); }
 .manifest-col { min-width: 0; }
-.manifest-col-label {
-  color: var(--fg-dim);
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  padding-bottom: 2px;
-}
 .manifest-entry {
   display: flex;
   gap: 8px;
@@ -1207,8 +1201,15 @@ body {
 
 /* Inside a diff, a manifest is annotation content rather than a block of
  * its own: the box already carries the padding and the border. */
-.diff .annot-manifest .annot-box { max-height: none; font-style: normal; }
-.diff .annot-manifest .annot-box .manifest { padding: 0; }
+.diff .annot-manifest .annot-box {
+  max-height: none;
+  font-style: normal;
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+.diff .annot-manifest .annot-box .manifest { padding: 2px 0 0; }
 
 /* --- Status bar ----------------------------------------------------------- */
 /* `position: sticky; bottom: 0` only pins relative to a scrolling

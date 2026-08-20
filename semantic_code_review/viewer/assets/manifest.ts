@@ -145,20 +145,19 @@ function _el(tag: string, className: string, text?: string): HTMLElement {
   return n;
 }
 
-/** The list heading a hide, or null when the hide covers no note (the
- *  common case — the caller renders nothing).
+/** The two-column list heading a hide, or null when the hide covers no
+ *  note (the common case — the caller renders nothing).
  *
- *  One column per side that actually carries a note. The side a note
- *  sits on is what the columns exist to show, and an empty column shows
- *  nothing while halving the width the text has to truncate into — so a
- *  one-sided hide, which is most of them on an additive diff, renders as
- *  a single full-width block still labelled with its side.
+ *  Position is the side: left column is base, right is head, matching
+ *  the grid the notes sit over. The columns are therefore unlabelled and
+ *  both are always emitted — a one-sided hide leaves its opposite column
+ *  empty, which is the cue, and a label would only repeat it.
  */
 function render(entries: ManifestNote[]): HTMLElement | null {
   if (entries.length === 0) return null;
-  const sides = (["old", "new"] as const).filter((s) => entries.some((n) => n.side === s));
-  const wrap = _el("div", sides.length === 1 ? "manifest manifest-one-side" : "manifest");
-  for (const s of sides) wrap.appendChild(_column(s, entries));
+  const wrap = _el("div", "manifest");
+  wrap.appendChild(_column("old", entries));
+  wrap.appendChild(_column("new", entries));
   // Not navigable, and not a way to open what it stands in for: the
   // chrome a manifest sits inside (a segment row, a gap chip) toggles on
   // click, and an entry is not that click.
@@ -168,7 +167,6 @@ function render(entries: ManifestNote[]): HTMLElement | null {
 
 function _column(side: "old" | "new", entries: ManifestNote[]): HTMLElement {
   const col = _el("div", `manifest-col manifest-col-${side}`);
-  col.appendChild(_el("div", "manifest-col-label", side));
   for (const n of entries) {
     if (n.side !== side) continue;
     const entry = _el("div", `manifest-entry manifest-${n.kind}`);
