@@ -36,7 +36,11 @@ class _FoldRegion:
     """An indent-based fold region within a hunk's row sequence.
 
     `header_idx` is the row whose content opens the block; `body_start_idx`
-    ..`body_end_idx` are the rows that fold up under the header.
+    ..`body_end_idx` are the rows that fold up under the header. These
+    three are indices into the rows *this* call was given, so they stay
+    inside the detector and the cross-language fixture that pins it —
+    they are not emitted to the viewer, which places every region against
+    the rows of its own current render.
     `context` picks the addressing scheme the viewer uses for /fold-summary:
       - "right": region has post-image lines only. right_start/right_end
         are 1-indexed line numbers in head/<path>.
@@ -477,9 +481,6 @@ def build_hunk_viewer_block(
         summary = summary_by_key.get(key, "")
         fold_region_blocks.append(
             {
-                "header_idx": reg.header_idx,
-                "body_start_idx": reg.body_start_idx,
-                "body_end_idx": reg.body_end_idx,
                 "context": reg.context,
                 "right_start": reg.right_start,
                 "right_end": reg.right_end,

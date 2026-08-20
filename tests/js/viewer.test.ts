@@ -1318,8 +1318,7 @@ describe("lazy fold summaries", () => {
             { kind: "pair", old_line: 2, new_line: 2, old_text: "    x = 1", new_text: "    x = 2" },
           ],
           fold_regions: [
-            { header_idx: 0, body_start_idx: 1, body_end_idx: 1,
-              context: "both", right_start: 1, right_end: 2,
+            { context: "both", right_start: 1, right_end: 2,
               left_start: 1, left_end: 2,
               has_changes: true, summary: "" },
           ],
@@ -1429,7 +1428,6 @@ describe("lazy fold summaries", () => {
             { kind: "del", old_line: 12, new_line: null, old_text: "    y = 2", new_text: "" },
           ],
           fold_regions: [{
-            header_idx: 0, body_start_idx: 1, body_end_idx: 2,
             context: "left", right_start: null, right_end: null,
             left_start: 10, left_end: 12, has_changes: true, summary: "",
           }],
