@@ -48,9 +48,16 @@ const SESSION_ENDPOINT: string = (() => {
 
 function boot(): void {
   Comments.init({
-    // Sidebar pills carry per-file unresolved/total counts; repaint
-    // them whenever the store changes (initial load, save, delete).
-    onChange: () => Sidebar.refreshFileCommentCounts(),
+    // Two things read the comment store outside the store's own render:
+    // the sidebar pills' unresolved/total counts, and the manifest
+    // heading every hide. The manifest is built during `render()`, and
+    // the store arrives after the first one — a file already collapsed
+    // from restored view state would head an empty list until something
+    // else repainted. So a store change is a repaint, not a patch.
+    onChange: () => {
+      Sidebar.refreshFileCommentCounts();
+      Render.render();
+    },
   });
   installDoneButton();
   Sidebar.init(DATA, {

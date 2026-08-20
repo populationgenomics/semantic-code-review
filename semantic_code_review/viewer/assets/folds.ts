@@ -22,7 +22,7 @@
 // them, so a re-render reproduces the collapse instead of losing it, and
 // a fold inside a folded file is still folded when the file reopens.
 //
-// `attachFileFolds(fileEl, file, repaint)` walks every row the render
+// `attachFileFolds(fileEl, file, notes, repaint)` walks every row the render
 // emitted, in DOM order — across hunks and adjacent expanded context
 // blocks — finds the row each detected region's span opens on, and
 // attaches one chevron there. `repaint` is the renderer's re-render:
@@ -36,6 +36,7 @@
 //
 import { Annotations, type AnnotationHandle } from "./annotations";
 import { FileRows, type RowWithEls } from "./file_rows";
+import { Manifest, type ManifestNote } from "./manifest";
 import { Visibility } from "./visibility";
 
 interface DetectedRegion {
@@ -60,6 +61,7 @@ interface DetectedRegion {
 interface AttachedFold {
   marker: SVGElement;
   foldHandle: AnnotationHandle | null;
+  manifestHandle: AnnotationHandle | null;
 }
 
 interface FoldRequestAddress {
@@ -616,7 +618,8 @@ function _foldBoxText(region: FoldRegion, canSummarise: boolean): string {
 
 function _attachOneFold(
   rows: RowWithEls[], file: FileBlock, region: FoldRegion, headerIdx: number,
-  fileIdx: number, collapsed: boolean, repaint: () => void,
+  fileIdx: number, collapsed: boolean, notes: ManifestNote[],
+  repaint: () => void,
 ): AttachedFold | null {
   const headerRow = rows[headerIdx];
   if (!headerRow) return null;
@@ -632,6 +635,13 @@ function _attachOneFold(
   const marker = _chev(collapsed, "fold-chev");
   marker.setAttribute("role", "button");
   marker.setAttribute("tabindex", "0");
+
+  // Attached before the summary box because each annotation inserts
+  // itself directly under the anchor: last attached sits nearest the
+  // row, so the summary ends up between the header and the manifest.
+  const manifestHandle = collapsed
+    ? _attachFoldManifest(file, region, headerRow, anchor, shadow, notes)
+    : null;
 
   let foldHandle: AnnotationHandle | null = null;
   const canSummarise = _canRequestFoldSummary(fileIdx, region);
@@ -676,11 +686,34 @@ function _attachOneFold(
 
   const contentCell = anchor && (anchor.children[1] as HTMLElement | undefined);
   if (contentCell) contentCell.prepend(marker);
-  return { marker, foldHandle };
+  return { marker, foldHandle, manifestHandle };
+}
+
+/** The manifest of what a collapsed region is holding down, hung under
+ *  the header row the chevron sits on.
+ *
+ *  The header row is the one line of the span that still renders, so a
+ *  note on it is already on screen with its own comment row; listing it
+ *  here as well would say the same thing twice.
+ */
+function _attachFoldManifest(
+  file: FileBlock, region: FoldRegion, headerRow: RowWithEls,
+  anchor: HTMLElement, shadow: HTMLElement, notes: ManifestNote[],
+): AnnotationHandle | null {
+  const spanId = Visibility.codeFoldSpanId(file.id, region);
+  const hidden = Manifest.under(file.id, spanId, notes).filter(
+    (n) => n.line !== (n.side === "new" ? headerRow.new_line : headerRow.old_line),
+  );
+  const content = Manifest.render(hidden);
+  if (!content) return null;
+  return Annotations.attach({
+    anchor, shadowAnchor: shadow, variant: "manifest", content,
+  });
 }
 
 function attachFileFolds(
-  fileEl: HTMLElement, file: FileBlock, repaint: () => void,
+  fileEl: HTMLElement, file: FileBlock, notes: ManifestNote[],
+  repaint: () => void,
 ): void {
   _teardownFileFolds(file.id);
   const fileIdx = Number(file.id.replace("F", ""));
@@ -696,10 +729,11 @@ function attachFileFolds(
     if (headerIdx === null) continue;   // nothing of this region is on screen
     const region = _upsertFoldRegion(file, det);
     const attached = _attachOneFold(
-      rows, file, region, headerIdx, fileIdx, collapsed, repaint,
+      rows, file, region, headerIdx, fileIdx, collapsed, notes, repaint,
     );
     if (!attached) continue;
     if (attached.foldHandle) handles.push(attached.foldHandle);
+    if (attached.manifestHandle) handles.push(attached.manifestHandle);
     if (attached.marker) chevrons.push(attached.marker);
   }
   _FILE_FOLD_STATE[file.id] = { handles, chevrons };

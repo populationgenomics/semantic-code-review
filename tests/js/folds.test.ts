@@ -197,7 +197,7 @@ function _addresses(file: FileBlock): string[] {
  *  surrounding context revealed — the two states #10's repro alternates
  *  between. */
 function _attachUnrevealed(file: FileBlock): void {
-  Folds.attachFileFolds(_mountFile(file.id, [{ kind: "hunk", rows: HUNK_ROWS }]), file, NO_REPAINT);
+  Folds.attachFileFolds(_mountFile(file.id, [{ kind: "hunk", rows: HUNK_ROWS }]), file, [], NO_REPAINT);
 }
 
 function _attachRevealed(file: FileBlock): void {
@@ -205,7 +205,7 @@ function _attachRevealed(file: FileBlock): void {
     { kind: "gap-expansion", rows: _contextRows(1, 5) },
     { kind: "hunk", rows: HUNK_ROWS },
     { kind: "gap-expansion", rows: _contextRows(9, 12) },
-  ]), file, NO_REPAINT);
+  ]), file, [], NO_REPAINT);
 }
 
 describe("CodeFold spans are absolute and reveal-invariant", () => {
@@ -265,7 +265,7 @@ describe("CodeFold spans are absolute and reveal-invariant", () => {
     const file = _makeFile({ head_lines: null, fold_symbols: { head: [], base: [] } });
     Folds.attachFileFolds(
       _mountFile(file.id, [{ kind: "hunk", rows: _contextRows(3, 9) }]), file,
-      NO_REPAINT,
+      [], NO_REPAINT,
     );
     // Two nested indentation regions (`class Foo:` and `def bar`), both
     // addressed off the rows rather than off a definition span.
@@ -297,7 +297,7 @@ describe("indentation folds are detected from head content, not the rendered row
 
   test("the address covers the whole block even where the hunk stops short", () => {
     const file = _file();
-    Folds.attachFileFolds(_mountFile(file.id, [{ kind: "hunk", rows }]), file, NO_REPAINT);
+    Folds.attachFileFolds(_mountFile(file.id, [{ kind: "hunk", rows }]), file, [], NO_REPAINT);
     // Both blocks run to line 10 — the indent detector closes a block on
     // the row before the next line at or below its own indent, and line 10
     // is the blank ahead of `def other():`.
@@ -306,7 +306,7 @@ describe("indentation folds are detected from head content, not the rendered row
 
   test("revealing context around the hunk does not move it", () => {
     const file = _file();
-    Folds.attachFileFolds(_mountFile(file.id, [{ kind: "hunk", rows }]), file, NO_REPAINT);
+    Folds.attachFileFolds(_mountFile(file.id, [{ kind: "hunk", rows }]), file, [], NO_REPAINT);
     const before = file.hunks.flatMap((h) => h.fold_regions);
     before[before.length - 1].summary = "bar's body";
 
@@ -315,7 +315,7 @@ describe("indentation folds are detected from head content, not the rendered row
       { kind: "gap-expansion", rows: _contextRows(1, 3) },
       { kind: "hunk", rows },
       { kind: "gap-expansion", rows: _contextRows(9, 12) },
-    ]), file, NO_REPAINT);
+    ]), file, [], NO_REPAINT);
 
     // The record is re-matched rather than orphaned, so its summary is
     // still what the collapsed placeholder shows. A row-derived address

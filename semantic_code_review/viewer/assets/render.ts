@@ -16,6 +16,16 @@
 // is the funnel every mutation passes through, so it is where the level
 // and the span store are written to `sessionStorage` (view_state.ts).
 //
+// A hide is not an erasure: every collapsed thing here is headed by the
+// manifest of the notes it covers (manifest.ts, ADR 0006), so a comment
+// inside a folded file still says where it is. Every run of lines this
+// module skips leaves something standing in its place too — a chip, a
+// `@@` header, a chevron — so the line-number gutter never steps
+// silently. The one gap left is a file with no `head_lines` under a
+// filter: an expanded region there splices two demoted hunks together
+// with the context between them missing, and there is no row to say so
+// until slice 6 makes that context fetchable.
+//
 // Other modules attach to surfaces this module creates:
 //   - sidebar.ts mutates pill state but reads from .file / .hunk
 //   - folds.ts attaches chevrons to the per-half row elements stashed
@@ -27,6 +37,7 @@ import { Annotations } from "./annotations";
 import { Comments } from "./comments";
 import { FileRows } from "./file_rows";
 import { Folds } from "./folds";
+import { Manifest, type ManifestNote } from "./manifest";
 import { Progress } from "./progress";
 import { Rendered } from "./rendered";
 import { Sidebar } from "./sidebar";
@@ -147,7 +158,9 @@ function renderHunkReplace(file: FileBlock, hunkIdx: number): void {
     render();
     return;
   }
-  const fresh = _renderHunk(h, file, new Set<string>());
+  const fresh = _renderHunk(
+    h, file, new Set<string>(), Manifest.notes(file, Comments.getAll()),
+  );
   const existing = document.querySelector(
     '.hunk[data-id="' + _cssEscape(h.id) + '"]',
   );
@@ -347,7 +360,15 @@ function _renderFile(f: FileBlock): HTMLElement | null {
   const folded = Visibility.isHidden(f.id, Visibility.fileSpanId(f.id));
   div.classList.toggle("folded", folded);
   div.appendChild(_renderFileHeader(f, folded));
-  if (!folded) {
+  // Gathered once per file: every hide inside it draws its entries from
+  // this list, and the store walk is O(comments) per call.
+  const notes = Manifest.notes(f, Comments.getAll());
+  if (folded) {
+    const manifest = Manifest.render(
+      Manifest.under(f.id, Visibility.fileSpanId(f.id), notes),
+    );
+    if (manifest) div.appendChild(manifest);
+  } else {
     const body = _el("div", "file-body");
     if (Rendered.isOn(f.id)) {
       // Rendered markdown mode is a separate body renderer: no diff
@@ -359,10 +380,10 @@ function _renderFile(f: FileBlock): HTMLElement | null {
       if (overview) body.appendChild(overview);
       // One header per collapsed CodeFold across the whole body: a fold
       // straddling a hunk boundary must not place one in each container.
-      _renderFileBody(body, f, liveIds, new Set<string>());
+      _renderFileBody(body, f, liveIds, new Set<string>(), notes);
       div.appendChild(body);
       // Run a file-level fold pass once the body is assembled.
-      Folds.attachFileFolds(div, f, render);
+      Folds.attachFileFolds(div, f, notes, render);
     }
   }
   return div;
@@ -378,7 +399,7 @@ function _renderFile(f: FileBlock): HTMLElement | null {
  *  the chrome around it (an explanatory header vs. a bare collapse). */
 function _renderFileBody(
   body: HTMLElement, f: FileBlock, liveIds: Set<string> | null,
-  headed: Set<string>,
+  headed: Set<string>, notes: ManifestNote[],
 ): void {
   const isLive = (h: HunkBlock): boolean => liveIds === null || liveIds.has(h.id);
   const total = f.head_lines ? f.head_lines.length : null;
@@ -391,8 +412,13 @@ function _renderFileBody(
       (h) => !isLive(h) && h.new_start >= curNew && (endNew === null || h.new_start <= endNew),
     );
     const { rows, marks } = _regionRows(f, curNew, endNew, curOld, demoted);
-    if (rows.length === 0) return;
-    body.appendChild(_renderRegion(f, { position, rows, marks }, headed));
+    if (rows.length === 0) {
+      if (position === "between" && endNew !== null && endNew >= curNew) {
+        body.appendChild(_renderAbsentContext(curNew, endNew, curOld, notes));
+      }
+      return;
+    }
+    _renderRegion(body, f, { position, rows, marks }, headed, notes);
   };
 
   // Just after a sidebar pill click, reveal the focused hunks' code
@@ -400,12 +426,42 @@ function _renderFileBody(
   const reveal = liveIds !== null && _state.focusReveal;
   for (const h of f.hunks.filter(isLive)) {
     flush(h.new_start - 1, emittedLive ? "between" : "top");
-    body.appendChild(_renderHunk(h, f, headed, reveal));
+    body.appendChild(_renderHunk(h, f, headed, notes, reveal));
     emittedLive = true;
     curNew = h.new_start + h.new_count;
     curOld = h.old_start + h.old_count;
   }
   flush(total, "bottom");
+}
+
+/** The band standing in for unchanged lines between two hunks that the
+ *  payload carries no text for — `head_lines` is null for a binary,
+ *  deleted or generated file and for anything over `_HEAD_LINES_CAP`.
+ *
+ *  Inert, and no `HiddenSpan`: there are no rows to reveal, so an expand
+ *  chip would open onto nothing and a span would be a record no click
+ *  could retract. The next hunk's `@@` header already accounts for the
+ *  step in the gutter; what it does not do is say those lines exist, or
+ *  give the notes sitting on them anywhere to appear — an ingested
+ *  comment on unchanged context in a 6,000-line file would otherwise be
+ *  nowhere in the page. Slice 6's `/file-text` makes the lines fetchable
+ *  and this band a real gap.
+ */
+function _renderAbsentContext(
+  startNew: number, endNew: number, startOld: number, notes: ManifestNote[],
+): HTMLElement {
+  const count = endNew - startNew + 1;
+  const band = _el("div", "gap-chip gap-absent");
+  band.title = "This file's contents were not shipped to the viewer, so these"
+    + " lines cannot be expanded.";
+  const word = count === 1 ? "line" : "lines";
+  band.innerHTML = `<span class="gap-icon">⋯</span>`
+    + `<span class="gap-label">${count} unchanged ${word} (not loaded)</span>`;
+  return _withManifest(band, Manifest.inRange(
+    notes,
+    { start: startNew, end: endNew },
+    { start: startOld, end: startOld + count - 1 },
+  ));
 }
 
 function _renderFileHeader(f: FileBlock, folded: boolean): HTMLElement {
@@ -534,15 +590,33 @@ function _rowExtent(rows: RowBlock[], attr: "new_line" | "old_line"): LineRange 
 }
 
 /** A region renders as a chip while its span is hidden and as the diff
- *  itself once the reviewer removes it. */
+ *  itself once the reviewer removes it. Appends rather than returns
+ *  because a chip carrying a manifest is two elements, not one. */
 function _renderRegion(
-  f: FileBlock, region: DiffRegion, headed: Set<string>,
-): HTMLElement {
+  body: HTMLElement, f: FileBlock, region: DiffRegion, headed: Set<string>,
+  notes: ManifestNote[],
+): void {
   const span = _regionSpan(f, region);
   Visibility.seed(span);
-  return Visibility.isHidden(f.id, span.id)
-    ? _renderRegionChip(region, span)
-    : _renderRegionExpansion(f, region, span, headed);
+  if (!Visibility.isHidden(f.id, span.id)) {
+    body.appendChild(_renderRegionExpansion(f, region, span, headed));
+    return;
+  }
+  body.appendChild(_withManifest(
+    _renderRegionChip(region, span),
+    Manifest.under(f.id, span.id, notes),
+  ));
+}
+
+/** Hang a manifest under a one-line band (a gap chip, loaded or not).
+ *  The band is its own click target, so the entries wrap onto their own
+ *  line rather than sitting inside its centred flex row. */
+function _withManifest(band: HTMLElement, entries: ManifestNote[]): HTMLElement {
+  const manifest = Manifest.render(entries);
+  if (!manifest) return band;
+  band.classList.add("has-manifest");
+  band.appendChild(manifest);
+  return band;
 }
 
 function _renderRegionChip(region: DiffRegion, span: HiddenSpan): HTMLElement {
@@ -611,14 +685,20 @@ function _renderDiffRows(
 // --- Hunk + diff body ---------------------------------------------------
 
 function _renderHunk(
-  h: HunkBlock, f: FileBlock, headed: Set<string>, reveal = false,
+  h: HunkBlock, f: FileBlock, headed: Set<string>, notes: ManifestNote[],
+  reveal = false,
 ): HTMLElement {
   const div = _el("div", "hunk");
   div.dataset.id = h.id;
   const folded = _hunkHidden(f, h, reveal);
   div.classList.toggle("folded", folded);
   div.appendChild(_renderHunkHeader(h, folded, f));
-  if (!folded) {
+  if (folded) {
+    const manifest = Manifest.render(
+      Manifest.under(f.id, Visibility.hunkSpanId(h.id), notes),
+    );
+    if (manifest) div.appendChild(manifest);
+  } else {
     // The collapse ladder shows segment summaries (never raw code) while
     // every segment span is in place. A hunk with no segments folds as one
     // synthetic segment spanning it, so every hunk behaves uniformly.
@@ -627,6 +707,15 @@ function _renderHunk(
       (s) => !Visibility.isHidden(f.id, Visibility.segmentSpanId(s.id)),
     );
     if (!reveal && !anyOpen) {
+      // One manifest for the body, not one per summary row: what the
+      // seg-list stands in for is the whole hunk — its base side and its
+      // context rows included — and no single segment span says that.
+      const manifest = Manifest.render(Manifest.inRange(
+        notes,
+        { start: h.new_start, end: h.new_start + h.new_count - 1 },
+        { start: h.old_start, end: h.old_start + h.old_count - 1 },
+      ));
+      if (manifest) div.appendChild(manifest);
       const list = _el("div", "seg-list");
       for (const s of segs) list.appendChild(_renderSegmentFolded(s, f));
       div.appendChild(list);
