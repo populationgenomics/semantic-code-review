@@ -174,11 +174,12 @@ and on the base side; `head_lines` is gone from the viewer payload.
 
 ## Open
 
-- **PR #9** stores collapse state on the region record keyed by span.
-  Slice 2 fixed the span rather than replacing the record, so #9's
-  `_folded` now lands on a key that holds; its tests still encode
-  row-derived spans and would need rewriting on top. Decide before
-  Slice 3, not during.
+- **PR #9** — *residual; expected to close unmerged once Slice 3 lands.*
+  It stores collapse state on the region record keyed by span. Slice 2
+  fixed the span rather than replacing the record, so its `_folded`
+  would now land on a key that holds — but Slice 3 replaces the record
+  with a `HiddenSpan`, so rewriting its row-derived tests to land it
+  first buys one slice of life.
 - **This plan has no ADR yet.** The decision record for the visibility
   model is owed; per `docs/adr/README.md` the ADR holds the *why* and
   this file holds the order.
