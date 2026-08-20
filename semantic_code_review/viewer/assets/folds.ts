@@ -1,12 +1,27 @@
-// Indent-based fold detection + on-demand fold-summary requests.
+// CodeFold detection + on-demand fold-summary requests.
 //
-// The viewer's fold story is unified per-file (not per-stretch):
-// `attachFileFolds(fileEl, file)` walks every visible row in the
-// file body in DOM order — across hunks and adjacent expanded
-// context blocks — runs an indent-based fold detector over the
-// unified sequence, and attaches one chevron per region. Folds
-// whose body spans a hunk boundary collapse the right rows in
-// every container because each row carries its own DOM refs.
+// A CodeFold is a `> def foo(): …` collapse of a structural region.
+// Detection and presentation are separate concerns here:
+//
+//   Identity is a side-tagged span of absolute file lines —
+//   `(context, right_start..right_end, left_start..left_end)` — and is
+//   detected from the *file's own content*: the definition spans in
+//   `fold_symbols` plus a whole-file row stream synthesised from
+//   `head_lines`. It therefore does not move when the reviewer reveals
+//   context, which is what keeps the persistent `FoldRegion` record —
+//   and the summary and collapse state hanging off it — attached to the
+//   region the reviewer folded (#10).
+//
+//   Presentation is the row indices a span lands on in *this* render,
+//   recomputed by `_placeRegion` every time `attachFileFolds` runs.
+//   Nothing durable is keyed on them.
+//
+// `attachFileFolds(fileEl, file)` walks every visible row in the file
+// body in DOM order — across hunks and adjacent expanded context blocks
+// — places each detected region onto that row list, and attaches one
+// chevron per placed region. Folds whose body spans a hunk boundary
+// collapse the right rows in every container because each row carries
+// its own DOM refs.
 //
 // First time the reviewer collapses a region whose summary is
 // empty, this module fires `POST /fold-summary` against the live
@@ -18,6 +33,9 @@ import { Annotations, type AnnotationHandle } from "./annotations";
 import { FileRows, type RowWithEls } from "./file_rows";
 
 interface DetectedRegion {
+  // Indices into the row sequence detection ran over — the whole-file
+  // stream, not the rendered rows. Kept because the cross-language
+  // fixture pins them; `_placeRegion` is what the renderer uses.
   header_idx: number;
   body_start_idx: number;
   body_end_idx: number;
@@ -26,10 +44,18 @@ interface DetectedRegion {
   right_end: number | null;
   left_start: number | null;
   left_end: number | null;
+  has_changes: boolean;
   // Identity of the definition the region snapped to; null for an
   // indentation-fallback region.
   qualified_name: string | null;
   kind: string | null;
+}
+
+// Where a detected region's span lands in the current render's row list.
+interface FoldPlacement {
+  headerIdx: number;
+  bodyStartIdx: number;
+  bodyEndIdx: number;
 }
 
 interface AttachedFold {
@@ -136,6 +162,99 @@ function _collectFileRows(fileEl: HTMLElement): RowWithEls[] {
   return out;
 }
 
+// The file's whole row stream: unchanged head context interleaved with
+// the hunks' own rows, in file order. This is the detection input — it
+// depends only on the file's content, so the regions it yields (and the
+// absolute line spans that identify them) are the same no matter which
+// part of the file is currently rendered.
+//
+// Returns null when the payload carries no head content: `head_lines` is
+// null for generated / binary / deleted files and for any file over
+// build_json's `_HEAD_LINES_CAP` (5,000 lines). Those files fall back to
+// detecting over the rendered rows — today's behaviour, #10 included.
+// Slice 6 replaces `head_lines` with the lazy `/file-text` route and
+// removes both the cap and the head-side-only limit.
+function _fileRowStream(file: FileBlock): RowBlock[] | null {
+  const hl = file.head_lines;
+  if (!hl) return null;
+  const rows: RowBlock[] = [];
+  let cn = 1;
+  let co = 1;
+  const ctxTo = (upTo: number): void => {
+    while (cn < upTo) {
+      const t = hl[cn - 1] ?? "";
+      rows.push({ kind: "ctx", old_line: co, new_line: cn, old_text: t, new_text: t });
+      co++; cn++;
+    }
+  };
+  for (const h of file.hunks || []) {
+    ctxTo(h.new_start);
+    for (const r of h.rows || []) rows.push(r);
+    cn = h.new_start + h.new_count;
+    co = h.old_start + h.old_count;
+  }
+  ctxTo(hl.length + 1);
+  return rows;
+}
+
+// Detection is O(rows x definition spans) over the whole file, so it is
+// memoised per FileBlock and only re-run when the content it reads
+// changes: an SSE `hunk` event swaps the HunkBlock object (DataStore
+// .replaceHunk), which the identity check below catches. The rendered-
+// rows fallback is deliberately not cached — it is reveal-dependent.
+interface DetectionCache {
+  hunks: HunkBlock[];
+  regions: DetectedRegion[];
+}
+
+const _DETECTION_CACHE = new WeakMap<FileBlock, DetectionCache>();
+
+function _detectFileRegions(
+  file: FileBlock, renderedRows: RowBlock[],
+): DetectedRegion[] {
+  const syms = file.fold_symbols || { head: [], base: [] };
+  const stream = _fileRowStream(file);
+  if (stream === null) return _computeFoldRegions(renderedRows, syms.head, syms.base);
+  const hunks = file.hunks || [];
+  const cached = _DETECTION_CACHE.get(file);
+  if (cached
+      && cached.hunks.length === hunks.length
+      && cached.hunks.every((h, i) => h === hunks[i])) {
+    return cached.regions;
+  }
+  const regions = _computeFoldRegions(stream, syms.head, syms.base);
+  _DETECTION_CACHE.set(file, { hunks: hunks.slice(), regions });
+  return regions;
+}
+
+// Where a region's absolute span lands in the rows this render produced:
+// the first and last rendered row inside the span on either side. The
+// header is the first such row even when the definition's own opening
+// line is not rendered — the chevron has to hang off a row that exists.
+// Null when the span shows one row or fewer, leaving nothing to fold.
+function _placeRegion(
+  det: DetectedRegion, rows: RowBlock[],
+): FoldPlacement | null {
+  let first = -1;
+  let last = -1;
+  for (let i = 0; i < rows.length; i++) {
+    if (!_rowInRegion(rows[i], det)) continue;
+    if (first < 0) first = i;
+    last = i;
+  }
+  if (first < 0 || last <= first) return null;
+  return { headerIdx: first, bodyStartIdx: first + 1, bodyEndIdx: last };
+}
+
+function _rowInRegion(row: RowBlock, det: DetectedRegion): boolean {
+  if (det.right_start != null && det.right_end != null && row.new_line != null
+      && row.new_line >= det.right_start && row.new_line <= det.right_end) {
+    return true;
+  }
+  return det.left_start != null && det.left_end != null && row.old_line != null
+    && row.old_line >= det.left_start && row.old_line <= det.left_end;
+}
+
 function _findExistingFoldRecord(
   file: FileBlock, det: DetectedRegion,
 ): FoldRegion | null {
@@ -155,34 +274,27 @@ function _findExistingFoldRecord(
   return null;
 }
 
-function _upsertFoldRegion(
-  file: FileBlock, det: DetectedRegion, rows: RowWithEls[],
-): FoldRegion {
+function _upsertFoldRegion(file: FileBlock, det: DetectedRegion): FoldRegion {
   // The local POST handler and the SSE updater both mutate the
   // region object's `summary` field — they need to point at the
   // same reference. Find a matching persistent record if one
   // exists, refresh its detected fields, and return it. Otherwise
   // create a new one and stash it on the file's first hunk so the
-  // next render picks it up.
-  const hasChanges = _anyChangesInRange(rows, det.header_idx, det.body_end_idx);
+  // next render picks it up. The record's row indices are not touched:
+  // they are the server's per-hunk detection indices, and placement in
+  // this render is `_placeRegion`'s job.
   const existing = _findExistingFoldRecord(file, det);
   if (existing) {
-    existing.header_idx = det.header_idx;
-    existing.body_start_idx = det.body_start_idx;
-    existing.body_end_idx = det.body_end_idx;
-    existing.has_changes = hasChanges;
+    existing.has_changes = det.has_changes;
     existing.qualified_name = det.qualified_name;
     existing.kind = det.kind;
     return existing;
   }
   const candidate: FoldRegion = {
-    header_idx: det.header_idx,
-    body_start_idx: det.body_start_idx,
-    body_end_idx: det.body_end_idx,
     context: det.context,
     right_start: det.right_start, right_end: det.right_end,
     left_start: det.left_start, left_end: det.left_end,
-    has_changes: hasChanges,
+    has_changes: det.has_changes,
     qualified_name: det.qualified_name, kind: det.kind,
     summary: "",
   };
@@ -379,6 +491,7 @@ function _computeFoldRegions(
     regions.push({
       header_idx, body_start_idx: body_start, body_end_idx: body_end,
       context, right_start, right_end, left_start, left_end,
+      has_changes: hasChanges,
       qualified_name: rr.qualifiedName, kind: rr.kind,
     });
   }
@@ -506,13 +619,12 @@ function _setFoldBoxContent(
 }
 
 function _attachOneFold(
-  rows: RowWithEls[], region: FoldRegion, fileIdx: number,
+  rows: RowWithEls[], region: FoldRegion, place: FoldPlacement, fileIdx: number,
 ): AttachedFold | null {
-  const bodyStart = region.body_start_idx;
-  const bodyEnd = region.body_end_idx;
-  if (bodyStart > bodyEnd) return null;
+  const bodyStart = place.bodyStartIdx;
+  const bodyEnd = place.bodyEndIdx;
 
-  const headerRow = rows[region.header_idx];
+  const headerRow = rows[place.headerIdx];
   if (!headerRow) return null;
   const headerOld = headerRow.oldEl;
   const headerNew = headerRow.newEl;
@@ -584,13 +696,13 @@ function attachFileFolds(fileEl: HTMLElement, file: FileBlock): void {
   const fileIdx = Number(file.id.replace("F", ""));
   const rows = _collectFileRows(fileEl);
   if (rows.length === 0) return;
-  const syms = file.fold_symbols || { head: [], base: [] };
-  const detected = _computeFoldRegions(rows, syms.head, syms.base);
   const handles: AnnotationHandle[] = [];
   const chevrons: SVGElement[] = [];
-  for (const det of detected) {
-    const region = _upsertFoldRegion(file, det, rows);
-    const attached = _attachOneFold(rows, region, fileIdx);
+  for (const det of _detectFileRegions(file, rows)) {
+    const place = _placeRegion(det, rows);
+    if (!place) continue;   // nothing of this region is on screen
+    const region = _upsertFoldRegion(file, det);
+    const attached = _attachOneFold(rows, region, place, fileIdx);
     if (!attached) continue;
     if (attached.foldHandle) handles.push(attached.foldHandle);
     if (attached.marker) chevrons.push(attached.marker);

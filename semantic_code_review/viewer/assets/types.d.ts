@@ -200,11 +200,20 @@ interface RowBlock {
 type FoldContext = "right" | "left" | "both";
 
 interface FoldRegion {
-  header_idx: number;
-  body_start_idx: number;
-  body_end_idx: number;
+  /** Row indices of the server's own per-hunk detection. Absent on a
+   *  region the viewer detected for itself. Presentation data, and the
+   *  viewer does not consume them: it re-places every region against
+   *  the rows of the current render (`_placeRegion` in folds.ts), since
+   *  revealing context changes which rows exist. Retired in slice 3. */
+  header_idx?: number;
+  body_start_idx?: number;
+  body_end_idx?: number;
   context: FoldContext;
-  /** 1-indexed line numbers in head/<path>. Null when context is "left". */
+  /** 1-indexed line numbers in head/<path>. Null when context is "left".
+   *  These plus `context` are the region's identity: what the viewer
+   *  matches a detected region against, and what /fold-summary and the
+   *  persisted `fold_descriptions` address. Stable across renders and
+   *  across reveals because both sides derive them from file content. */
   right_start: number | null;
   right_end: number | null;
   /** 1-indexed line numbers in base/<path>. Null when context is "right". */
