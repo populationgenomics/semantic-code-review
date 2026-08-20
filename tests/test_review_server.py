@@ -133,6 +133,37 @@ def test_get_data_json(server) -> None:
     assert body["debug"] is False
 
 
+def test_data_json_carries_the_run_id(tmp_path: Path) -> None:
+    """The run directory's name goes out with the payload; the viewer keys
+    its per-tab `sessionStorage` view state on it (ADR 0006)."""
+    run_dir = tmp_path / "local-main-abc12345"
+    run_dir.mkdir()
+    srv = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []})
+    srv.start()
+    try:
+        code, body = _request(srv.url() + "/data.json")
+        assert code == 200
+        assert body["run_id"] == "local-main-abc12345"
+    finally:
+        srv.stop()
+
+
+def test_data_json_run_id_survives_a_viewer_json_swap(tmp_path: Path) -> None:
+    """`update_viewer_json` replaces the payload wholesale, so the run id
+    is merged at serve time rather than baked in once."""
+    run_dir = tmp_path / "local-main-abc12345"
+    run_dir.mkdir()
+    srv = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []})
+    srv.start()
+    try:
+        srv.update_viewer_json({"version": "1", "files": [], "augmented": True})
+        code, body = _request(srv.url() + "/data.json")
+        assert code == 200
+        assert body["run_id"] == "local-main-abc12345"
+    finally:
+        srv.stop()
+
+
 def test_data_json_debug_flag(tmp_path: Path) -> None:
     """--debug stamps `debug: true` into /data.json so the viewer mounts the
     raw-log drawer."""

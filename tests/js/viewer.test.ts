@@ -19,6 +19,18 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, test, expect, vi, beforeEach, afterEach } from "vitest";
+import { installTabStorage, makeStorage } from "./setup";
+import { ViewState } from "../../semantic_code_review/viewer/assets/view_state";
+
+/** The run the fixture data belongs to. The viewer keys its per-tab view
+ *  state on it, so a test that pre-seeds storage has to agree. */
+const RUN_ID = "test-run";
+
+/** Boot the viewer at a collapse level, the way a reload does — through
+ *  the stored record, since no view state rides in the URL any more. */
+function presetCollapseLevel(level: "files" | "hunks" | "segments" | "off"): void {
+  ViewState.save(RUN_ID, level, []);
+}
 
 const VIEWER_SRC = (() => {
   const bundle = path.resolve(
@@ -97,6 +109,7 @@ function queueFetchResponse(r: FetchResponse): void {
 
 interface ViewerData {
   version?: string;
+  run_id?: string;
   pending?: boolean;
   pr?: Record<string, unknown>;
   smells_catalogue?: Record<string, unknown>;
@@ -195,6 +208,7 @@ function makeHunkBlock(id: string, intent = "", overrides: Record<string, unknow
 function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
   return {
     version: "1",
+    run_id: RUN_ID,
     pending: true,
     pr: { title: "test", themes: [], symbols_added: [], symbols_modified: [], symbols_removed: [], callgraph_edges: [] },
     smells_catalogue: {},
@@ -215,6 +229,16 @@ function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
   };
 }
 
+function fileEl(id: string): HTMLElement {
+  const el = document.querySelector(`.file[data-id="${id}"]`) as HTMLElement | null;
+  if (!el) throw new Error(`no .file[data-id=${id}] in the document`);
+  return el;
+}
+
+function clickFileHeader(id: string): void {
+  (fileEl(id).querySelector(".file-header") as HTMLElement).click();
+}
+
 // --- Global hooks ----------------------------------------------------------
 
 beforeEach(() => {
@@ -222,12 +246,16 @@ beforeEach(() => {
   fetchResponses.length = 0;
   fetchCalls.length = 0;
   // Reset persisted viewer state between tests. The viewer restores the
-  // focused sidebar pill from localStorage (sidebar.ts) and fold/focus from
-  // location.hash (render.ts _restoreHash) on boot; neither is cleared by
-  // wiping the DOM. Without this, a prior test's focused symbol re-applies on
-  // the next boot — highlighting before the test acts and leaking symbol-hit
-  // spans. node 25's timing masked it; node 20's exposed it.
+  // focused sidebar pill from localStorage (sidebar.ts) and the collapse
+  // level plus every hidden span from sessionStorage (view_state.ts) on
+  // boot; neither is cleared by wiping the DOM. Without this, a prior
+  // test's focused symbol re-applies on the next boot — highlighting
+  // before the test acts and leaking symbol-hit spans. node 25's timing
+  // masked it; node 20's exposed it. A fresh Storage rather than
+  // `.clear()` so a test that played a second tab hands the next one
+  // back a first tab.
   localStorage.clear();
+  installTabStorage();
   window.history.replaceState(null, "", window.location.pathname + window.location.search);
   (globalThis as unknown as { EventSource: typeof EventSource }).EventSource =
     EventSourceStub as unknown as typeof EventSource;
@@ -585,7 +613,7 @@ describe("streaming events", () => {
   });
 
   test("focusing a symbol pill search-highlights its name across the diff", async () => {
-    window.location.hash = "#fold=off"; // expand hunks so diff bodies render
+    presetCollapseLevel("off"); // expand hunks so diff bodies render
     await bootViewer(makeData({
       pending: false,
       files: [{
@@ -623,7 +651,6 @@ describe("streaming events", () => {
     // ...and leaves the underlying line text intact.
     const firstCell = document.querySelector('.hunk[data-id="H0_0"] .cell-content code')!;
     expect(firstCell.textContent).toBe("x = compute(1)");
-    window.location.hash = "";
   });
 
   test("symbols axis nests methods under their class and filters by subtree", async () => {
@@ -801,7 +828,7 @@ describe("streaming events", () => {
 
 describe("LLM observation → comment promotion", () => {
   test("Add as comment opens the editor pre-filled and saves with derived_from", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     const data = makeData({
       pending: false,
       files: [{
@@ -855,7 +882,7 @@ describe("LLM observation → comment promotion", () => {
   });
 
   test("smell pill click saves a comment immediately and detaches the pill", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     const data = makeData({
       pending: false,
       smells_catalogue: {
@@ -903,7 +930,7 @@ describe("LLM observation → comment promotion", () => {
   });
 
   test("line_note already promoted on initial load is hidden", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     const data = makeData({
       pending: false,
       files: [{
@@ -940,7 +967,7 @@ describe("LLM observation → comment promotion", () => {
 
 describe("sidebar comment counts", () => {
   test("Files-axis pill shows unresolved/total badge once comments load", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({
       pending: false,
       files: [
@@ -1010,7 +1037,7 @@ describe("sidebar comment counts", () => {
   });
 
   test("pills with no comments get no comment badge", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({ pending: false }));
     await new Promise<void>((r) => setTimeout(r, 0));
     const filesSection = document.querySelector('[data-axis="files"]')!;
@@ -1040,7 +1067,7 @@ describe("ingested PR comments", () => {
     };
     // Boot with the fold mode set to "off" so all hunk rows render —
     // default fold is "hunks" which collapses the diff body.
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({ pending: false }), { comments: [ingested] });
     // Comment re-attach happens after the store load Promise resolves.
     // One extra tick lets it settle.
@@ -1070,7 +1097,7 @@ describe("ingested PR comments", () => {
   });
 
   test("thread groups parent + replies into one annotation, parent first", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({ pending: false }), {
       comments: [
         // Out-of-order on the wire: latest reply first. Sorted into
@@ -1111,7 +1138,7 @@ describe("ingested PR comments", () => {
   });
 
   test("shifted comment anchors at head_line with a 'was line N' chip", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({ pending: false }), {
       comments: [{
         id: "gh-1", file: "a.py", side: "new",
@@ -1138,7 +1165,7 @@ describe("ingested PR comments", () => {
   });
 
   test("orphaned comment chip names the commit it was lost since", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({ pending: false }), {
       comments: [{
         id: "gh-1", file: "a.py", side: "new",
@@ -1157,7 +1184,7 @@ describe("ingested PR comments", () => {
   });
 
   test("anchored comment shows no anchor chip", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({ pending: false }), {
       comments: [{
         id: "gh-1", file: "a.py", side: "new",
@@ -1172,7 +1199,7 @@ describe("ingested PR comments", () => {
   });
 
   test("file_gone comments are skipped (no annotation row)", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({ pending: false }), {
       comments: [{
         id: "gh-1", file: "a.py", side: "new",
@@ -1187,7 +1214,7 @@ describe("ingested PR comments", () => {
   });
 
   test("chip is only on the thread root, not on replies", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({ pending: false }), {
       comments: [
         {
@@ -1216,7 +1243,7 @@ describe("ingested PR comments", () => {
   });
 
   test("resolved thread renders collapsed; clicking the header expands", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({ pending: false }), {
       comments: [
         {
@@ -1259,7 +1286,7 @@ describe("ingested PR comments", () => {
   });
 
   test("Reply opens the editor and saves with in_reply_to_id set", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({ pending: false }), {
       comments: [{
         id: "gh-1", file: "a.py", side: "new", line: 1,
@@ -1642,16 +1669,6 @@ describe("lazy fold summaries", () => {
   // the DOM happened to hold. The span algebra itself is exercised without
   // a document in tests/js/visibility.test.ts.
 
-  function fileEl(id: string): HTMLElement {
-    const el = document.querySelector(`.file[data-id="${id}"]`) as HTMLElement | null;
-    if (!el) throw new Error(`no .file[data-id=${id}] in the document`);
-    return el;
-  }
-
-  function clickFileHeader(id: string): void {
-    (fileEl(id).querySelector(".file-header") as HTMLElement).click();
-  }
-
   test("a revealed context gap survives a re-render", async () => {
     await bootViewer(makeData({
       pending: true,
@@ -1734,6 +1751,135 @@ describe("lazy fold summaries", () => {
     expect(fileEl("F1").classList.contains("folded")).toBe(false);
   });
 });
+
+// --- Per-tab persistence (ADR 0006, slice 4) ------------------------------
+//
+// View state lives in `sessionStorage` keyed by run, and nowhere else. A
+// reload is modelled by booting the bundle a second time against the same
+// storage; a second tab by swapping in a fresh one. The storage layer
+// itself — the record shape, and what it does with a malformed one — is
+// exercised without a document in tests/js/view_state.test.ts.
+
+describe("view state survives a reload, per tab", () => {
+  function twoFiles(): ViewerData {
+    return makeData({
+      pending: false,
+      files: [
+        {
+          id: "F0", path: "src/a.py", status: "modified", language: "python",
+          adds: 1, dels: 1, summary: "", head_lines: null,
+          symbols: { added: [], modified: [], removed: [] },
+          hunks: [makeHunkBlock("H0_0", "real change")],
+        },
+        {
+          id: "F1", path: "uv.lock", status: "modified", language: "",
+          adds: 1, dels: 1, summary: "", head_lines: null,
+          symbols: { added: [], modified: [], removed: [] },
+          hunks: [makeHunkBlock("H1_0", "regenerated")],
+        },
+      ],
+    });
+  }
+
+  test("a reload restores what the reviewer folded by hand", async () => {
+    await bootViewer(twoFiles());
+    clickFileHeader("F1");
+    expect(fileEl("F1").classList.contains("folded")).toBe(true);
+
+    await bootViewer(twoFiles());   // reload: same tab, same storage
+
+    expect(fileEl("F1").classList.contains("folded")).toBe(true);
+    expect(fileEl("F0").classList.contains("folded")).toBe(false);
+  });
+
+  test("a reload restores the collapse level", async () => {
+    await bootViewer(twoFiles());
+    (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+    expect(fileEl("F0").querySelectorAll(".diff .row").length).toBeGreaterThan(0);
+
+    await bootViewer(twoFiles());
+
+    expect(fileEl("F0").querySelectorAll(".diff .row").length).toBeGreaterThan(0);
+    const active = document.querySelector(".fold-slider button.active") as HTMLElement;
+    expect(active.dataset.fold).toBe("off");
+    // Carried by the stored record, not by the `#fold=` key that used to
+    // do this job.
+    expect(window.location.hash).toBe("");
+  });
+
+  test("a reload restores a reveal, not just a hide", async () => {
+    // The marks ledger is what makes this work: the renderer re-seeds
+    // every gap it lays out, so persisting the hidden spans alone would
+    // put the chip back on the next boot.
+    const data = (): ViewerData => makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 1, dels: 1, summary: "",
+        head_lines: ["l1", "l2", "l3", "l4", "l5"],
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock("H0_0", "ok", {
+          old_start: 3, old_count: 1, new_start: 3, new_count: 1,
+          rows: [{ kind: "pair", old_line: 3, new_line: 3, old_text: "l3", new_text: "L3" }],
+        })],
+      }],
+    });
+
+    await bootViewer(data());
+    (document.querySelector(".gap-chip") as HTMLElement).click();
+    expect(document.querySelectorAll(".gap-expansion")).toHaveLength(1);
+
+    await bootViewer(data());
+
+    expect(document.querySelectorAll(".gap-expansion")).toHaveLength(1);
+    expect(document.body.textContent).toContain("l1");
+  });
+
+  test("two tabs are independent", async () => {
+    await bootViewer(twoFiles());
+    clickFileHeader("F1");
+    expect(fileEl("F1").classList.contains("folded")).toBe(true);
+
+    // A second tab on the same origin gets its own sessionStorage, so it
+    // opens at the defaults rather than inheriting the first tab's folds.
+    const firstTab = installTabStorage();
+    await bootViewer(twoFiles());
+    expect(fileEl("F1").classList.contains("folded")).toBe(false);
+
+    // ...and folding in the second tab left the first tab's record alone.
+    clickFileHeader("F0");
+    installTabStorage(firstTab!);
+    await bootViewer(twoFiles());
+    expect(fileEl("F1").classList.contains("folded")).toBe(true);
+    expect(fileEl("F0").classList.contains("folded")).toBe(false);
+  });
+
+  test("no view state rides in the URL", async () => {
+    await bootViewer(twoFiles());
+    expect(window.location.hash).toBe("");
+
+    (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+    clickFileHeader("F1");
+
+    expect(window.location.hash).toBe("");
+  });
+
+  test("a write the browser refuses leaves the viewer working", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    installTabStorage({
+      ...makeStorage(),
+      setItem: () => { throw new DOMException("quota", "QuotaExceededError"); },
+    });
+
+    await bootViewer(twoFiles());
+    clickFileHeader("F1");
+
+    // In-memory state is unaffected; only the reload survives is lost.
+    expect(fileEl("F1").classList.contains("folded")).toBe(true);
+    expect(warn).toHaveBeenCalled();
+  });
+});
+
 
 describe("review console", () => {
   // The console_id the module stamped on the most recent /console/ask;
@@ -2004,7 +2150,7 @@ describe("rendered markdown mode", () => {
   });
 
   test("a comment on a rendered block anchors on its source line and round-trips", async () => {
-    window.location.hash = "#fold=off";  // expand the diff body so the round-trip row renders
+    presetCollapseLevel("off");  // expand the diff body so the round-trip row renders
     await bootViewer(mdData());
     queueFetchResponse({
       status: 200,

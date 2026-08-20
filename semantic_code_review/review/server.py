@@ -478,10 +478,20 @@ class _Handler(BaseHTTPRequestHandler):
             self._serve_static(path[len("/static/") :])
             return
         if path == "/data.json":
-            # Stamp the runtime debug flag alongside the diff payload so the
-            # viewer knows whether to mount the debug drawer. Merged at serve
-            # time because update_viewer_json swaps viewer_json wholesale.
-            self._json(200, {**self.ctx.viewer_json, "debug": self.ctx.debug})
+            # Stamp the runtime debug flag and the run id alongside the diff
+            # payload: neither is a property of the diff, and both are merged
+            # at serve time because update_viewer_json swaps viewer_json
+            # wholesale. The run id is the run directory's name — the run's
+            # identity everywhere else (comments, sidecar, cache) — and the
+            # viewer keys its per-tab view state on it.
+            self._json(
+                200,
+                {
+                    **self.ctx.viewer_json,
+                    "debug": self.ctx.debug,
+                    "run_id": self.ctx.run_dir.name,
+                },
+            )
             return
         if path == "/file-text":
             self._handle_file_text()

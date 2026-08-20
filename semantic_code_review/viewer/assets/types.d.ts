@@ -16,6 +16,11 @@
 
 interface ViewerData {
   version: string;
+  /** The run directory's name, stamped by the server at serve time (it
+   *  is a property of the run, not of the diff). Keys the per-tab view
+   *  state in `sessionStorage`; always present from a review server, so
+   *  view_state.ts raises rather than inventing a key. */
+  run_id: string;
   /** Pre-augment marker: true while the page is open before the
    *  augmentation pass produced any annotations. Cleared once the
    *  `done` SSE event arrives (see installSessionEvents in viewer.js). */

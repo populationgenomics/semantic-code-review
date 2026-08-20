@@ -5,12 +5,16 @@
 // chips for unchanged context, CodeFold summaries, refs, smell
 // pills. Carries the collapse *level* and the renderedDiffs cache
 // because both exist to feed the renderer, and binds the user inputs
-// that drive it (collapse-level slider buttons, keyboard 1-4, hash sync).
+// that drive it (collapse-level slider buttons, keyboard 1-4).
 //
 // What is hidden lives in visibility.ts, not here: every hide is a
 // `HiddenSpan` and every render reads the current span set rather than
 // the DOM it produced last time. Interactions in this module do one
 // thing — mutate a span and re-render.
+//
+// That contract is also what makes persistence a single call: `render()`
+// is the funnel every mutation passes through, so it is where the level
+// and the span store are written to `sessionStorage` (view_state.ts).
 //
 // Other modules attach to surfaces this module creates:
 //   - sidebar.ts mutates pill state but reads from .file / .hunk
@@ -27,6 +31,7 @@ import { Progress } from "./progress";
 import { Rendered } from "./rendered";
 import { Sidebar } from "./sidebar";
 import { blockDiff, matchRanges, wrapRanges, type CharRange } from "./text_highlight";
+import { ViewState } from "./view_state";
 import {
   Visibility, type CollapseLevel, type HiddenSpan, type LineRange,
 } from "./visibility";
@@ -44,9 +49,17 @@ interface RenderState {
   // Deliberately not a span retraction — removing the level's span would
   // leak an expanded hunk into the unfiltered view once the filter clears.
   focusReveal: boolean;
+  // What _saveViewState last wrote, so a render that moved nothing does
+  // not re-serialise the whole span store.
+  savedRevision: number;
+  savedLevel: CollapseLevel | null;
 }
 
-let _data: ViewerData = { version: "1", pr: {} as PRBlock, smells_catalogue: {}, files: [], groups: [], symbols: [] };
+// Pre-init placeholder, replaced wholesale by renderInit. `run_id` is
+// empty rather than invented: ViewState.storageKey raises on it, so
+// persistence reached before boot fails instead of writing under a key
+// no run owns.
+let _data: ViewerData = { version: "1", run_id: "", pr: {} as PRBlock, smells_catalogue: {}, files: [], groups: [], symbols: [] };
 let _smells: Record<string, SmellCatalogueEntry> = {};
 // The focused symbol's name, highlighted search-style across every diff
 // line, or null when no symbol pill is active. Newly rendered cells pick
@@ -57,24 +70,30 @@ const _state: RenderState = {
   collapseLevel: "hunks",
   renderedDiffs: Object.create(null),
   focusReveal: true,
+  savedRevision: -1,
+  savedLevel: null,
 };
 
 // --- Public API ----------------------------------------------------------
 
-/** Wire input handlers + restore state from URL hash + run initial
- *  render. Called once at boot from viewer.js. Drops the rendered-diff
- *  cache and every hidden span so a re-boot (tests, future hot reload)
- *  starts fresh. */
+/** Wire input handlers + restore this run's stored view state + run the
+ *  initial render. Called once at boot from viewer.js. Drops the
+ *  rendered-diff cache and every hidden span so a re-boot (tests, future
+ *  hot reload) starts from what is stored, not from what was in memory. */
 function renderInit(data: ViewerData): void {
   _data = data;
   _smells = data.smells_catalogue || {};
   _state.collapseLevel = "hunks";
   _state.renderedDiffs = Object.create(null);
   _state.focusReveal = true;
+  _state.savedRevision = -1;
+  _state.savedLevel = null;
   Visibility.reset();
   _wireInputs();
-  _restoreHash();
-  Visibility.setLevel(_data, _state.collapseLevel);
+  // A restored store already holds the level's spans *and* its marks, so
+  // seeding over the top would re-hide what the reviewer had expanded.
+  // render()'s syncLevel still catches nodes the stored state never saw.
+  if (!_restoreViewState()) Visibility.setLevel(_data, _state.collapseLevel);
   render();
 }
 
@@ -95,7 +114,7 @@ function render(): void {
   Sidebar.render();
   Sidebar.applyFilter();
   _updateStatus();
-  _syncHash();
+  _saveViewState();
   _updateSliderButtons();
   Comments.renderAll();
   // Annotation arrows attached during render were sized while the
@@ -957,26 +976,32 @@ function _updateStatus(): void {
   s.textContent = `${_data.files.length} files · ${smells} smells · ${critical} critical · keys 1-4 fold · space toggle · ? help`;
 }
 
-// The hash carries the collapse level and nothing else. Per-item state is
-// a span set now, which does not fit `id=f|o` pairs — an expansion is the
-// absence of a record, not a record of an absence. Slice 4 moves the lot
-// to sessionStorage and drops the key.
-function _syncHash(): void {
-  const newHash = `#fold=${_state.collapseLevel}`;
-  if (window.location.hash !== newHash) {
-    history.replaceState(null, "", newHash);
-  }
+// No view state rides in the URL. The level used to, as `#fold=<level>`,
+// which made two sources of truth the moment per-item state moved to the
+// span store; both now live in one `sessionStorage` record (ADR 0006).
+
+/** Restore this run's stored state, if any. Returns whether it did, so
+ *  the caller knows whether the level still needs seeding from scratch.
+ *  Deliberately does not catch: a malformed record is a bug in what
+ *  wrote it, not something to paper over with a default span set. */
+function _restoreViewState(): boolean {
+  const stored = ViewState.load(_data.run_id);
+  if (!stored) return false;
+  _state.collapseLevel = stored.collapseLevel;
+  Visibility.restore(stored.files);
+  return true;
 }
 
-function _restoreHash(): void {
-  const h = window.location.hash.slice(1);
-  if (!h) return;
-  for (const kv of h.split("&")) {
-    const [k, v] = kv.split("=");
-    if (k === "fold" && ["files", "hunks", "segments", "off"].includes(v)) {
-      _state.collapseLevel = v as CollapseLevel;
-    }
-  }
+/** Persist the level and the span store, if either moved since the last
+ *  write. `render()` runs on every SSE frame and the store is the size
+ *  of the diff, so the revision check is what keeps this off the hot
+ *  path. */
+function _saveViewState(): void {
+  const rev = Visibility.revision();
+  if (rev === _state.savedRevision && _state.collapseLevel === _state.savedLevel) return;
+  _state.savedRevision = rev;
+  _state.savedLevel = _state.collapseLevel;
+  ViewState.save(_data.run_id, _state.collapseLevel, Visibility.snapshot());
 }
 
 function _onKeydown(e: KeyboardEvent): void {
@@ -1029,10 +1054,6 @@ function _wireInputs(): void {
     if (e.target === overlay) _closeHelp();
   });
   document.addEventListener("keydown", _onKeydown);
-  window.addEventListener("hashchange", () => {
-    _restoreHash();
-    _setCollapseLevel(_state.collapseLevel);
-  });
 }
 
 // --- Public surface -----------------------------------------------------
