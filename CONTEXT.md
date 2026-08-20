@@ -7,8 +7,8 @@ without re-inventing vocabulary.
 This file grows incrementally — add an entry when a refactor needs a
 term, not all at once. Terms not yet listed but recurring in code
 include: **pass** (overview / hunk / fold-summary), **annotation**,
-**row**, **smell**, **theme**. Pin these the next time a refactor
-brushes against them.
+**smell**, **theme**. Pin these the next time a refactor brushes
+against them.
 
 ## Terms
 
@@ -24,10 +24,11 @@ overridable with `--runs-root`. Contents:
   artefacts emitted by the augment pipeline (paired; same data, two
   shapes).
 - `base/` and `head/` — git worktrees pinned to the diff's endpoints
-  so `RepoTools` (the MCP-exposed read_file / grep) can resolve paths
-  during the LLM passes.
-- `comments.json` — reviewer comments persisted by the back-channel
-  HTTP server; populated only when `scr review` is the entry point.
+  so [[repo-tools]] can resolve paths during the LLM passes.
+- `comments.json` — the [[reviewer-comment]] store. Seeded on first
+  GitHub materialise from the PR's existing review comments
+  (`fetch/github_comments.materialize_pr_comments`), then appended to
+  by the back-channel HTTP server during a `scr review` session.
 - `trace/` — one JSON per LLM call (prompt, response, usage), plus
   `augment.log`.
 - `usage.json` — token accounting for the run, derived from `trace/`
@@ -38,13 +39,14 @@ overridable with `--runs-root`. Contents:
 Each subsystem under `fetch/`, `review/`, `augment/`, and `viewer/`
 takes a `run_dir: Path` and operates inside it. The implicit contract
 is "everything I need to do my job lives under this one path". The
-act of *producing* a run directory is named: see [[run-spec]].
+act of *producing* a run directory is named: see [[runspec]].
 
 **Augmented diff**
 The output of the augment pipeline, kept on disk in two paired forms:
 
 - `augmented.diff` — the unified diff with LLM annotations encoded as
-  line-prefix metadata (`# intent: …`, `# refs: …`, `# fold: …`, etc).
+  `#scr:`-prefixed directive lines (`#scr: scr-hunk-intent: …`,
+  `#scr: scr-fold: …`, etc; `#scr>` continues a wrapped value).
   Grammar lives in `format/parse.py` ↔ `format/emit.py`. The text form
   is what the HTML viewer ultimately renders.
 - `augmented.scr.json` — the same content as a Pydantic-shaped JSON
@@ -87,10 +89,25 @@ lists of hunks. The augment pipeline runs the per-hunk LLM pass once
 per hunk (`HunkAnnotations`); the [[viewer-data]] addresses each
 hunk by a stable id of the form `"H<file_idx>_<hunk_idx>"`.
 
+**Row**
+One line of the viewer's side-by-side grid: `RowBlock{kind, old_line,
+new_line, old_text, new_text}`, `kind` ∈ `ctx` / `ins` / `del` / `pair`.
+Built per [[hunk]] server-side by `hunk_layout.build_rows` (consecutive
+`-`/`+` runs paired positionally, not by LCS) and shipped on
+`HunkBlock.rows`.
+
+Three row sequences coexist and must not be confused: a hunk's own rows;
+the *rendered* rows, meaning whatever a given render actually put on
+screen (this grows as the reviewer reveals context); and the *whole-file*
+row stream `folds.ts` synthesises from `head_lines` to detect
+[[fold-region]]s. An index into any of them is presentation, never
+identity — durable addresses use absolute file lines.
+
 **Fold region**
 A collapsible structural region in the viewer — the `> def foo(): …`
-chevron. Addressed by `(file_idx, context, right_range, left_range)`,
-where the ranges are absolute 1-indexed file lines:
+chevron. Addressed by `(file_idx, context, right_start..right_end,
+left_start..left_end)`, where the ranges are absolute 1-indexed file
+lines:
 
 - `context = "right"` — unchanged-context fold (collapses lines that
   exist in the post-image only). Pure-context folds are the common
@@ -101,12 +118,18 @@ where the ranges are absolute 1-indexed file lines:
   unified-diff view of the region.
 
 The address is the region's identity: what a detected region is matched
-against, what `/fold-summary` asks for, and what the sidecar stores. It
-is derived from file content on both sides — the definition's own
-`fold_symbols` span, or indentation over the whole file — never from the
-rows on screen, so revealing context around a hunk does not move it. The
-row indices a region occupies are per-render presentation, recomputed
-each time the viewer places a region onto the rows it just rendered.
+against, what `/fold-summary` asks for, and what the sidecar stores. A
+symbol-snapped region takes the definition's own `fold_symbols` span; an
+indentation-fallback region takes the extent of the [[row]]s it was
+detected over — and the viewer detects over the whole-file row stream,
+not the rendered rows, so revealing context around a hunk does not move
+the address. A file shipped without `head_lines` (binary, deleted,
+generated, or over `build_json._HEAD_LINES_CAP`) has no such stream and
+still detects over the rendered rows. The row indices a region occupies
+are per-render presentation, recomputed by `_placeRegion` on every
+render; the wire also carries the server's own detection indices
+(`header_idx` / `body_start_idx` / `body_end_idx`), which the viewer
+ignores.
 
 Summaries are produced on demand by the fold-summary pass the first
 time a region is collapsed, then persisted in the
@@ -119,11 +142,11 @@ An LLM-produced semantic sub-slice of a [[hunk]]: a contiguous run of
 the hunk's changed lines the per-hunk pass groups by intent.
 `SegmentBlock` carries `new_start`/`new_count` (its head-side line
 range) plus its own `intent`, `smells`, `context`, `refs`, and a
-stable `id`. When a hunk has segments and segment-fold is on (viewer
-fold mode ≠ `"off"`), the viewer renders the hunk body as a `seg-list`
-— one collapsed summary row per segment, each independently foldable —
-instead of the raw diff; toggling any segment (or fold=off) drops back
-to the raw hunk diff.
+stable `id`. When a hunk has segments and the [[fold-level]] is not
+`"off"`, the viewer renders the hunk body as a `seg-list` — one
+collapsed summary row per segment, each independently foldable —
+instead of the raw diff; toggling any segment (or dropping the level to
+`off`) drops back to the raw hunk diff.
 
 Segments are semantic and fallible, *not* the deterministic structural
 [[symbol]] ranges: a segment need not line up with one symbol, and the
@@ -161,7 +184,7 @@ one synthetic whole-hunk segment, so every hunk behaves uniformly);
 
 Per-item exceptions live in `RenderState.overrides` — a reviewer
 expanding/collapsing one file/hunk/segment; an override wins over the
-level default. Picking a level (`_setGlobalFold`) is authoritative: it
+level default. Picking a level (`_setCollapseLevel`) is authoritative: it
 clears every override, folding the whole tree to that depth, including a
 filter's focused hunks.
 
@@ -182,24 +205,30 @@ review server and consumed by the TS viewer. Defined by the
 the [[augmented-diff]] sidecar by `viewer/build_json.py` +
 `viewer/hunk_layout.py`, augmented with metadata from `meta.json`.
 
-Distinct from the [[augmented-diff]] sidecar in two ways: (1) it
-includes pre-rendered row layout (the diff's two-column structure
-expanded into row objects) which the sidecar leaves implicit; (2)
-it carries transient runtime flags (e.g. `pending` while the
-augment pass is still streaming) that have no place on the
-persisted sidecar.
+Distinct from the [[augmented-diff]] sidecar in three ways: (1) it
+includes pre-rendered [[row]] layout (the diff's two-column structure
+expanded into row objects) which the sidecar leaves implicit; (2) it
+carries transient runtime flags (`pending` while the augment pass is
+still streaming; `_failed` / `_inflight` on hunks and fold regions)
+that have no place on the persisted sidecar; (3) it ships file
+*content* the diff never mentions — `FileBlock.head_lines`, the whole
+post-image, null for binary / deleted / generated files and for any
+file over `build_json._HEAD_LINES_CAP` (5,000 lines).
 
-The TS side has no single owner for the in-memory tree today —
-`boot.ts` fetches it and mutates it in response to SSE events,
-while every other module reads from the same global reference. A
-deepening to give it a typed owner is in flight.
+`data_store.ts` owns every mutation of the in-memory tree. `boot.ts`
+still holds the reference (it owns the `/data.json` fetch result) and
+its SSE handlers translate a payload into a `DataStore` call, then ask
+the right module to repaint. `DataStore` is stateless: each mutator
+takes the `ViewerData` reference as its first argument.
 
 **Viewer id**
 The stable per-node identity the viewer keys DOM and state on, minted in
 `build_json.py`: `F<idx>` per file (index into the diff's file list),
-`H<fileidx>_<hunkidx>` per [[hunk]], `G<i>` per [[overview-seed]] group,
-`SY<i>` per [[symbol]] node ([[symbols-axis]]). The `F<idx>` id is a
-file's identity everywhere client-side: [[rendered-mode]] keys its
+`H<fileidx>_<hunkidx>` per [[hunk]], `G<i>` per overview theme group,
+`SY<i>` per [[symbol]] node ([[symbols-axis]]). The Files sidebar axis is
+the exception: it mints `BF<file_idx>` client-side in `sidebar.ts`.
+The `F<idx>` id is a file's identity everywhere client-side:
+[[rendered-mode]] keys its
 per-file state (source cache, flipped set, fold level, reveal/section
 overrides) on it and parses the index back out for the
 `/file-text?file_idx=` fetch. Ids are position-derived, so they're
@@ -256,15 +285,40 @@ Delta specifics worth pinning:
   path), hydrated by `Markdown.hydrate` once a block is in the DOM.
 
 **Reviewer comment**
-A reviewer-authored inline comment anchored to a specific
-`(file, side, line)`. Round-trips between the viewer and the
-review server's `/comments` route during a session, and is
-persisted to `comments.json` in the [[run-directory]].
+An inline comment anchored to a specific `(file, side, line)`.
+Round-trips between the viewer and the review server's `/comments`
+route during a session, and is persisted to `comments.json` in the
+[[run-directory]].
+
+`source` splits two populations. `"local"` — authored in this session,
+editable, postable upstream. `"github"` — ingested from the PR on first
+materialise, read-only, carrying `author`, `in_reply_to_id`,
+`commit_id`, `html_url`, and provider-rendered `body_html`. Posting a
+local comment resolves it through an [[anchor]] first, then converts it
+to an ingested one.
 
 Named `ReviewerComment` in TypeScript and `Comment` in Python —
 the TS name is qualified because `lib.dom.Comment` (a `Node`
 subtype) is in the global namespace and an unqualified `Comment`
 would shadow it.
+
+**Anchor**
+Two mechanisms share the word; both concern where a
+[[reviewer-comment]] sits.
+
+- *Inbound* (`fetch/anchor.py`): an ingested comment was written against
+  an older commit, so its line is propagated forward through the
+  intervening diffs onto the run's head, yielding `head_line` and
+  `anchor_status`.
+- *Outbound* (`review/anchors.py`): GitHub threads a review comment only
+  to a line inside a diff hunk, but the viewer lets a reviewer comment on
+  revealed context. `postable_ranges(diff_text)` collects the legal
+  `(path, side)` ranges; `resolve()` returns an `Anchor` — unchanged when
+  the line is already legal, else moved to the nearest hunk line within
+  `NEAREST_LINE_LIMIT`, else demoted to a file-level thread (`line=None`).
+  The reason is appended to the body by `with_note`, so a reader is never
+  silently misdirected. Out-of-hunk lines otherwise fail silently: the
+  GraphQL mutation returns 200 with no errors and a null thread.
 
 **Backend**
 A registered LLM provider that the CLI resolves a name to. Each backend
@@ -278,6 +332,17 @@ The handle the augment pipeline drives. Wraps either a pydantic-ai
 model id string (for SDK backends) or a `pydantic_ai.models.Model`
 instance (for CLI subprocess backends). Constructed by
 `Backend.resolve(model=...)`. Defined in `augment/agents.py`.
+
+Two flags on it bound and shape a pass. `request_limit` caps the SDK
+agentic loop the way `--max-turns` caps a CLI driver. `native_output`
+constrains output with the provider's native structured output instead
+of a submit tool; SDK backends set it from
+`backends/base.supports_native_output_with_tools(model)` — a per-*model*
+capability read off the pydantic-ai profile, so a model outside the
+supported list falls back to the tool path rather than failing every
+hunk. It matters because Anthropic rejects thinking and output tools in
+the same request. CLI drivers always leave it false: their
+`--json-schema` is derived from the output tool.
 
 **CLI driver**
 A concrete `pydantic_ai.Model` subclass we author to wrap a specific
@@ -312,6 +377,28 @@ author. pydantic-ai itself has no word for this distinction —
 "`Model`" covers both — but our tree splits along it: drivers are
 ours, other `Model`s come from pydantic-ai.
 
+**Repo tools**
+The read-only tool surface the LLM calls during a pass: `RepoTools` in
+`augment/tools.py`, holding the run's head worktree and bare repo, the
+base/head SHAs, and an optional shared `SourceCache`. Every method
+marked `@_tool` is exported by introspection to both consumers —
+pydantic-ai SDK Agents via `TOOL_FUNCTIONS`, and the hosted MCP server
+the [[cli-driver]]s reach via `mcp_tool_schemas` / `mcp_dispatch`
+(`mcp_http_host.py`, ADR 0003) — so renaming a method moves both wire
+surfaces at once.
+
+Today: `read_file`, `read_file_at`, `outline`, `symbol_at`,
+`changed_symbols`, `grep`, `grep_at`, `references`, `list_dir`,
+`git_log`. The review console appends `hunk(id)`, deliberately *not*
+`@_tool`-marked because it needs a bound sidecar that does not exist at
+augment time. Results are capped at `TOOL_RESULT_CAP_BYTES` (20 KB) and
+flagged when truncated.
+
+Every exported tool takes a leading `purpose` string, required by the
+generated schema and stripped before dispatch — the method never sees
+it. It is injected once in `_make_tool_fn` rather than declared per
+method, and exists so a trace shows *why* each call was made.
+
 **Symbol**
 The normalized unit of the *structural layer* — `Symbol{kind, name,
 qualified_name, range, signature?, children[]}`, defined in
@@ -324,14 +411,15 @@ captures into this tree; `outline_symbols(source, lang)` is the entry
 point, returning `[]` for an unsupported language or a parse failure
 rather than raising.
 
-This is the single internal currency the structural consumers read:
-the `RepoTools.outline` / `symbol_at` tools, the diff-wide delta, the
-overview-prompt seed, and the sidebar Symbols axis.
+This is the single internal currency the *definition-side* structural
+consumers read: the [[repo-tools]] `outline` / `symbol_at` tools, the
+diff-wide delta, the overview-prompt seed, and the sidebar Symbols axis.
 It is deliberately *not* reconciled with the LLM-derived
 `Overview.symbols_*` / `FileSymbols` — those answer "why did this
 change" (semantic, fallible); `Symbol` answers "where is the code and
 what does it literally declare" (structural, exact). The two coexist as
-separate layers by design (ADR 0001).
+separate layers by design (ADR 0001). Use sites are a separate unit
+again — see [[reference]].
 
 **SymbolDelta**
 The deterministic base→head structural delta — `{added, removed,
@@ -376,10 +464,11 @@ the distinct hunks beneath it; a leaf carries only its own. Any node
 whose whole subtree touches no hunk yields no block. The viewer's
 `Sidebar.rebuildSymbolsAxis` loads the forest from `DATA.symbols` at boot
 (flattening every node into `byId` for active-pill lookup) and
-`Sidebar` renders it as an expand/collapse tree (`_symbolNode`) reusing
-the existing pill machinery (`applyFilter`, localStorage `<axis>:<id>`,
-count badges). Like the Files axis it's structural — present from boot,
-never refreshed by an SSE pass (ADR 0001 Slice 5).
+`Sidebar` renders it as an expand/collapse tree (`_treeNode`, shared
+with the Files axis) reusing the existing pill machinery (`applyFilter`,
+localStorage `<axis>:<id>`, count badges). Like the Files axis it's
+structural — present from boot, never refreshed by an SSE pass (ADR
+0001 Slice 5).
 
 Filtering is hunk-granular, not symbol-precise: a pill resolves to the
 *hunks* its symbols overlap, and focus renders those whole hunks live
@@ -387,3 +476,21 @@ Filtering is hunk-granular, not symbol-precise: a pill resolves to the
 with no unchanged gap between them — share that hunk id, so focusing
 either surfaces both. Sub-hunk narrowing would key on [[segment]] ranges
 (which carry line coordinates) but isn't done today.
+
+**Reference**
+The use-site unit of the structural layer — `Reference{line, kind, text}`
+in `structural/references.py`, behind the [[repo-tools]] `references`
+tool. Answers "where is this name used", the counterpart to
+[[symbol]]'s "where is it defined", and the question the model asks far
+more often.
+
+Two backends. Python uses `ast`: the tree-sitter tags query captures
+only `reference.call`, and captures `np.array(x)` as `array` — losing
+the module root, so "is this import still used" is unanswerable from it.
+Every other language uses the tags query's `@reference.*` captures.
+Both are name-based, not scope-resolved: two distinct `helper`s in one
+file are indistinguishable. Better than a text search — comments,
+strings, substrings and the definition itself are excluded — but not a
+resolver, and callers must not present it as one. A file that will not
+parse falls back to a text search of that file and is flagged inline
+rather than dropped.
