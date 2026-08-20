@@ -17,7 +17,7 @@ function makeHunk(id: string, overrides: Partial<HunkBlock> = {}): HunkBlock {
     id, header: "@@ -10,4 +10,4 @@",
     old_start: 10, old_count: 4, new_start: 10, new_count: 4,
     adds: 1, dels: 1, intent: "", smells: [], confidence: null, context: "",
-    refs: [], line_notes: [], segments: [], rows: [], fold_regions: [],
+    refs: [], line_notes: [], segments: [], rows: [],
     ...overrides,
   };
 }

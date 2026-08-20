@@ -2,9 +2,10 @@
 //
 // The same (rows, spans) cases in tests/fixtures/fold_regions_cases.json
 // drive this vitest case and the pytest case in tests/test_hunk_layout.py
-// (test_fold_regions_lockstep_fixture). Both detectors must produce the
-// regions baked into the fixture, so the server's wire `fold_regions` and
-// the viewer's client-side detection stay reconcilable.
+// (test_fold_regions_lockstep_fixture). Detection itself runs only here
+// now (ADR 0006 slice 6); `hunk_layout.compute_fold_regions` is the
+// reference implementation this one is pinned against, so the algorithm
+// has an executable specification outside the bundle.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -193,11 +194,12 @@ function _makeFile(overrides: Partial<FileBlock> = {}): FileBlock {
     adds: 1, dels: 1, summary: "",
     symbols: { added: [], modified: [], removed: [] },
     fold_symbols: { head: SPANS, base: SPANS },
+    fold_regions: [],
     hunks: [{
       id: "H0_0", header: "@@ -6,3 +6,3 @@",
       old_start: 6, old_count: 3, new_start: 6, new_count: 3,
       adds: 1, dels: 1, intent: "", smells: [], confidence: null, context: "",
-      refs: [], line_notes: [], segments: [], rows: HUNK_ROWS, fold_regions: [],
+      refs: [], line_notes: [], segments: [], rows: HUNK_ROWS,
     }],
     ...overrides,
   };
@@ -210,8 +212,7 @@ function _placeholderTexts(): string[] {
 
 /** Every region record the file carries, as its identity tuple. */
 function _addresses(file: FileBlock): string[] {
-  return file.hunks
-    .flatMap((h) => h.fold_regions)
+  return file.fold_regions
     .map((r) => `${r.context}:${r.right_start}-${r.right_end}:${r.left_start}-${r.left_end}`);
 }
 
@@ -245,7 +246,7 @@ describe("CodeFold spans are absolute and reveal-invariant", () => {
     const file = _makeFile();
     await _serve(file, HEAD_LINES);
     _attachUnrevealed(file);
-    const records = file.hunks.flatMap((h) => h.fold_regions);
+    const records = [...file.fold_regions];
     // Whatever hangs off a record — the fold summary today, the collapse
     // flag once it is record-borne — must survive the reveal.
     records[0].summary = "sets up Foo";
@@ -258,7 +259,7 @@ describe("CodeFold spans are absolute and reveal-invariant", () => {
     // What matters is that the two existing ones keep their record
     // objects.
     expect(_addresses(file)).toEqual(["both:3-9:3-9", "both:4-9:4-9", "right:11-12:11-12"]);
-    const after = file.hunks.flatMap((h) => h.fold_regions);
+    const after = [...file.fold_regions];
     expect(after[0]).toBe(records[0]);
     expect(after[1]).toBe(records[1]);
     expect(after[0].summary).toBe("sets up Foo");
@@ -269,7 +270,7 @@ describe("CodeFold spans are absolute and reveal-invariant", () => {
     await _serve(file, HEAD_LINES);
     // Reveal the context around the hunk, then fold `Foo`.
     _attachRevealed(file);
-    const folded = file.hunks[0].fold_regions[0];
+    const folded = file.fold_regions[0];
     folded.summary = "collapsed by the reviewer";
     const chevrons = Array.from(document.querySelectorAll<SVGElement>(".fold-chev"));
     chevrons[0].dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
@@ -280,8 +281,8 @@ describe("CodeFold spans are absolute and reveal-invariant", () => {
     document.body.innerHTML = "";
     _attachUnrevealed(file);
 
-    expect(file.hunks[0].fold_regions[0]).toBe(folded);
-    expect(file.hunks[0].fold_regions[0].summary).toBe("collapsed by the reviewer");
+    expect(file.fold_regions[0]).toBe(folded);
+    expect(file.fold_regions[0].summary).toBe("collapsed by the reviewer");
   });
 
   test("no content: no fold is offered rather than one that moves", () => {
@@ -374,7 +375,7 @@ describe("indentation folds are detected from file content, not the rendered row
     const file = _file();
     await _serve(file, HEAD_LINES);
     Folds.attachFileFolds(_mountFile(file.id, [{ kind: "hunk", rows }]), file, [], NO_REPAINT);
-    const before = file.hunks.flatMap((h) => h.fold_regions);
+    const before = [...file.fold_regions];
     before[before.length - 1].summary = "bar's body";
 
     document.body.innerHTML = "";
@@ -387,7 +388,7 @@ describe("indentation folds are detected from file content, not the rendered row
     // The record is re-matched rather than orphaned, so its summary is
     // still what the collapsed placeholder shows. A row-derived address
     // would have moved from 4..8 to 4..10 and left this behind.
-    const after = file.hunks.flatMap((h) => h.fold_regions);
+    const after = [...file.fold_regions];
     expect(after[before.length - 1]).toBe(before[before.length - 1]);
     expect(_placeholderTexts()).toContain("bar's body");
   });

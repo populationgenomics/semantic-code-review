@@ -210,21 +210,6 @@ def _fold_spans(symbols: list[structural.Symbol], depth: int = 0) -> list[dict[s
     return out
 
 
-def file_fold_spans(
-    f: AnnotatedFile,
-    base_dir: Path | None,
-    head_dir: Path | None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Flattened per-side definition spans for one file, as `(head, base)`.
-
-    The currency `build_hunk_viewer_block` needs to snap folds to symbol
-    boundaries. Empty lists degrade an unsupported language / unavailable
-    worktree, same as `fold_symbols`.
-    """
-    syms = _file_symbols(f, base_dir, head_dir)
-    return _fold_spans(syms.head), _fold_spans(syms.base)
-
-
 def _symbol_blocks(
     diff: AnnotatedDiff,
     file_syms: list[_FileSymbols],
@@ -417,9 +402,7 @@ def _file_block(
     idx: int,
     syms: _FileSymbols,
 ) -> dict[str, Any]:
-    head_spans = _fold_spans(syms.head)
-    base_spans = _fold_spans(syms.base)
-    hunks = [build_hunk_viewer_block(h, idx, hi, head_spans, base_spans) for hi, h in enumerate(f.hunks)]
+    hunks = [build_hunk_viewer_block(h, idx, hi) for hi, h in enumerate(f.hunks)]
     adds = sum(h["adds"] for h in hunks)
     dels = sum(h["dels"] for h in hunks)
     ann = f.ann
@@ -434,6 +417,7 @@ def _file_block(
         "summary": ann.summary,
         "symbols": ann.symbols.model_dump() if ann.symbols else {"added": [], "modified": [], "removed": []},
         "fold_symbols": {"head": _fold_spans(syms.head), "base": _fold_spans(syms.base)},
+        "fold_regions": _fold_region_blocks(f),
         "hunks": hunks,
     }
 
@@ -503,6 +487,41 @@ _LANG_BY_EXT = {
     ".diff": "diff",
     ".patch": "diff",
 }
+
+
+def _fold_region_blocks(f: AnnotatedFile) -> list[dict[str, Any]]:
+    """The file's persisted `CodeFold` summaries, as addressed records.
+
+    Not detection: the viewer detects its own regions from the file's
+    content and matches them to these by address, so what the server owes
+    it is the summaries it has stored — every one of them, whether or not
+    the region has a row in any hunk, and whatever the language. Detecting
+    here as well used to decide which summaries came back, and dropped the
+    ones that fell outside a hunk or belonged to a file with no symbols.
+
+    `fold_descriptions` sit on hunk annotations for legacy reasons (see
+    `fold_summary._replace_fold_description`), so the file's are their
+    union, first occurrence of an address winning.
+    """
+    seen: set[tuple[str, int, int, int, int]] = set()
+    out: list[dict[str, Any]] = []
+    for h in f.hunks:
+        for fd in h.ann.fold_descriptions:
+            key = (fd.context, fd.right_start, fd.right_end, fd.left_start, fd.left_end)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                {
+                    "context": fd.context,
+                    "right_start": fd.right_start,
+                    "right_end": fd.right_end,
+                    "left_start": fd.left_start,
+                    "left_end": fd.left_end,
+                    "summary": fd.summary,
+                }
+            )
+    return out
 
 
 def _lang_from_path(path: str) -> str:

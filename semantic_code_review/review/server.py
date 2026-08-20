@@ -116,13 +116,12 @@ def _update_viewer_json_fold(
     viewer_json: dict[str, Any],
     payload: dict[str, Any],
 ) -> None:
-    """Patch the matching fold_regions[i].summary in the viewer JSON
-    so a fresh `/data.json` fetch sees the result.
+    """Patch the addressed file's fold record so a fresh `/data.json`
+    fetch sees the summary.
 
-    Walks every hunk in the addressed file looking for a region whose
-    (context, right_start/end, left_start/end) match — the regions are
-    addressed at the file level by the v2 protocol but still attached
-    to individual hunks in the per-hunk fold_regions block.
+    The records are the summaries the run has, addressed in absolute file
+    lines; a region the reviewer is the first to fold has none yet, so
+    this appends one rather than dropping the result.
     """
     files = viewer_json.get("files") or []
     fi = payload.get("file_idx")
@@ -134,17 +133,27 @@ def _update_viewer_json_fold(
     ls = payload.get("left_start", 0)
     le = payload.get("left_end", 0)
     summary = payload.get("summary", "")
-    for hunk in files[fi].get("hunks") or []:
-        for reg in hunk.get("fold_regions") or []:
-            if (
-                reg.get("context") == context
-                and (reg.get("right_start") or 0) == rs
-                and (reg.get("right_end") or 0) == re_
-                and (reg.get("left_start") or 0) == ls
-                and (reg.get("left_end") or 0) == le
-            ):
-                reg["summary"] = summary
-                return
+    regions = files[fi].setdefault("fold_regions", [])
+    for reg in regions:
+        if (
+            reg.get("context") == context
+            and (reg.get("right_start") or 0) == rs
+            and (reg.get("right_end") or 0) == re_
+            and (reg.get("left_start") or 0) == ls
+            and (reg.get("left_end") or 0) == le
+        ):
+            reg["summary"] = summary
+            return
+    regions.append(
+        {
+            "context": context,
+            "right_start": rs,
+            "right_end": re_,
+            "left_start": ls,
+            "left_end": le,
+            "summary": summary,
+        }
+    )
 
 
 def _fold_symbol_from_viewer_json(
@@ -154,30 +163,30 @@ def _fold_symbol_from_viewer_json(
     right_range: tuple[int, int] | None,
     left_range: tuple[int, int] | None,
 ) -> tuple[str | None, str | None]:
-    """Look up the symbol a fold region snapped to, from the viewer JSON.
+    """Look up the definition a fold region snapped to, for the prompt.
 
-    The server-computed `fold_regions` carry the definition's
-    `qualified_name` / `kind` (or null for indentation-fallback regions);
-    the client requests by `(context, ranges)`, which match in lockstep.
-    Returns `(None, None)` when no region matches — a client-only region
-    over expanded context the server never computed — so the prompt is
-    simply left unseeded.
+    Read straight off the file's `fold_symbols`, because that is where the
+    client's address came from: a symbol-snapped region *is* a definition's
+    declared span, on whichever side it exists. `(None, None)` for an
+    indentation region, which has no definition, and the prompt is left
+    unseeded.
+
+    `context` is unused — the ranges alone identify the definition — and
+    kept so the caller reads as the address it holds. Two definitions with
+    byte-identical spans are indistinguishable here; the first wins, as it
+    does in the viewer's own detector.
     """
     files = viewer_json.get("files") or []
     if file_idx < 0 or file_idx >= len(files):
         return (None, None)
-    rs, re_ = right_range or (0, 0)
-    ls, le = left_range or (0, 0)
-    for hunk in files[file_idx].get("hunks") or []:
-        for reg in hunk.get("fold_regions") or []:
-            if (
-                reg.get("context") == context
-                and (reg.get("right_start") or 0) == rs
-                and (reg.get("right_end") or 0) == re_
-                and (reg.get("left_start") or 0) == ls
-                and (reg.get("left_end") or 0) == le
-            ):
-                return (reg.get("qualified_name"), reg.get("kind"))
+    del context
+    spans = files[file_idx].get("fold_symbols") or {}
+    for side, rng in (("head", right_range), ("base", left_range)):
+        if rng is None:
+            continue
+        for span in spans.get(side) or []:
+            if (span.get("start_line"), span.get("end_line")) == rng:
+                return (span.get("qualified_name"), span.get("kind"))
     return (None, None)
 
 
@@ -744,8 +753,9 @@ class _Handler(BaseHTTPRequestHandler):
             FoldSummaryNotReady,
         )
 
-        # Seed the prompt with the symbol the region snapped to (if any),
-        # resolved from the server-computed fold_regions in the viewer JSON.
+        # Seed the prompt with the definition the region snapped to (if
+        # any), resolved from the file's `fold_symbols` — the spans the
+        # client's address came from.
         qualified_name, kind = _fold_symbol_from_viewer_json(
             self.ctx.viewer_json,
             file_idx,

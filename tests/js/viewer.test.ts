@@ -264,7 +264,6 @@ function makeHunkBlock(id: string, intent = "", overrides: Record<string, unknow
       { kind: "pair", old_line: 1, new_line: 1, old_text: "a", new_text: "a" },
       { kind: "pair", old_line: 2, new_line: 2, old_text: "b", new_text: "B" },
     ],
-    fold_regions: [],
     ...overrides,
   };
 }
@@ -1417,9 +1416,9 @@ describe("ingested PR comments", () => {
 describe("lazy fold summaries", () => {
   function dataWithFold(): ViewerData {
     // Rows the file-level walker will recognise as a fold: `def foo():`
-    // header at indent 0, indented body. The fold_regions block is
-    // server-computed; the viewer re-detects from the rows but uses
-    // the block when looking up an existing summary.
+    // header at indent 0, indented body. The file's `fold_regions` are
+    // the summaries the run has stored, addressed in file lines; the
+    // viewer detects the region itself and matches by address.
     serveFileSides("F0", ["def foo():", "    x = 1"], ["def foo():", "    x = 2"]);
     return makeData({
       pending: false,
@@ -1427,15 +1426,14 @@ describe("lazy fold summaries", () => {
         id: "F0", path: "a.py", status: "modified", language: "python",
         adds: 1, dels: 1, summary: "ok",
         symbols: { added: [], modified: [], removed: [] },
+        fold_regions: [
+          { context: "both", right_start: 1, right_end: 2,
+            left_start: 1, left_end: 2, summary: "" },
+        ],
         hunks: [makeHunkBlock("H0_0", "real intent", {
           rows: [
             { kind: "ctx", old_line: 1, new_line: 1, old_text: "def foo():", new_text: "def foo():" },
             { kind: "pair", old_line: 2, new_line: 2, old_text: "    x = 1", new_text: "    x = 2" },
-          ],
-          fold_regions: [
-            { context: "both", right_start: 1, right_end: 2,
-              left_start: 1, left_end: 2,
-              has_changes: true, summary: "" },
           ],
         })],
       }],
@@ -1466,6 +1464,24 @@ describe("lazy fold summaries", () => {
     // fold-chev handler covers that).
     el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   }
+
+  test("a stored summary re-seeds the region the viewer detects", async () => {
+    // What the wire records are for. The server does not detect — it
+    // publishes the summaries it has, addressed in absolute file lines —
+    // so a summary comes back for whatever the viewer detects at that
+    // address, whether or not the region has a row in any hunk and
+    // whatever the file's language. Collapsing it fires no request.
+    const data = dataWithFold();
+    (data.files![0].fold_regions as Array<Record<string, unknown>>)[0].summary =
+      "sets x";
+    await bootViewer(data);
+    expandHunk();
+
+    clickEl(foldChevron());
+
+    expect(document.querySelector(".annot-box")?.textContent).toBe("sets x");
+    expect(fetchCalls.filter((c) => c.url.includes("/fold-summary"))).toHaveLength(0);
+  });
 
   test("first fold-close posts /fold-summary and renders the response", async () => {
     await bootViewer(dataWithFold());
@@ -1550,10 +1566,6 @@ describe("lazy fold summaries", () => {
             { kind: "del", old_line: 11, new_line: null, old_text: "    x = 1", new_text: "" },
             { kind: "del", old_line: 12, new_line: null, old_text: "    y = 2", new_text: "" },
           ],
-          fold_regions: [{
-            context: "left", right_start: null, right_end: null,
-            left_start: 10, left_end: 12, has_changes: true, summary: "",
-          }],
         })],
       }],
     }));
@@ -2024,7 +2036,6 @@ describe("collapsed content is a manifest, not an absence", () => {
             { kind: "ctx", old_line: 1, new_line: 1, old_text: "def foo():", new_text: "def foo():" },
             { kind: "pair", old_line: 2, new_line: 2, old_text: "    x = 1", new_text: "    x = 2" },
           ],
-          fold_regions: [],
         })],
       }],
     }), {

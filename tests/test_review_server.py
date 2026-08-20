@@ -505,23 +505,32 @@ def test_fold_summary_broadcasts_and_patches_viewer_json(tmp_path: Path) -> None
             {
                 "id": "F0",
                 "path": "src/x.py",
-                "hunks": [
+                # The definition the client's address came from: the
+                # symbol is resolved from these spans, not from a
+                # server-side re-detection of the region.
+                "fold_symbols": {
+                    "head": [
+                        {
+                            "start_line": 1,
+                            "end_line": 3,
+                            "kind": "function",
+                            "qualified_name": "Foo.bar",
+                            "depth": 0,
+                        }
+                    ],
+                    "base": [],
+                },
+                "fold_regions": [
                     {
-                        "id": "H0_0",
-                        "fold_regions": [
-                            {
-                                "context": "right",
-                                "right_start": 1,
-                                "right_end": 3,
-                                "left_start": 0,
-                                "left_end": 0,
-                                "qualified_name": "Foo.bar",
-                                "kind": "function",
-                                "summary": "",
-                            }
-                        ],
+                        "context": "right",
+                        "right_start": 1,
+                        "right_end": 3,
+                        "left_start": 0,
+                        "left_end": 0,
+                        "summary": "",
                     }
                 ],
+                "hunks": [{"id": "H0_0"}],
             }
         ],
     }
@@ -590,7 +599,7 @@ def test_fold_summary_broadcasts_and_patches_viewer_json(tmp_path: Path) -> None
         # `/data.json` reflects the patched viewer_json.
         code, data = _request(srv.url() + "/data.json")
         assert code == 200
-        assert data["files"][0]["hunks"][0]["fold_regions"][0]["summary"].startswith("wraps the body")
+        assert data["files"][0]["fold_regions"][0]["summary"].startswith("wraps the body")
         # The SSE channel broadcast the same payload.
         events_resp.fp.readline()  # id
         event_line = events_resp.fp.readline()
@@ -616,21 +625,17 @@ def test_fold_summary_skips_generated_file(tmp_path: Path) -> None:
                 "id": "F0",
                 "path": "uv.lock",
                 "status": "generated",
-                "hunks": [
+                "fold_regions": [
                     {
-                        "id": "H0_0",
-                        "fold_regions": [
-                            {
-                                "context": "right",
-                                "right_start": 1,
-                                "right_end": 3,
-                                "left_start": 0,
-                                "left_end": 0,
-                                "summary": "",
-                            }
-                        ],
+                        "context": "right",
+                        "right_start": 1,
+                        "right_end": 3,
+                        "left_start": 0,
+                        "left_end": 0,
+                        "summary": "",
                     }
                 ],
+                "hunks": [{"id": "H0_0"}],
             }
         ],
     }
@@ -651,7 +656,7 @@ def test_fold_summary_skips_generated_file(tmp_path: Path) -> None:
         assert "not summarised" in body["summary"]
         # The canned note is patched into the viewer JSON like a real one.
         _, data = _request(srv.url() + "/data.json")
-        assert data["files"][0]["hunks"][0]["fold_regions"][0]["summary"] == body["summary"]
+        assert data["files"][0]["fold_regions"][0]["summary"] == body["summary"]
     finally:
         srv.stop()
 

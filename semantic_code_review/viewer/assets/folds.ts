@@ -264,15 +264,13 @@ function _findExistingFoldRecord(
 ): FoldRegion | null {
   const rs = det.right_start || 0, re_ = det.right_end || 0;
   const ls = det.left_start || 0, le = det.left_end || 0;
-  for (const h of file.hunks || []) {
-    for (const r of h.fold_regions || []) {
-      if (
-        (r.context || "right") === det.context
-        && (r.right_start || 0) === rs && (r.right_end || 0) === re_
-        && (r.left_start || 0) === ls && (r.left_end || 0) === le
-      ) {
-        return r;
-      }
+  for (const r of file.fold_regions || []) {
+    if (
+      (r.context || "right") === det.context
+      && (r.right_start || 0) === rs && (r.right_end || 0) === re_
+      && (r.left_start || 0) === ls && (r.left_end || 0) === le
+    ) {
+      return r;
     }
   }
   return null;
@@ -281,12 +279,10 @@ function _findExistingFoldRecord(
 function _upsertFoldRegion(file: FileBlock, det: DetectedRegion): FoldRegion {
   // The local POST handler and the SSE updater both mutate the
   // region object's `summary` field — they need to point at the
-  // same reference. Find a matching persistent record if one
-  // exists, refresh its detected fields, and return it. Otherwise
-  // create a new one and stash it on the file's first hunk so the
-  // next render picks it up. The record's row indices are not touched:
-  // they are the server's per-hunk detection indices, and placement in
-  // this render is `_placeRegion`'s job.
+  // same reference. Find the record the server sent for this address if
+  // there is one, fill in what only detection knows, and return it.
+  // Otherwise create one on the file, which is where a summary fetched
+  // this session lives until the next run persists it.
   const existing = _findExistingFoldRecord(file, det);
   if (existing) {
     existing.has_changes = det.has_changes;
@@ -302,11 +298,8 @@ function _upsertFoldRegion(file: FileBlock, det: DetectedRegion): FoldRegion {
     qualified_name: det.qualified_name, kind: det.kind,
     summary: "",
   };
-  if (file.hunks && file.hunks.length > 0) {
-    const h0 = file.hunks[0];
-    if (!h0.fold_regions) h0.fold_regions = [];
-    h0.fold_regions.push(candidate);
-  }
+  if (!file.fold_regions) file.fold_regions = [];
+  file.fold_regions.push(candidate);
   return candidate;
 }
 

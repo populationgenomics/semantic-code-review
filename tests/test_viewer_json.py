@@ -5,6 +5,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from semantic_code_review.augment.schemas import (
+    AnnotatedDiff,
+    AnnotatedFile,
+    AnnotatedHunk,
+    FoldDescription,
+    HunkAnnotations,
+    ParsedHunk,
+    PRInfo,
+)
 from semantic_code_review.format.parse import parse_augmented_diff
 from semantic_code_review.viewer.build_json import (
     build_pending_viewer_json,
@@ -392,6 +401,67 @@ def test_fold_symbols_empty_for_unsupported_language(tmp_path: Path) -> None:
     data = build_pending_viewer_json(tmp_path)
 
     assert data["files"][0]["fold_symbols"] == {"head": [], "base": []}
+
+
+# --- fold regions: the summaries the run has, at the file level ------------
+
+
+def test_fold_regions_are_the_persisted_summaries_on_the_file() -> None:
+    """A `FoldDescription` reaches the viewer as a file-level record,
+    whatever the region's relation to the hunks.
+
+    The server does not detect regions (ADR 0006 slice 6): the viewer
+    does, from the file's content, and matches by address. So a summary
+    for a definition with no row in any hunk — the common case once
+    detection reads the whole file — still comes back, where per-hunk
+    detection used to drop it.
+    """
+    hunk = AnnotatedHunk(
+        parsed=ParsedHunk(
+            header="@@ -1,1 +1,1 @@",
+            body="-a\n+b\n",
+            old_start=1,
+            old_count=1,
+            new_start=1,
+            new_count=1,
+        ),
+        ann=HunkAnnotations(
+            intent="",
+            fold_descriptions=[
+                # Lines 40-80: nowhere near the hunk at line 1.
+                FoldDescription(context="right", right_start=40, right_end=80, summary="the parser"),
+                FoldDescription(context="left", left_start=5, left_end=9, summary="the old parser"),
+            ],
+        ),
+    )
+    diff = AnnotatedDiff(
+        pr=PRInfo(pr_url="", base_sha="a", head_sha="b"),
+        files=[AnnotatedFile(path="a.py", diff_git_line="diff --git a/a.py b/a.py", hunks=[hunk])],
+    )
+
+    block = build_viewer_json(diff, {})["files"][0]
+
+    assert block["fold_regions"] == [
+        {
+            "context": "right",
+            "right_start": 40,
+            "right_end": 80,
+            "left_start": 0,
+            "left_end": 0,
+            "summary": "the parser",
+        },
+        {
+            "context": "left",
+            "right_start": 0,
+            "right_end": 0,
+            "left_start": 5,
+            "left_end": 9,
+            "summary": "the old parser",
+        },
+    ]
+    # And nowhere else: a hunk is not where a fold lives, so an SSE event
+    # replacing one cannot take the file's fold records with it.
+    assert "fold_regions" not in block["hunks"][0]
 
 
 # --- file content is not in the payload ------------------------------------
