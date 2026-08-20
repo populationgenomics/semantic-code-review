@@ -137,6 +137,9 @@ that is what makes a reveal outlive both the renderer's per-render
 re-seed and a bulk action. `Visibility.reset()` is the only thing that
 clears the marks.
 
+Both ledgers persist, as [[view-state]]: a reload restores the reveals
+along with the hides.
+
 **Fold region**
 A collapsible structural region in the viewer — the `> def foo(): …`
 chevron. Addressed by `(file_idx, context, right_start..right_end,
@@ -246,8 +249,36 @@ suppresses only *level*-owned hides; one the reviewer set by hand wins.
 Fold toggles flip the actually-visible state, so one click collapses a
 focus-revealed hunk rather than no-op'ing.
 
-The URL hash carries `fold=<level>` and nothing else; slice 4 of the
-visibility-model work moves view state to `sessionStorage` and drops it.
+The level persists with the spans, as [[view-state]]. Nothing about it
+rides in the URL.
+
+**View state**
+What the reviewer has folded and at what depth: the [[hidden-span]]
+ledgers of every file plus the [[fold-level]]. Persisted by
+`viewer/assets/view_state.ts` as one `sessionStorage` record under
+`scr-view-state:<run_id>`, written at the end of each `render()` — the
+funnel every span mutation already passes through — and skipped when
+neither the level nor the store's revision has moved. Restored by
+`Render.init`, which seeds the level from scratch only when there was no
+record; a restored store already carries the level's marks, and seeding
+over them would re-hide what the reviewer had expanded.
+
+`sessionStorage` is the ceiling, not a preference (ADR 0006). Every
+browser tier is origin-scoped and the review server binds `--port 0`, so
+the origin changes each run; a tab's lifetime, reload included, is all
+that is reachable. The run id in the key is not what separates two tabs
+— `sessionStorage` already does — it stops a later run inheriting an
+earlier one's record when the kernel reuses the ephemeral port.
+
+Failures split: an unavailable or full store degrades to in-memory with a
+console warning; a record that parses but does not describe view state
+raises `ViewStateError`, uncaught, rather than being coerced into a
+plausible span set. A record at another schema `version` is discarded as
+stale, which is neither.
+
+Not everything the viewer remembers is view state under this entry: the
+active sidebar pill is a [[collapsible-region]] filter, and `sidebar.ts`
+still keeps it in `localStorage` keyed on `pr.head_sha`.
 
 **Viewer data**
 The in-memory runtime data structure served as `/data.json` by the
@@ -267,6 +298,12 @@ that have no place on the persisted sidecar; (3) it ships file
 *content* the diff never mentions — `FileBlock.head_lines`, the whole
 post-image, null for binary / deleted / generated files and for any
 file over `build_json._HEAD_LINES_CAP` (5,000 lines).
+
+Two fields are not built by `build_json.py` at all: `debug` and
+`run_id` are merged into the payload by the `/data.json` handler,
+because both are properties of the server and the run rather than of
+the diff, and `update_viewer_json` swaps the built payload wholesale.
+`run_id` is the [[run-directory]]'s name; it keys the [[view-state]].
 
 `data_store.ts` owns every mutation of the in-memory tree. `boot.ts`
 still holds the reference (it owns the `/data.json` fetch result) and

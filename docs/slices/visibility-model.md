@@ -8,9 +8,9 @@ identities, three persistence tiers and no shared rule:
 
 | | identity | survives re-render | survives reload |
 |---|---|---|---|
-| `> ` marker collapse | span of absolute file lines (slice 2; was *rendered row indices*) | since slice 3 | slice 4 |
-| file / hunk header collapse | stable id (`H0_1`) | yes | slice 4 (was: URL hash) |
-| unchanged context outside a hunk | span of absolute file lines (slice 3; was *none — pure DOM*) | since slice 3 | slice 4 |
+| `> ` marker collapse | span of absolute file lines (slice 2; was *rendered row indices*) | since slice 3 | since slice 4 |
+| file / hunk header collapse | stable id (`H0_1`) | yes | since slice 4 (was: URL hash) |
+| unchanged context outside a hunk | span of absolute file lines (slice 3; was *none — pure DOM*) | since slice 3 | since slice 4 |
 
 The first was keyed on something the user can move: revealing context
 changed the rendered row array, `_computeFoldRegions` derived different
@@ -194,13 +194,66 @@ and each fails against the pre-slice viewer.
 PR #9 is now fully superseded: its `_folded` lived on the region record,
 which no longer holds collapse state.
 
-## Slice 4 — Per-tab persistence
+## Slice 4 — Per-tab persistence *(done, 182c747, 3abb19a)*
 
-`sessionStorage`, keyed by run; `fold=` leaves the URL hash (slice 3
-already dropped the per-item entries) so there is one source of truth.
+One `sessionStorage` record per run — `scr-view-state:<run_id>` — holding
+the collapse level and both span ledgers of every file. `#fold=` is gone
+from the URL along with the `hashchange` listener, so there is one source
+of truth. `view_state.ts` owns the record; `visibility.ts` gained
+`snapshot` / `restore` / `revision` and stayed storage-free.
 
-**Done when:** reload restores collapse state, two tabs are independent,
-and no view state rides in the URL.
+**There was no run id to key on.** `pr.head_sha` was the obvious
+candidate (`sidebar.ts` uses it) and is wrong: it does not move when the
+*base* does, so `scr review HEAD~1` and `scr review HEAD~3` on a clean
+tree share it while showing different diffs. The plan's worry — a dirty
+tree holding the head SHA fixed — is not real here, because
+`_synthesise_head_sha` folds the working-tree diff into the SHA. The run
+directory's name is used instead: it is the run's identity everywhere
+else (comments, sidecar, cache), and the server stamps it into
+`/data.json` at serve time next to the `debug` flag, both being
+properties of the run rather than of the diff.
+
+**What the run key is for.** `sessionStorage` is already per-tab, so the
+key does not guard tab collision. It guards the one way a record outlives
+its run: the kernel hands a later run the same ephemeral port, the
+reviewer points the same tab at it, the origin matches, and spans
+addressing absolute file lines would hide arbitrary lines of a different
+diff.
+
+**Where the write happens.** At the end of `render()`, which every span
+mutation already funnels through, gated on a revision counter so a render
+that moved nothing does not re-serialise a span set the size of the diff
+(one per SSE frame otherwise). Restoring skips the boot-time
+`setLevel`: a restored store already holds the level's *marks*, and
+re-seeding over them would re-hide every hunk the reviewer had expanded.
+
+**Fail soft on write, loud on corruption.** A denied or full store
+degrades to in-memory with a warning — nothing is wrong with the state
+itself. A record that parses but does not describe view state raises
+`ViewStateError`, uncaught. A record at another schema `version` is
+neither: it is a known stale artefact of an older scr in the same tab,
+discarded with a warning. Without that third case the first version bump
+would hard-fail every reused tab.
+
+**Testing.** `tests/js/view_state.test.ts` drives the record without a
+document: the round trip of both ledgers, per-tab isolation (a second
+`sessionStorage` instance, which is what a tab is), a denied store, a
+refused write, and each malformed shape. The three done-conditions need
+the renderer, so they sit in `viewer.test.ts` — a reload restoring a
+hide, a reveal and the level; two tabs staying independent; an empty
+`location.hash` after a level pick and a fold. All six fail against
+9774606.
+
+**Left alone: `sidebar.ts`'s `localStorage`.** The active pill persists to
+`localStorage` keyed on `head_sha`, and by ADR 0006's own reasoning that
+cannot survive a run — 352ba4c introduced it as "persists to localStorage
+keyed by head sha", i.e. as cross-run persistence, before anyone had
+reasoned about the port-0 origin. So it is already-broken cross-run
+persistence rather than a written-down exception. Not changed here: the
+pill is a *filter*, which slice 3 deliberately kept outside the span
+model, and switching it to `sessionStorage` would trade a real if small
+behaviour (reopen the URL in a fresh tab within one run and the filter
+comes back) for consistency. The author's call, not this slice's.
 
 ## Slice 5 — The manifest
 
