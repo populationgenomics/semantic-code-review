@@ -181,17 +181,6 @@ function lineHidden(fileId: string, side: "old" | "new", line: number): boolean 
   return covering(fileId, side, line).length > 0;
 }
 
-/** Every span covering a row, optionally narrowed to one kind. A row
- *  carries up to two line numbers and is covered when either side is. */
-function coveringRow(
-  fileId: string, row: RowBlock, kind?: SpanKind,
-): HiddenSpan[] {
-  return spansOf(fileId).filter((s) => {
-    if (kind !== undefined && s.kind !== kind) return false;
-    return _inRange(s.right, row.new_line) || _inRange(s.left, row.old_line);
-  });
-}
-
 /** Which of a container's rows this render emits, as indices into `rows`.
  *
  *  Only `codefold` spans are consulted: they are the sole hiding source
@@ -207,9 +196,15 @@ function coveringRow(
 function planRows(
   fileId: string, rows: RowBlock[], headed: Set<string>,
 ): number[] {
+  // Pulled out of the loop: this runs over every rendered row of every
+  // file, and the common case is no folds at all.
+  const codeFolds = spansOf(fileId).filter((s) => s.kind === "codefold");
+  if (codeFolds.length === 0) return rows.map((_, i) => i);
   const out: number[] = [];
   for (let i = 0; i < rows.length; i++) {
-    const folds = coveringRow(fileId, rows[i], "codefold");
+    const folds = codeFolds.filter(
+      (s) => _inRange(s.right, rows[i].new_line) || _inRange(s.left, rows[i].old_line),
+    );
     if (folds.length === 0) {
       out.push(i);
       continue;
@@ -375,7 +370,6 @@ export const Visibility = {
   dropOwned,
   covering,
   lineHidden,
-  coveringRow,
   planRows,
   fileSpan,
   fileSpanId,
