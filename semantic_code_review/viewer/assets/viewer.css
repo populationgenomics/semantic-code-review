@@ -1170,6 +1170,7 @@ body {
   text-align: left;
   cursor: default;
 }
+.manifest-single { grid-template-columns: minmax(0, 1fr); }
 .manifest-col { min-width: 0; }
 .manifest-entry {
   display: flex;
@@ -1201,7 +1202,18 @@ body {
 
 /* Inside a diff, a manifest is annotation content rather than a block of
  * its own: the box already carries the padding and the border. */
-.diff .annot-manifest .annot-box { max-height: none; font-style: normal; }
+/* Undecorated: every entry already draws its own 3px kind-coloured bar,
+   so the box's border-left would double it. Stripping the chrome puts
+   the entry's bar exactly where a comment box's sits. */
+.diff .annot-manifest .annot-box {
+  max-height: none;
+  font-style: normal;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  max-width: none;
+}
 .diff .annot-manifest .annot-box .manifest { padding: 0; }
 
 /* --- Status bar ----------------------------------------------------------- */

@@ -148,18 +148,30 @@ function _el(tag: string, className: string, text?: string): HTMLElement {
 /** The two-column list heading a hide, or null when the hide covers no
  *  note (the common case — the caller renders nothing).
  *
- *  Position is the side and the only thing carrying it, so both columns
- *  are always emitted and neither is labelled. A `CodeFold`'s manifest
- *  is attached inside one `.half` of the diff grid (annotations.ts puts
- *  the content in the fold's own pane and a spacer opposite), so the
- *  box's position in the page says nothing about which side a note is
- *  on — only its column does.
+ *  `layout` picks how the side is carried, because the two hides differ
+ *  in what space they own:
+ *
+ *  - `"sides"` (file, hunk, segment, gap) spans the whole diff, so the
+ *    columns line up under the grid they describe and position alone
+ *    says which side a note is on. Both are emitted and neither is
+ *    labelled; an empty one is the cue.
+ *  - `"single"` (a `CodeFold`) is attached inside one `.half` — the
+ *    fold's own pane, with a spacer opposite — so half of it is already
+ *    off the side it would need to point at. Splitting a pane again
+ *    buys nothing and costs the text half its width, so the notes run
+ *    as one list in line order.
  */
-function render(entries: ManifestNote[]): HTMLElement | null {
+function render(
+  entries: ManifestNote[], layout: "sides" | "single" = "sides",
+): HTMLElement | null {
   if (entries.length === 0) return null;
-  const wrap = _el("div", "manifest");
-  wrap.appendChild(_column("old", entries));
-  wrap.appendChild(_column("new", entries));
+  const wrap = _el("div", layout === "single" ? "manifest manifest-single" : "manifest");
+  if (layout === "single") {
+    wrap.appendChild(_column(null, entries));
+  } else {
+    wrap.appendChild(_column("old", entries));
+    wrap.appendChild(_column("new", entries));
+  }
   // Not navigable, and not a way to open what it stands in for: the
   // chrome a manifest sits inside (a segment row, a gap chip) toggles on
   // click, and an entry is not that click.
@@ -167,10 +179,11 @@ function render(entries: ManifestNote[]): HTMLElement | null {
   return wrap;
 }
 
-function _column(side: "old" | "new", entries: ManifestNote[]): HTMLElement {
-  const col = _el("div", `manifest-col manifest-col-${side}`);
+/** One column. `side` null takes every note, already in line order. */
+function _column(side: "old" | "new" | null, entries: ManifestNote[]): HTMLElement {
+  const col = _el("div", side ? `manifest-col manifest-col-${side}` : "manifest-col");
   for (const n of entries) {
-    if (n.side !== side) continue;
+    if (side !== null && n.side !== side) continue;
     const entry = _el("div", `manifest-entry manifest-${n.kind}`);
     entry.title = n.text;
     entry.appendChild(_el("span", "manifest-line", String(n.line)));

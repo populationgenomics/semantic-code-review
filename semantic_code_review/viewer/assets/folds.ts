@@ -698,7 +698,7 @@ function _attachFoldManifest(
   const hidden = Manifest.under(file.id, spanId, notes).filter(
     (n) => n.line !== (n.side === "new" ? headerRow.new_line : headerRow.old_line),
   );
-  const content = Manifest.render(hidden);
+  const content = Manifest.render(hidden, "single");
   if (!content) return null;
   return Annotations.attach({
     anchor, shadowAnchor: shadow, variant: "manifest", content,

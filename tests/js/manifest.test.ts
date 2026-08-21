@@ -211,27 +211,39 @@ describe("a manifest is what one hide covers", () => {
   });
 });
 
-describe("manifest columns", () => {
+describe("manifest layout", () => {
   const note = (side: "old" | "new", line: number, text: string): ManifestNote =>
     ({ kind: "comment", side, line, text });
 
-  test("both columns are always emitted, in old/new order and unlabelled", () => {
-    const el = Manifest.render([note("new", 12, "head-side only")])!;
+  test("sides: two unlabelled columns in old/new order", () => {
+    const el = Manifest.render([note("new", 12, "head"), note("old", 9, "base")])!;
     expect(el.className).toBe("manifest");
     expect(el.querySelectorAll(".manifest-col-label").length).toBe(0);
-    expect(Array.from(el.querySelectorAll(".manifest-col")).map((c) => c.className))
-      .toEqual(["manifest-col manifest-col-old", "manifest-col manifest-col-new"]);
+    expect(el.querySelector(".manifest-col-old")!.textContent).toContain("base");
+    expect(el.querySelector(".manifest-col-new")!.textContent).toContain("head");
   });
 
-  test("a head-side note lands in the right column, the left staying empty", () => {
+  test("sides: a one-sided hide leaves its opposite column empty", () => {
     const el = Manifest.render([note("new", 12, "head-side only")])!;
     expect(el.querySelector(".manifest-col-old")!.children.length).toBe(0);
-    expect(el.querySelector(".manifest-col-new")!.textContent).toContain("head-side only");
   });
 
-  test("a base-side note lands in the left column, the right staying empty", () => {
-    const el = Manifest.render([note("old", 9, "deleted line")])!;
-    expect(el.querySelector(".manifest-col-old")!.textContent).toContain("deleted line");
-    expect(el.querySelector(".manifest-col-new")!.children.length).toBe(0);
+  test("single: one column carrying both sides, in line order", () => {
+    const el = Manifest.render(
+      [note("old", 9, "base note"), note("new", 12, "head note")], "single",
+    )!;
+    expect(el.classList.contains("manifest-single")).toBe(true);
+    const cols = el.querySelectorAll(".manifest-col");
+    expect(cols.length).toBe(1);
+    expect(Array.from(cols[0].querySelectorAll(".manifest-text")).map((n) => n.textContent))
+      .toEqual(["base note", "head note"]);
+  });
+
+  test("single: entries keep their kind colour, which is what draws the bar", () => {
+    const el = Manifest.render(
+      [{ kind: "annotation", side: "new", line: 3, text: "llm" }], "single",
+    )!;
+    expect(el.querySelector(".manifest-entry")!.className)
+      .toBe("manifest-entry manifest-annotation");
   });
 });
