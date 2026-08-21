@@ -30,11 +30,6 @@ export interface FoldRegionAddress {
 
 export interface ResolvedFoldRegion {
   file: FileBlock;
-  /** Index into `file.hunks` of the hunk whose `fold_regions` list
-   *  carries the addressed region. Regions are addressed at the file
-   *  level but persisted on individual hunks (today, the first hunk
-   *  of the file — see CONTEXT.md `Fold region`). */
-  hostHunkIdx: number;
   region: FoldRegion;
 }
 
@@ -99,18 +94,13 @@ export const DataStore = {
 
   // --- Fold regions --------------------------------------------------
 
-  /** Look up the fold region at `addr`, walking every hunk in the
-   *  addressed file. Returns null if no matching region exists. */
+  /** Look up the fold region at `addr` among the addressed file's
+   *  records. Returns null if no matching region exists. */
   findFoldRegion(data: ViewerData, addr: FoldRegionAddress): ResolvedFoldRegion | null {
     const f = data.files && data.files[addr.file_idx];
     if (!f) return null;
-    for (let hi = 0; hi < (f.hunks || []).length; hi++) {
-      const h = f.hunks[hi];
-      for (const r of h.fold_regions || []) {
-        if (_foldKeyMatches(r, addr)) {
-          return { file: f, hostHunkIdx: hi, region: r };
-        }
-      }
+    for (const r of f.fold_regions || []) {
+      if (_foldKeyMatches(r, addr)) return { file: f, region: r };
     }
     return null;
   },
@@ -120,10 +110,9 @@ export const DataStore = {
    *  Outcomes:
    *    "applied"   — summary written; caller should re-render.
    *    "noop"      — same summary already present; nothing to do.
-   *    "inflight"  — region's own local POST is racing this; caller
-   *                  must NOT re-render (the in-flight handler owns
-   *                  the DOM update, and a re-render would pop the
-   *                  user's just-closed fold back open).
+   *    "inflight"  — region's own local POST is racing this; the
+   *                  in-flight handler repaints when it settles, so
+   *                  the caller has nothing to do.
    *    "not-found" — the address doesn't match any region. */
   applyFoldSummary(
     data: ViewerData, addr: FoldRegionAddress, summary: string,

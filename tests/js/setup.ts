@@ -9,17 +9,20 @@
 // good enough for testing reflow coalescing as long as we flush with
 // `await flushRaf()` after scheduling.
 //
-// localStorage: node 25 ships the Web Storage API as an on-by-default
-// global, but it's inert without `--localstorage-file` (accessing it
-// yields a methodless stub) and shadows jsdom's working Storage on the
-// shared global object. We install a real in-memory Storage so
-// getItem/setItem/removeItem/clear behave and stay isolated per run.
+// local/sessionStorage: node 25 ships the Web Storage API as an
+// on-by-default global, but it's inert without `--localstorage-file`
+// (accessing it yields a methodless stub) and shadows jsdom's working
+// Storage on the shared global object. We install real in-memory
+// Storages so getItem/setItem/removeItem/clear behave and stay isolated
+// per run. `sessionStorage` is per-tab in a browser; `installTabStorage`
+// is how a test plays a second tab.
 
 import { afterEach, vi } from "vitest";
 
-{
+/** A standalone in-memory `Storage`. One per simulated tab. */
+export function makeStorage(): Storage {
   const store = new Map<string, string>();
-  const storage: Storage = {
+  return {
     getItem: (k) => (store.has(k) ? store.get(k)! : null),
     setItem: (k, v) => { store.set(k, String(v)); },
     removeItem: (k) => { store.delete(k); },
@@ -27,8 +30,31 @@ import { afterEach, vi } from "vitest";
     key: (i) => Array.from(store.keys())[i] ?? null,
     get length() { return store.size; },
   };
-  (globalThis as unknown as { localStorage: Storage }).localStorage = storage;
 }
+
+/** Swap in a fresh `sessionStorage`, as opening a second tab on the same
+ *  origin does. Returns the storage that was in place, so a test can
+ *  switch back to the first tab — or null if what was in place was a
+ *  test's throwing stand-in for a browser that denies storage.
+ *
+ *  `defineProperty` rather than assignment: a test may have replaced the
+ *  property with a throwing getter, which plain assignment would not
+ *  displace. */
+export function installTabStorage(storage: Storage = makeStorage()): Storage | null {
+  let previous: Storage | null = null;
+  try {
+    previous = (globalThis as unknown as { sessionStorage: Storage }).sessionStorage;
+  } catch {
+    previous = null;
+  }
+  Object.defineProperty(globalThis, "sessionStorage", {
+    configurable: true, writable: true, value: storage,
+  });
+  return previous;
+}
+
+(globalThis as unknown as { localStorage: Storage }).localStorage = makeStorage();
+installTabStorage();
 
 type RoCallback = (entries: ResizeObserverEntry[]) => void;
 

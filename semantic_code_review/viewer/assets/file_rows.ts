@@ -29,6 +29,8 @@ export interface RowWithEls extends RowBlock {
 }
 
 export interface FileRowsEntry {
+  /** The rows this render put on screen, paired with their elements. A
+   *  collapsed `CodeFold` keeps rows out of here. */
   rows: RowBlock[];
   oldEls: HTMLElement[];
   newEls: HTMLElement[];

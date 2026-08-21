@@ -1,4 +1,4 @@
-r"""Hunk → viewer block: row pairing, fold detection, output assembly.
+r"""Hunk → viewer block: row pairing and output assembly.
 
 Each row carries old/new line numbers and the text to display on each side.
 Consecutive `-` / `+` runs are paired positionally (sequential pairing, not
@@ -15,10 +15,16 @@ The hunk body's "\ No newline at end of file" marker is silently dropped
 for v1 rendering (it doesn't affect side-by-side layout).
 
 `Row` and `FoldRegion` are module-private value types; callers consume the
-shape returned by ``build_hunk_viewer_block`` (a JSON-friendly dict). The
-``build_rows`` and ``compute_fold_regions`` functions remain public because
-the augment-side hunk prompt also walks fold regions (it only reads
-attributes off the returned values, never imports the type names).
+shape returned by ``build_hunk_viewer_block`` (a JSON-friendly dict).
+
+``compute_fold_regions`` is the **reference implementation** of the
+viewer's `CodeFold` detector, not part of the wire build. Detection runs
+in one place — the viewer, over the content `/file-text` serves it (ADR
+0006 slice 6) — because only the viewer knows which content it has; a
+second detector here is what silently desynced the two addresses once
+already. What stays is the specification: this function and the viewer's
+`_computeFoldRegions` are pinned against each other on the shared cases
+in ``tests/fixtures/fold_regions_cases.json``.
 """
 
 from __future__ import annotations
@@ -36,7 +42,11 @@ class _FoldRegion:
     """An indent-based fold region within a hunk's row sequence.
 
     `header_idx` is the row whose content opens the block; `body_start_idx`
-    ..`body_end_idx` are the rows that fold up under the header.
+    ..`body_end_idx` are the rows that fold up under the header. These
+    three are indices into the rows *this* call was given, so they stay
+    inside the detector and the cross-language fixture that pins it —
+    they are not emitted to the viewer, which places every region against
+    the rows of its own current render.
     `context` picks the addressing scheme the viewer uses for /fold-summary:
       - "right": region has post-image lines only. right_start/right_end
         are 1-indexed line numbers in head/<path>.
@@ -50,7 +60,10 @@ class _FoldRegion:
 
     `qualified_name` / `kind` carry the identity of the definition the
     region snapped to (e.g. "Foo.bar" / "function"); both are None for an
-    indentation-fallback region, which has no symbol behind it.
+    indentation-fallback region, which has no symbol behind it. A snapped
+    region's line ranges are the definition's declared span, so they are
+    the same whichever rows happened to be detected over; only an
+    indentation region's ranges are read off the rows.
     """
 
     header_idx: int
@@ -64,6 +77,25 @@ class _FoldRegion:
     has_changes: bool
     qualified_name: str | None
     kind: str | None
+
+
+@dataclass
+class _RawRegion:
+    """A detected region before its side addresses are resolved.
+
+    `right_range` / `left_range` are the definition's own declared line
+    span on that side, present only on a symbol-snapped region (and only
+    for a side whose tree actually holds the definition). An
+    indentation-fallback region carries neither: its extent is knowable
+    only from the rows it was detected over.
+    """
+
+    header_idx: int
+    body_end_idx: int
+    qualified_name: str | None
+    kind: str | None
+    right_range: tuple[int, int] | None = None
+    left_range: tuple[int, int] | None = None
 
 
 @dataclass
@@ -258,21 +290,38 @@ def _row_symbols(
     return enc
 
 
+def _span_ranges(spans: list[dict[str, Any]]) -> dict[str, tuple[int, int]]:
+    """`qualified_name` -> that definition's declared `(start, end)` lines.
+
+    First occurrence wins, matching the first-seen ordering the region
+    builder uses elsewhere.
+    """
+    out: dict[str, tuple[int, int]] = {}
+    for s in spans:
+        out.setdefault(s["qualified_name"], (s["start_line"], s["end_line"]))
+    return out
+
+
 def _symbol_raw_regions(
     rows: list[_Row],
     head_spans: list[dict[str, Any]],
     base_spans: list[dict[str, Any]],
-) -> tuple[list[tuple[int, int, str | None, str | None]], set[int]]:
-    """`(header_idx, body_end_idx, qualified_name, kind)` snapped to spans.
+) -> tuple[list[_RawRegion], set[int]]:
+    """Raw regions snapped to definition spans, plus their covered rows.
 
     Every definition with at least one present row becomes a region whose
     header is its first present row and whose body runs to its last present
-    row — clamped to the rows in `rows` — carrying that definition's
-    `qualified_name` and `kind`. Nested definitions nest because a row
-    carries its whole enclosing chain. Also returns the set of row indices
-    that fall inside any definition, so the caller can fall back to
+    row — clamped to the rows in `rows`. Nested definitions nest because a
+    row carries its whole enclosing chain. Also returns the set of row
+    indices that fall inside any definition, so the caller can fall back to
     indentation folds for the uncovered runs.
+
+    The region's *addresses* come from the definition's own declared span
+    on each side, never from the rows: a row-derived address moves when
+    the viewer reveals more context around the same definition.
     """
+    head_ranges = _span_ranges(head_spans)
+    base_ranges = _span_ranges(base_spans)
     runs: dict[str, list[int]] = {}  # qualified_name -> [first_idx, last_idx]
     kinds: dict[str, str] = {}  # qualified_name -> kind
     order: list[str] = []  # first-seen order, for determinism
@@ -288,7 +337,17 @@ def _symbol_raw_regions(
                 order.append(qn)
             else:
                 run[1] = i
-    out: list[tuple[int, int, str | None, str | None]] = [(runs[qn][0], runs[qn][1], qn, kinds[qn]) for qn in order]
+    out = [
+        _RawRegion(
+            header_idx=runs[qn][0],
+            body_end_idx=runs[qn][1],
+            qualified_name=qn,
+            kind=kinds[qn],
+            right_range=head_ranges.get(qn),
+            left_range=base_ranges.get(qn),
+        )
+        for qn in order
+    ]
     return out, covered
 
 
@@ -306,35 +365,42 @@ def compute_fold_regions(
     unavailable worktree — every region is indentation-based, byte-identical
     to the pre-symbol output. The algorithm mirrors the viewer's JS
     implementation so the line ranges line up deterministically.
+
+    A snapped region is addressed by its definition's declared span; an
+    indentation region has no such span and is addressed by the rows it
+    was detected over.
     """
     head_spans = head_spans or []
     base_spans = base_spans or []
-    # Uniform shape: (header_idx, body_end_idx, qualified_name|None, kind|None).
-    # Indentation regions carry no symbol.
-    raw: list[tuple[int, int, str | None, str | None]]
+    raw: list[_RawRegion]
     if head_spans or base_spans:
         raw, covered = _symbol_raw_regions(rows, head_spans, base_spans)
         # Keep an indentation region only where no row it spans is already
         # covered by a definition — the snapped region owns that stretch.
         raw += [
-            (h, e, None, None) for h, e in _indent_raw_regions(rows) if not any(j in covered for j in range(h, e + 1))
+            _RawRegion(h, e, None, None)
+            for h, e in _indent_raw_regions(rows)
+            if not any(j in covered for j in range(h, e + 1))
         ]
     else:
-        raw = [(h, e, None, None) for h, e in _indent_raw_regions(rows)]
+        raw = [_RawRegion(h, e, None, None) for h, e in _indent_raw_regions(rows)]
 
     regions: list[_FoldRegion] = []
-    for header_idx, body_end, qualified_name, kind in sorted(
-        raw,
-        key=lambda r: (r[0], r[1]),
-    ):
+    for rr in sorted(raw, key=lambda r: (r.header_idx, r.body_end_idx)):
+        header_idx, body_end = rr.header_idx, rr.body_end_idx
+        qualified_name, kind = rr.qualified_name, rr.kind
         body_start = header_idx + 1
         if body_start > body_end:
             continue
         has_changes = any(rows[j].kind in ("ins", "del", "pair") for j in range(header_idx, body_end + 1))
-        right_start = _first_side_line(rows, header_idx, body_end, "right")
-        right_end = _last_side_line(rows, header_idx, body_end, "right")
-        left_start = _first_side_line(rows, header_idx, body_end, "left")
-        left_end = _last_side_line(rows, header_idx, body_end, "left")
+        if qualified_name is not None:
+            right_start, right_end = rr.right_range or (None, None)
+            left_start, left_end = rr.left_range or (None, None)
+        else:
+            right_start = _first_side_line(rows, header_idx, body_end, "right")
+            right_end = _last_side_line(rows, header_idx, body_end, "right")
+            left_start = _first_side_line(rows, header_idx, body_end, "left")
+            left_end = _last_side_line(rows, header_idx, body_end, "left")
         # context picks the addressing axis(es). Pair regions (both
         # sides populated and the diff straddles changed content) are
         # addressed as "both" so the server can produce a diff-style
@@ -388,53 +454,19 @@ def build_hunk_viewer_block(
     h: AnnotatedHunk,
     file_idx: int,
     hunk_idx: int,
-    head_spans: list[dict[str, Any]] | None = None,
-    base_spans: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Build one hunk's viewer-JSON block: rows, folds, segments, counts.
+    """Build one hunk's viewer-JSON block: rows, segments, counts.
 
-    `head_spans` / `base_spans` are the file's flattened `fold_symbols`
-    for each side; passing them snaps folds to definition boundaries (and
-    keeps the wire `fold_regions` addresses in lockstep with the viewer's
-    client-side detector). Omitting them yields indentation-based folds.
+    No fold regions: a `CodeFold` is a property of the file, addressed in
+    absolute file lines, and the viewer detects it from the file's own
+    content. They ride on the file block (`build_json._fold_region_blocks`)
+    — which is also why an SSE `hunk` event replacing this block no longer
+    takes the file's fold records with it.
     """
     hunk_id = f"H{file_idx}_{hunk_idx}"
     parsed = h.parsed
     ann = h.ann
     rows = build_rows(parsed)
-    regions = compute_fold_regions(rows, head_spans, base_spans)
-    # Index summaries by (context, ranges) so right/left/both descriptions
-    # don't collide when a hunk has folds of multiple kinds.
-    summary_by_key: dict[tuple[str, int, int, int, int], str] = {
-        (fd.context, fd.right_start, fd.right_end, fd.left_start, fd.left_end): fd.summary
-        for fd in ann.fold_descriptions
-    }
-    fold_region_blocks: list[dict[str, Any]] = []
-    for reg in regions:
-        key = (
-            reg.context,
-            reg.right_start or 0,
-            reg.right_end or 0,
-            reg.left_start or 0,
-            reg.left_end or 0,
-        )
-        summary = summary_by_key.get(key, "")
-        fold_region_blocks.append(
-            {
-                "header_idx": reg.header_idx,
-                "body_start_idx": reg.body_start_idx,
-                "body_end_idx": reg.body_end_idx,
-                "context": reg.context,
-                "right_start": reg.right_start,
-                "right_end": reg.right_end,
-                "left_start": reg.left_start,
-                "left_end": reg.left_end,
-                "has_changes": reg.has_changes,
-                "qualified_name": reg.qualified_name,
-                "kind": reg.kind,
-                "summary": summary,
-            }
-        )
     body_lines = parsed.body.splitlines()
     adds = sum(1 for ln in body_lines if ln.startswith("+"))
     dels = sum(1 for ln in body_lines if ln.startswith("-"))
@@ -455,7 +487,6 @@ def build_hunk_viewer_block(
         "line_notes": [ln.model_dump() for ln in ann.line_notes],
         "segments": [_segment_block(s, hunk_id, si) for si, s in enumerate(ann.segments)],
         "rows": [r.to_dict() for r in rows],
-        "fold_regions": fold_region_blocks,
     }
 
 

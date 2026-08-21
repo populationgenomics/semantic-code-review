@@ -19,6 +19,18 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, test, expect, vi, beforeEach, afterEach } from "vitest";
+import { installTabStorage, makeStorage } from "./setup";
+import { ViewState } from "../../semantic_code_review/viewer/assets/view_state";
+
+/** The run the fixture data belongs to. The viewer keys its per-tab view
+ *  state on it, so a test that pre-seeds storage has to agree. */
+const RUN_ID = "test-run";
+
+/** Boot the viewer at a collapse level, the way a reload does — through
+ *  the stored record, since no view state rides in the URL any more. */
+function presetCollapseLevel(level: "files" | "hunks" | "segments" | "off"): void {
+  ViewState.save(RUN_ID, level, []);
+}
 
 const VIEWER_SRC = (() => {
   const bundle = path.resolve(
@@ -81,6 +93,14 @@ function lastEventSource(): StubEventSource {
 
 // --- Stub fetch ------------------------------------------------------------
 // Tests queue responses via `queueFetchResponse({status, body})`.
+//
+// `/file-text` is the exception: it is answered from `fileTexts` rather
+// than the queue. The renderer asks for every file body it lays out
+// (ADR 0006 slice 6 — the route is the viewer's only source of file
+// content), so a queued response would be eaten by a fetch the test
+// never wrote. A file no test registered is served `{base: null, head:
+// null}`: the honest answer for one the route cannot serve — binary, or
+// over its 2 MB per-side cap.
 
 interface FetchResponse {
   status: number;
@@ -88,15 +108,65 @@ interface FetchResponse {
 }
 const fetchResponses: FetchResponse[] = [];
 const fetchCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+const fileTexts: Record<string, { base: string | null; head: string | null }> =
+  Object.create(null);
 
 function queueFetchResponse(r: FetchResponse): void {
   fetchResponses.push(r);
+}
+
+/** Give `/file-text` a body for one file. `sides` says which of them the
+ *  route serves: "base" models a file whose head side is over the cap
+ *  (or absent, as a deletion's is), and vice versa. Unchanged context is
+ *  the same text on both sides, so one array covers both. */
+function serveFileText(
+  fileId: string, lines: string[], sides: "both" | "head" | "base" = "both",
+): void {
+  serveFileSides(
+    fileId, sides === "head" ? null : lines, sides === "base" ? null : lines,
+  );
+}
+
+/** The two sides separately, for a file whose pre- and post-image differ
+ *  where it matters — a deletion the trailing context has to run past. */
+function serveFileSides(
+  fileId: string, base: string[] | null, head: string[] | null,
+): void {
+  fileTexts[fileId] = {
+    base: base === null ? null : base.join("\n"),
+    head: head === null ? null : head.join("\n"),
+  };
+}
+
+/** Let a `/file-text` arrival and the repaint it coalesces into land.
+ *  Two ticks: the answer settles on the first, and the repaint it
+ *  schedules runs on the next. */
+async function settleFileText(): Promise<void> {
+  await new Promise<void>((r) => setTimeout(r, 0));
+  await new Promise<void>((r) => setTimeout(r, 0));
+}
+
+// The route is a round-trip, so the first paint happens without it.
+// `holdFileText` stalls every answer until `releaseFileText`, which is
+// how a test looks at the viewer before its content exists.
+let holdFileText = false;
+const heldFileText: Array<() => void> = [];
+
+function holdFileTextAnswers(): void {
+  holdFileText = true;
+}
+
+function releaseFileText(): Promise<void> {
+  holdFileText = false;
+  for (const resolve of heldFileText.splice(0)) resolve();
+  return settleFileText();
 }
 
 // --- Boot helper ----------------------------------------------------------
 
 interface ViewerData {
   version?: string;
+  run_id?: string;
   pending?: boolean;
   pr?: Record<string, unknown>;
   smells_catalogue?: Record<string, unknown>;
@@ -108,6 +178,10 @@ interface BootOptions {
   /** Body the /comments fetch fired by Comments.init should resolve to.
    *  Defaults to an empty array. */
   comments?: unknown[];
+  /** Wait for the `/file-text` arrivals the first render asks for, and
+   *  the repaint they coalesce into. Default true; false leaves the test
+   *  looking at the first paint, before any content. */
+  awaitContent?: boolean;
 }
 
 async function bootViewer(data: ViewerData, opts: BootOptions = {}): Promise<void> {
@@ -147,7 +221,7 @@ async function bootViewer(data: ViewerData, opts: BootOptions = {}): Promise<voi
       <aside id="group-sidebar" class="group-sidebar"></aside>
       <main id="app"></main>
     </div>
-    <footer id="status-bar"></footer>
+    <footer id="status-bar"><span id="status-counts"></span></footer>
     <div id="help-overlay" class="help-overlay hidden"></div>
   `;
   // boot.ts fetches /data.json first thing — queue this response
@@ -164,10 +238,13 @@ async function bootViewer(data: ViewerData, opts: BootOptions = {}): Promise<voi
   // microtasks once the /data.json fetch resolves.
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
   new Function(VIEWER_SRC)();
-  // Drain microtasks + one macrotask tick so the fetch promise
-  // chain resolves, boot() runs, Comments.init's /comments fetch
-  // resolves, and all sync init lands before the test asserts.
+  // Drain microtasks + macrotask ticks so the fetch promise chain
+  // resolves, boot() runs, Comments.init's /comments fetch resolves, and
+  // all sync init lands before the test asserts. The second tick is the
+  // file content: the first render asks `/file-text` for every body it
+  // lays out and the arrival repaints (coalesced through a timer).
   await new Promise<void>((r) => setTimeout(r, 0));
+  if (opts.awaitContent !== false) await settleFileText();
 }
 
 function makeHunkBlock(id: string, intent = "", overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -187,7 +264,6 @@ function makeHunkBlock(id: string, intent = "", overrides: Record<string, unknow
       { kind: "pair", old_line: 1, new_line: 1, old_text: "a", new_text: "a" },
       { kind: "pair", old_line: 2, new_line: 2, old_text: "b", new_text: "B" },
     ],
-    fold_regions: [],
     ...overrides,
   };
 }
@@ -195,6 +271,7 @@ function makeHunkBlock(id: string, intent = "", overrides: Record<string, unknow
 function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
   return {
     version: "1",
+    run_id: RUN_ID,
     pending: true,
     pr: { title: "test", themes: [], symbols_added: [], symbols_modified: [], symbols_removed: [], callgraph_edges: [] },
     smells_catalogue: {},
@@ -206,7 +283,6 @@ function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
       adds: 1, dels: 1,
       summary: "",
       symbols: { added: [], modified: [], removed: [] },
-      head_lines: null,
       hunks: [makeHunkBlock("H0_0")],
     }],
     groups: [],
@@ -215,24 +291,51 @@ function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
   };
 }
 
+function fileEl(id: string): HTMLElement {
+  const el = document.querySelector(`.file[data-id="${id}"]`) as HTMLElement | null;
+  if (!el) throw new Error(`no .file[data-id=${id}] in the document`);
+  return el;
+}
+
+function clickFileHeader(id: string): void {
+  (fileEl(id).querySelector(".file-header") as HTMLElement).click();
+}
+
 // --- Global hooks ----------------------------------------------------------
 
 beforeEach(() => {
   eventSourceInstances.length = 0;
   fetchResponses.length = 0;
   fetchCalls.length = 0;
+  for (const k of Object.keys(fileTexts)) delete fileTexts[k];
+  holdFileText = false;
+  heldFileText.length = 0;
   // Reset persisted viewer state between tests. The viewer restores the
-  // focused sidebar pill from localStorage (sidebar.ts) and fold/focus from
-  // location.hash (render.ts _restoreHash) on boot; neither is cleared by
-  // wiping the DOM. Without this, a prior test's focused symbol re-applies on
-  // the next boot — highlighting before the test acts and leaking symbol-hit
-  // spans. node 25's timing masked it; node 20's exposed it.
+  // focused sidebar pill from localStorage (sidebar.ts) and the collapse
+  // level plus every hidden span from sessionStorage (view_state.ts) on
+  // boot; neither is cleared by wiping the DOM. Without this, a prior
+  // test's focused symbol re-applies on the next boot — highlighting
+  // before the test acts and leaking symbol-hit spans. node 25's timing
+  // masked it; node 20's exposed it. A fresh Storage rather than
+  // `.clear()` so a test that played a second tab hands the next one
+  // back a first tab.
   localStorage.clear();
+  installTabStorage();
   window.history.replaceState(null, "", window.location.pathname + window.location.search);
   (globalThis as unknown as { EventSource: typeof EventSource }).EventSource =
     EventSourceStub as unknown as typeof EventSource;
   vi.spyOn(globalThis, "fetch").mockImplementation(((url: string, init?: RequestInit) => {
     fetchCalls.push({ url, init });
+    const fileText = /\/file-text\?file_idx=(\d+)/.exec(url);
+    if (fileText) {
+      const body = {
+        file_idx: Number(fileText[1]), path: "",
+        ...(fileTexts[`F${fileText[1]}`] ?? { base: null, head: null }),
+      };
+      const answer = { status: 200, ok: true, json: () => Promise.resolve(body) } as Response;
+      if (!holdFileText) return Promise.resolve(answer);
+      return new Promise<Response>((r) => heldFileText.push(() => r(answer)));
+    }
     const next = fetchResponses.shift() ?? { status: 200, body: {} };
     return Promise.resolve({
       status: next.status,
@@ -242,9 +345,14 @@ beforeEach(() => {
   }) as typeof fetch);
 });
 
-afterEach(() => {
+afterEach(async () => {
   document.head.innerHTML = "";
   document.body.innerHTML = "";
+  // A `/file-text` arrival repaints through a timer, and a test that
+  // ended before one landed leaves it pending. Drain it here, with the
+  // DOM already gone, so the previous bundle's render cannot fire into
+  // the next test's document.
+  await settleFileText();
 });
 
 
@@ -253,7 +361,7 @@ describe("pending boot", () => {
     await bootViewer(makeData({
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "",
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0"), makeHunkBlock("H0_1")],
       }],
@@ -280,13 +388,13 @@ describe("pending boot", () => {
       files: [
         {
           id: "F0", path: "uv.lock", status: "generated", language: "",
-          adds: 0, dels: 0, summary: "", head_lines: null,
+          adds: 0, dels: 0, summary: "",
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H0_0"), makeHunkBlock("H0_1")],
         },
         {
           id: "F1", path: "a.py", status: "modified", language: "python",
-          adds: 0, dels: 0, summary: "", head_lines: null,
+          adds: 0, dels: 0, summary: "",
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H1_0")],
         },
@@ -352,7 +460,7 @@ describe("streaming events", () => {
     await bootViewer(makeData({
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "",
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0"), makeHunkBlock("H0_1")],
       }],
@@ -387,13 +495,13 @@ describe("streaming events", () => {
       files: [
         {
           id: "F0", path: "a.py", status: "modified", language: "python",
-          adds: 0, dels: 0, summary: "", head_lines: null,
+          adds: 0, dels: 0, summary: "",
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H0_0", "alpha"), makeHunkBlock("H0_1", "beta")],
         },
         {
           id: "F1", path: "b.py", status: "modified", language: "python",
-          adds: 0, dels: 0, summary: "", head_lines: null,
+          adds: 0, dels: 0, summary: "",
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H1_0", "gamma")],
         },
@@ -432,7 +540,7 @@ describe("streaming events", () => {
   test("by-file axis groups into a directory tree: compress, sort, and subtree filter", async () => {
     const mkFile = (id: string, p: string, hid: string): Record<string, unknown> => ({
       id, path: p, status: "modified", language: "python",
-      adds: 0, dels: 0, summary: "", head_lines: null,
+      adds: 0, dels: 0, summary: "",
       symbols: { added: [], modified: [], removed: [] },
       hunks: [makeHunkBlock(hid)],
     });
@@ -491,13 +599,13 @@ describe("streaming events", () => {
         old_start: line, old_count: 1, new_start: line, new_count: 1,
         rows: [{ kind: "pair", old_line: line, new_line: line, old_text: oldText, new_text: newText }],
       });
+    // 9 lines with changed lines at 2, 5, 8 → context at 1, 3-4, 6-7, 9.
+    serveFileText("F0", ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9"]);
     await bootViewer(makeData({
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
         adds: 3, dels: 3, summary: "",
-        // 9 lines with changed lines at 2, 5, 8 → context at 1, 3-4, 6-7, 9.
-        head_lines: ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9"],
         symbols: { added: [], modified: [], removed: [] },
         hunks: [hunkAt("H0", 2, "a", "A"), hunkAt("H1", 5, "sdf", "fgh"), hunkAt("H2", 8, "e", "E")],
       }],
@@ -548,12 +656,13 @@ describe("streaming events", () => {
     expect(document.querySelectorAll(".gap-chip").length).toBeGreaterThan(0);
   });
 
+
   test("symbols axis renders flat pills from boot and filters on click", async () => {
     await bootViewer(makeData({
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "",
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "alpha"), makeHunkBlock("H0_1", "beta")],
       }],
@@ -585,12 +694,12 @@ describe("streaming events", () => {
   });
 
   test("focusing a symbol pill search-highlights its name across the diff", async () => {
-    window.location.hash = "#fold=off"; // expand hunks so diff bodies render
+    presetCollapseLevel("off"); // expand hunks so diff bodies render
     await bootViewer(makeData({
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "",
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "", {
           rows: [
@@ -623,7 +732,6 @@ describe("streaming events", () => {
     // ...and leaves the underlying line text intact.
     const firstCell = document.querySelector('.hunk[data-id="H0_0"] .cell-content code')!;
     expect(firstCell.textContent).toBe("x = compute(1)");
-    window.location.hash = "";
   });
 
   test("symbols axis nests methods under their class and filters by subtree", async () => {
@@ -631,7 +739,7 @@ describe("streaming events", () => {
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "",
         symbols: { added: [], modified: [], removed: [] },
         hunks: [
           makeHunkBlock("H0_0", "alpha"),
@@ -689,10 +797,14 @@ describe("streaming events", () => {
 
   // --- Fold-level ladder + focus reveal -----------------------------------
 
-  const foldFile = (): Record<string, unknown> => ({
+  /** Registers its own source with the `/file-text` stub — the caller
+   *  boots straight after, and the unchanged context between the three
+   *  hunks only exists if the route serves it. */
+  const foldFile = (): Record<string, unknown> => {
+    serveFileText("F0", ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9"]);
+    return {
     id: "F0", path: "a.py", status: "modified", language: "python",
     adds: 3, dels: 3, summary: "",
-    head_lines: ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9"],
     symbols: { added: [], modified: [], removed: [] },
     hunks: [
       makeHunkBlock("H0", "", { old_start: 2, old_count: 1, new_start: 2, new_count: 1,
@@ -702,7 +814,8 @@ describe("streaming events", () => {
       makeHunkBlock("H2", "", { old_start: 8, old_count: 1, new_start: 8, new_count: 1,
         rows: [{ kind: "pair", old_line: 8, new_line: 8, old_text: "c", new_text: "C" }] }),
     ],
-  });
+    };
+  };
   const fold = (level: string): void =>
     (document.querySelector(`.fold-slider button[data-fold="${level}"]`) as HTMLElement).click();
   const codeRows = (sel: string): number =>
@@ -801,12 +914,12 @@ describe("streaming events", () => {
 
 describe("LLM observation → comment promotion", () => {
   test("Add as comment opens the editor pre-filled and saves with derived_from", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     const data = makeData({
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "",
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "real intent", {
           line_notes: [{ line: 2, body: "consider using Path" }],
@@ -855,7 +968,7 @@ describe("LLM observation → comment promotion", () => {
   });
 
   test("smell pill click saves a comment immediately and detaches the pill", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     const data = makeData({
       pending: false,
       smells_catalogue: {
@@ -863,7 +976,7 @@ describe("LLM observation → comment promotion", () => {
       },
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "",
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "real intent", {
           smells: [{ tag: "perf", note: "tight loop in hot path" }],
@@ -903,12 +1016,12 @@ describe("LLM observation → comment promotion", () => {
   });
 
   test("line_note already promoted on initial load is hidden", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     const data = makeData({
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "",
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "", {
           line_notes: [{ line: 1, body: "old observation" }],
@@ -940,19 +1053,19 @@ describe("LLM observation → comment promotion", () => {
 
 describe("sidebar comment counts", () => {
   test("Files-axis pill shows unresolved/total badge once comments load", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({
       pending: false,
       files: [
         {
           id: "F0", path: "a.py", status: "modified", language: "python",
-          adds: 0, dels: 0, summary: "", head_lines: null,
+          adds: 0, dels: 0, summary: "",
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H0_0")],
         },
         {
           id: "F1", path: "b.py", status: "modified", language: "python",
-          adds: 0, dels: 0, summary: "", head_lines: null,
+          adds: 0, dels: 0, summary: "",
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H1_0")],
         },
@@ -1010,7 +1123,7 @@ describe("sidebar comment counts", () => {
   });
 
   test("pills with no comments get no comment badge", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({ pending: false }));
     await new Promise<void>((r) => setTimeout(r, 0));
     const filesSection = document.querySelector('[data-axis="files"]')!;
@@ -1040,7 +1153,7 @@ describe("ingested PR comments", () => {
     };
     // Boot with the fold mode set to "off" so all hunk rows render —
     // default fold is "hunks" which collapses the diff body.
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({ pending: false }), { comments: [ingested] });
     // Comment re-attach happens after the store load Promise resolves.
     // One extra tick lets it settle.
@@ -1070,7 +1183,7 @@ describe("ingested PR comments", () => {
   });
 
   test("thread groups parent + replies into one annotation, parent first", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({ pending: false }), {
       comments: [
         // Out-of-order on the wire: latest reply first. Sorted into
@@ -1111,7 +1224,7 @@ describe("ingested PR comments", () => {
   });
 
   test("shifted comment anchors at head_line with a 'was line N' chip", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({ pending: false }), {
       comments: [{
         id: "gh-1", file: "a.py", side: "new",
@@ -1138,7 +1251,7 @@ describe("ingested PR comments", () => {
   });
 
   test("orphaned comment chip names the commit it was lost since", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({ pending: false }), {
       comments: [{
         id: "gh-1", file: "a.py", side: "new",
@@ -1157,7 +1270,7 @@ describe("ingested PR comments", () => {
   });
 
   test("anchored comment shows no anchor chip", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({ pending: false }), {
       comments: [{
         id: "gh-1", file: "a.py", side: "new",
@@ -1172,7 +1285,7 @@ describe("ingested PR comments", () => {
   });
 
   test("file_gone comments are skipped (no annotation row)", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({ pending: false }), {
       comments: [{
         id: "gh-1", file: "a.py", side: "new",
@@ -1187,7 +1300,7 @@ describe("ingested PR comments", () => {
   });
 
   test("chip is only on the thread root, not on replies", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({ pending: false }), {
       comments: [
         {
@@ -1216,7 +1329,7 @@ describe("ingested PR comments", () => {
   });
 
   test("resolved thread renders collapsed; clicking the header expands", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({ pending: false }), {
       comments: [
         {
@@ -1259,7 +1372,7 @@ describe("ingested PR comments", () => {
   });
 
   test("Reply opens the editor and saves with in_reply_to_id set", async () => {
-    window.location.hash = "#fold=off";
+    presetCollapseLevel("off");
     await bootViewer(makeData({ pending: false }), {
       comments: [{
         id: "gh-1", file: "a.py", side: "new", line: 1,
@@ -1303,25 +1416,24 @@ describe("ingested PR comments", () => {
 describe("lazy fold summaries", () => {
   function dataWithFold(): ViewerData {
     // Rows the file-level walker will recognise as a fold: `def foo():`
-    // header at indent 0, indented body. The fold_regions block is
-    // server-computed; the viewer re-detects from the rows but uses
-    // the block when looking up an existing summary.
+    // header at indent 0, indented body. The file's `fold_regions` are
+    // the summaries the run has stored, addressed in file lines; the
+    // viewer detects the region itself and matches by address.
+    serveFileSides("F0", ["def foo():", "    x = 1"], ["def foo():", "    x = 2"]);
     return makeData({
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 1, dels: 1, summary: "ok", head_lines: null,
+        adds: 1, dels: 1, summary: "ok",
         symbols: { added: [], modified: [], removed: [] },
+        fold_regions: [
+          { context: "both", right_start: 1, right_end: 2,
+            left_start: 1, left_end: 2, summary: "" },
+        ],
         hunks: [makeHunkBlock("H0_0", "real intent", {
           rows: [
             { kind: "ctx", old_line: 1, new_line: 1, old_text: "def foo():", new_text: "def foo():" },
             { kind: "pair", old_line: 2, new_line: 2, old_text: "    x = 1", new_text: "    x = 2" },
-          ],
-          fold_regions: [
-            { header_idx: 0, body_start_idx: 1, body_end_idx: 1,
-              context: "both", right_start: 1, right_end: 2,
-              left_start: 1, left_end: 2,
-              has_changes: true, summary: "" },
           ],
         })],
       }],
@@ -1336,6 +1448,15 @@ describe("lazy fold summaries", () => {
     (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
   }
 
+  /** The `CodeFold` chevron currently on screen. Re-queried after every
+   *  click: hide and reveal are state changes that repaint, so the node
+   *  a test clicked is not the node it should then assert on. */
+  function foldChevron(): SVGElement {
+    const el = document.querySelector(".fold-chev") as SVGElement | null;
+    if (!el) throw new Error("no .fold-chev in the document");
+    return el;
+  }
+
   function clickEl(el: Element): void {
     // jsdom's SVGElement doesn't expose .click(); the addEventListener
     // path needs a dispatched event. Bubbling so the .hunk-header's
@@ -1343,6 +1464,24 @@ describe("lazy fold summaries", () => {
     // fold-chev handler covers that).
     el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   }
+
+  test("a stored summary re-seeds the region the viewer detects", async () => {
+    // What the wire records are for. The server does not detect — it
+    // publishes the summaries it has, addressed in absolute file lines —
+    // so a summary comes back for whatever the viewer detects at that
+    // address, whether or not the region has a row in any hunk and
+    // whatever the file's language. Collapsing it fires no request.
+    const data = dataWithFold();
+    (data.files![0].fold_regions as Array<Record<string, unknown>>)[0].summary =
+      "sets x";
+    await bootViewer(data);
+    expandHunk();
+
+    clickEl(foldChevron());
+
+    expect(document.querySelector(".annot-box")?.textContent).toBe("sets x");
+    expect(fetchCalls.filter((c) => c.url.includes("/fold-summary"))).toHaveLength(0);
+  });
 
   test("first fold-close posts /fold-summary and renders the response", async () => {
     await bootViewer(dataWithFold());
@@ -1355,7 +1494,9 @@ describe("lazy fold summaries", () => {
     const marker = document.querySelector(".fold-chev") as SVGElement | null;
     expect(marker).not.toBeNull();
     clickEl(marker!);
-    expect(marker!.classList.contains("open")).toBe(false);
+    // The click moves a hidden span and repaints, so the chevron on
+    // screen is a fresh node rendered from the new state.
+    expect(foldChevron().classList.contains("open")).toBe(false);
 
     const foldCalls = fetchCalls.filter((c) => c.url.includes("/fold-summary"));
     expect(foldCalls).toHaveLength(1);
@@ -1405,23 +1546,26 @@ describe("lazy fold summaries", () => {
   });
 
   test("pure-deletion fold posts side=old with old-image coordinates", async () => {
+    // Base-only: the route serves no head side for a file whose head is
+    // over its cap. The removed definition is in the base text, which is
+    // where the region is addressed.
+    serveFileText("F0", [
+      "l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9",
+      "def removed():", "    x = 1", "    y = 2",
+    ], "base");
     await bootViewer(makeData({
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 3, summary: "ok", head_lines: null,
+        adds: 0, dels: 3, summary: "ok",
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "real intent", {
+          old_start: 10, old_count: 3, new_start: 9, new_count: 0,
           rows: [
             { kind: "del", old_line: 10, new_line: null, old_text: "def removed():", new_text: "" },
             { kind: "del", old_line: 11, new_line: null, old_text: "    x = 1", new_text: "" },
             { kind: "del", old_line: 12, new_line: null, old_text: "    y = 2", new_text: "" },
           ],
-          fold_regions: [{
-            header_idx: 0, body_start_idx: 1, body_end_idx: 2,
-            context: "left", right_start: null, right_end: null,
-            left_start: 10, left_end: 12, has_changes: true, summary: "",
-          }],
         })],
       }],
     }));
@@ -1450,16 +1594,16 @@ describe("lazy fold summaries", () => {
     // hunk lives inside the body, and the body continues for one
     // more indented line. Folding the def-block should collapse
     // rows from both stretches.
+    serveFileText("F0", [
+      "def foo():",                  // 1 — fold header (in expanded context)
+      "    x = 1",                   // 2 — body line (in expanded context)
+      "    return new()",            // 3 — body line (lives inside the hunk)
+    ]);
     await bootViewer(makeData({
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
         adds: 1, dels: 1, summary: "ok",
-        head_lines: [
-          "def foo():",                  // 1 — fold header (in expanded context)
-          "    x = 1",                   // 2 — body line (in expanded context)
-          "    return new()",            // 3 — body line (lives inside the hunk)
-        ],
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "ok", {
           // Hunk covers line 3 only: replace `return old()` with `return new()`.
@@ -1486,27 +1630,20 @@ describe("lazy fold summaries", () => {
     const chevrons = document.querySelectorAll(".fold-chev");
     expect(chevrons.length).toBeGreaterThanOrEqual(1);
 
-    // Identify the row elements (one per side) we expect to hide.
     // ScrAnnotations.attach injects a .row-annotation wrapper for the
     // fold's summary box; filter it out and only count diff rows.
-    const expansionRows = document.querySelectorAll(
-      ".gap-expansion .half-new .row:not(.row-annotation)",
-    );
-    const hunkRows = document.querySelectorAll(
-      ".hunk .half-new .row:not(.row-annotation)",
-    );
-    expect(expansionRows.length).toBe(2);
-    expect(hunkRows.length).toBeGreaterThanOrEqual(1);
-    // Pre-condition: all visible.
-    expect((expansionRows[1] as HTMLElement).style.display).not.toBe("none");
-    expect((hunkRows[0] as HTMLElement).style.display).not.toBe("none");
+    const rowTexts = (sel: string): string[] =>
+      Array.from(document.querySelectorAll(`${sel} .half-new .row:not(.row-annotation)`))
+        .map((r) => r.textContent ?? "");
+    expect(rowTexts(".gap-expansion")).toHaveLength(2);
+    expect(rowTexts(".hunk").length).toBeGreaterThanOrEqual(1);
 
-    // Click the chevron — body of the fold (expansion row 2 + hunk row 1)
-    // should go to display:none. Header (expansion row 1) stays.
+    // Click the chevron — the fold's body (expansion row 2 + the hunk's
+    // pair row) is not rendered at all; the header row stays, in the
+    // container it started in.
     clickEl(chevrons[0]);
-    expect((expansionRows[0] as HTMLElement).style.display).not.toBe("none");
-    expect((expansionRows[1] as HTMLElement).style.display).toBe("none");
-    expect((hunkRows[0] as HTMLElement).style.display).toBe("none");
+    expect(rowTexts(".gap-expansion")).toEqual(["1def foo():"]);
+    expect(rowTexts(".hunk")).toEqual([]);
 
     // Fold-summary fires for the cross-stretch range (lines 1..3).
     const foldCalls = fetchCalls.filter((c) => c.url.includes("/fold-summary"));
@@ -1523,19 +1660,19 @@ describe("lazy fold summaries", () => {
     // hunk. The first 3 lines form a `def foo():` body — the
     // expand-context path should detect that as an indent fold and
     // attach a chevron the reviewer can click to summarise.
+    serveFileText("F0", [
+      "def foo():",                  // 1
+      "    x = 1",                   // 2
+      "    y = 2",                   // 3
+      "",                            // 4
+      "z = 5",                       // 5
+      "z = 6",                       // 6
+    ]);
     await bootViewer(makeData({
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
         adds: 1, dels: 1, summary: "ok",
-        head_lines: [
-          "def foo():",                  // 1
-          "    x = 1",                   // 2
-          "    y = 2",                   // 3
-          "",                            // 4
-          "z = 5",                       // 5
-          "z = 6",                       // 6
-        ],
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "trivial", {
           old_start: 7, old_count: 1, new_start: 7, new_count: 1,
@@ -1571,8 +1708,8 @@ describe("lazy fold summaries", () => {
     expect(body.file_idx).toBe(0);
     expect(body.right_start).toBe(1);
     // Fold ends at the row before the dedenter; that row is the blank
-    // line (row 4 of head_lines). Matches Python's compute_fold_regions
-    // — the algorithm doesn't crop trailing blanks.
+    // line 4. Matches Python's compute_fold_regions — the algorithm
+    // doesn't crop trailing blanks.
     expect(body.right_end).toBe(4);
   });
 
@@ -1590,7 +1727,7 @@ describe("lazy fold summaries", () => {
 
     const marker = document.querySelector(".fold-chev") as SVGElement;
     clickEl(marker);   // collapse → POST
-    expect(marker.classList.contains("open")).toBe(false);
+    expect(foldChevron().classList.contains("open")).toBe(false);
 
     // SSE arrives for the same region with the same payload.
     lastEventSource().dispatch("fold-summary", {
@@ -1600,8 +1737,7 @@ describe("lazy fold summaries", () => {
 
     // Fold is still collapsed; the box carries the summary text from
     // the fetch handler.
-    const markerAfter = document.querySelector(".fold-chev") as SVGElement;
-    expect(markerAfter.classList.contains("open")).toBe(false);
+    expect(foldChevron().classList.contains("open")).toBe(false);
     expect(document.querySelector(".annot-box")?.textContent).toBe("wraps in try/except");
   });
 
@@ -1633,7 +1769,922 @@ describe("lazy fold summaries", () => {
     const box = document.querySelector(".annot-box");
     expect(box?.textContent).toBe("remote summary");
   });
+
+  // --- One visibility model (ADR 0006) ------------------------------------
+  //
+  // The renderer's half of the model: what the reviewer hid or revealed is
+  // a span, so a repaint reproduces it rather than reverting to whatever
+  // the DOM happened to hold. The span algebra itself is exercised without
+  // a document in tests/js/visibility.test.ts.
+
+  test("a revealed context gap survives a re-render", async () => {
+    serveFileText("F0", ["l1", "l2", "l3", "l4", "l5"]);
+    await bootViewer(makeData({
+      pending: true,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 1, dels: 1, summary: "",
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock("H0_0", "ok", {
+          old_start: 3, old_count: 1, new_start: 3, new_count: 1,
+          rows: [{ kind: "pair", old_line: 3, new_line: 3, old_text: "l3", new_text: "L3" }],
+        })],
+      }],
+    }));
+
+    (document.querySelector(".gap-chip") as HTMLElement).click();
+    expect(document.querySelectorAll(".gap-expansion")).toHaveLength(1);
+    expect(document.body.textContent).toContain("l1");
+
+    // Any repaint at all — here the augment pass finishing — used to put
+    // the chip back, because the expansion was only ever a DOM swap.
+    lastEventSource().dispatch("done", { reason: "complete" });
+
+    expect(document.querySelectorAll(".gap-expansion")).toHaveLength(1);
+    expect(document.body.textContent).toContain("l1");
+  });
+
+  test("a CodeFold inside a file survives collapsing and reopening the file", async () => {
+    await bootViewer(dataWithFold());
+    expandHunk();
+    clickEl(foldChevron());
+    expect(foldChevron().classList.contains("open")).toBe(false);
+    expect(document.body.textContent).not.toContain("x = 2");
+
+    // Collapse the whole file over the top of it, then reopen. State is
+    // nested, not flattened: the container's collapse does not destroy
+    // what is inside it.
+    clickFileHeader("F0");
+    expect(fileEl("F0").querySelector(".file-body")).toBeNull();
+    clickFileHeader("F0");
+
+    expect(foldChevron().classList.contains("open")).toBe(false);
+    expect(document.body.textContent).not.toContain("x = 2");
+  });
+
+  /** A file whose only `CodeFold` lives on one side: `foo` is added, so
+   *  the definition is in the head symbol tree and in no base one. The
+   *  region's address therefore has a null left side — which is where the
+   *  wire's own encoding of "absent" (`FoldDescription`'s `0`) used to
+   *  fork the identity. */
+  function rightOnlyFold(
+    foldRegions: Array<Record<string, unknown>> = [],
+  ): ViewerData {
+    serveFileSides("F0", ["a", "b"], ["a", "def foo():", "    x = 1", "    y = 2", "b"]);
+    return makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 3, dels: 0, summary: "ok",
+        symbols: { added: [], modified: [], removed: [] },
+        fold_symbols: {
+          head: [{
+            start_line: 2, end_line: 4, kind: "function",
+            qualified_name: "foo", depth: 0,
+          }],
+          base: [],
+        },
+        fold_regions: foldRegions,
+        hunks: [makeHunkBlock("H0_0", "adds foo", {
+          old_start: 1, old_count: 2, new_start: 1, new_count: 5,
+          rows: [
+            { kind: "ctx", old_line: 1, new_line: 1, old_text: "a", new_text: "a" },
+            { kind: "ins", old_line: null, new_line: 2, old_text: "", new_text: "def foo():" },
+            { kind: "ins", old_line: null, new_line: 3, old_text: "", new_text: "    x = 1" },
+            { kind: "ins", old_line: null, new_line: 4, old_text: "", new_text: "    y = 2" },
+            { kind: "ctx", old_line: 2, new_line: 5, old_text: "b", new_text: "b" },
+          ],
+        })],
+      }],
+    });
+  }
+
+  /** The record the server writes once a summary has been generated for
+   *  a one-sided fold: `FoldDescription` spells an absent side `0`, not
+   *  null. Verbatim from `/data.json` on a real run. */
+  const STORED_ONE_SIDED_SUMMARY = {
+    context: "right", right_start: 2, right_end: 4,
+    left_start: 0, left_end: 0, summary: "defines foo",
+  };
+
+  test("a stored summary does not fork a one-sided fold's identity", async () => {
+    // The summary record is matched to a detected region by address and
+    // carries its text; it is not an identity. When it was one, the two
+    // encodings of an absent side gave the same region two span ids: the
+    // chevron read one, the click wrote the other, and the fold went
+    // unreachable the first time it was collapsed — rows gone, and no
+    // affordance left to bring them back.
+    await bootViewer(rightOnlyFold([STORED_ONE_SIDED_SUMMARY]));
+    expandHunk();
+    expect(document.body.textContent).toContain("x = 1");
+
+    clickEl(foldChevron());
+
+    expect(document.body.textContent).not.toContain("x = 1");
+    // Still reopenable: one identity, so the collapse the renderer sees
+    // is the collapse the click made.
+    expect(foldChevron().classList.contains("open")).toBe(false);
+    clickEl(foldChevron());
+    expect(document.body.textContent).toContain("x = 1");
+  });
+
+  test("a one-sided fold restored from view state reopens after a reload", async () => {
+    // The reported flow. Collapsing fires `/fold-summary`, so the record
+    // above is on the wire by the next boot while the persisted span
+    // still carries the address detection derives. A click that minted
+    // its span from the record retracted nothing and hid a second span
+    // over the same lines.
+    presetCollapseLevel("off");
+    ViewState.save(RUN_ID, "off", [{
+      fileId: "F0",
+      spans: [{
+        id: "cf:F0:right:2-4:-", fileId: "F0", owner: "user",
+        kind: "codefold", right: { start: 2, end: 4 }, left: null,
+      }],
+      marks: [["cf:F0:right:2-4:-", "user"]],
+    }]);
+
+    await bootViewer(rightOnlyFold([STORED_ONE_SIDED_SUMMARY]));
+    expect(document.body.textContent).not.toContain("x = 1");
+
+    clickEl(foldChevron());
+
+    expect(document.body.textContent).toContain("x = 1");
+    // And the reveal is a removal, not a second span over the same lines:
+    // read back through the store the render pass just wrote.
+    const stored = ViewState.load(RUN_ID)!.files.find((f) => f.fileId === "F0");
+    expect(stored!.spans.filter((s) => s.kind === "codefold")).toEqual([]);
+  });
+
+  test("picking a collapse level is a bulk action, not a reset", async () => {
+    // The reviewer folds a lockfile away because they do not intend to
+    // read it, then expands everything else. The manual fold-away must
+    // not blow back open.
+    await bootViewer(makeData({
+      pending: false,
+      files: [
+        {
+          id: "F0", path: "src/a.py", status: "modified", language: "python",
+          adds: 1, dels: 1, summary: "",
+          symbols: { added: [], modified: [], removed: [] },
+          hunks: [makeHunkBlock("H0_0", "real change")],
+        },
+        {
+          id: "F1", path: "uv.lock", status: "modified", language: "",
+          adds: 1, dels: 1, summary: "",
+          symbols: { added: [], modified: [], removed: [] },
+          hunks: [makeHunkBlock("H1_0", "regenerated")],
+        },
+      ],
+    }));
+
+    clickFileHeader("F1");
+    expect(fileEl("F1").classList.contains("folded")).toBe(true);
+
+    (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+
+    // Everything else opened to code; the lockfile is still shut.
+    expect(fileEl("F0").querySelectorAll(".diff .row").length).toBeGreaterThan(0);
+    expect(fileEl("F1").classList.contains("folded")).toBe(true);
+    expect(fileEl("F1").querySelector(".file-body")).toBeNull();
+
+    // Reset is the one control that retracts it.
+    (document.getElementById("reset-btn") as HTMLElement).click();
+    expect(fileEl("F1").classList.contains("folded")).toBe(false);
+  });
 });
+
+// --- The manifest (ADR 0006, slice 5) -------------------------------------
+//
+// Hiding a range must not erase what is inside it. Each hide is headed
+// by the notes it covers, and every run of lines the renderer skips
+// leaves something standing in the gutter's place. What belongs in a
+// manifest, given spans and comments, is settled without a document in
+// tests/js/manifest.test.ts; these are the renderer's claims.
+
+describe("collapsed content is a manifest, not an absence", () => {
+  /** One file, ten lines, two hunks (line 2 and line 8) with unchanged
+   *  context above, between and below. */
+  function twoHunkFile(lines: string[] | null): ViewerData {
+    if (lines) serveFileText("F0", lines);
+    return makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 2, dels: 2, summary: "",
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [
+          makeHunkBlock("H0_0", "first", {
+            old_start: 2, old_count: 1, new_start: 2, new_count: 1,
+            rows: [{ kind: "pair", old_line: 2, new_line: 2, old_text: "l2", new_text: "L2" }],
+          }),
+          makeHunkBlock("H0_1", "second", {
+            old_start: 8, old_count: 1, new_start: 8, new_count: 1,
+            rows: [{ kind: "pair", old_line: 8, new_line: 8, old_text: "l8", new_text: "L8" }],
+          }),
+        ],
+      }],
+    });
+  }
+
+  const LINES = ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9", "l10"];
+
+  function comment(
+    id: string, line: number, body: string, extra: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return {
+      id, file: "a.py", side: "new", line, body,
+      created_at: 1, updated_at: 1, ...extra,
+    };
+  }
+
+  /** Every manifest entry under `root`, as "line text". */
+  function entries(root: ParentNode): string[] {
+    return Array.from(root.querySelectorAll(".manifest-entry")).map((e) => {
+      const line = e.querySelector(".manifest-line")!.textContent;
+      const text = e.querySelector(".manifest-text")!.textContent;
+      return `${line} ${text}`;
+    });
+  }
+
+  /** The store load resolves after the first paint, so the repaint that
+   *  fills the manifests is one tick behind boot. */
+  function settleComments(): Promise<void> {
+    return new Promise<void>((r) => setTimeout(r, 0));
+  }
+
+  test("collapsing a file shows its unresolved comments as one-line entries", async () => {
+    presetCollapseLevel("off");
+    await bootViewer(twoHunkFile(LINES), {
+      comments: [
+        comment("c1", 2, "needs a null check\nand a test"),
+        comment("gh1", 8, "settled", { source: "github", thread_resolved: true }),
+        comment("c3", 8, "still wrong", { side: "old" }),
+      ],
+    });
+    await settleComments();
+
+    clickFileHeader("F0");
+
+    // The unresolved pair, at their line numbers, one line each; the
+    // resolved thread is finished business and is not here. Which side a
+    // note sits on is half of where it is, so the two columns are not
+    // interchangeable.
+    expect(entries(fileEl("F0").querySelector(".manifest-col-old")!))
+      .toEqual(["8 still wrong"]);
+    expect(entries(fileEl("F0").querySelector(".manifest-col-new")!))
+      .toEqual(["2 needs a null check"]);
+  });
+
+  test("a comment is coloured as a comment, an LLM annotation as an annotation", async () => {
+    const data = twoHunkFile(LINES);
+    (data.files![0].hunks as Array<Record<string, unknown>>)[0].line_notes =
+      [{ line: 2, body: "unchecked index" }];
+    presetCollapseLevel("off");
+    await bootViewer(data, { comments: [comment("c1", 8, "needs a null check")] });
+    await settleComments();
+
+    clickFileHeader("F0");
+
+    const kinds = Array.from(fileEl("F0").querySelectorAll(".manifest-entry"))
+      .map((e) => e.className);
+    expect(kinds).toEqual([
+      "manifest-entry manifest-annotation",
+      "manifest-entry manifest-comment",
+    ]);
+  });
+
+  test("a hunk collapsed from the start heads itself once the store loads", async () => {
+    // The comment store resolves after the first paint, so this hide was
+    // already in place — the default level here, restored view state in
+    // a real session — before there was anything to list. Without a
+    // repaint when the store lands it would head an empty list forever.
+    await bootViewer(twoHunkFile(LINES), {
+      comments: [comment("c1", 2, "needs a null check")],
+    });
+    await settleComments();
+
+    expect(entries(fileEl("F0").querySelector('.hunk[data-id="H0_0"]')!))
+      .toEqual(["2 needs a null check"]);
+    // ... and only in the hunk that covers it.
+    expect(entries(fileEl("F0").querySelector('.hunk[data-id="H0_1"]')!)).toEqual([]);
+  });
+
+  test("a collapsed context gap heads itself with the notes on those lines", async () => {
+    presetCollapseLevel("off");
+    await bootViewer(twoHunkFile(LINES), {
+      comments: [comment("c1", 5, "this loop is the hot path")],
+    });
+    await settleComments();
+
+    const chip = fileEl("F0").querySelectorAll(".gap-chip")[1] as HTMLElement;
+    expect(entries(chip)).toEqual(["5 this loop is the hot path"]);
+  });
+
+  test("a manifest entry is not a way to open what it stands in for", async () => {
+    // Not navigable until testing shows people expect it (ADR 0006) —
+    // and a click on an entry must not reach the chip underneath.
+    presetCollapseLevel("off");
+    await bootViewer(twoHunkFile(LINES), {
+      comments: [comment("c1", 5, "this loop is the hot path")],
+    });
+    await settleComments();
+
+    const chip = fileEl("F0").querySelectorAll(".gap-chip")[1] as HTMLElement;
+    (chip.querySelector(".manifest-entry") as HTMLElement).click();
+
+    expect(fileEl("F0").querySelectorAll(".gap-expansion")).toHaveLength(0);
+    expect(document.body.textContent).not.toContain("l5");
+  });
+
+  test("a hunk folded to its segments heads them with its whole body's notes", async () => {
+    // A segment span covers head lines only, and the seg-list stands in
+    // for the entire body — base side and context rows included.
+    const data = twoHunkFile(LINES);
+    (data.files![0].hunks as Array<Record<string, unknown>>)[0].rows = [
+      { kind: "del", old_line: 2, new_line: null, old_text: "gone", new_text: "" },
+    ];
+    presetCollapseLevel("segments");
+    await bootViewer(data, {
+      comments: [comment("c1", 2, "why was this dropped?", { side: "old" })],
+    });
+    await settleComments();
+
+    const hunk = fileEl("F0").querySelector('.hunk[data-id="H0_0"]')!;
+    expect(hunk.querySelector(".seg-list")).not.toBeNull();
+    expect(entries(hunk.querySelector(".manifest-col-old")!))
+      .toEqual(["2 why was this dropped?"]);
+  });
+
+  test("a collapsed CodeFold heads itself, minus the line still on screen", async () => {
+    presetCollapseLevel("off");
+    serveFileSides("F0", ["def foo():", "    x = 1"], ["def foo():", "    x = 2"]);
+    await bootViewer(makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 1, dels: 1, summary: "",
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock("H0_0", "real intent", {
+          rows: [
+            { kind: "ctx", old_line: 1, new_line: 1, old_text: "def foo():", new_text: "def foo():" },
+            { kind: "pair", old_line: 2, new_line: 2, old_text: "    x = 1", new_text: "    x = 2" },
+          ],
+        })],
+      }],
+    }), {
+      comments: [
+        comment("c1", 1, "on the header line"),
+        comment("c2", 2, "inside the fold"),
+      ],
+    });
+    await settleComments();
+
+    (document.querySelector(".fold-chev") as SVGElement)
+      .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    // The header row is the one line of the span that still renders, so
+    // its own comment is on screen rather than in the list.
+    expect(entries(fileEl("F0"))).toEqual(["2 inside the fold"]);
+    expect(document.querySelector(".annot-manifest")).not.toBeNull();
+  });
+});
+
+describe("no collapsed state leaves the gutter jumping", () => {
+  /** Line-number jumps in one side's gutter that nothing stands in for.
+   *
+   *  Walks the file body in DOM order, reading the numbers off the rows
+   *  of one half and treating anything that presents a hide — a gap chip
+   *  or band, a hunk header, a segment summary, a CodeFold chevron — as
+   *  an account of the lines skipped after it. A pair left over is a
+   *  gutter that jumps with nothing said about the gap: the shape of
+   *  issue #10's report, "the hunk was folded ... with a linenumber
+   *  jump".
+   */
+  function unexplainedJumps(
+    fileElement: HTMLElement, side: "old" | "new",
+  ): Array<[number, number]> {
+    const jumps: Array<[number, number]> = [];
+    let previous: number | null = null;
+    let accounted = true;
+    const nodes = fileElement.querySelectorAll(
+      `.gap-chip, .hunk-header, .segment, .half-${side} > .row`,
+    );
+    for (const node of Array.from(nodes)) {
+      if (!node.classList.contains("row")) { accounted = true; continue; }
+      const cell = node.querySelector(`.cell-lineno-${side}`);
+      if (!cell || cell.classList.contains("empty")) continue;  // one-sided row
+      const line = parseInt(cell.textContent || "", 10);
+      if (isNaN(line)) continue;
+      if (previous !== null && line !== previous + 1 && !accounted) {
+        jumps.push([previous, line]);
+      }
+      previous = line;
+      // A collapsed CodeFold keeps its first line as the header the
+      // chevron hangs off; that chevron is what stands in for the rest.
+      // It hangs on whichever half carries the text, and the halves are
+      // drawn side by side, so it accounts for both gutters — hence the
+      // paired row (the renderer's `_scrPair`, which the comment layer
+      // reads the same way).
+      const paired = (node as { _scrPair?: HTMLElement })._scrPair;
+      accounted = node.querySelector(".fold-chev") !== null
+        || (paired?.querySelector(".fold-chev") ?? null) !== null;
+    }
+    return jumps;
+  }
+
+  /** `lines` is the source `/file-text` serves for the file; null models
+   *  one it cannot serve at all. */
+  function twoHunks(lines: string[] | null): ViewerData {
+    if (lines) serveFileText("F0", lines);
+    return makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 2, dels: 2, summary: "",
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [
+          makeHunkBlock("H0_0", "first", {
+            old_start: 2, old_count: 1, new_start: 2, new_count: 1,
+            rows: [{ kind: "pair", old_line: 2, new_line: 2, old_text: "l2", new_text: "L2" }],
+          }),
+          makeHunkBlock("H0_1", "second", {
+            old_start: 8, old_count: 1, new_start: 8, new_count: 1,
+            rows: [{ kind: "pair", old_line: 8, new_line: 8, old_text: "l8", new_text: "L8" }],
+          }),
+        ],
+      }],
+    });
+  }
+
+  const LINES = ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9", "l10"];
+
+  function bothSides(): Array<[number, number]> {
+    const el = fileEl("F0");
+    return [...unexplainedJumps(el, "old"), ...unexplainedJumps(el, "new")];
+  }
+
+  test("the walker catches a gutter that skips lines with nothing in between", () => {
+    // The check has to be able to fail, or the tests below say nothing.
+    document.body.innerHTML = `
+      <div class="file" data-id="F0"><div class="file-body"><div class="diff">
+        <div class="half half-new">
+          <div class="row"><span class="cell cell-lineno cell-lineno-new">2</span></div>
+          <div class="row"><span class="cell cell-lineno cell-lineno-new">8</span></div>
+        </div>
+      </div></div></div>`;
+    expect(unexplainedJumps(fileEl("F0"), "new")).toEqual([[2, 8]]);
+  });
+
+  for (const level of ["files", "hunks", "segments", "off"] as const) {
+    test(`the ${level} level accounts for every line it hides`, async () => {
+      presetCollapseLevel(level);
+      await bootViewer(twoHunks(LINES));
+      expect(bothSides()).toEqual([]);
+    });
+  }
+
+  test("an expanded gap between two collapsed ones stays continuous", async () => {
+    presetCollapseLevel("off");
+    await bootViewer(twoHunks(LINES));
+    (fileEl("F0").querySelectorAll(".gap-chip")[1] as HTMLElement).click();
+    expect(fileEl("F0").querySelectorAll(".gap-expansion")).toHaveLength(1);
+    expect(bothSides()).toEqual([]);
+  });
+
+  test("a CodeFold hides its body behind the line the chevron sits on", async () => {
+    presetCollapseLevel("off");
+    serveFileSides(
+      "F0",
+      ["def foo():", "    a = 1", "    b = 1", "done()"],
+      ["def foo():", "    a = 1", "    b = 2", "done()"],
+    );
+    await bootViewer(makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 1, dels: 1, summary: "",
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock("H0_0", "intent", {
+          old_start: 1, old_count: 4, new_start: 1, new_count: 4,
+          rows: [
+            { kind: "ctx", old_line: 1, new_line: 1, old_text: "def foo():", new_text: "def foo():" },
+            { kind: "ctx", old_line: 2, new_line: 2, old_text: "    a = 1", new_text: "    a = 1" },
+            { kind: "pair", old_line: 3, new_line: 3, old_text: "    b = 1", new_text: "    b = 2" },
+            { kind: "ctx", old_line: 4, new_line: 4, old_text: "done()", new_text: "done()" },
+          ],
+        })],
+      }],
+    }));
+    (document.querySelector(".fold-chev") as SVGElement)
+      .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    // Lines 2-3 are inside the collapsed definition; line 1 keeps the
+    // chevron, so the 1 -> 4 step is accounted for.
+    expect(fileEl("F0").querySelectorAll(".half-new > .row .cell-lineno-new").length)
+      .toBeLessThan(4);
+    expect(bothSides()).toEqual([]);
+  });
+
+  test("a file the route cannot serve names the gap between its hunks", async () => {
+    // Both sides null: a binary file, or one over `/file-text`'s 2 MB
+    // per-side cap. There are no rows to stand a gap chip in front of.
+    // The next `@@` header already keeps the gutter honest; the band is
+    // what says the lines exist at all, and gives the notes on them
+    // somewhere to be.
+    presetCollapseLevel("off");
+    await bootViewer(twoHunks(null));
+
+    expect(bothSides()).toEqual([]);
+    const band = fileEl("F0").querySelector(".gap-absent");
+    expect(band).not.toBeNull();
+    expect(band!.textContent).toContain("5 unchanged lines");
+  });
+
+  test("the band carries the notes on the lines it cannot show", async () => {
+    presetCollapseLevel("off");
+    await bootViewer(twoHunks(null), {
+      comments: [{
+        id: "c1", file: "a.py", side: "new", line: 5, body: "still relevant",
+        created_at: 1, updated_at: 1,
+      }],
+    });
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    const band = fileEl("F0").querySelector(".gap-absent")!;
+    expect(band.querySelector(".manifest-text")!.textContent).toBe("still relevant");
+  });
+
+  // The case slice 5 left false, and the reason slice 6 exists: under a
+  // filter the region swallows the demoted hunks as well as the context,
+  // and with no context to put between them their rows were spliced
+  // together — the gutter stepped 2 -> 5 -> 8 with nothing to say so.
+
+  /** Three hunks (lines 2, 5, 8) and a symbols pill covering the first
+   *  and last, so the middle one demotes into the region between them. */
+  function threeHunksOnePill(lines: string[] | null): ViewerData {
+    if (lines) serveFileText("F0", lines);
+    const at = (id: string, line: number): Record<string, unknown> =>
+      makeHunkBlock(id, "changed", {
+        old_start: line, old_count: 1, new_start: line, new_count: 1,
+        rows: [{
+          kind: "pair", old_line: line, new_line: line,
+          old_text: `l${line}`, new_text: `L${line}`,
+        }],
+      });
+    return makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 3, dels: 3, summary: "",
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [at("H0_0", 2), at("H0_1", 5), at("H0_2", 8)],
+      }],
+      symbols: [{ id: "SY0", title: "ends", rationale: "", hunk_ids: ["H0_0", "H0_2"] }],
+    });
+  }
+
+  function focusPill(): void {
+    document.querySelector<HTMLElement>(
+      '[data-axis="symbols"] .group-btn[data-pill-id="SY0"]',
+    )!.click();
+  }
+
+  test("a demoted hunk expands with its context, under a filter", async () => {
+    presetCollapseLevel("off");
+    await bootViewer(threeHunksOnePill(LINES));
+    focusPill();
+
+    // Chips: line 1 above the first hunk, 3-7 between (the demoted hunk
+    // and its context), 9-10 below.
+    (fileEl("F0").querySelectorAll(".gap-chip")[1] as HTMLElement).click();
+
+    // The demoted hunk's own row is there, and so is every line between
+    // it and the hunks either side.
+    const shown = Array.from(
+      fileEl("F0").querySelectorAll(".gap-expansion .half-new .cell-lineno-new"),
+    ).map((c) => c.textContent);
+    expect(shown).toEqual(["3", "4", "5", "6", "7"]);
+    expect(bothSides()).toEqual([]);
+  });
+
+  test("with no content the demoted hunk stands alone, between two bands", async () => {
+    // Nothing to fill the gaps with, so the run breaks at them rather
+    // than splicing: the region either side of the demoted hunk is its
+    // own, and a band names the lines in between.
+    presetCollapseLevel("off");
+    await bootViewer(threeHunksOnePill(null));
+    focusPill();
+
+    for (const chip of Array.from(fileEl("F0").querySelectorAll<HTMLElement>(".gap-chip"))) {
+      if (!chip.classList.contains("gap-absent")) chip.click();
+    }
+    const bands = Array.from(fileEl("F0").querySelectorAll(".gap-absent"))
+      .map((b) => b.textContent);
+    expect(bands).toEqual([
+      "⋯2 unchanged lines (not loaded)",   // 3-4, before the demoted hunk
+      "⋯2 unchanged lines (not loaded)",   // 6-7, after it
+    ]);
+    expect(bothSides()).toEqual([]);
+  });
+});
+
+// --- Content arrives after first paint (ADR 0006, slice 6) ----------------
+//
+// `/file-text` is the viewer's only source of file content, and it
+// answers after the first render. What that costs is fold affordances and
+// gap chips for one paint; what it must not cost is state — a persisted
+// `HiddenSpan` describes itself, so restoring one needs no content, and
+// the repaint an arrival triggers must not undo a reveal.
+
+describe("file content arrives asynchronously", () => {
+  const LINES_TEN = ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9", "l10"];
+
+  /** One file, one hunk at line 5, so there is a gap either side of it. */
+  function gappyFile(id: string, path: string): Record<string, unknown> {
+    const n = id.replace("F", "");
+    return {
+      id, path, status: "modified", language: "python",
+      adds: 1, dels: 1, summary: "",
+      symbols: { added: [], modified: [], removed: [] },
+      hunks: [makeHunkBlock(`H${n}_0`, "changed", {
+        old_start: 5, old_count: 1, new_start: 5, new_count: 1,
+        rows: [{ kind: "pair", old_line: 5, new_line: 5, old_text: "l5", new_text: "L5" }],
+      })],
+    };
+  }
+
+  function oneFold(): ViewerData {
+    serveFileSides("F0", ["def foo():", "    x = 1"], ["def foo():", "    x = 2"]);
+    return makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 1, dels: 1, summary: "",
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock("H0_0", "intent", {
+          old_start: 1, old_count: 2, new_start: 1, new_count: 2,
+          rows: [
+            { kind: "ctx", old_line: 1, new_line: 1, old_text: "def foo():", new_text: "def foo():" },
+            { kind: "pair", old_line: 2, new_line: 2, old_text: "    x = 1", new_text: "    x = 2" },
+          ],
+        })],
+      }],
+    });
+  }
+
+  test("a fold affordance arrives with the content, not before it", async () => {
+    presetCollapseLevel("off");
+    holdFileTextAnswers();
+    await bootViewer(oneFold());
+    // First paint: the diff is there, the chevron is not — a region
+    // detected off the rendered rows would be addressed by them.
+    expect(document.querySelectorAll(".diff .row").length).toBeGreaterThan(0);
+    expect(document.querySelector(".fold-chev")).toBeNull();
+
+    await releaseFileText();
+    expect(document.querySelector(".fold-chev")).not.toBeNull();
+  });
+
+  test("a CodeFold restored from view state is collapsed at first paint", async () => {
+    // The ordering claim: state does not wait for content. The span is
+    // the whole of the collapse, and the renderer honours it before
+    // anything has been detected — the chevron to reopen it is what
+    // arrives late.
+    presetCollapseLevel("off");
+    ViewState.save(RUN_ID, "off", [{
+      fileId: "F0",
+      spans: [{
+        id: "cf:F0:both:1-2:1-2", fileId: "F0", owner: "user", kind: "codefold",
+        right: { start: 1, end: 2 }, left: { start: 1, end: 2 },
+      }],
+      marks: [["cf:F0:both:1-2:1-2", "user"]],
+    }]);
+
+    holdFileTextAnswers();
+    await bootViewer(oneFold());
+    expect(document.body.textContent).not.toContain("x = 2");
+    // Hidden with nothing detected: the span is the whole of the state.
+    expect(document.querySelector(".fold-chev")).toBeNull();
+
+    await releaseFileText();
+    // Still collapsed, and now with the chevron that reopens it: the
+    // detector re-found the region rather than a differently-addressed
+    // one that would have left the span hiding lines nothing offers back.
+    expect(document.body.textContent).not.toContain("x = 2");
+    const chev = document.querySelector(".fold-chev") as SVGElement;
+    expect(chev.classList.contains("open")).toBe(false);
+    chev.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(document.body.textContent).toContain("x = 2");
+  });
+
+  test("a late arrival does not re-seed a gap the reviewer opened", async () => {
+    // A file the reviewer opens later fetches its content then, and the
+    // repaint that lands with it runs the whole renderer — including the
+    // seeding of every gap in every other file.
+    serveFileText("F0", LINES_TEN);
+    serveFileText("F1", LINES_TEN);
+    presetCollapseLevel("files");   // no file body renders, so nothing is asked for
+    await bootViewer(makeData({
+      pending: false,
+      files: [gappyFile("F0", "a.py"), gappyFile("F1", "b.py")],
+    }));
+    expect(fetchCalls.filter((c) => c.url.includes("/file-text"))).toHaveLength(0);
+
+    clickFileHeader("F0");
+    await settleFileText();
+    (fileEl("F0").querySelector(".gap-chip") as HTMLElement).click();
+    expect(fileEl("F0").querySelectorAll(".gap-expansion")).toHaveLength(1);
+
+    clickFileHeader("F1");                  // opens F1 → fetch → repaint
+    await settleFileText();
+    expect(fetchCalls.filter((c) => c.url.includes("file_idx=1"))).toHaveLength(1);
+    expect(fileEl("F0").querySelectorAll(".gap-expansion")).toHaveLength(1);
+  });
+
+  test("context after a pure deletion pairs the sides right", async () => {
+    // Git writes a zero-count side as the line *before* the hunk
+    // (`@@ -10,3 +9,0 @@` deletes base 10-12 after head line 9), so
+    // reading the header literally resumes the head side one line early
+    // and pairs every later context row against the wrong base line.
+    const base = Array.from({ length: 20 }, (_, i) => `l${i + 1}`);
+    const head = base.filter((_, i) => i < 9 || i > 11);
+    serveFileSides("F0", base, head);
+    presetCollapseLevel("off");
+    await bootViewer(makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 0, dels: 3, summary: "",
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock("H0_0", "drop three", {
+          old_start: 10, old_count: 3, new_start: 9, new_count: 0,
+          rows: [10, 11, 12].map((n) => ({
+            kind: "del", old_line: n, new_line: null,
+            old_text: `l${n}`, new_text: "",
+          })),
+        })],
+      }],
+    }));
+
+    // Expand the run below the deletion.
+    const chips = fileEl("F0").querySelectorAll<HTMLElement>(".gap-chip");
+    chips[chips.length - 1].click();
+    const rows = Array.from(
+      fileEl("F0").querySelectorAll(".gap-expansion:last-of-type .half-new > .row"),
+    ).map((r) => [
+      (r as HTMLElement & { _scrPair?: HTMLElement })._scrPair!
+        .querySelector(".cell-lineno-old")!.textContent,
+      r.querySelector(".cell-lineno-new")!.textContent,
+    ]);
+
+    // Head 10 is base 13: the three deleted lines are behind it.
+    expect(rows[0]).toEqual(["13", "10"]);
+    expect(rows[rows.length - 1]).toEqual(["20", "17"]);
+  });
+
+  test("a file the route cannot serve is not asked twice", async () => {
+    // A failed or empty answer is an answer: re-requesting on every
+    // render would be one fetch per repaint for the rest of the session.
+    await bootViewer(makeData({ pending: false }));   // nothing registered
+    (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+    (document.querySelector('.fold-slider button[data-fold="files"]') as HTMLElement).click();
+    await settleFileText();
+
+    expect(fetchCalls.filter((c) => c.url.includes("/file-text"))).toHaveLength(1);
+  });
+});
+
+// --- Per-tab persistence (ADR 0006, slice 4) ------------------------------
+//
+// View state lives in `sessionStorage` keyed by run, and nowhere else. A
+// reload is modelled by booting the bundle a second time against the same
+// storage; a second tab by swapping in a fresh one. The storage layer
+// itself — the record shape, and what it does with a malformed one — is
+// exercised without a document in tests/js/view_state.test.ts.
+
+describe("view state survives a reload, per tab", () => {
+  function twoFiles(): ViewerData {
+    return makeData({
+      pending: false,
+      files: [
+        {
+          id: "F0", path: "src/a.py", status: "modified", language: "python",
+          adds: 1, dels: 1, summary: "",
+          symbols: { added: [], modified: [], removed: [] },
+          hunks: [makeHunkBlock("H0_0", "real change")],
+        },
+        {
+          id: "F1", path: "uv.lock", status: "modified", language: "",
+          adds: 1, dels: 1, summary: "",
+          symbols: { added: [], modified: [], removed: [] },
+          hunks: [makeHunkBlock("H1_0", "regenerated")],
+        },
+      ],
+    });
+  }
+
+  test("a reload restores what the reviewer folded by hand", async () => {
+    await bootViewer(twoFiles());
+    clickFileHeader("F1");
+    expect(fileEl("F1").classList.contains("folded")).toBe(true);
+
+    await bootViewer(twoFiles());   // reload: same tab, same storage
+
+    expect(fileEl("F1").classList.contains("folded")).toBe(true);
+    expect(fileEl("F0").classList.contains("folded")).toBe(false);
+  });
+
+  test("a reload restores the collapse level", async () => {
+    await bootViewer(twoFiles());
+    (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+    expect(fileEl("F0").querySelectorAll(".diff .row").length).toBeGreaterThan(0);
+
+    await bootViewer(twoFiles());
+
+    expect(fileEl("F0").querySelectorAll(".diff .row").length).toBeGreaterThan(0);
+    const active = document.querySelector(".fold-slider button.active") as HTMLElement;
+    expect(active.dataset.fold).toBe("off");
+    // Carried by the stored record, not by the `#fold=` key that used to
+    // do this job.
+    expect(window.location.hash).toBe("");
+  });
+
+  test("a reload restores a reveal, not just a hide", async () => {
+    // The marks ledger is what makes this work: the renderer re-seeds
+    // every gap it lays out, so persisting the hidden spans alone would
+    // put the chip back on the next boot.
+    const data = (): ViewerData => {
+      serveFileText("F0", ["l1", "l2", "l3", "l4", "l5"]);
+      return makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 1, dels: 1, summary: "",
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock("H0_0", "ok", {
+          old_start: 3, old_count: 1, new_start: 3, new_count: 1,
+          rows: [{ kind: "pair", old_line: 3, new_line: 3, old_text: "l3", new_text: "L3" }],
+        })],
+      }],
+      });
+    };
+
+    await bootViewer(data());
+    (document.querySelector(".gap-chip") as HTMLElement).click();
+    expect(document.querySelectorAll(".gap-expansion")).toHaveLength(1);
+
+    await bootViewer(data());
+
+    expect(document.querySelectorAll(".gap-expansion")).toHaveLength(1);
+    expect(document.body.textContent).toContain("l1");
+  });
+
+  test("two tabs are independent", async () => {
+    await bootViewer(twoFiles());
+    clickFileHeader("F1");
+    expect(fileEl("F1").classList.contains("folded")).toBe(true);
+
+    // A second tab on the same origin gets its own sessionStorage, so it
+    // opens at the defaults rather than inheriting the first tab's folds.
+    const firstTab = installTabStorage();
+    await bootViewer(twoFiles());
+    expect(fileEl("F1").classList.contains("folded")).toBe(false);
+
+    // ...and folding in the second tab left the first tab's record alone.
+    clickFileHeader("F0");
+    installTabStorage(firstTab!);
+    await bootViewer(twoFiles());
+    expect(fileEl("F1").classList.contains("folded")).toBe(true);
+    expect(fileEl("F0").classList.contains("folded")).toBe(false);
+  });
+
+  test("no view state rides in the URL", async () => {
+    await bootViewer(twoFiles());
+    expect(window.location.hash).toBe("");
+
+    (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+    clickFileHeader("F1");
+
+    expect(window.location.hash).toBe("");
+  });
+
+  test("a write the browser refuses leaves the viewer working", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    installTabStorage({
+      ...makeStorage(),
+      setItem: () => { throw new DOMException("quota", "QuotaExceededError"); },
+    });
+
+    await bootViewer(twoFiles());
+    clickFileHeader("F1");
+
+    // In-memory state is unaffected; only the reload survives is lost.
+    expect(fileEl("F1").classList.contains("folded")).toBe(true);
+    expect(warn).toHaveBeenCalled();
+  });
+});
+
 
 describe("review console", () => {
   // The console_id the module stamped on the most recent /console/ask;
@@ -1824,7 +2875,7 @@ describe("rendered markdown mode", () => {
       pending: false,
       files: [{
         id: "F0", path: "docs/x.md", status: "modified", language: "markdown",
-        adds: 1, dels: 1, summary: "", head_lines: null,
+        adds: 1, dels: 1, summary: "",
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0")],
       }],
@@ -1843,12 +2894,9 @@ describe("rendered markdown mode", () => {
     expect(document.querySelector(".md-toggle")).toBeNull();
   });
 
-  test("flipping on fetches /file-text and renders base-left / head-right", async () => {
+  test("flipping on renders base-left / head-right from the served source", async () => {
+    serveFileSides("F0", ["# Old"], ["# New", "", "hello world"]);
     await bootViewer(mdData());
-    queueFetchResponse({
-      status: 200,
-      body: { file_idx: 0, path: "docs/x.md", base: "# Old", head: "# New\n\nhello world" },
-    });
     (document.querySelector(".md-toggle") as HTMLElement).click();
     await new Promise<void>((r) => setTimeout(r, 0));
 
@@ -1868,11 +2916,8 @@ describe("rendered markdown mode", () => {
   });
 
   test("flipping back restores the text diff untouched", async () => {
+    serveFileSides("F0", ["# Old"], ["# New"]);
     await bootViewer(mdData());
-    queueFetchResponse({
-      status: 200,
-      body: { file_idx: 0, path: "docs/x.md", base: "# Old", head: "# New" },
-    });
     const toggle = (): HTMLElement => document.querySelector(".md-toggle") as HTMLElement;
     toggle().click();
     await new Promise<void>((r) => setTimeout(r, 0));
@@ -1884,12 +2929,9 @@ describe("rendered markdown mode", () => {
     expect(document.querySelector(".file .hunk")).not.toBeNull();
   });
 
-  test("re-flipping on does not re-fetch (source is cached)", async () => {
+  test("flipping does not re-fetch — the text diff and rendered mode share one source", async () => {
+    serveFileSides("F0", ["# Old"], ["# New"]);
     await bootViewer(mdData());
-    queueFetchResponse({
-      status: 200,
-      body: { file_idx: 0, path: "docs/x.md", base: "# Old", head: "# New" },
-    });
     const toggle = (): HTMLElement => document.querySelector(".md-toggle") as HTMLElement;
     toggle().click();                                   // on — fetches
     await new Promise<void>((r) => setTimeout(r, 0));
@@ -1904,12 +2946,9 @@ describe("rendered markdown mode", () => {
   });
 
   test("a comment on a rendered block anchors on its source line and round-trips", async () => {
-    window.location.hash = "#fold=off";  // expand the diff body so the round-trip row renders
+    presetCollapseLevel("off");  // expand the diff body so the round-trip row renders
+    serveFileSides("F0", ["# Old"], ["# New", "", "hello world"]);
     await bootViewer(mdData());
-    queueFetchResponse({
-      status: 200,
-      body: { file_idx: 0, path: "docs/x.md", base: "# Old", head: "# New\n\nhello world" },
-    });
     (document.querySelector(".md-toggle") as HTMLElement).click();
     await new Promise<void>((r) => setTimeout(r, 0));
 

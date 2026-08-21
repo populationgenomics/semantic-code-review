@@ -595,8 +595,8 @@ def _slice_and_cap(text: str, start_line: int | None, end_line: int | None) -> s
 # Tool surface — derived from `RepoTools`
 # ---------------------------------------------------------------------------
 #
-# Both the pydantic-ai Agent (`tools=TOOL_FUNCTIONS`) and the MCP stdio
-# server (`mcp_tool_schemas`, `mcp_dispatch`) read from the same set of
+# Both the pydantic-ai Agent (`tools=TOOL_FUNCTIONS`) and the hosted HTTP
+# MCP server (`mcp_tool_schemas`, `mcp_dispatch`) read from the same set of
 # `@_tool`-marked methods. Adding/renaming a tool means editing one
 # method — the wire surface follows.
 

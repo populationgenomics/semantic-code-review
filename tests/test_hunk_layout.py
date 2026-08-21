@@ -268,6 +268,40 @@ def test_symbol_folding_snaps_method_under_class_and_drops_inner_block() -> None
     assert [(r.header_idx, r.body_end_idx) for r in regions] == [(0, 4), (1, 4)]
 
 
+def test_symbol_region_address_is_the_declared_span_not_the_rows() -> None:
+    """A snapped region addresses its definition's whole span, whichever
+    slice of it the rows happen to show.
+
+    The viewer detects over a wider row set than one hunk (revealed
+    context, adjacent hunks). Reading the address off the rows would move
+    it every time more of the definition became visible; reading it off
+    the span keeps the two detectors — and successive detections in the
+    viewer — addressing the same region (#10).
+    """
+    span = [{"start_line": 10, "end_line": 40, "kind": "function", "qualified_name": "big", "depth": 0}]
+
+    def _addr(first: int, last: int) -> tuple:
+        rows = _rows_from_dicts(
+            [
+                {
+                    "kind": "ctx" if n != first else "pair",
+                    "old_line": n,
+                    "new_line": n,
+                    "old_text": f"    a{n}",
+                    "new_text": f"    b{n}" if n == first else f"    a{n}",
+                }
+                for n in range(first, last + 1)
+            ]
+        )
+        (region,) = compute_fold_regions(rows, span, span)
+        return (region.context, region.right_start, region.right_end, region.left_start, region.left_end)
+
+    narrow = _addr(20, 22)
+    wide = _addr(11, 39)
+    assert narrow == ("both", 10, 40, 10, 40)
+    assert narrow == wide
+
+
 def test_symbol_folding_no_spans_is_identical_to_indentation() -> None:
     """An all-unsupported file (no spans) folds byte-identically to the
     pre-slice indentation output."""

@@ -5,6 +5,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from semantic_code_review.augment.schemas import (
+    AnnotatedDiff,
+    AnnotatedFile,
+    AnnotatedHunk,
+    FoldDescription,
+    HunkAnnotations,
+    ParsedHunk,
+    PRInfo,
+)
 from semantic_code_review.format.parse import parse_augmented_diff
 from semantic_code_review.viewer.build_json import (
     build_pending_viewer_json,
@@ -392,6 +401,116 @@ def test_fold_symbols_empty_for_unsupported_language(tmp_path: Path) -> None:
     data = build_pending_viewer_json(tmp_path)
 
     assert data["files"][0]["fold_symbols"] == {"head": [], "base": []}
+
+
+# --- fold regions: the summaries the run has, at the file level ------------
+
+
+def test_fold_regions_are_the_persisted_summaries_on_the_file() -> None:
+    """A `FoldDescription` reaches the viewer as a file-level record,
+    whatever the region's relation to the hunks.
+
+    The server does not detect regions (ADR 0006 slice 6): the viewer
+    does, from the file's content, and matches by address. So a summary
+    for a definition with no row in any hunk — the common case once
+    detection reads the whole file — still comes back, where per-hunk
+    detection used to drop it.
+
+    An absent side goes out as `null`, not as `FoldDescription`'s `0`:
+    the address is what a `CodeFold`'s span id is built from, and the
+    two spellings keyed the same region twice.
+    """
+    hunk = AnnotatedHunk(
+        parsed=ParsedHunk(
+            header="@@ -1,1 +1,1 @@",
+            body="-a\n+b\n",
+            old_start=1,
+            old_count=1,
+            new_start=1,
+            new_count=1,
+        ),
+        ann=HunkAnnotations(
+            intent="",
+            fold_descriptions=[
+                # Lines 40-80: nowhere near the hunk at line 1.
+                FoldDescription(context="right", right_start=40, right_end=80, summary="the parser"),
+                FoldDescription(context="left", left_start=5, left_end=9, summary="the old parser"),
+            ],
+        ),
+    )
+    diff = AnnotatedDiff(
+        pr=PRInfo(pr_url="", base_sha="a", head_sha="b"),
+        files=[AnnotatedFile(path="a.py", diff_git_line="diff --git a/a.py b/a.py", hunks=[hunk])],
+    )
+
+    block = build_viewer_json(diff, {})["files"][0]
+
+    assert block["fold_regions"] == [
+        {
+            "context": "right",
+            "right_start": 40,
+            "right_end": 80,
+            "left_start": None,
+            "left_end": None,
+            "summary": "the parser",
+        },
+        {
+            "context": "left",
+            "right_start": None,
+            "right_end": None,
+            "left_start": 5,
+            "left_end": 9,
+            "summary": "the old parser",
+        },
+    ]
+    # And nowhere else: a hunk is not where a fold lives, so an SSE event
+    # replacing one cannot take the file's fold records with it.
+    assert "fold_regions" not in block["hunks"][0]
+
+
+# --- file content is not in the payload ------------------------------------
+
+
+def test_file_block_ships_no_file_content(tmp_path: Path) -> None:
+    """A file block carries the diff and the definition spans, never the
+    file's text.
+
+    The viewer fetches content per file from `/file-text` (ADR 0006 slice
+    6), which is what removes the old 5,000-line cap on it and the
+    head-side-only limit. A payload that carried it as well would be the
+    whole diff's text over the wire before the first paint.
+    """
+    (tmp_path / "raw.diff").write_text(
+        "diff --git a/a.py b/a.py\nindex 0123456..89abcde 100644\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "meta.json").write_text(
+        json.dumps(
+            {
+                "title": "Edit a",
+                "author": {"login": "t"},
+                "url": "",
+                "baseRefOid": "aaa",
+                "headRefOid": "bbb",
+            }
+        ),
+        encoding="utf-8",
+    )
+    base = tmp_path / "base"
+    head = tmp_path / "head"
+    base.mkdir()
+    head.mkdir()
+    # Well under the cap that used to apply, and still not shipped.
+    (base / "a.py").write_text("old\n", encoding="utf-8")
+    (head / "a.py").write_text("new\n", encoding="utf-8")
+
+    block = build_pending_viewer_json(tmp_path)["files"][0]
+
+    assert "head_lines" not in block
+    # Nothing else smuggles it either: the only text in a file block is
+    # the diff's own rows.
+    outside_hunks = {k: v for k, v in block.items() if k != "hunks"}
+    assert "new" not in json.dumps(outside_hunks)
 
 
 # --- syntax-highlighting language map --------------------------------------

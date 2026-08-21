@@ -1142,6 +1142,80 @@ body {
 }
 .gap-expansion .gap-collapse:hover { color: var(--fg); border-color: var(--accent); }
 
+/* A band standing in for unchanged lines the payload never shipped
+ * (no `head_lines`). Same seam as a gap chip, minus the affordance:
+ * there is nothing to expand until slice 6's /file-text lands. */
+.gap-chip.gap-absent { cursor: default; color: var(--fg-dim); }
+.gap-chip.gap-absent:hover { color: var(--fg-dim); border-color: var(--border); }
+.gap-chip.gap-absent .gap-icon { color: var(--fg-dim); }
+
+/* --- Manifest of a hide (ADR 0006) --------------------------------------- */
+/* Every collapsed thing is headed by the notes it covers, so hiding a
+ * range never erases the reviewer's own. Two columns because which side
+ * a note sits on is half of where it is, and position carries that —
+ * left is base, right is head, so the columns need no labels and an
+ * empty one is itself the cue; the colour sidebar on each
+ * entry carries its kind, matching the palette of the expanded view
+ * (amber comment, blue LLM annotation). Entries are inert — not
+ * navigable, by ADR 0006 — so nothing here takes a pointer cursor. */
+.manifest {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0 12px;
+  padding: 6px 14px 8px;
+  /* A manifest reads the same whichever chrome it heads, so it takes
+     neither the gap chip's monospace nor its centring. */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 12px;
+  text-align: left;
+  cursor: default;
+}
+.manifest-single { grid-template-columns: minmax(0, 1fr); }
+.manifest-col { min-width: 0; }
+.manifest-entry {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 1px 0 1px 7px;
+  border-left: 3px solid var(--border);
+  min-width: 0;
+}
+.manifest-comment { border-left-color: var(--warn); }
+.manifest-annotation { border-left-color: var(--accent); }
+.manifest-line {
+  font-family: var(--mono);
+  color: var(--fg-dim);
+  flex: 0 0 auto;
+}
+.manifest-text {
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* A manifest under a one-line band: the band is a centred flex row, so
+ * the list wraps onto a full-width line of its own beneath it. */
+.gap-chip.has-manifest { flex-wrap: wrap; }
+.gap-chip.has-manifest .manifest { flex: 0 0 100%; }
+
+/* Inside a diff, a manifest is annotation content rather than a block of
+ * its own: the box already carries the padding and the border. */
+/* Undecorated: every entry already draws its own 3px kind-coloured bar,
+   so the box's border-left would double it. Stripping the chrome puts
+   the entry's bar exactly where a comment box's sits. */
+.diff .annot-manifest .annot-box {
+  max-height: none;
+  font-style: normal;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  max-width: none;
+}
+.diff .annot-manifest .annot-box .manifest { padding: 0; }
+
 /* --- Status bar ----------------------------------------------------------- */
 /* `position: sticky; bottom: 0` only pins relative to a scrolling
  * ancestor, not the viewport — for a body-level footer it just sits

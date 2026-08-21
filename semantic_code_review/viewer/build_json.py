@@ -29,9 +29,6 @@ from ..augment.schemas import (
 from ..format.parse import parse_raw_diff
 from .hunk_layout import build_hunk_viewer_block
 
-#: cap — files with more than this many lines don't bundle head_lines.
-_HEAD_LINES_CAP = 5000
-
 
 def build_viewer_json(
     diff: AnnotatedDiff,
@@ -54,7 +51,7 @@ def build_viewer_json(
             }
             for tag, d in SMELL_CATALOGUE.items()
         },
-        "files": [_file_block(f, i, head_dir, file_syms[i]) for i, f in enumerate(diff.files)],
+        "files": [_file_block(f, i, file_syms[i]) for i, f in enumerate(diff.files)],
         "groups": _group_blocks(diff),
         "symbols": _symbol_blocks(diff, file_syms),
     }
@@ -211,21 +208,6 @@ def _fold_spans(symbols: list[structural.Symbol], depth: int = 0) -> list[dict[s
         )
         out.extend(_fold_spans(s.children, depth + 1))
     return out
-
-
-def file_fold_spans(
-    f: AnnotatedFile,
-    base_dir: Path | None,
-    head_dir: Path | None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Flattened per-side definition spans for one file, as `(head, base)`.
-
-    The currency `build_hunk_viewer_block` needs to snap folds to symbol
-    boundaries. Empty lists degrade an unsupported language / unavailable
-    worktree, same as `fold_symbols`.
-    """
-    syms = _file_symbols(f, base_dir, head_dir)
-    return _fold_spans(syms.head), _fold_spans(syms.base)
 
 
 def _symbol_blocks(
@@ -418,15 +400,11 @@ def _pr_block(diff: AnnotatedDiff, meta: dict[str, Any]) -> dict[str, Any]:
 def _file_block(
     f: AnnotatedFile,
     idx: int,
-    head_dir: Path | None,
     syms: _FileSymbols,
 ) -> dict[str, Any]:
-    head_spans = _fold_spans(syms.head)
-    base_spans = _fold_spans(syms.base)
-    hunks = [build_hunk_viewer_block(h, idx, hi, head_spans, base_spans) for hi, h in enumerate(f.hunks)]
+    hunks = [build_hunk_viewer_block(h, idx, hi) for hi, h in enumerate(f.hunks)]
     adds = sum(h["adds"] for h in hunks)
     dels = sum(h["dels"] for h in hunks)
-    head_lines = _load_head_lines(f, head_dir)
     ann = f.ann
     return {
         "id": f"F{idx}",
@@ -439,33 +417,9 @@ def _file_block(
         "summary": ann.summary,
         "symbols": ann.symbols.model_dump() if ann.symbols else {"added": [], "modified": [], "removed": []},
         "fold_symbols": {"head": _fold_spans(syms.head), "base": _fold_spans(syms.base)},
-        "head_lines": head_lines,
+        "fold_regions": _fold_region_blocks(f),
         "hunks": hunks,
     }
-
-
-def _load_head_lines(f: AnnotatedFile, head_dir: Path | None) -> list[str] | None:
-    """Return the full head-file content split into lines, or None if we skip.
-
-    Skipped when: no head_dir available, file is GENERATED/BINARY, head file
-    doesn't exist (e.g. deleted file), or the file is over the size cap.
-    """
-    if head_dir is None:
-        return None
-    role = f.ann.role
-    if role is not None and role.value in ("generated", "binary", "deleted"):
-        return None
-    path = head_dir / f.path
-    if not path.exists() or not path.is_file():
-        return None
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    lines = text.splitlines()
-    if len(lines) > _HEAD_LINES_CAP:
-        return None
-    return lines
 
 
 # Maps a file extension to a highlight.js language *registered in the
@@ -533,6 +487,54 @@ _LANG_BY_EXT = {
     ".diff": "diff",
     ".patch": "diff",
 }
+
+
+def _fold_region_blocks(f: AnnotatedFile) -> list[dict[str, Any]]:
+    """The file's persisted `CodeFold` summaries, as addressed records.
+
+    Not detection: the viewer detects its own regions from the file's
+    content and matches them to these by address, so what the server owes
+    it is the summaries it has stored — every one of them, whether or not
+    the region has a row in any hunk, and whatever the language. Detecting
+    here as well used to decide which summaries came back, and dropped the
+    ones that fell outside a hunk or belonged to a file with no symbols.
+
+    `fold_descriptions` sit on hunk annotations for legacy reasons (see
+    `fold_summary._replace_fold_description`), so the file's are their
+    union, first occurrence of an address winning.
+    """
+    seen: set[tuple[str, int, int, int, int]] = set()
+    out: list[dict[str, Any]] = []
+    for h in f.hunks:
+        for fd in h.ann.fold_descriptions:
+            key = (fd.context, fd.right_start, fd.right_end, fd.left_start, fd.left_end)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                {
+                    "context": fd.context,
+                    "right_start": _absent_side_as_null(fd.right_start),
+                    "right_end": _absent_side_as_null(fd.right_end),
+                    "left_start": _absent_side_as_null(fd.left_start),
+                    "left_end": _absent_side_as_null(fd.left_end),
+                    "summary": fd.summary,
+                }
+            )
+    return out
+
+
+def _absent_side_as_null(line: int) -> int | None:
+    """Translate `FoldDescription`'s absent-side sentinel to the wire's.
+
+    Lines are 1-indexed, so `FoldDescription` spells "this side is not
+    part of the address" as `0`; the viewer spells it `null`, and a
+    `CodeFold`'s span id is built from that address. Letting the `0`
+    through gave one region two ids — the id the viewer detected and the
+    id it read back off this record — so a fold went unreopenable once a
+    summary for it had been stored.
+    """
+    return line if line > 0 else None
 
 
 def _lang_from_path(path: str) -> str:

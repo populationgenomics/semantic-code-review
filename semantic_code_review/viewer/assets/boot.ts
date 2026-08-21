@@ -11,7 +11,7 @@ import { Comments } from "./comments";
 import { Console } from "./console";
 import { DataStore, type FoldRegionAddress } from "./data_store";
 import { DebugDrawer } from "./debug_drawer";
-import { Folds } from "./folds";
+import { FileText } from "./file_text";
 import { PostModal } from "./post_modal";
 import { Progress } from "./progress";
 import { Render } from "./render";
@@ -49,9 +49,16 @@ const SESSION_ENDPOINT: string = (() => {
 
 function boot(): void {
   Comments.init({
-    // Sidebar pills carry per-file unresolved/total counts; repaint
-    // them whenever the store changes (initial load, save, delete).
-    onChange: () => Sidebar.refreshFileCommentCounts(),
+    // Two things read the comment store outside the store's own render:
+    // the sidebar pills' unresolved/total counts, and the manifest
+    // heading every hide. The manifest is built during `render()`, and
+    // the store arrives after the first one — a file already collapsed
+    // from restored view state would head an empty list until something
+    // else repainted. So a store change is a repaint, not a patch.
+    onChange: () => {
+      Sidebar.refreshFileCommentCounts();
+      Render.render();
+    },
   });
   installDoneButton();
   Sidebar.init(DATA, {
@@ -62,9 +69,14 @@ function boot(): void {
     // (ephemeral focus-reveal) — driven from render.ts.
     onFilterChange: () => Render.applyFilterChange(),
   });
-  // lazy /file-text backing for the md toggle; the callback repaints on
-  // rendered-mode fold-level changes and chip reveals.
-  Rendered.init(SESSION_ENDPOINT, () => Render.render());
+  // The lazy /file-text route backs both renderers: the markdown
+  // toggle's source and the text diff's unchanged context + CodeFold
+  // detection. Content arrives after first paint, so an arrival is a
+  // repaint (one per batch, coalesced in file_text.ts).
+  FileText.init(SESSION_ENDPOINT, () => Render.render());
+  // The callback repaints on rendered-mode fold-level changes and chip
+  // reveals.
+  Rendered.init(() => Render.render());
   Render.init(DATA);       // wires hash + keyboard + initial paint
   Progress.init(DATA);
   installPrHeader(DATA);
@@ -255,16 +267,10 @@ function applyFoldSummary(payload: SseFoldSummaryEvent): void {
   };
   const outcome = DataStore.applyFoldSummary(DATA, addr, payload.summary);
   if (outcome !== "applied") return;
-  // Cross-tab path: the resolved region tells us which hunk hosts it
-  // so we can replace just that hunk's DOM, then re-attach folds over
-  // the freshly-rendered rows.
-  const resolved = DataStore.findFoldRegion(DATA, addr);
-  if (!resolved) return;
-  Render.renderHunkReplace(resolved.file, resolved.hostHunkIdx);
-  const fileEl = document.querySelector(
-    '.file[data-id="' + _cssEscape(resolved.file.id) + '"]',
-  ) as HTMLElement | null;
-  if (fileEl) Folds.attachFileFolds(fileEl, resolved.file);
+  // The summary lives on the region record and the collapse lives in the
+  // span store, so a plain repaint picks the new text up without
+  // disturbing what the reviewer has folded.
+  Render.render();
 }
 
 function finaliseStreaming(): void {
@@ -272,13 +278,4 @@ function finaliseStreaming(): void {
   // Hide the progress strip — only useful while streaming.
   Progress.finalise();
   Render.render();
-}
-
-// Minimal CSS.escape polyfill — only needed because some older
-// browsers ship without `CSS.escape`. File and hunk ids are simple
-// ASCII identifiers, so escaping is a defensive measure.
-function _cssEscape(s: string): string {
-  const w = window as unknown as { CSS?: { escape?: (s: string) => string } };
-  if (w.CSS && typeof w.CSS.escape === "function") return w.CSS.escape(s);
-  return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => "\\" + c);
 }

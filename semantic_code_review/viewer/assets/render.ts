@@ -1,12 +1,32 @@
-// Diff renderer + fold-state machinery.
+// Diff renderer + collapse-state machinery.
 //
 // Owns the layout pass that turns DATA into the on-page DOM: PR
 // panel, file blocks, hunk headers, the side-by-side row grid, gap
-// chips for unchanged context, segment-folded summaries, refs, smell
-// pills. Carries the fold state too (STATE.fold / overrides /
-// renderedDiffs cache) because all of that exists to feed the
-// renderer, and binds the user inputs that drive it (fold-slider
-// buttons, keyboard 1-4, hash sync).
+// chips for unchanged context, CodeFold summaries, refs, smell
+// pills. Carries the collapse *level* and the renderedDiffs cache
+// because both exist to feed the renderer, and binds the user inputs
+// that drive it (collapse-level slider buttons, keyboard 1-4).
+//
+// What is hidden lives in visibility.ts, not here: every hide is a
+// `HiddenSpan` and every render reads the current span set rather than
+// the DOM it produced last time. Interactions in this module do one
+// thing — mutate a span and re-render.
+//
+// That contract is also what makes persistence a single call: `render()`
+// is the funnel every mutation passes through, so it is where the level
+// and the span store are written to `sessionStorage` (view_state.ts).
+//
+// A hide is not an erasure: every collapsed thing here is headed by the
+// manifest of the notes it covers (manifest.ts, ADR 0006), so a comment
+// inside a folded file still says where it is. Every run of lines this
+// module skips leaves something standing in its place too — a chip, a
+// `@@` header, a chevron, or the inert band naming lines the viewer has
+// no text for — so the line-number gutter never steps silently.
+//
+// The unchanged lines a chip stands in front of are not in the diff: the
+// renderer synthesises them from the file's own source, which arrives
+// after first paint (file_text.ts). Until it does — and permanently, for
+// a file the route cannot serve — those runs render as the band.
 //
 // Other modules attach to surfaces this module creates:
 //   - sidebar.ts mutates pill state but reads from .file / .hunk
@@ -18,28 +38,42 @@
 import { Annotations } from "./annotations";
 import { Comments } from "./comments";
 import { FileRows } from "./file_rows";
+import { FileText } from "./file_text";
 import { Folds } from "./folds";
+import { Manifest, type ManifestNote } from "./manifest";
 import { Progress } from "./progress";
 import { Rendered } from "./rendered";
 import { Sidebar } from "./sidebar";
 import { blockDiff, matchRanges, wrapRanges, type CharRange } from "./text_highlight";
+import { ViewState } from "./view_state";
+import {
+  Visibility, type CollapseLevel, type HiddenSpan, type LineRange,
+} from "./visibility";
 
 // --- Module state --------------------------------------------------------
 
-type FoldMode = "files" | "hunks" | "segments" | "off";
-
 interface RenderState {
-  fold: FoldMode;
-  overrides: Record<string, boolean>;
+  // The global collapse *level*, not a fold: it seeds the `level`-owned
+  // hidden spans for files, hunks and segments. See
+  // docs/slices/visibility-model.md for the vocabulary.
+  collapseLevel: CollapseLevel;
   renderedDiffs: Record<string, HTMLElement>;
   // Ephemeral: reveal the focused hunks' code (set when a sidebar pill is
-  // clicked, cleared the moment the fold-level slider is touched). Kept
-  // out of `overrides` on purpose — a stored per-hunk override would leak
-  // an expanded hunk into the unfiltered view once the filter clears.
+  // clicked, cleared the moment the collapse-level slider is touched).
+  // Deliberately not a span retraction — removing the level's span would
+  // leak an expanded hunk into the unfiltered view once the filter clears.
   focusReveal: boolean;
+  // What _saveViewState last wrote, so a render that moved nothing does
+  // not re-serialise the whole span store.
+  savedRevision: number;
+  savedLevel: CollapseLevel | null;
 }
 
-let _data: ViewerData = { version: "1", pr: {} as PRBlock, smells_catalogue: {}, files: [], groups: [], symbols: [] };
+// Pre-init placeholder, replaced wholesale by renderInit. `run_id` is
+// empty rather than invented: ViewState.storageKey raises on it, so
+// persistence reached before boot fails instead of writing under a key
+// no run owns.
+let _data: ViewerData = { version: "1", run_id: "", pr: {} as PRBlock, smells_catalogue: {}, files: [], groups: [], symbols: [] };
 let _smells: Record<string, SmellCatalogueEntry> = {};
 // The focused symbol's name, highlighted search-style across every diff
 // line, or null when no symbol pill is active. Newly rendered cells pick
@@ -47,27 +81,36 @@ let _smells: Record<string, SmellCatalogueEntry> = {};
 // DOM. See setSymbolSearch / sidebar's active-pill callback.
 let _symbolSearch: string | null = null;
 const _state: RenderState = {
-  fold: "hunks",
-  overrides: Object.create(null),
+  collapseLevel: "hunks",
   renderedDiffs: Object.create(null),
   focusReveal: true,
+  savedRevision: -1,
+  savedLevel: null,
 };
 
 // --- Public API ----------------------------------------------------------
 
-/** Wire input handlers + restore state from URL hash + run initial
- *  render. Called once at boot from viewer.js. Resets the rendered-
- *  diff cache + fold overrides so a re-boot (tests, future hot
- *  reload) starts fresh. */
+/** Wire input handlers + restore this run's stored view state + run the
+ *  initial render. Called once at boot from viewer.js. Drops the
+ *  rendered-diff cache and every hidden span so a re-boot (tests, future
+ *  hot reload) starts from what is stored, not from what was in memory. */
 function renderInit(data: ViewerData): void {
   _data = data;
   _smells = data.smells_catalogue || {};
-  _state.fold = "hunks";
-  _state.overrides = Object.create(null);
+  _state.collapseLevel = "hunks";
   _state.renderedDiffs = Object.create(null);
   _state.focusReveal = true;
+  _state.savedRevision = -1;
+  _state.savedLevel = null;
+  Visibility.reset();
+  // File ids are position-derived, so a second boot in the same page
+  // would read the previous diff's text under F0.
+  FileText.reset();
   _wireInputs();
-  _restoreHash();
+  // A restored store already holds the level's spans *and* its marks, so
+  // seeding over the top would re-hide what the reviewer had expanded.
+  // render()'s syncLevel still catches nodes the stored state never saw.
+  if (!_restoreViewState()) Visibility.setLevel(_data, _state.collapseLevel);
   render();
 }
 
@@ -76,6 +119,9 @@ function renderInit(data: ViewerData): void {
 function render(): void {
   const app = document.getElementById("app");
   if (!app) return;
+  // Nodes that arrived since the last bulk action (an SSE hunk patch can
+  // bring segments) take the current level's default.
+  Visibility.syncLevel(_data, _state.collapseLevel);
   app.innerHTML = "";
   app.appendChild(_renderPRPanel(_data.pr));
   for (const f of _data.files) {
@@ -85,7 +131,7 @@ function render(): void {
   Sidebar.render();
   Sidebar.applyFilter();
   _updateStatus();
-  _syncHash();
+  _saveViewState();
   _updateSliderButtons();
   Comments.renderAll();
   // Annotation arrows attached during render were sized while the
@@ -107,12 +153,20 @@ function renderHunkReplace(file: FileBlock, hunkIdx: number): void {
   const h = file.hunks[hunkIdx];
   if (!h) return;
   delete _state.renderedDiffs[h.id];
-  // Under an active filter the file body is the focused merged diff
-  // (header-less .hunk wrappers), not the normal hunk layout — a
-  // surgical swap would inject a full hunk header. Fall back to a full
-  // re-render, which rebuilds the focused body correctly.
-  if (Sidebar.activeHunkIds() !== null) { render(); return; }
-  const fresh = _renderHunk(h, file);
+  // Two cases the surgical swap can't serve. Under an active filter the
+  // file body is the focused merged diff (header-less .hunk wrappers),
+  // not the normal hunk layout, so a swap would inject a full hunk
+  // header. With a CodeFold in the file, which rows this hunk emits
+  // depends on what the containers before it already emitted, and only a
+  // whole-body pass knows that. Both fall back to a full re-render.
+  if (Sidebar.activeHunkIds() !== null
+      || Visibility.spansOf(file.id).some((s) => s.kind === "codefold")) {
+    render();
+    return;
+  }
+  const fresh = _renderHunk(
+    h, file, new Set<string>(), Manifest.notes(file, Comments.getAll()),
+  );
   const existing = document.querySelector(
     '.hunk[data-id="' + _cssEscape(h.id) + '"]',
   );
@@ -136,8 +190,7 @@ function repaintHunkHeader(hunkId: string): void {
   const f = _data.files && _data.files[fi];
   const h = f && f.hunks && f.hunks[hi];
   if (!h) return;
-  const folded = _isFolded(h.id, _defaultHunkFolded());
-  const fresh = _renderHunkHeader(h, folded, f);
+  const fresh = _renderHunkHeader(h, _hunkHidden(f, h, false), f);
   oldHdr.replaceWith(fresh);
 }
 
@@ -147,26 +200,33 @@ function clearRenderedDiffCache(hunkId: string): void {
   delete _state.renderedDiffs[hunkId];
 }
 
-// --- Fold state ---------------------------------------------------------
+// --- Hide / reveal ------------------------------------------------------
+//
+// Every interaction below is the same two steps: move a span, re-render.
+// The transitions themselves are visibility.ts's, so they are exercisable
+// without a document; what lives here is the binding from a click to one.
 
-function _defaultFileFolded(): boolean    { return _state.fold === "files"; }
-function _defaultHunkFolded(): boolean    { return _state.fold === "files" || _state.fold === "hunks"; }
-function _defaultSegmentFolded(): boolean { return _state.fold !== "off"; }
-
-function _isFolded(id: string, fallback: boolean): boolean {
-  return Object.prototype.hasOwnProperty.call(_state.overrides, id)
-    ? _state.overrides[id] : fallback;
-}
-
-function _toggleFold(id: string, currentDefault: boolean): void {
-  const current = _isFolded(id, currentDefault);
-  _state.overrides[id] = !current;
+/** Put a span in or out of the store, then repaint. Callers pass the
+ *  state they want, computed by flipping what is actually on screen — a
+ *  focus-revealed hunk reads as showing, so one click collapses it. */
+function _setHidden(span: HiddenSpan, hidden: boolean): void {
+  if (hidden) Visibility.hide(span);
+  else Visibility.reveal(span.fileId, span.id);
   render();
 }
 
-function _setGlobalFold(fold: FoldMode): void {
-  _state.fold = fold;
-  _state.overrides = Object.create(null);
+/** Whether a hunk renders folded. Focus-reveal forces the *level's* hides
+ *  open for the filter's hunks; a hide the reviewer set by hand still
+ *  wins, since it is not the level's to retract. */
+function _hunkHidden(f: FileBlock, h: HunkBlock, reveal: boolean): boolean {
+  const id = Visibility.hunkSpanId(h.id);
+  if (!Visibility.isHidden(f.id, id)) return false;
+  return !(reveal && Visibility.markOwner(f.id, id) === "level");
+}
+
+function _setCollapseLevel(level: CollapseLevel): void {
+  _state.collapseLevel = level;
+  Visibility.setLevel(_data, level);
   // The slider is authoritative: fold every hunk (focused or not) to this
   // level, so focus-reveal stops forcing the focused hunks open.
   _state.focusReveal = false;
@@ -303,10 +363,18 @@ function _renderFile(f: FileBlock): HTMLElement | null {
   const div = _el("div", "file");
   if (liveIds !== null) div.classList.add("filtered");
   div.dataset.id = f.id;
-  const folded = _isFolded(f.id, _defaultFileFolded());
+  const folded = Visibility.isHidden(f.id, Visibility.fileSpanId(f.id));
   div.classList.toggle("folded", folded);
   div.appendChild(_renderFileHeader(f, folded));
-  if (!folded) {
+  // Gathered once per file: every hide inside it draws its entries from
+  // this list, and the store walk is O(comments) per call.
+  const notes = Manifest.notes(f, Comments.getAll());
+  if (folded) {
+    const manifest = Manifest.render(
+      Manifest.under(f.id, Visibility.fileSpanId(f.id), notes),
+    );
+    if (manifest) div.appendChild(manifest);
+  } else {
     const body = _el("div", "file-body");
     if (Rendered.isOn(f.id)) {
       // Rendered markdown mode is a separate body renderer: no diff
@@ -314,12 +382,18 @@ function _renderFile(f: FileBlock): HTMLElement | null {
       Rendered.renderBody(body, f);
       div.appendChild(body);
     } else {
+      // Lay the body out against whatever content has arrived, and ask
+      // for it if this is the first render that needed it. The arrival
+      // repaints (boot wires FileText's callback to render).
+      FileText.request(f);
       const overview = _renderFileOverview(f);
       if (overview) body.appendChild(overview);
-      _renderFileBody(body, f, liveIds);
+      // One header per collapsed CodeFold across the whole body: a fold
+      // straddling a hunk boundary must not place one in each container.
+      _renderFileBody(body, f, liveIds, new Set<string>(), notes);
       div.appendChild(body);
       // Run a file-level fold pass once the body is assembled.
-      Folds.attachFileFolds(div, f);
+      Folds.attachFileFolds(div, f, notes, render);
     }
   }
   return div;
@@ -335,9 +409,9 @@ function _renderFile(f: FileBlock): HTMLElement | null {
  *  the chrome around it (an explanatory header vs. a bare collapse). */
 function _renderFileBody(
   body: HTMLElement, f: FileBlock, liveIds: Set<string> | null,
+  headed: Set<string>, notes: ManifestNote[],
 ): void {
   const isLive = (h: HunkBlock): boolean => liveIds === null || liveIds.has(h.id);
-  const total = f.head_lines ? f.head_lines.length : null;
   let curNew = 1;
   let curOld = 1;
   let emittedLive = false;
@@ -346,22 +420,66 @@ function _renderFileBody(
     const demoted = f.hunks.filter(
       (h) => !isLive(h) && h.new_start >= curNew && (endNew === null || h.new_start <= endNew),
     );
-    const { rows, marks } = _regionRows(f, curNew, endNew, curOld, demoted);
-    if (rows.length === 0) return;
-    body.appendChild(_renderRegionChip(f, { position, rows, marks }));
+    const pieces = _regionPieces(f, curNew, endNew, curOld, demoted);
+    for (let i = 0; i < pieces.length; i++) {
+      const piece = pieces[i];
+      // Only the outermost pieces inherit the flush's position: an
+      // absent band or a chip in the middle of one reads as "between".
+      const pos = i === 0 ? position
+        : i === pieces.length - 1 && position === "bottom" ? "bottom" : "between";
+      if ("absent" in piece) {
+        // Only between two rendered things: at the head or the foot of a
+        // file nothing precedes or follows the missing lines, so there
+        // is no step in the gutter for the band to account for.
+        if (pos === "between") {
+          body.appendChild(_renderAbsentContext(piece.absent, notes));
+        }
+        continue;
+      }
+      _renderRegion(body, f, { position: pos, ...piece }, headed, notes);
+    }
   };
 
   // Just after a sidebar pill click, reveal the focused hunks' code
   // (ephemeral); the fold-level slider clears the flag and takes over.
   const reveal = liveIds !== null && _state.focusReveal;
   for (const h of f.hunks.filter(isLive)) {
-    flush(h.new_start - 1, emittedLive ? "between" : "top");
-    body.appendChild(_renderHunk(h, f, reveal));
+    const b = FileText.hunkBounds(h);
+    flush(b.firstNew - 1, emittedLive ? "between" : "top");
+    body.appendChild(_renderHunk(h, f, headed, notes, reveal));
     emittedLive = true;
-    curNew = h.new_start + h.new_count;
-    curOld = h.old_start + h.old_count;
+    curNew = b.nextNew;
+    curOld = b.nextOld;
   }
-  flush(total, "bottom");
+  flush(FileText.tailEnd(f.id, curNew, curOld), "bottom");
+}
+
+/** The band standing in for unchanged lines the viewer has no text for:
+ *  `/file-text` has not answered yet, or it served neither side — a
+ *  binary file, or one over the route's 2 MB per-side cap.
+ *
+ *  Inert, and no `HiddenSpan`: there are no rows to reveal, so an expand
+ *  chip would open onto nothing and a span would be a record no click
+ *  could retract. What it adds over rendering nothing is that the lines
+ *  are named, and that the notes sitting on them have somewhere to
+ *  appear — an ingested comment on unchanged context in a file the route
+ *  cannot serve would otherwise be nowhere in the page.
+ */
+function _renderAbsentContext(
+  range: AbsentRange, notes: ManifestNote[],
+): HTMLElement {
+  const count = range.endNew - range.startNew + 1;
+  const band = _el("div", "gap-chip gap-absent");
+  band.title = "The viewer has no text for these lines, so they cannot be"
+    + " expanded.";
+  const word = count === 1 ? "line" : "lines";
+  band.innerHTML = `<span class="gap-icon">⋯</span>`
+    + `<span class="gap-label">${count} unchanged ${word} (not loaded)</span>`;
+  return _withManifest(band, Manifest.inRange(
+    notes,
+    { start: range.startNew, end: range.endNew },
+    { start: range.startOld, end: range.startOld + count - 1 },
+  ));
 }
 
 function _renderFileHeader(f: FileBlock, folded: boolean): HTMLElement {
@@ -380,7 +498,7 @@ function _renderFileHeader(f: FileBlock, folded: boolean): HTMLElement {
     hdr.appendChild(badge);
   }
   if (Rendered.isMarkdown(f)) hdr.appendChild(_renderMdToggle(f));
-  hdr.addEventListener("click", () => _toggleFold(f.id, folded));
+  hdr.addEventListener("click", () => _setHidden(Visibility.fileSpan(f, "user"), !folded));
   return hdr;
 }
 
@@ -435,40 +553,123 @@ interface DiffRegion {
   marks: (_RowMarks | undefined)[];
 }
 
-/** The row stream for a region: unchanged context (from head_lines)
- *  interleaved with the demoted hunks' own rows, in file order. `newEnd`
- *  bounds the trailing context; null (no head_lines) skips context
- *  entirely, leaving just the hunk rows. */
-function _regionRows(
-  f: FileBlock, newStart: number, newEnd: number | null, oldStart: number, hunks: HunkBlock[],
-): { rows: RowBlock[]; marks: (_RowMarks | undefined)[] } {
-  const rows: RowBlock[] = [];
-  const marks: (_RowMarks | undefined)[] = [];
-  const hl = f.head_lines;
-  let cn = newStart;
-  let co = oldStart;
-  const ctxTo = (upTo: number): void => {
-    if (!hl) return;
-    while (cn < upTo) {
-      const t = hl[cn - 1] ?? "";
-      rows.push({ kind: "ctx", old_line: co, new_line: cn, old_text: t, new_text: t });
-      marks.push(undefined);
-      co++; cn++;
-    }
-  };
-  for (const h of hunks) {
-    ctxTo(h.new_start);
-    const hm = _blockMarks(h.rows || []);
-    const hr = h.rows || [];
-    for (let i = 0; i < hr.length; i++) { rows.push(hr[i]); marks.push(hm[i]); }
-    cn = h.new_start + h.new_count;
-    co = h.old_start + h.old_count;
-  }
-  if (hl && newEnd !== null) ctxTo(newEnd + 1);
-  return { rows, marks };
+/** A run of unchanged lines with no text behind it, so nothing can be
+ *  rendered for them but the band. */
+interface AbsentRange {
+  startNew: number;
+  endNew: number;
+  startOld: number;
 }
 
-function _renderRegionChip(f: FileBlock, region: DiffRegion): HTMLElement {
+type RegionPiece =
+  | { rows: RowBlock[]; marks: (_RowMarks | undefined)[] }
+  | { absent: AbsentRange };
+
+/** What the renderer puts between two live hunks: unchanged context
+ *  interleaved with the demoted hunks' own rows, in file order.
+ *
+ *  One piece while the file's content is there to fill the gaps — the
+ *  whole run is one expandable region. Without content a gap cannot be
+ *  filled, so the run *breaks* at it: the region either side stands on
+ *  its own and a band names the lines in between. Splicing the two
+ *  hunks' rows together instead is what stepped the gutter silently
+ *  under a filter (slice 5), and left the notes on those lines nowhere.
+ *
+ *  `newEnd` bounds the trailing context; null (an unbounded tail, i.e. no
+ *  content at all) ends the run at the last hunk row. */
+function _regionPieces(
+  f: FileBlock, newStart: number, newEnd: number | null, oldStart: number,
+  hunks: HunkBlock[],
+): RegionPiece[] {
+  const pieces: RegionPiece[] = [];
+  let rows: RowBlock[] = [];
+  let marks: (_RowMarks | undefined)[] = [];
+  let cn = newStart;
+  let co = oldStart;
+  const closeRows = (): void => {
+    if (rows.length === 0) return;
+    pieces.push({ rows, marks });
+    rows = [];
+    marks = [];
+  };
+  const gapTo = (upTo: number): void => {
+    if (upTo <= cn) return;
+    const ctx = FileText.contextRows(f.id, cn, upTo, co);
+    if (ctx.length === 0) {
+      closeRows();
+      pieces.push({ absent: { startNew: cn, endNew: upTo - 1, startOld: co } });
+    } else {
+      for (const r of ctx) { rows.push(r); marks.push(undefined); }
+    }
+    co += upTo - cn;
+    cn = upTo;
+  };
+  for (const h of hunks) {
+    const b = FileText.hunkBounds(h);
+    gapTo(b.firstNew);
+    const hr = h.rows || [];
+    const hm = _blockMarks(hr);
+    for (let i = 0; i < hr.length; i++) { rows.push(hr[i]); marks.push(hm[i]); }
+    cn = b.nextNew;
+    co = b.nextOld;
+  }
+  if (newEnd !== null) gapTo(newEnd + 1);
+  closeRows();
+  return pieces;
+}
+
+/** The span standing for one region. Its id is the region's own extent,
+ *  so the same gap under the same layout is the same span across renders
+ *  — which is what makes a reveal survive one. */
+function _regionSpan(f: FileBlock, region: DiffRegion): HiddenSpan {
+  return Visibility.contextSpan(
+    f.id, _rowExtent(region.rows, "new_line"), _rowExtent(region.rows, "old_line"),
+  );
+}
+
+function _rowExtent(rows: RowBlock[], attr: "new_line" | "old_line"): LineRange | null {
+  let start: number | null = null;
+  let end = 0;
+  for (const r of rows) {
+    const v = r[attr];
+    if (v == null) continue;
+    if (start === null) start = v;
+    end = v;
+  }
+  return start === null ? null : { start, end };
+}
+
+/** A region renders as a chip while its span is hidden and as the diff
+ *  itself once the reviewer removes it. Appends rather than returns
+ *  because a chip carrying a manifest is two elements, not one. */
+function _renderRegion(
+  body: HTMLElement, f: FileBlock, region: DiffRegion, headed: Set<string>,
+  notes: ManifestNote[],
+): void {
+  const span = _regionSpan(f, region);
+  Visibility.seed(span);
+  if (!Visibility.isHidden(f.id, span.id)) {
+    body.appendChild(_renderRegionExpansion(f, region, span, headed));
+    return;
+  }
+  body.appendChild(_withManifest(
+    _renderRegionChip(region, span),
+    Manifest.under(f.id, span.id, notes),
+  ));
+}
+
+/** Hang a manifest under a one-line band (a gap chip, loaded or not).
+ *  The band is its own click target, so the entries wrap onto their own
+ *  line rather than sitting inside its centred flex row. */
+function _withManifest(band: HTMLElement, entries: ManifestNote[]): HTMLElement {
+  const manifest = Manifest.render(entries);
+  if (!manifest) return band;
+  band.classList.add("has-manifest");
+  band.appendChild(manifest);
+  return band;
+}
+
+function _renderRegionChip(region: DiffRegion, span: HiddenSpan): HTMLElement {
   const chip = _el("div", "gap-chip");
   const count = region.rows.length;
   const icon = region.position === "top" ? "⬆" : region.position === "bottom" ? "⬇" : "⋯";
@@ -477,84 +678,99 @@ function _renderRegionChip(f: FileBlock, region: DiffRegion): HTMLElement {
               : region.position === "bottom" ? `expand ${count} ${word} below`
               : `expand ${count} hidden ${word}`;
   chip.innerHTML = `<span class="gap-icon">${icon}</span><span class="gap-label">${label}</span>`;
-  chip.addEventListener("click", () => {
-    chip.replaceWith(_renderRegionExpansion(f, region));
-    _refreshFileFolds(f);
-  });
+  chip.addEventListener("click", () => _setHidden(span, false));
   return chip;
 }
 
-function _renderRegionExpansion(f: FileBlock, region: DiffRegion): HTMLElement {
+function _renderRegionExpansion(
+  f: FileBlock, region: DiffRegion, span: HiddenSpan, headed: Set<string>,
+): HTMLElement {
   const container = _el("div", "gap-expansion");
   const collapse = _el("button", "gap-collapse", "× collapse");
   collapse.title = "Hide these lines again";
-  collapse.addEventListener("click", () => {
-    container.replaceWith(_renderRegionChip(f, region));
-    _refreshFileFolds(f);
-  });
+  collapse.addEventListener("click", () => _setHidden(span, true));
   container.appendChild(collapse);
-  const { diff, oldEls, newEls } = _renderDiffRows(f, region.rows, region.marks);
+  const { diff, rows, oldEls, newEls } = _renderDiffRows(
+    f, region.rows, region.marks, headed,
+  );
   // The file-level fold walker (folds.ts) recovers the row stream + DOM
   // elements from the container.
-  FileRows.record(container, { rows: region.rows, oldEls, newEls });
+  FileRows.record(container, { rows, oldEls, newEls });
   container.appendChild(diff);
   return container;
 }
 
 /** Render a diff-row stream into a `.diff` grid, pairing old/new rows.
  *  The single primitive behind both hunk bodies and region expansions —
- *  what differs between them is only the surrounding chrome. */
+ *  what differs between them is only the surrounding chrome.
+ *
+ *  Rows inside a collapsed `CodeFold` are not emitted at all, so the
+ *  returned `rows` (and the element arrays beside them) are what actually
+ *  landed on screen; every caller keys off those, never the input. */
 function _renderDiffRows(
   f: FileBlock, rows: RowBlock[], marks: (_RowMarks | undefined)[],
-): { diff: HTMLElement; oldEls: HTMLElement[]; newEls: HTMLElement[] } {
+  headed: Set<string>,
+): { diff: HTMLElement; rows: RowBlock[]; oldEls: HTMLElement[]; newEls: HTMLElement[] } {
   const diff = _el("div", "diff");
   const halfOld = _el("div", "half half-old");
   const halfNew = _el("div", "half half-new");
   diff.appendChild(halfOld);
   diff.appendChild(halfNew);
+  const shown: RowBlock[] = [];
   const oldEls: HTMLElement[] = [];
   const newEls: HTMLElement[] = [];
-  for (let i = 0; i < rows.length; i++) {
+  for (const i of Visibility.planRows(f.id, rows, headed)) {
     const pair = _renderRow(rows[i], f, marks[i]?.old, marks[i]?.new);
     (pair.old as { _scrPair?: HTMLElement })._scrPair = pair.new;
     (pair.new as { _scrPair?: HTMLElement })._scrPair = pair.old;
     halfOld.appendChild(pair.old);
     halfNew.appendChild(pair.new);
+    shown.push(rows[i]);
     oldEls.push(pair.old);
     newEls.push(pair.new);
   }
-  return { diff, oldEls, newEls };
-}
-
-function _refreshFileFolds(f: FileBlock): void {
-  const fileEl = document.querySelector(
-    '.file[data-id="' + _cssEscape(f.id) + '"]',
-  ) as HTMLElement | null;
-  if (fileEl) Folds.attachFileFolds(fileEl, f);
+  return { diff, rows: shown, oldEls, newEls };
 }
 
 // --- Hunk + diff body ---------------------------------------------------
 
-function _renderHunk(h: HunkBlock, f: FileBlock, reveal = false): HTMLElement {
+function _renderHunk(
+  h: HunkBlock, f: FileBlock, headed: Set<string>, notes: ManifestNote[],
+  reveal = false,
+): HTMLElement {
   const div = _el("div", "hunk");
   div.dataset.id = h.id;
-  // reveal (focus) forces the hunk fully open — code, not summaries — but
-  // an explicit fold override the reviewer set still wins.
-  const folded = _isFolded(h.id, reveal ? false : _defaultHunkFolded());
+  const folded = _hunkHidden(f, h, reveal);
   div.classList.toggle("folded", folded);
   div.appendChild(_renderHunkHeader(h, folded, f));
-  if (!folded) {
-    // The collapse ladder shows segment summaries (never raw code) until
-    // `off` or a reveal. A hunk with no segments folds as one synthetic
-    // segment spanning it, so every hunk behaves uniformly at this level.
-    const segs = _displaySegments(h);
-    const anyOpen = segs.some((s) => _isFolded(s.id, _defaultSegmentFolded()) === false);
-    if (!reveal && _defaultSegmentFolded() && !anyOpen) {
+  if (folded) {
+    const manifest = Manifest.render(
+      Manifest.under(f.id, Visibility.hunkSpanId(h.id), notes),
+    );
+    if (manifest) div.appendChild(manifest);
+  } else {
+    // The collapse ladder shows segment summaries (never raw code) while
+    // every segment span is in place. A hunk with no segments folds as one
+    // synthetic segment spanning it, so every hunk behaves uniformly.
+    const segs = Visibility.displaySegments(h);
+    const anyOpen = segs.some(
+      (s) => !Visibility.isHidden(f.id, Visibility.segmentSpanId(s.id)),
+    );
+    if (!reveal && !anyOpen) {
+      // One manifest for the body, not one per summary row: what the
+      // seg-list stands in for is the whole hunk — its base side and its
+      // context rows included — and no single segment span says that.
+      const manifest = Manifest.render(Manifest.inRange(
+        notes,
+        { start: h.new_start, end: h.new_start + h.new_count - 1 },
+        { start: h.old_start, end: h.old_start + h.old_count - 1 },
+      ));
+      if (manifest) div.appendChild(manifest);
       const list = _el("div", "seg-list");
       for (const s of segs) list.appendChild(_renderSegmentFolded(s, f));
       div.appendChild(list);
     } else {
-      div.appendChild(_renderHunkDiff(h, f));
+      div.appendChild(_renderHunkDiff(h, f, headed));
     }
     if (h.context) {
       const c = _el("div", "context-note");
@@ -595,22 +811,6 @@ function _buildRefLink(ref: Ref): HTMLElement {
   return a;
 }
 
-/** The segments to show a hunk's body as at segment-fold level: its own
- *  if it has any, else one synthetic segment spanning the whole hunk so a
- *  segment-less hunk still folds to a single summary (never raw code). */
-function _displaySegments(h: HunkBlock): SegmentBlock[] {
-  if (h.segments && h.segments.length > 0) return h.segments;
-  return [{
-    id: `${h.id}_whole`,
-    new_start: h.new_start,
-    new_count: h.new_count,
-    intent: h.intent || "",
-    smells: h.smells || [],
-    context: h.context || "",
-    refs: h.refs || [],
-  }];
-}
-
 function _renderHunkHeader(h: HunkBlock, folded: boolean, f: FileBlock): HTMLElement {
   const hdr = _el("div", "hunk-header");
   hdr.appendChild(_chev(folded));
@@ -647,9 +847,7 @@ function _renderHunkHeader(h: HunkBlock, folded: boolean, f: FileBlock): HTMLEle
   hdr.appendChild(meta);
   hdr.addEventListener("click", (e) => {
     e.stopPropagation();
-    // Flip the visible state — `folded` is the actual current state
-    // (respecting reveal + overrides), not just the level default.
-    _toggleFold(h.id, folded);
+    _setHidden(Visibility.hunkSpan(f, h, "user"), !folded);
   });
   return hdr;
 }
@@ -667,23 +865,29 @@ function _renderSegmentFolded(s: SegmentBlock, f: FileBlock): HTMLElement {
   div.addEventListener("click", (e) => {
     e.stopPropagation();
     // A rendered summary is always in the folded state; clicking opens it
-    // (which, in step b, reveals the whole hunk's code).
-    _toggleFold(s.id, true);
+    // (which reveals the whole hunk's code).
+    _setHidden(Visibility.segmentSpan(f, s, "user"), false);
   });
   return div;
 }
 
-function _renderHunkDiff(h: HunkBlock, file: FileBlock): HTMLElement {
-  const cached = _state.renderedDiffs[h.id];
+function _renderHunkDiff(
+  h: HunkBlock, file: FileBlock, headed: Set<string>,
+): HTMLElement {
+  // A cached `.diff` holds the hunk's whole row set, so it is valid only
+  // while no CodeFold is hiding rows out of it. Folds are rare; the cost
+  // of the miss is confined to files that carry one.
+  const cacheable = !Visibility.spansOf(file.id).some((s) => s.kind === "codefold");
+  const cached = cacheable ? _state.renderedDiffs[h.id] : undefined;
   if (cached) return cached;
-  const rows = h.rows || [];
-  const marks = _blockMarks(rows);
-  const { diff, oldEls, newEls } = _renderDiffRows(file, rows, marks);
+  const allRows = h.rows || [];
+  const marks = _blockMarks(allRows);
+  const { diff, rows, oldEls, newEls } = _renderDiffRows(file, allRows, marks, headed);
   _attachLineNotes(oldEls, newEls, rows, h.line_notes || [], h.id, file.path);
-  // Record this hunk's rows so folds.ts can build a unified row stream
-  // across the hunk and adjacent expanded context.
+  // Record the rows this render actually emitted so folds.ts can build a
+  // unified row stream across the hunk and adjacent expanded context.
   FileRows.record(diff, { rows, oldEls, newEls });
-  _state.renderedDiffs[h.id] = diff;
+  if (cacheable) _state.renderedDiffs[h.id] = diff;
   return diff;
 }
 
@@ -882,7 +1086,7 @@ function _clearSymbolHits(code: HTMLElement): void {
 function _updateSliderButtons(): void {
   document.querySelectorAll(".fold-slider button").forEach((b) => {
     const btn = b as HTMLElement;
-    btn.classList.toggle("active", btn.dataset.fold === _state.fold);
+    btn.classList.toggle("active", btn.dataset.fold === _state.collapseLevel);
   });
 }
 
@@ -911,28 +1115,32 @@ function _updateStatus(): void {
   s.textContent = `${_data.files.length} files · ${smells} smells · ${critical} critical · keys 1-4 fold · space toggle · ? help`;
 }
 
-function _syncHash(): void {
-  const parts = [`fold=${_state.fold}`];
-  for (const [id, folded] of Object.entries(_state.overrides)) {
-    parts.push(`${id}=${folded ? "f" : "o"}`);
-  }
-  const newHash = "#" + parts.join("&");
-  if (window.location.hash !== newHash) {
-    history.replaceState(null, "", newHash);
-  }
+// No view state rides in the URL. The level used to, as `#fold=<level>`,
+// which made two sources of truth the moment per-item state moved to the
+// span store; both now live in one `sessionStorage` record (ADR 0006).
+
+/** Restore this run's stored state, if any. Returns whether it did, so
+ *  the caller knows whether the level still needs seeding from scratch.
+ *  Deliberately does not catch: a malformed record is a bug in what
+ *  wrote it, not something to paper over with a default span set. */
+function _restoreViewState(): boolean {
+  const stored = ViewState.load(_data.run_id);
+  if (!stored) return false;
+  _state.collapseLevel = stored.collapseLevel;
+  Visibility.restore(stored.files);
+  return true;
 }
 
-function _restoreHash(): void {
-  const h = window.location.hash.slice(1);
-  if (!h) return;
-  for (const kv of h.split("&")) {
-    const [k, v] = kv.split("=");
-    if (k === "fold" && ["files", "hunks", "segments", "off"].includes(v)) {
-      _state.fold = v as FoldMode;
-    } else if (k && v != null) {
-      _state.overrides[k] = (v === "f");
-    }
-  }
+/** Persist the level and the span store, if either moved since the last
+ *  write. `render()` runs on every SSE frame and the store is the size
+ *  of the diff, so the revision check is what keeps this off the hot
+ *  path. */
+function _saveViewState(): void {
+  const rev = Visibility.revision();
+  if (rev === _state.savedRevision && _state.collapseLevel === _state.savedLevel) return;
+  _state.savedRevision = rev;
+  _state.savedLevel = _state.collapseLevel;
+  ViewState.save(_data.run_id, _state.collapseLevel, Visibility.snapshot());
 }
 
 function _onKeydown(e: KeyboardEvent): void {
@@ -941,10 +1149,10 @@ function _onKeydown(e: KeyboardEvent): void {
   if (tag === "input" || tag === "textarea") return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   switch (e.key) {
-    case "1": _setGlobalFold("files"); e.preventDefault(); break;
-    case "2": _setGlobalFold("hunks"); e.preventDefault(); break;
-    case "3": _setGlobalFold("segments"); e.preventDefault(); break;
-    case "4": _setGlobalFold("off"); e.preventDefault(); break;
+    case "1": _setCollapseLevel("files"); e.preventDefault(); break;
+    case "2": _setCollapseLevel("hunks"); e.preventDefault(); break;
+    case "3": _setCollapseLevel("segments"); e.preventDefault(); break;
+    case "4": _setCollapseLevel("off"); e.preventDefault(); break;
     case "?": _toggleHelp(); e.preventDefault(); break;
     case "Escape": _closeHelp(); break;
   }
@@ -963,14 +1171,18 @@ function _wireInputs(): void {
   document.querySelectorAll(".fold-slider button").forEach((b) => {
     const btn = b as HTMLElement;
     btn.addEventListener("click", () => {
-      const f = btn.dataset.fold as FoldMode | undefined;
-      if (f) _setGlobalFold(f);
+      const f = btn.dataset.fold as CollapseLevel | undefined;
+      if (f) _setCollapseLevel(f);
     });
   });
   const reset = document.getElementById("reset-btn");
   if (reset) {
+    // The one control that *is* a reset: it drops every span, whoever
+    // asserted it, and re-seeds from the level. Nothing else retracts a
+    // hide the reviewer set by hand.
     reset.addEventListener("click", () => {
-      _state.overrides = Object.create(null);
+      Visibility.reset();
+      Visibility.setLevel(_data, _state.collapseLevel);
       render();
     });
   }
@@ -981,11 +1193,6 @@ function _wireInputs(): void {
     if (e.target === overlay) _closeHelp();
   });
   document.addEventListener("keydown", _onKeydown);
-  window.addEventListener("hashchange", () => {
-    _state.overrides = Object.create(null);
-    _restoreHash();
-    render();
-  });
 }
 
 // --- Public surface -----------------------------------------------------

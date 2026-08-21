@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from semantic_code_review.review import server as review_server
 from semantic_code_review.review.comments import Comment, format_markdown
 from semantic_code_review.review.server import ReviewServer
 
@@ -131,6 +132,37 @@ def test_get_data_json(server) -> None:
     assert body["version"] == "1"
     # Debug off by default: the viewer won't mount the drawer.
     assert body["debug"] is False
+
+
+def test_data_json_carries_the_run_id(tmp_path: Path) -> None:
+    """The run directory's name goes out with the payload; the viewer keys
+    its per-tab `sessionStorage` view state on it (ADR 0006)."""
+    run_dir = tmp_path / "local-main-abc12345"
+    run_dir.mkdir()
+    srv = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []})
+    srv.start()
+    try:
+        code, body = _request(srv.url() + "/data.json")
+        assert code == 200
+        assert body["run_id"] == "local-main-abc12345"
+    finally:
+        srv.stop()
+
+
+def test_data_json_run_id_survives_a_viewer_json_swap(tmp_path: Path) -> None:
+    """`update_viewer_json` replaces the payload wholesale, so the run id
+    is merged at serve time rather than baked in once."""
+    run_dir = tmp_path / "local-main-abc12345"
+    run_dir.mkdir()
+    srv = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []})
+    srv.start()
+    try:
+        srv.update_viewer_json({"version": "1", "files": [], "augmented": True})
+        code, body = _request(srv.url() + "/data.json")
+        assert code == 200
+        assert body["run_id"] == "local-main-abc12345"
+    finally:
+        srv.stop()
 
 
 def test_data_json_debug_flag(tmp_path: Path) -> None:
@@ -473,23 +505,32 @@ def test_fold_summary_broadcasts_and_patches_viewer_json(tmp_path: Path) -> None
             {
                 "id": "F0",
                 "path": "src/x.py",
-                "hunks": [
+                # The definition the client's address came from: the
+                # symbol is resolved from these spans, not from a
+                # server-side re-detection of the region.
+                "fold_symbols": {
+                    "head": [
+                        {
+                            "start_line": 1,
+                            "end_line": 3,
+                            "kind": "function",
+                            "qualified_name": "Foo.bar",
+                            "depth": 0,
+                        }
+                    ],
+                    "base": [],
+                },
+                "fold_regions": [
                     {
-                        "id": "H0_0",
-                        "fold_regions": [
-                            {
-                                "context": "right",
-                                "right_start": 1,
-                                "right_end": 3,
-                                "left_start": 0,
-                                "left_end": 0,
-                                "qualified_name": "Foo.bar",
-                                "kind": "function",
-                                "summary": "",
-                            }
-                        ],
+                        "context": "right",
+                        "right_start": 1,
+                        "right_end": 3,
+                        "left_start": 0,
+                        "left_end": 0,
+                        "summary": "",
                     }
                 ],
+                "hunks": [{"id": "H0_0"}],
             }
         ],
     }
@@ -558,7 +599,7 @@ def test_fold_summary_broadcasts_and_patches_viewer_json(tmp_path: Path) -> None
         # `/data.json` reflects the patched viewer_json.
         code, data = _request(srv.url() + "/data.json")
         assert code == 200
-        assert data["files"][0]["hunks"][0]["fold_regions"][0]["summary"].startswith("wraps the body")
+        assert data["files"][0]["fold_regions"][0]["summary"].startswith("wraps the body")
         # The SSE channel broadcast the same payload.
         events_resp.fp.readline()  # id
         event_line = events_resp.fp.readline()
@@ -584,21 +625,17 @@ def test_fold_summary_skips_generated_file(tmp_path: Path) -> None:
                 "id": "F0",
                 "path": "uv.lock",
                 "status": "generated",
-                "hunks": [
+                "fold_regions": [
                     {
-                        "id": "H0_0",
-                        "fold_regions": [
-                            {
-                                "context": "right",
-                                "right_start": 1,
-                                "right_end": 3,
-                                "left_start": 0,
-                                "left_end": 0,
-                                "summary": "",
-                            }
-                        ],
+                        "context": "right",
+                        "right_start": 1,
+                        "right_end": 3,
+                        "left_start": 0,
+                        "left_end": 0,
+                        "summary": "",
                     }
                 ],
+                "hunks": [{"id": "H0_0"}],
             }
         ],
     }
@@ -619,7 +656,7 @@ def test_fold_summary_skips_generated_file(tmp_path: Path) -> None:
         assert "not summarised" in body["summary"]
         # The canned note is patched into the viewer JSON like a real one.
         _, data = _request(srv.url() + "/data.json")
-        assert data["files"][0]["hunks"][0]["fold_regions"][0]["summary"] == body["summary"]
+        assert data["files"][0]["fold_regions"][0]["summary"] == body["summary"]
     finally:
         srv.stop()
 
@@ -1141,7 +1178,7 @@ def test_serve_review_serves_pending_then_streams_and_finalises(tmp_path: Path) 
     assert "r" in result_box
 
 
-# --- /file-text (rendered markdown mode) -------------------------------
+# --- /file-text (rendered markdown mode + the text diff's content) -----
 
 
 def _file_text_server(tmp_path: Path, files: list[dict]) -> ReviewServer:
@@ -1214,6 +1251,48 @@ def test_file_text_bad_index(tmp_path: Path) -> None:
         srv.stop()
     assert oor.value.code == 404
     assert bad.value.code == 400
+
+
+def test_file_text_serves_a_file_over_the_old_head_lines_cap(tmp_path: Path) -> None:
+    """Size is bounded by the route, not by the payload.
+
+    `FileBlock.head_lines` used to carry content and stopped at 5,000
+    lines; the viewer reads `/file-text` instead (ADR 0006 slice 6), so a
+    file that long is served in full and keeps its folds and gap chips.
+    """
+    (tmp_path / "head").mkdir()
+    body = "".join(f"line {i}\n" for i in range(6000))
+    (tmp_path / "head" / "big.py").write_text(body)
+    srv = _file_text_server(tmp_path, [{"id": "F0", "path": "big.py", "old_path": None, "status": "added"}])
+    try:
+        code, payload = _request(srv.url() + "/file-text?file_idx=0")
+    finally:
+        srv.stop()
+    assert code == 200
+    assert payload["head"] == body
+
+
+def test_file_text_over_the_cap_is_null_not_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A side over the cap comes back null.
+
+    Null is the load-bearing part: the viewer reads it as "no content"
+    and stands a band in the unchanged lines' place. An empty string
+    would read as an empty file — every fold detected out of existence
+    and every gap silently zero lines long.
+    """
+    monkeypatch.setattr(review_server, "_FILE_TEXT_CAP_BYTES", 16)
+    (tmp_path / "base").mkdir()
+    (tmp_path / "head").mkdir()
+    (tmp_path / "base" / "a.py").write_text("small\n")
+    (tmp_path / "head" / "a.py").write_text("x" * 64 + "\n")
+    srv = _file_text_server(tmp_path, [{"id": "F0", "path": "a.py", "old_path": None, "status": "modified"}])
+    try:
+        code, payload = _request(srv.url() + "/file-text?file_idx=0")
+    finally:
+        srv.stop()
+    assert code == 200
+    assert payload["head"] is None
+    assert payload["base"] == "small\n"
 
 
 def test_file_text_path_traversal_refused(tmp_path: Path) -> None:

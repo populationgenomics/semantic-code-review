@@ -132,7 +132,11 @@ function promoteSmell(opts: {
  *  to head_sha this is the post-propagation `head_line`; for everything
  *  else it's the comment's original `line`. Returns null when the
  *  anchor can't be placed at any head row (file_gone /
- *  commit_unavailable) — those comments are skipped during render. */
+ *  commit_unavailable) — those comments are skipped during render.
+ *
+ *  Public because a manifest entry names the same line the thread would
+ *  have hung off; two answers to "where is this comment" would be one
+ *  too many (manifest.ts). */
 function _displayLine(c: ReviewerComment): number | null {
   if (c.anchor_status === "file_gone" || c.anchor_status === "commit_unavailable") {
     return null;
@@ -686,6 +690,7 @@ export const Comments = {
   init,
   renderAll,
   getAll,
+  displayLine: _displayLine,
   isPromoted,
   openPromotionEditor,
   promoteSmell,

@@ -8,7 +8,7 @@
 //
 // Mirror of:
 //   - semantic_code_review/viewer/build_json.py  (top-level shape)
-//   - semantic_code_review/viewer/hunk_layout.py (hunk + fold_regions block)
+//   - semantic_code_review/viewer/hunk_layout.py (hunk block)
 //   - semantic_code_review/augment/schemas.py    (FoldDescription, Smell, etc.)
 // Keep these in lockstep when fields shift.
 
@@ -16,6 +16,11 @@
 
 interface ViewerData {
   version: string;
+  /** The run directory's name, stamped by the server at serve time (it
+   *  is a property of the run, not of the diff). Keys the per-tab view
+   *  state in `sessionStorage`; always present from a review server, so
+   *  view_state.ts raises rather than inventing a key. */
+  run_id: string;
   /** Pre-augment marker: true while the page is open before the
    *  augmentation pass produced any annotations. Cleared once the
    *  `done` SSE event arrives (see installSessionEvents in viewer.js). */
@@ -95,11 +100,15 @@ interface FileBlock {
   symbols: FileSymbols;
   /** Flattened tree-sitter definition spans per side, for symbol-aware
    *  folding. Empty lists for an unsupported language / unavailable
-   *  worktree. Inert in slice 1 — no consumer yet. */
+   *  worktree. The file's *content* is not here: the viewer fetches it
+   *  from `/file-text` on demand (file_text.ts). */
   fold_symbols: FoldSymbols;
-  /** Full post-image content split into lines, or null when not
-   *  shipped (large file, deleted/binary/generated, etc.). */
-  head_lines: string[] | null;
+  /** The `CodeFold` summaries this run has for the file, addressed in
+   *  absolute file lines. Not detection — the viewer detects its own
+   *  regions from the file's content and matches them to these by
+   *  address (folds.ts). A record the viewer detects nothing for is
+   *  inert; a region with no record gets one client-side. */
+  fold_regions: FoldRegion[];
   hunks: HunkBlock[];
 }
 
@@ -147,7 +156,6 @@ interface HunkBlock {
   line_notes: LineNote[];
   segments: SegmentBlock[];
   rows: RowBlock[];
-  fold_regions: FoldRegion[];
   /** Viewer-runtime only (not on the wire): set by DataStore when the
    *  augment pass reported a hunk-level failure, so the renderer can
    *  show "couldn't produce annotations" instead of the pending
@@ -200,28 +208,35 @@ interface RowBlock {
 type FoldContext = "right" | "left" | "both";
 
 interface FoldRegion {
-  header_idx: number;
-  body_start_idx: number;
-  body_end_idx: number;
   context: FoldContext;
-  /** 1-indexed line numbers in head/<path>. Null when context is "left". */
+  /** 1-indexed line numbers in head/<path>. Null when context is "left".
+   *  These plus `context` are the region's identity: what the viewer
+   *  matches a detected region against, and what /fold-summary and the
+   *  persisted `fold_descriptions` address. Stable across renders and
+   *  across reveals because both sides derive them from file content. */
   right_start: number | null;
   right_end: number | null;
   /** 1-indexed line numbers in base/<path>. Null when context is "right". */
   left_start: number | null;
   left_end: number | null;
-  has_changes: boolean;
+  summary: string;
+  /** Detection-derived, filled in by folds.ts when it matches a detected
+   *  region to this record — absent on a record straight off the wire,
+   *  which carries an address and a summary and nothing else. */
+  has_changes?: boolean;
   /** Identity of the definition this region snapped to (e.g. "Foo.bar" /
    *  "function"); null on an indentation-fallback region. The viewer
    *  labels the collapsed placeholder with these when present. */
-  qualified_name: string | null;
-  kind: string | null;
-  summary: string;
+  qualified_name?: string | null;
+  kind?: string | null;
   /** Viewer-runtime only (not on the wire): set by folds.ts while a
    *  local POST /fold-summary is in flight, honoured by DataStore so
    *  an echoing SSE event doesn't stomp the in-flight fetch handler's
    *  DOM update. */
   _inflight?: boolean;
+  /** Viewer-runtime only: the last POST /fold-summary for this region
+   *  failed, so the placeholder renders the retry copy. */
+  _summaryFailed?: boolean;
 }
 
 // --- Sidebar groups ---------------------------------------------------------

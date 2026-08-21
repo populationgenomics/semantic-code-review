@@ -20,7 +20,6 @@ from ..cache.store import CacheStore
 from ..format.emit import emit_augmented_diff
 from ..format.parse import parse_raw_diff
 from ..format.sidecar import dump_sidecar
-from ..viewer.build_json import file_fold_spans
 from ..viewer.hunk_layout import build_hunk_viewer_block
 from . import mcp_http_host, skip, source_cache, usage
 from .agents import Client
@@ -241,21 +240,6 @@ async def augment_run_dir(
 
         overview_json = overview_to_prompt_json(diff, include_symbols=False)
 
-        # Per-file definition spans, parsed once from the worktrees, so the
-        # per-hunk SSE re-emits below carry symbol-aware `fold_regions`
-        # addresses in lockstep with the full-page build and the viewer's
-        # client-side detector. Empty lists where a worktree is absent.
-        head_dir = run_dir / "head"
-        base_dir = run_dir / "base"
-        file_spans: dict[int, tuple[list, list]] = {
-            fi: file_fold_spans(
-                fp,
-                base_dir if base_dir.exists() else None,
-                head_dir if head_dir.exists() else None,
-            )
-            for fi, fp in enumerate(diff.files)
-        }
-
         # Subprocess clients allocate temp config files at first use;
         # `aclosing` calls `client.aclose()` on exit so /tmp doesn't
         # accumulate them across runs. SDKBackend's aclose is a no-op
@@ -315,7 +299,6 @@ async def augment_run_dir(
                             stats,
                             results,
                             on_event,
-                            file_spans,
                             file_outlines.get(batch[0][0], ""),
                             removed_by_file.get(batch[0][0], ""),
                         )
@@ -341,7 +324,6 @@ async def augment_run_dir(
                             stats,
                             results,
                             on_event,
-                            file_spans.get(fi, ([], [])),
                             file_outlines.get(fi, ""),
                             removed_by_file.get(fi, ""),
                         )
@@ -394,12 +376,7 @@ async def augment_run_dir(
                             continue
                         if len(hunk.ann.line_notes) == len(old_fp.hunks[hi].ann.line_notes):
                             continue
-                        block = build_hunk_viewer_block(
-                            hunk,
-                            fi,
-                            hi,
-                            *file_spans.get(fi, ([], [])),
-                        )
+                        block = build_hunk_viewer_block(hunk, fi, hi)
                         _safe_emit(
                             on_event,
                             "hunk",
@@ -489,7 +466,6 @@ async def _augment_one_batch(
     stats: _HunkStats,
     results: dict[tuple[int, int], HunkAnnotations],
     on_event: OnEvent | None,
-    file_spans: dict[int, tuple[list, list]],
     file_outline: str,
     removed_symbols: str,
 ) -> None:
@@ -553,12 +529,9 @@ async def _augment_one_batch(
             for hi, hunk in hunks:
                 if hi not in by_index:
                     continue
-                spans = file_spans.get(fi, ([], []))
                 try:
                     ann = build_hunk_annotations(hunk.parsed, by_index[hi])
-                    block = build_hunk_viewer_block(
-                        AnnotatedHunk(parsed=hunk.parsed, ann=ann), fi, hi, spans[0], spans[1]
-                    )
+                    block = build_hunk_viewer_block(AnnotatedHunk(parsed=hunk.parsed, ann=ann), fi, hi)
                 except _BUG_ERRORS:
                     raise
                 except Exception as e:  # noqa: BLE001 — one hunk degrades to a single call
@@ -607,7 +580,6 @@ async def _augment_one_batch(
             stats,
             results,
             on_event,
-            file_spans.get(fi, ([], [])),
             file_outline,
             removed_symbols,
         )
@@ -629,7 +601,6 @@ async def _augment_one_hunk(
     stats: _HunkStats,
     results: dict[tuple[int, int], HunkAnnotations],
     on_event: OnEvent | None,
-    fold_spans: tuple[list, list],
     file_outline: str,
     removed_symbols: str,
 ) -> None:
@@ -677,13 +648,7 @@ async def _augment_one_hunk(
                 len(ann.segments),
                 len(ann.line_notes),
             )
-            block = build_hunk_viewer_block(
-                AnnotatedHunk(parsed=hunk.parsed, ann=ann),
-                fi,
-                hi,
-                fold_spans[0],
-                fold_spans[1],
-            )
+            block = build_hunk_viewer_block(AnnotatedHunk(parsed=hunk.parsed, ann=ann), fi, hi)
             _safe_emit(
                 on_event,
                 "hunk",
