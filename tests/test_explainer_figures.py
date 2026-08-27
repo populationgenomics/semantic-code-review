@@ -12,7 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from semantic_code_review.augment import explainer_figures, explainer_schema
+from semantic_code_review.augment import explainer, explainer_figures, explainer_schema, prompts
+from semantic_code_review.augment.agents import Client
 
 _ASSETS = Path(__file__).resolve().parents[1] / "semantic_code_review" / "viewer" / "assets"
 
@@ -280,3 +281,60 @@ def test_every_vocabulary_class_is_styled_by_the_viewer() -> None:
     css = (_ASSETS / "viewer.css").read_text(encoding="utf-8")
     styled = set(re.findall(r"\.explainer-figure svg \.([\w-]+)", css))
     assert set(explainer_figures.FIGURE_CLASSES) - styled == set()
+
+
+def test_the_prompt_names_exactly_the_vocabulary_the_sanitiser_keeps() -> None:
+    """The third consumer of the contract. A class the guidance offers
+    and the sanitiser strips renders unstyled; one the sanitiser keeps
+    and the guidance never mentions is never used."""
+    named = set(re.findall(r"`([\w-]+)`", prompts.EXPLAINER_FIGURE_GUIDANCE))
+    assert set(explainer_figures.FIGURE_CLASSES) - named == set()
+
+
+def test_the_prompt_names_every_element_the_sanitiser_allows() -> None:
+    named = set(re.findall(r"`([\w-]+)`", prompts.EXPLAINER_FIGURE_GUIDANCE))
+    assert set(explainer_figures.ALLOWED_ELEMENTS) - named == set()
+
+
+# --- Threading the family and cast into a prose call ----------------------
+
+
+def test_figure_context_carries_the_family_and_the_cast() -> None:
+    out = prompts.format_figure_context("boxes are services, dashed arrows are events", ["Cursor", "ListRequest"])
+    assert "boxes are services, dashed arrows are events" in out
+    assert "Cursor, ListRequest" in out
+
+
+def test_figure_context_refuses_a_document_with_no_family() -> None:
+    with pytest.raises(ValueError, match="no figure family"):
+        prompts.format_figure_context("   ", ["Cursor"])
+
+
+def test_prose_guidance_is_the_vocabulary_plus_this_document_s_decisions() -> None:
+    doc = _doc_with_figure(_svg('<g class="d-box"/>'))
+    doc.figure_family = "boxes are services"
+    doc.cast = ["Cursor"]
+    out = explainer.prose_figure_guidance(doc)
+    assert prompts.EXPLAINER_FIGURE_GUIDANCE in out
+    assert "boxes are services" in out
+    assert "Cursor" in out
+
+
+def test_prose_guidance_is_empty_when_the_skeleton_fixed_no_family() -> None:
+    """No family means nothing keeps three sections drawing the same
+    component the same way — better no figures than three languages."""
+    assert explainer.prose_figure_guidance(_doc_with_figure(_svg("<g/>"))) == ""
+
+
+def test_figure_guidance_rides_the_same_carrier_as_the_rest() -> None:
+    doc = _doc_with_figure(_svg("<g/>"))
+    doc.figure_family = "boxes are services"
+    guidance = explainer.prose_figure_guidance(doc)
+
+    sdk_system, sdk_prefix = explainer.carry_guidance(Client(model="anthropic:x"), guidance)
+    assert guidance in sdk_system
+    assert sdk_prefix == ""
+
+    cli_system, cli_prefix = explainer.carry_guidance(Client(model="anthropic:x", is_subprocess_backend=True), guidance)
+    assert cli_prefix == guidance
+    assert guidance not in cli_system

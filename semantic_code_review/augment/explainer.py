@@ -29,7 +29,7 @@ from pydantic_ai.output import ToolOutput
 from ..cache.store import CacheStore
 from ..structural import SymbolDelta
 from ..viewer.build_json import ViewerIdIndex, viewer_id_index
-from . import explainer_schema
+from . import explainer_schema, prompts
 from .agents import Client
 from .pass_ import PassMeta, run_pass
 from .prompts import EXPLAINER_ROLE, EXPLAINER_SKELETON_GUIDANCE
@@ -92,7 +92,7 @@ def make_explainer_skeleton_agent(model: str | Model, system: str) -> Agent[None
     No repo tools: Background is the only section granted them, and it
     is a separate call (slice 3). `system` is the fully-assembled
     instruction text, which differs by backend — see
-    :func:`_carry_guidance`.
+    :func:`carry_guidance`.
     """
     return Agent(
         model=model,
@@ -101,7 +101,7 @@ def make_explainer_skeleton_agent(model: str | Model, system: str) -> Agent[None
     )
 
 
-def _carry_guidance(client: Client) -> tuple[str, str]:
+def carry_guidance(client: Client, guidance: str) -> tuple[str, str]:
     """Split the prompt between argv and stdin for this backend.
 
     The CLI drivers put `system_text` on argv as `--system-prompt`, and
@@ -111,13 +111,34 @@ def _carry_guidance(client: Client) -> tuple[str, str]:
     keep the guidance in the system prompt, where it is the cacheable
     prefix.
 
+    Args:
+        client: The backend handle; `is_subprocess_backend` chooses the
+            carrier.
+        guidance: The bulk block for this call — the skeleton's, or a
+            prose section's plus :func:`prose_figure_guidance`.
+
     Returns:
         `(system_text, user_prefix)`. Exactly one of them carries the
         guidance block; the model sees the same words either way.
     """
     if client.is_subprocess_backend:
-        return EXPLAINER_ROLE, EXPLAINER_SKELETON_GUIDANCE
-    return f"{EXPLAINER_ROLE}\n\n{EXPLAINER_SKELETON_GUIDANCE}", ""
+        return EXPLAINER_ROLE, guidance
+    return f"{EXPLAINER_ROLE}\n\n{guidance}", ""
+
+
+def prose_figure_guidance(doc: explainer_schema.ExplainerDocument) -> str:
+    """Everything a prose call needs to draw a figure for this document.
+
+    The vocabulary block, which is fixed, plus the family and cast the
+    skeleton fixed for this change. Returns `""` when the skeleton fixed
+    no family: with nothing to keep three sections drawing the same
+    component the same way, the document is better off with no figures
+    than with three visual languages.
+    """
+    if not doc.figure_family.strip():
+        return ""
+    context = prompts.format_figure_context(doc.figure_family, doc.cast)
+    return f"{prompts.EXPLAINER_FIGURE_GUIDANCE}\n\n{context}"
 
 
 def format_skeleton_prompt(
@@ -269,7 +290,7 @@ async def generate_explainer_skeleton(
     from .hunks import overview_to_prompt_json
 
     diff = load_sidecar(sidecar)
-    system_text, user_prefix = _carry_guidance(client)
+    system_text, user_prefix = carry_guidance(client, EXPLAINER_SKELETON_GUIDANCE)
     user_text = format_skeleton_prompt(
         diff,
         overview_json=overview_to_prompt_json(diff, include_symbols=False),

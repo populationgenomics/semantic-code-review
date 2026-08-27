@@ -12,6 +12,8 @@ populate; the schema enforces *how* they're shaped.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from .schemas import SMELL_TAGS_TEXT
 
 PROMPT_VERSION = "p23"
@@ -275,3 +277,97 @@ EXPLAINER_SKELETON_GUIDANCE = (
     "Tone throughout: explanatory, not evaluative. You are orienting a reader, "
     "not judging the change."
 )
+
+
+# The figure half of the presentation contract in
+# `docs/explainer-presentation.md`. The stylesheet and the sanitiser are
+# the other two consumers; `tests/test_explainer_figures.py` fails if the
+# class vocabulary here drifts from theirs. Bulk guidance, so it rides
+# the same carrier as the rest — see `explainer.carry_guidance`.
+EXPLAINER_FIGURE_GUIDANCE = (
+    "# figures\n"
+    "A figure is inline SVG in the section's `figures` slot. Never put SVG or HTML in "
+    "prose markdown; it is not interpreted there.\n\n"
+    "You emit GEOMETRY and CLASS NAMES. You do not emit appearance. Every fill, stroke, "
+    "stroke width, dash pattern, font and size is decided by the viewer's stylesheet and "
+    "resolves against the reader's colour scheme, which you cannot see. A `fill`, "
+    "`stroke`, `stroke-width`, `stroke-dasharray`, `style`, `font-family`, `font-size`, "
+    "`font-weight`, `color` or `opacity` attribute is removed before the figure is "
+    "stored — the shape stays and renders unpainted. Reach for a class instead.\n\n"
+    "Structure:\n"
+    "- One root `<svg>` with a `viewBox`. No `width` or `height` on it: the page sizes "
+    "the figure to the text measure.\n"
+    "- Elements: `svg`, `g`, `defs`, `marker`, `rect`, `circle`, `ellipse`, `line`, "
+    "`polyline`, `polygon`, `path`, `text`, `tspan`, `title`, `desc`. Anything else is "
+    "removed with everything inside it.\n"
+    "- Arrow heads are `<marker>` elements in the figure's own `<defs>`, with the head "
+    'class on the marker\'s `<path>`, referenced as `marker-end="url(#id)"`. Ids are '
+    "namespaced per figure on the way in, so pick whatever reads clearly.\n"
+    "- `alt` is required: one sentence describing what the figure shows, for a reader "
+    "who cannot see it. `caption` is one sentence saying what to take from it.\n\n"
+    "Classes — boxes and frames:\n"
+    "- `d-box` default container; `d-box-alt` a container one step raised from it.\n"
+    "- `d-box-acc` primary accent; `d-box-acc2` secondary accent.\n"
+    "- `d-box-warn` a hazard or failure path; `d-box-ok` a success path.\n"
+    "- `d-frame` a dashed boundary: a trust region, a deployment, a scope.\n"
+    "- `d-fill-bg` a surface-filled shape, for overlaying other shapes.\n\n"
+    "Classes — text:\n"
+    "- `t` body label; `t-b` an emphasised label such as a component name; `t-sm` a "
+    "secondary label; `t-cap` a small uppercase caption for a region title.\n"
+    "- `t-mono` an identifier, call or literal; `t-mono-sm` a secondary identifier.\n"
+    "- `t-acc`, `t-warn`, `t-ok` short status labels.\n\n"
+    "Classes — lines and heads:\n"
+    "- `ln` primary flow; `ln2` a secondary flow to be told apart from it.\n"
+    "- `ln-mut` a dashed, de-emphasised relation; `ln-thin` a structural rule that is "
+    "not a flow.\n"
+    "- `ln-warn` / `ln-ok` failure and success flows.\n"
+    "- `head`, `head2`, `head-mut`, `head-warn`, `head-ok` are the arrow heads; use the "
+    "one whose name matches the line class.\n\n"
+    "Classes — marks:\n"
+    "- `hl` a highlight over an existing shape; `chip` a small accent pill for a value "
+    "or count; `rule` a thick rounded separator.\n\n"
+    "A class outside that list is removed. Layout is yours — position, size and "
+    "arrangement carry the meaning, and a figure may put two framed regions side by "
+    "side above a third. Draw a figure only where a spatial relationship is doing work; "
+    "a sentence beats a box-and-arrow restatement of the sentence."
+)
+
+
+def format_figure_context(figure_family: str, cast: Sequence[str]) -> str:
+    """The document-wide figure decisions, for one prose call.
+
+    The skeleton fixes the family and the cast once; every later call is
+    told them rather than choosing. That is what makes the figures read
+    as one document instead of three that each invented a visual
+    language.
+
+    Args:
+        figure_family: Which shape carries which meaning in this
+            change's diagrams.
+        cast: The components that recur, plus the data object worth
+            tracing through a worked example.
+
+    Returns:
+        A guidance block naming both.
+
+    Raises:
+        ValueError: `figure_family` is empty. A caller with no family to
+            hand over has nothing to keep the figures consistent, and
+            should leave the figure guidance out of the call entirely
+            rather than let each section invent its own.
+    """
+    if not figure_family.strip():
+        raise ValueError("no figure family was fixed for this document; omit the figure guidance instead")
+    lines = [
+        "# this document's figure family and cast",
+        "Fixed for the whole document. Draw to them; do not substitute your own.",
+        f"- family: {figure_family.strip()}",
+    ]
+    named = [c.strip() for c in cast if c.strip()]
+    if named:
+        lines.append(f"- cast: {', '.join(named)}")
+        lines.append(
+            "Name these as they are named in the code, draw each the same way in every "
+            "figure, and trace the same data object through every worked example."
+        )
+    return "\n".join(lines)
