@@ -11,3 +11,4 @@ slice plan holds the *how, in order*.
 - [Tool surface & MCP hosting](tool-surface-hosting.md) — ADR 0003
 - [Rendered markdown diff](rendered-markdown-diff.md) — ADR 0004
 - [One visibility model](visibility-model.md) — ADR owed
+- [Change explainer](change-explainer.md) — ADR 0007
