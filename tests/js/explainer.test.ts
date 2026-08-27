@@ -432,34 +432,40 @@ describe("prose rendering", () => {
     expect(body.textContent).toContain("after");
   });
 
-  test("an inline file reference becomes a chip labelled by path", () => {
+  test("an inline file reference becomes an arrow, with the path in its tooltip", () => {
+    // The prose has usually just named the file, so the arrow attaches to
+    // the phrase and the path moves to the tooltip rather than repeating
+    // itself at slab width mid-sentence.
     withBody("The contract lives in [F0].");
-    const chip = Explainer.renderPane().querySelector(".explainer-chip")!;
-    expect(chip.textContent).toBe("schema/api.proto");
-    expect((chip as HTMLElement).dataset.refId).toBe("F0");
+    const ref = Explainer.renderPane().querySelector(".explainer-arrow") as HTMLElement;
+    expect(ref.textContent).toBe("\u2197");
+    expect(ref.title).toContain("schema/api.proto");
+    expect(ref.dataset.refId).toBe("F0");
   });
 
-  test("a hunk chip names the file and the hunk's place in it", () => {
+  test("a hunk arrow names the file and the hunk's place in it, in its tooltip", () => {
     const opened: string[] = [];
     boot({}, { onOpenHunk: (id: string) => opened.push(id) });
     Explainer.onEvent(proseDoc({ state: "ready", body: "See [H1_1] for the rename." }) as SseExplainerEvent);
-    const chip = Explainer.renderPane().querySelector(".explainer-chip") as HTMLElement;
-    expect(chip.textContent).toBe("gen/api_pb.ts:2");
-    chip.click();
+    const ref = Explainer.renderPane().querySelector(".explainer-arrow") as HTMLElement;
+    expect(ref.title).toContain("gen/api_pb.ts:2");
+    ref.click();
     expect(opened).toEqual(["H1_1"]);
   });
 
-  test("a reference inside a code span is the snippet's, not a chip", () => {
+  test("a reference inside a code span is the snippet's, not an arrow", () => {
     withBody("Grep for `[F0]` in the fixture, and read [F1].");
-    const chips = Explainer.renderPane().querySelectorAll(".explainer-chip");
-    expect(chips).toHaveLength(1);
-    expect(chips[0].textContent).toBe("gen/api_pb.ts");
+    const refs = Explainer.renderPane().querySelectorAll(".explainer-arrow");
+    expect(refs).toHaveLength(1);
+    expect((refs[0] as HTMLElement).title).toContain("gen/api_pb.ts");
   });
 
-  test("surrounding prose survives the chip swap", () => {
+  test("surrounding prose survives the arrow swap", () => {
+    // The token is replaced by the arrow glyph, so the sentence reads as
+    // written rather than having a path spliced into it.
     withBody("Read [F0] first, then [F1].");
     const body = Explainer.renderPane().querySelector(".explainer-body")!;
-    expect(body.textContent!.trim()).toBe("Read schema/api.proto first, then gen/api_pb.ts.");
+    expect(body.textContent!.trim()).toBe("Read \u2197 first, then \u2197.");
   });
 });
 

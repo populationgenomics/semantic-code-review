@@ -912,7 +912,12 @@ class _Handler(BaseHTTPRequestHandler):
 
         with self.ctx.state_lock:
             if self.ctx.explainer_busy:
-                self._json(409, {"error": "an explainer pass is already running"})
+                # `retry`: another pass holds the slot, which clears on its
+                # own. Distinct from the readiness 409 (which carries
+                # `total`) and from a real failure — a caller that treats
+                # this as terminal makes the reviewer press again for a
+                # condition that resolves itself.
+                self._json(409, {"error": "an explainer pass is already running", "retry": True})
                 return
             self.ctx.explainer_busy = True
         try:
@@ -961,7 +966,12 @@ class _Handler(BaseHTTPRequestHandler):
 
         with self.ctx.state_lock:
             if self.ctx.explainer_busy:
-                self._json(409, {"error": "an explainer pass is already running"})
+                # `retry`: another pass holds the slot, which clears on its
+                # own. Distinct from the readiness 409 (which carries
+                # `total`) and from a real failure — a caller that treats
+                # this as terminal makes the reviewer press again for a
+                # condition that resolves itself.
+                self._json(409, {"error": "an explainer pass is already running", "retry": True})
                 return
             self.ctx.explainer_busy = True
         try:

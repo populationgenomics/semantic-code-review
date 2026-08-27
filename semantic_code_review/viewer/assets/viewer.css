@@ -1520,13 +1520,14 @@ body { padding-bottom: 30px; }
    rather than the diff's dense monospace chrome: serif body at the
    measure, UI sans for every piece of chrome around it.
 
+   The document fills the pane rather than sitting at a fixed measure —
+   the reviewer's window is the measure.
+
    The affordance classes and the `d-`/`t`/`ln`/`head` figure vocabulary
    below are one half of the contract in docs/explainer-presentation.md;
    the prompt in augment/prompts.py is the other. A class the model uses
    and this file does not define renders unstyled. */
 .explainer {
-  max-width: 72ch;
-  margin: 0 auto;
   padding: 32px 28px 72px;
   font-family: var(--serif);
   font-size: 18px;
@@ -1739,8 +1740,24 @@ body { padding-bottom: 30px; }
   color: var(--warn);
 }
 
-/* An inline reference sits in a line of prose, so it takes a pill
-   rather than the bare link the Map's first column uses. */
+/* An inline reference is an arrow attached to the phrase it follows —
+   the prose has usually just named the target, so a pill repeating the
+   full path breaks the line for no information. The target lives in the
+   tooltip. */
+.explainer-arrow {
+  background: none;
+  border: none;
+  padding: 0 0 0 1px;
+  margin: 0;
+  font-family: var(--ui);
+  font-size: 0.72em;
+  line-height: 1;
+  vertical-align: 0.35em;
+  color: var(--accent);
+  cursor: pointer;
+}
+.explainer-arrow:hover { color: var(--fg); }
+
 .explainer-chip {
   padding: 1px 6px;
   border-radius: 10px;

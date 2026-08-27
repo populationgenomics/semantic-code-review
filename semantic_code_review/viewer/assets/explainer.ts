@@ -158,6 +158,10 @@ function generateSection(id: string): void {
   void _drainQueue();
 }
 
+//: Backoff before retrying a section the server was too busy to write.
+//: One pass takes tens of seconds, so polling faster buys nothing.
+const _RETRY_MS = 4000;
+
 async function _drainQueue(): Promise<void> {
   if (_writing !== null) return;
   while (_queue.length > 0) {
@@ -183,6 +187,16 @@ async function _writeSection(id: string): Promise<void> {
       // annotated, and prose over the gaps reads exactly as fluently as
       // prose over the whole thing.
       _sectionPhase[id] = { kind: "waiting", annotated: payload.annotated || 0, total: payload.total };
+      return;
+    }
+    if (r.status === 409 && payload.retry) {
+      // Another pass holds the server's slot — one per server, shared by
+      // the skeleton and every section. It clears on its own, so this is
+      // a wait, not a failure: re-queue rather than making the reviewer
+      // press again for a condition that resolves itself.
+      delete _sectionPhase[id];
+      _queue.push(id);   // renders as "Queued behind another section…"
+      window.setTimeout(() => void _drainQueue(), _RETRY_MS);
       return;
     }
     if (!r.ok) throw new Error(payload.error || `POST /explainer/section/${id} -> ${r.status}`);
@@ -509,11 +523,20 @@ function _inCode(node: Node): boolean {
   return false;
 }
 
+/** An inline reference is a link-out arrow, not a label.
+ *
+ *  The prose has almost always just named the thing it is citing
+ *  ("models/workbench.proto [F10] holds the message shapes"), so a chip
+ *  carrying the full repo path repeats it at slab width and breaks the
+ *  line. The arrow attaches to the phrase before it and the target
+ *  moves to the tooltip, where it costs nothing to read past. */
 function _refChip(id: string): HTMLElement {
   const isFile = id.charAt(0) === "F";
-  const btn = _el("button", "explainer-ref explainer-chip", isFile ? _fileLabel(id) : _hunkLabel(id));
+  const target = isFile ? _fileLabel(id) : _hunkLabel(id);
+  const btn = _el("button", "explainer-ref explainer-arrow", "\u2197");
   btn.dataset.refId = id;
-  btn.title = isFile ? "Open this file in the diff" : "Open this hunk in the diff";
+  btn.title = isFile ? `Open ${target} in the diff` : `Open ${target} in the diff`;
+  btn.setAttribute("aria-label", btn.title);
   btn.addEventListener("click", () => {
     if (isFile) _onOpenFile?.(id);
     else _onOpenHunk?.(id);
