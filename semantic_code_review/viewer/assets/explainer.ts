@@ -319,9 +319,50 @@ function _renderSection(section: ExplainerSection): HTMLElement {
     el.appendChild(_renderMap(section));
     return el;
   }
+  if (section.skip_box) el.appendChild(_renderSkipBox(section.skip_box));
+  if (section.terms && section.terms.length > 0) el.appendChild(_renderTerms(section.terms));
   for (const node of _proseNodes(section)) el.appendChild(node);
   for (const sub of section.subsections || []) el.appendChild(_renderSubsection(sub));
+  const sources = _renderSources(section);
+  if (sources) el.appendChild(sources);
   return el;
+}
+
+/** "If you already know X, jump to Y." Background is written in two
+ *  layers and this is the way past the first one. */
+function _renderSkipBox(box: ExplainerSkipBox): HTMLElement {
+  const el = _el("div", "explainer-skip");
+  el.appendChild(_renderBody(box.body));
+  const target = _findSection(box.target_section_id);
+  const btn = _el("button", "explainer-skip-link", `Skip to ${target ? target.title : box.target_section_id}`);
+  btn.addEventListener("click", () => setActiveSection(box.target_section_id));
+  el.appendChild(btn);
+  return el;
+}
+
+/** Names the section introduces, as a definition list — cheaper to read
+ *  than a paragraph each, and it keeps them out of the prose. */
+function _renderTerms(terms: ExplainerTerm[]): HTMLElement {
+  const dl = _el("dl", "explainer-terms");
+  for (const t of terms) {
+    dl.appendChild(_el("dt", null, t.term));
+    const dd = _el("dd", null);
+    dd.appendChild(_renderBody(t.definition));
+    dl.appendChild(dd);
+  }
+  return dl;
+}
+
+/** What the section's pass actually opened. Recorded from the tool
+ *  surface, so a section citing nothing is visibly one that read
+ *  nothing — which is legible without judging the prose. */
+function _renderSources(section: ExplainerSection): HTMLElement | null {
+  if (section.state !== "ready" || section.kind !== "background") return null;
+  const sources = section.sources || [];
+  const text = sources.length > 0
+    ? `Read while writing this: ${sources.join(", ")}`
+    : "Written without reading any file.";
+  return _el("p", "explainer-sources", text);
 }
 
 /** A model-chosen part of the walkthrough. It carries its own

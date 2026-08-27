@@ -1,16 +1,23 @@
-"""Per-section prose for the change explainer (ADR 0007, slice 2).
+"""Per-section prose for the change explainer (ADR 0007, slices 2-3).
 
 The skeleton (`explainer.py`) writes the Map and leaves Background,
 Intuition and Code `pending`. Each of those is filled by one structured
 call from `POST /explainer/section/{id}`, on first open — a section
 nobody opens is never paid for.
 
-The pass is seeded and tool-less: the overview, the skeleton's fixed
-decisions, and — for the files the skeleton assigned the section — every
-hunk under them with its established intent. Connective tissue between
-those intents is the thing forty independent per-hunk calls structurally
-cannot produce. Background's tool grant is slice 3; until then it runs
-seeded like its neighbours.
+The passes differ in what they are given, not in what they emit:
+
+- **Intuition** and **Code** are seeded and tool-less: the overview, the
+  skeleton's fixed decisions, and — for the files the skeleton assigned
+  the section — every hunk under them with its established intent.
+  Connective tissue between those intents is the thing forty independent
+  per-hunk calls structurally cannot produce.
+- **Background** also gets `RepoTools`, under a bounded turn budget,
+  because it is the only section asserting facts about code *outside*
+  the diff. What it opened is recorded from the tool surface and
+  rendered as a citation line, and its answer is cached on `base_sha`
+  alone — it describes the system before the change, so it survives head
+  movement and prompt-iteration re-runs on the same branch.
 
 A section whose anchored hunks are not all annotated is refused rather
 than written: prose built on half the intents reads exactly as fluently
@@ -21,6 +28,7 @@ updated document attached so the route can fan the state out.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from pathlib import Path
 from typing import Any, Literal
@@ -32,14 +40,27 @@ from pydantic_ai.output import ToolOutput
 
 from ..cache.store import CacheStore
 from ..viewer.build_json import ViewerIdIndex, viewer_id_index
-from . import explainer_schema
+from . import explainer_schema, mcp_http_host, source_cache
 from .agents import Client
 from .explainer import ExplainerNotReady, carry_guidance
 from .pass_ import PassMeta, run_pass
-from .prompts import EXPLAINER_SECTION_BRIEFS, EXPLAINER_SECTION_GUIDANCE
+from .prompts import (
+    EXPLAINER_BACKGROUND_GUIDANCE,
+    EXPLAINER_SECTION_BRIEFS,
+    EXPLAINER_SECTION_GUIDANCE,
+)
 from .schemas import AnnotatedDiff
+from .tools import TOOL_FUNCTIONS, RepoTools
 
 log = logging.getLogger(__name__)
+
+
+#: Requests Background's agentic loop may make before pydantic-ai cuts
+#: it off. Small on purpose: the section wants the two or three files the
+#: change lands on, not a survey. The cap and the count actually used go
+#: to `trace/`, because an agentic pass whose cost is invisible is the
+#: failure mode the cap exists to prevent.
+BACKGROUND_TURN_CAP = 12
 
 
 class SectionNotFound(KeyError):
@@ -99,6 +120,20 @@ class SubmittedSubsection(BaseModel):
     )
 
 
+class SubmittedTerm(BaseModel):
+    """One entry of a term list."""
+
+    term: str = Field(description="The name as the code spells it.")
+    definition: str = Field(description="One or two sentences. Markdown.")
+
+
+class SubmittedSkipBox(BaseModel):
+    """Background's 'you already know this' escape hatch."""
+
+    body: str = Field(description="One sentence naming what the reader would already have to know.")
+    target_section_id: str = Field(description="The section to jump to: `intuition` or `code`.")
+
+
 class ExplainerSectionSubmission(BaseModel):
     """Wire format of `submit_explainer_section`."""
 
@@ -111,20 +146,39 @@ class ExplainerSectionSubmission(BaseModel):
         default_factory=list,
         description="Model-chosen parts of the walkthrough. Code only; ignored elsewhere.",
     )
+    terms: list[SubmittedTerm] = Field(
+        default_factory=list,
+        description="Names the reader needs before the prose uses them. Rendered as a definition list.",
+    )
+    skip_box: SubmittedSkipBox | None = Field(
+        default=None,
+        description="Background only: lets a reader who knows the system skip its first layer.",
+    )
     toy_data: bool = Field(
         default=False,
         description="True when a worked example here uses invented identifiers, counts or values.",
     )
 
 
-def make_explainer_section_agent(model: str | Model, system: str) -> Agent[None, ExplainerSectionSubmission]:
-    """Agent for one prose section. No repo tools — the seed is the code
-    it may speak about, and Background's grant is slice 3.
+def make_explainer_section_agent(
+    model: str | Model,
+    system: str,
+    *,
+    tools: list | None = None,
+) -> Agent[RepoTools, ExplainerSectionSubmission]:
+    """Agent for one prose section.
+
+    `tools` is empty for the seeded passes — their seed is the only code
+    they may speak about — and the recording `RepoTools` surface for
+    Background. `deps_type` is declared either way so one agent shape
+    serves both.
     """
     return Agent(
         model=model,
+        deps_type=RepoTools,
         output_type=ToolOutput(ExplainerSectionSubmission, name="submit_explainer_section"),
         instructions=system,
+        tools=tools or [],
     )
 
 
@@ -280,13 +334,16 @@ def apply_section_submission(
     submission: ExplainerSectionSubmission,
     *,
     ids: ViewerIdIndex,
+    sources: list[str] | None = None,
 ) -> None:
     """Fold a `submit_explainer_section` payload into `section`, in place.
 
     References the model invented are dropped and counted into the
     document's `dropped_refs`. A submission that narrows nothing leaves
     the skeleton's references standing — that is the section's assigned
-    scope, not a missing value.
+    scope, not a missing value. `sources` is the recorded read list for a
+    tool-using pass; it comes from the tool surface, never from the
+    submission.
     """
     kept, dropped = _validate(submission.refs, ids)
     subsections, sub_dropped = _subsections(section, submission.subsections, ids)
@@ -295,10 +352,40 @@ def apply_section_submission(
     if kept:
         section.refs = kept
     section.subsections = subsections
+    section.terms = [
+        explainer_schema.Term(term=t.term.strip(), definition=t.definition.strip())
+        for t in submission.terms
+        if t.term.strip()
+    ]
+    section.skip_box = _skip_box(doc, section, submission.skip_box)
+    section.sources = list(sources) if sources else []
     section.state = "ready"
 
     doc.dropped_refs += dropped + sub_dropped
     doc.toy_data = doc.toy_data or submission.toy_data
+
+
+def _skip_box(
+    doc: explainer_schema.ExplainerDocument,
+    section: explainer_schema.Section,
+    submitted: SubmittedSkipBox | None,
+) -> explainer_schema.SkipBox | None:
+    """The section's skip box, or None when it has no valid one.
+
+    Background only — it is the only section written in two layers — and
+    the target has to resolve, because a jump to nowhere is worse than no
+    jump offered.
+    """
+    if submitted is None:
+        return None
+    if section.kind != "background":
+        log.warning("explainer: %s section submitted a skip box — Background only; dropped", section.id)
+        return None
+    target = submitted.target_section_id.strip()
+    if not any(s.id == target for s in doc.sections):
+        log.warning("explainer: skip box targets %r, which is not a section here — dropped", target)
+        return None
+    return explainer_schema.SkipBox(body=submitted.body.strip(), target_section_id=target)
 
 
 def _validate(
@@ -364,6 +451,61 @@ def find_section(
     raise SectionNotFound(section_id)
 
 
+# --- Provenance -----------------------------------------------------------
+
+#: Tool arguments that name a file the pass opened. `grep`'s
+#: `path_glob` is a filter over a search, not a read, so it is not one
+#: of these — a citation line has to list what was actually looked at.
+_PATH_ARGS = ("path",)
+
+
+class _ReadRecorder:
+    """The paths a tool-using pass opened, in first-read order.
+
+    Fed from whichever transport the backend uses: the pydantic-ai tool
+    wrappers on SDK backends, the hosted MCP server's dispatch hook on
+    subprocess ones. The reader never sees the model's account of what
+    it read — only this.
+    """
+
+    def __init__(self) -> None:
+        self.paths: list[str] = []
+
+    def record(self, args: dict[str, Any]) -> None:
+        for name in _PATH_ARGS:
+            value = args.get(name)
+            if not isinstance(value, str):
+                continue
+            path = value.strip()
+            if path and path not in self.paths:
+                self.paths.append(path)
+
+
+def _recording_tool_functions(recorder: _ReadRecorder) -> list:
+    """`TOOL_FUNCTIONS`, each wrapped to note the path it was handed.
+
+    Wrapped here rather than in `tools.py`: this is the one pass that
+    cites its reads, and every other caller of the tool surface should
+    be unaffected by that.
+    """
+    return [_recording_tool(fn, recorder) for fn in TOOL_FUNCTIONS]
+
+
+def _recording_tool(fn: Any, recorder: _ReadRecorder) -> Any:
+    async def wrapper(ctx: Any, **kwargs: Any) -> str:
+        recorder.record(kwargs)
+        return await fn(ctx, **kwargs)
+
+    # pydantic-ai derives each tool's schema by introspection, so the
+    # wrapper has to present the wrapped function's signature verbatim.
+    wrapper.__name__ = fn.__name__
+    wrapper.__qualname__ = fn.__qualname__
+    wrapper.__doc__ = fn.__doc__
+    wrapper.__signature__ = fn.__signature__  # type: ignore[attr-defined]
+    wrapper.__annotations__ = dict(fn.__annotations__)
+    return wrapper
+
+
 # --- Running --------------------------------------------------------------
 
 
@@ -410,7 +552,11 @@ async def generate_explainer_section(
     # that only want the prompt assembly or the apply step.
     from .hunks import overview_to_prompt_json
 
-    system_text, user_prefix = carry_guidance(client, EXPLAINER_SECTION_GUIDANCE)
+    is_background = section.kind == "background"
+    guidance = EXPLAINER_SECTION_GUIDANCE
+    if is_background:
+        guidance = f"{guidance}\n\n{EXPLAINER_BACKGROUND_GUIDANCE}"
+    system_text, user_prefix = carry_guidance(client, guidance)
     user_text = format_section_prompt(
         diff,
         doc,
@@ -420,10 +566,60 @@ async def generate_explainer_section(
     if user_prefix:
         user_text = f"{user_prefix}\n\n{user_text}"
 
-    meta = PassMeta(name=f"explainer-{section.kind}", submit_tool="submit_explainer_section")
     try:
+        payload, sources = await _run_section_pass(
+            client,
+            run_dir=run_dir,
+            diff=diff,
+            section=section,
+            system_text=system_text,
+            user_text=user_text,
+            model=model,
+            cache=cache,
+            trace_dir=trace_dir,
+        )
+    except Exception as e:
+        section.state = "failed"
+        explainer_schema.save_explainer(run_dir, doc)
+        log.exception("explainer section %s failed", section_id)
+        raise SectionFailed(f"{type(e).__name__}: {e}", doc.model_dump(mode="json")) from e
+
+    apply_section_submission(
+        doc,
+        section,
+        ExplainerSectionSubmission.model_validate(payload),
+        ids=viewer_id_index(diff),
+        sources=sources,
+    )
+    explainer_schema.save_explainer(run_dir, doc)
+    return doc
+
+
+async def _run_section_pass(
+    client: Client,
+    *,
+    run_dir: Path,
+    diff: AnnotatedDiff,
+    section: explainer_schema.Section,
+    system_text: str,
+    user_text: str,
+    model: str,
+    cache: CacheStore | None,
+    trace_dir: Path | None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Drive one section's pass; return `(payload, files_read)`.
+
+    Intuition and Code are one tool-less call keyed on their own prompt.
+    Background gets the repo tools, `BACKGROUND_TURN_CAP` requests to
+    spend, and a cache key of `base_sha` alone — it describes the system
+    before the change, so it is invariant across head movement and across
+    prompt-iteration re-runs on the same branch, which is the whole
+    reason it is a separate call.
+    """
+    trace_path = (trace_dir / f"explainer-{section.id}.json") if trace_dir is not None else None
+    if section.kind != "background":
         payload = await run_pass(
-            meta,
+            PassMeta(name=f"explainer-{section.kind}", submit_tool="submit_explainer_section"),
             client=client,
             agent=make_explainer_section_agent(client.model, system_text),
             user_content=user_text,
@@ -431,24 +627,55 @@ async def generate_explainer_section(
             model=model,
             cache_inputs=(user_text,),
             cache=cache,
-            trace_path=(trace_dir / f"explainer-{section.id}.json") if trace_dir is not None else None,
+            trace_path=trace_path,
             cache_request={"system": system_text, "user": user_text},
         )
-    except Exception as e:
-        section.state = "failed"
-        explainer_schema.save_explainer(run_dir, doc)
-        log.exception("explainer section %s failed", section_id)
-        raise SectionFailed(f"{type(e).__name__}: {e}", doc.model_dump(mode="json")) from e
-    assert payload is not None  # `meta.swallow_errors` is false
+        assert payload is not None  # `swallow_errors` is false
+        return payload, []
 
-    apply_section_submission(
-        doc,
-        section,
-        ExplainerSectionSubmission.model_validate(payload),
-        ids=viewer_id_index(diff),
+    recorder = _ReadRecorder()
+    repo_tools = RepoTools(
+        head_worktree=run_dir / "head",
+        repo_git=run_dir / "repo.git",
+        base_sha=diff.pr.base_sha,
+        head_sha=diff.pr.head_sha,
+        cache=source_cache.SourceCache(),
     )
-    explainer_schema.save_explainer(run_dir, doc)
-    return doc
+    async with contextlib.AsyncExitStack() as stack:
+        if client.is_subprocess_backend:
+            # Subprocess backends reach the worktree over MCP rather than
+            # pydantic-ai `deps`, so the recorder feeds off the host's
+            # dispatch hook instead of the tool wrappers. One host per
+            # request, as the console does.
+            host = stack.enter_context(
+                mcp_http_host.McpHttpHost(repo_tools, on_tool=lambda _name, args: recorder.record(args))
+            )
+            client.set_mcp_endpoint(host.mcp_config())
+            stack.callback(client.set_mcp_endpoint, None)
+        payload = await run_pass(
+            PassMeta(
+                name="explainer-background",
+                submit_tool="submit_explainer_section",
+                tool_names=tuple(fn.__name__ for fn in TOOL_FUNCTIONS),
+            ),
+            client=client,
+            agent=make_explainer_section_agent(
+                client.model,
+                system_text,
+                tools=_recording_tool_functions(recorder),
+            ),
+            user_content=user_text,
+            system=system_text,
+            model=model,
+            cache_inputs=(diff.pr.base_sha,),
+            deps=repo_tools,
+            request_limit=BACKGROUND_TURN_CAP,
+            cache=cache,
+            trace_path=trace_path,
+            cache_request={"system": system_text, "user": user_text},
+        )
+    assert payload is not None  # `swallow_errors` is false
+    return payload, recorder.paths
 
 
 def _load(run_dir: Path) -> tuple[AnnotatedDiff, explainer_schema.ExplainerDocument]:
@@ -474,6 +701,7 @@ def _load(run_dir: Path) -> tuple[AnnotatedDiff, explainer_schema.ExplainerDocum
 
 
 __all__ = [
+    "BACKGROUND_TURN_CAP",
     "ExplainerSectionSubmission",
     "SectionFailed",
     "SectionNotFound",

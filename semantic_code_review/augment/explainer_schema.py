@@ -70,6 +70,27 @@ class MapRow(BaseModel):
     why: str
 
 
+class Term(BaseModel):
+    """One entry of a section's term list."""
+
+    term: str
+    definition: str
+
+
+class SkipBox(BaseModel):
+    """Background's escape hatch for a reader who knows the system.
+
+    Background is written in two layers — ground for a newcomer, then
+    what the change lands on — and this is what lets the second reader
+    past the first layer. `target_section_id` is validated against the
+    document's own sections when the box is folded in; an unresolvable
+    jump is dropped rather than rendered dead.
+    """
+
+    body: str
+    target_section_id: str
+
+
 class Section(BaseModel):
     """One section of the document.
 
@@ -86,6 +107,14 @@ class Section(BaseModel):
     body: str = ""
     refs: list[Reference] = Field(default_factory=list)
     map_rows: list[MapRow] = Field(default_factory=list)
+    terms: list[Term] = Field(default_factory=list)
+    skip_box: SkipBox | None = None
+    #: Repo paths the section's pass actually opened, in first-read
+    #: order — recorded from the tool surface, never from the model's
+    #: account of itself. Rendered as a citation line: a Background
+    #: citing no reads is one that made it up, and that is legible
+    #: without judging the prose. Empty for the tool-less sections.
+    sources: list[str] = Field(default_factory=list)
     subsections: list[Section] = Field(default_factory=list)
 
 
@@ -241,6 +270,8 @@ __all__ = [
     "MapRow",
     "Reference",
     "Section",
+    "SkipBox",
+    "Term",
     "explainer_path",
     "load_explainer",
     "save_explainer",

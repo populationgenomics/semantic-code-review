@@ -78,6 +78,7 @@ async def run_pass(
     cache_inputs: tuple[Any, ...],
     deps: Any = None,
     model_settings: Any = None,
+    request_limit: int | None = None,
     cache: CacheStore | None = None,
     trace_path: Path | None = None,
     cache_request: dict[str, Any] | None = None,
@@ -108,7 +109,10 @@ async def run_pass(
     # SDK backends have no equivalent, so without a limit here a pass that
     # cannot answer its question keeps investigating until pydantic-ai's
     # default ceiling — losing the hunk after spending the most on it.
-    usage_limits = UsageLimits(request_limit=client.request_limit) if client.request_limit else None
+    # `request_limit` lets a pass narrow that to its own budget; the
+    # effective figure and the requests actually made go to the trace.
+    limit = request_limit if request_limit is not None else client.request_limit
+    usage_limits = UsageLimits(request_limit=limit) if limit else None
     # The last attempt is outside the loop so the function has one exit on
     # each path — the retries swallow the grammar error, the final call
     # propagates whatever it raises.
@@ -123,6 +127,7 @@ async def run_pass(
                 deps=deps,
                 model_settings=model_settings,
                 usage_limits=usage_limits,
+                turn_cap=limit,
                 cache=cache,
                 key=key,
                 trace_path=trace_path,
@@ -148,6 +153,7 @@ async def run_pass(
         deps=deps,
         model_settings=model_settings,
         usage_limits=usage_limits,
+        turn_cap=limit,
         cache=cache,
         key=key,
         trace_path=trace_path,
@@ -181,6 +187,7 @@ async def _drive_agent(
     deps: Any,
     model_settings: Any,
     usage_limits: Any,
+    turn_cap: int | None,
     cache: CacheStore | None,
     key: CacheKey | None,
     trace_path: Path | None,
@@ -206,6 +213,7 @@ async def _drive_agent(
                     tool_names=list(meta.tool_names),
                     submit_tool=meta.submit_tool,
                     error=exc,
+                    turn_cap=turn_cap,
                 )
             if meta.swallow_errors:
                 log.warning(
@@ -228,6 +236,7 @@ async def _drive_agent(
             system=system,
             tool_names=list(meta.tool_names),
             submit_tool=meta.submit_tool,
+            turn_cap=turn_cap,
         )
 
     payload = submit_args_from_result(run_result)

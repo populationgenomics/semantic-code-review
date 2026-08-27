@@ -33,6 +33,9 @@ function section(overrides: Partial<ExplainerSection> = {}): ExplainerSection {
     body: "",
     refs: [],
     map_rows: [],
+    terms: [],
+    skip_box: null,
+    sources: [],
     subsections: [],
     ...overrides,
   };
@@ -492,5 +495,72 @@ describe("subsections", () => {
     }) as SseExplainerEvent);
     expect(Explainer.renderPane().querySelector(".explainer-footnote")!.textContent)
       .toContain("2 references");
+  });
+});
+
+// --- Background's provenance and affordances -------------------------------
+
+describe("Background", () => {
+  function backgroundDoc(overrides: Partial<ExplainerSection> = {}): ExplainerDocument {
+    return doc({
+      sections: [
+        section({ id: "background", kind: "background", title: "Background", state: "ready", ...overrides }),
+        section({ id: "code", kind: "code", title: "Code", state: "pending" }),
+      ],
+    });
+  }
+
+  test("the files the pass read are rendered as a citation line", () => {
+    boot();
+    Explainer.onEvent(backgroundDoc({
+      body: "The RPC layer.",
+      sources: ["schema/api.proto", "cmd/list.go"],
+    }) as SseExplainerEvent);
+    const line = Explainer.renderPane().querySelector(".explainer-sources")!;
+    expect(line.textContent).toContain("schema/api.proto");
+    expect(line.textContent).toContain("cmd/list.go");
+  });
+
+  test("a Background that read nothing says so — that is the whole point", () => {
+    boot();
+    Explainer.onEvent(backgroundDoc({ body: "The RPC layer.", sources: [] }) as SseExplainerEvent);
+    expect(Explainer.renderPane().querySelector(".explainer-sources")!.textContent)
+      .toBe("Written without reading any file.");
+  });
+
+  test("a section that was never granted tools carries no citation line", () => {
+    boot();
+    Explainer.onEvent(doc({
+      sections: [section({ id: "code", kind: "code", title: "Code", state: "ready", body: "x" })],
+    }) as SseExplainerEvent);
+    expect(Explainer.renderPane().querySelector(".explainer-sources")).toBeNull();
+  });
+
+  test("the skip box jumps to the section it names", () => {
+    boot();
+    Explainer.onEvent(backgroundDoc({
+      body: "Ground.",
+      skip_box: { body: "If you know the RPC layer,", target_section_id: "code" },
+    }) as SseExplainerEvent);
+    const box = Explainer.renderPane().querySelector(".explainer-skip")!;
+    expect(box.textContent).toContain("If you know the RPC layer");
+    (box.querySelector(".explainer-skip-link") as HTMLElement).click();
+    expect(Explainer.activeSectionId()).toBe("code");
+  });
+
+  test("terms render as a definition list", () => {
+    boot();
+    Explainer.onEvent(backgroundDoc({
+      body: "Ground.",
+      terms: [
+        { term: "ListRequest", definition: "the **paged** request" },
+        { term: "cursor", definition: "an opaque position token" },
+      ],
+    }) as SseExplainerEvent);
+    const dl = Explainer.renderPane().querySelector(".explainer-terms")!;
+    expect(Array.from(dl.querySelectorAll("dt")).map((n) => n.textContent))
+      .toEqual(["ListRequest", "cursor"]);
+    // Definitions are markdown too, through the same sanitised path.
+    expect(dl.querySelector("dd strong")!.textContent).toBe("paged");
   });
 });

@@ -296,3 +296,104 @@ def test_toy_data_latches_on_the_document(diff: AnnotatedDiff, doc) -> None:
     )
     # One section's invented example is enough for the footer to say so.
     assert doc.toy_data is True
+
+
+# --- Background: tools, budget, provenance -------------------------------
+
+
+def test_background_guidance_only_reaches_the_background_pass() -> None:
+    """Tool instructions handed to a tool-less pass describe a surface
+    that is not there."""
+    from semantic_code_review.augment.prompts import EXPLAINER_BACKGROUND_GUIDANCE
+
+    assert "read_file" in EXPLAINER_BACKGROUND_GUIDANCE
+    assert "read_file" not in EXPLAINER_SECTION_GUIDANCE
+
+
+def test_the_read_recorder_keeps_first_read_order_without_duplicates() -> None:
+    rec = explainer_section._ReadRecorder()
+    rec.record({"path": "a.py", "purpose": "x"})
+    rec.record({"path": "b.py"})
+    rec.record({"path": "a.py"})
+    rec.record({"pattern": "cursor", "path_glob": "*.py"})  # a search, not a read
+    rec.record({"path": "   "})
+    assert rec.paths == ["a.py", "b.py"]
+
+
+def test_the_recording_wrappers_keep_the_tool_schema_intact() -> None:
+    """pydantic-ai builds each tool's schema by introspection, so a
+    wrapper that loses the signature loses the tool."""
+    import inspect
+
+    from semantic_code_review.augment.tools import TOOL_FUNCTIONS
+
+    rec = explainer_section._ReadRecorder()
+    wrapped = explainer_section._recording_tool_functions(rec)
+    assert [f.__name__ for f in wrapped] == [f.__name__ for f in TOOL_FUNCTIONS]
+    for original, w in zip(TOOL_FUNCTIONS, wrapped, strict=True):
+        assert inspect.signature(w) == inspect.signature(original)
+        assert w.__doc__ == original.__doc__
+
+
+def test_background_records_what_it_read_and_the_others_record_nothing(diff: AnnotatedDiff, doc) -> None:
+    ids = build_json.viewer_id_index(diff)
+    background = explainer_section.find_section(doc, "background")
+    explainer_section.apply_section_submission(
+        doc, background, _submission(), ids=ids, sources=["schema/api.proto", "cmd/list.go"]
+    )
+    assert background.sources == ["schema/api.proto", "cmd/list.go"]
+
+    code = explainer_section.find_section(doc, "code")
+    explainer_section.apply_section_submission(doc, code, _submission(), ids=ids)
+    assert code.sources == []
+
+
+def test_the_skip_box_lands_on_background_with_a_target_that_resolves(diff: AnnotatedDiff, doc) -> None:
+    section = explainer_section.find_section(doc, "background")
+    explainer_section.apply_section_submission(
+        doc,
+        section,
+        _submission(skip_box={"body": "If you know the RPC layer,", "target_section_id": "code"}),
+        ids=build_json.viewer_id_index(diff),
+    )
+    assert section.skip_box is not None
+    assert section.skip_box.target_section_id == "code"
+
+
+def test_a_skip_box_pointing_nowhere_is_dropped(diff: AnnotatedDiff, doc) -> None:
+    """A jump to a section that is not there is worse than no jump."""
+    section = explainer_section.find_section(doc, "background")
+    explainer_section.apply_section_submission(
+        doc,
+        section,
+        _submission(skip_box={"body": "skip", "target_section_id": "appendix"}),
+        ids=build_json.viewer_id_index(diff),
+    )
+    assert section.skip_box is None
+
+
+def test_only_background_gets_a_skip_box(diff: AnnotatedDiff, doc) -> None:
+    section = explainer_section.find_section(doc, "code")
+    explainer_section.apply_section_submission(
+        doc,
+        section,
+        _submission(skip_box={"body": "skip", "target_section_id": "intuition"}),
+        ids=build_json.viewer_id_index(diff),
+    )
+    assert section.skip_box is None
+
+
+def test_terms_land_as_a_definition_list(diff: AnnotatedDiff, doc) -> None:
+    section = explainer_section.find_section(doc, "background")
+    explainer_section.apply_section_submission(
+        doc,
+        section,
+        _submission(
+            terms=[
+                {"term": "  ListRequest  ", "definition": "  the paged request  "},
+                {"term": "  ", "definition": "an entry with no name"},
+            ]
+        ),
+        ids=build_json.viewer_id_index(diff),
+    )
+    assert [(t.term, t.definition) for t in section.terms] == [("ListRequest", "the paged request")]

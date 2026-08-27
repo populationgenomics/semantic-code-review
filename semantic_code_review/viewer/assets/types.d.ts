@@ -314,15 +314,34 @@ interface ExplainerMapRow {
 type ExplainerSectionKind = "background" | "intuition" | "code" | "map";
 type ExplainerSectionState = "pending" | "ready" | "failed";
 
+/** One entry of a section's term list. */
+interface ExplainerTerm {
+  term: string;
+  definition: string;
+}
+
+/** Background's escape hatch past its first layer. `target_section_id`
+ *  is validated server-side, so a box that arrives here resolves. */
+interface ExplainerSkipBox {
+  body: string;
+  target_section_id: string;
+}
+
 interface ExplainerSection {
   id: string;
   kind: ExplainerSectionKind;
   title: string;
   state: ExplainerSectionState;
-  /** Markdown prose. Empty until the section's own pass runs (slice 2). */
+  /** Markdown prose. Empty until the section's own pass runs. */
   body: string;
   refs: ExplainerRef[];
   map_rows: ExplainerMapRow[];
+  terms: ExplainerTerm[];
+  skip_box: ExplainerSkipBox | null;
+  /** Repo paths the section's pass actually opened, recorded from the
+   *  tool surface rather than claimed by the model. Rendered as a
+   *  citation line; empty for the tool-less sections. */
+  sources: string[];
   subsections: ExplainerSection[];
 }
 

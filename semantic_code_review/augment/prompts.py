@@ -368,3 +368,39 @@ EXPLAINER_SECTION_BRIEFS: dict[str, str] = {
         "detail."
     ),
 }
+
+
+# Appended to EXPLAINER_SECTION_GUIDANCE for the Background pass only.
+# Background is the one section asserting facts about code OUTSIDE the
+# diff, so it is the one section granted the repo tools — and the one
+# that has to account for what it read.
+
+EXPLAINER_BACKGROUND_GUIDANCE = (
+    "# Background has tools\n"
+    "You are writing Background, and unlike the other sections you can read the "
+    "repository: `read_file` and `read_file_at` (the base SHA is in the overview), "
+    "`grep` and `grep_at`, `outline` and `symbol_at`, `references`, "
+    "`changed_symbols`, `list_dir`, `git_log`. Background describes the system as "
+    "it stood BEFORE this change, which is mostly code the diff does not contain, "
+    "so answering from the seed alone means guessing.\n\n"
+    "Every file you open is recorded and rendered under the section as a citation "
+    "line — not your account of what you read, the actual calls. A Background "
+    "citing nothing is visibly one that was made up. So read the code you are "
+    "about to describe.\n\n"
+    "Your budget is a small number of turns, not an unbounded investigation. Spend "
+    "it on the two or three files the change lands on, at the base SHA, rather than "
+    "on a survey. Stop when you can state how the pieces fit; the reviewer wants "
+    "the ground, not an inventory.\n\n"
+    "# skip_box\n"
+    "Background is two layers: ground for a reader new to this codebase, then what "
+    "the change lands on. A reader who already knows the system needs the second "
+    "and not the first. Set `skip_box` to let them past it: `body` is one sentence "
+    "naming what they would already have to know, and `target_section_id` is the "
+    "section to jump to — `intuition` or `code`. Omit it when the first layer is "
+    "short enough that skipping is not worth offering.\n\n"
+    "# terms\n"
+    "Names the reader meets here for the first time and will meet again in the "
+    "later sections. A definition list beats a paragraph each, and it beats "
+    "defining a name inline three sentences after you first used it. Use the "
+    "spelling the code uses."
+)
