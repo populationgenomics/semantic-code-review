@@ -178,7 +178,7 @@ sources visible.
 seeded and tool-less. An unbounded agentic pass whose cost is invisible
 is the failure mode the cap exists to prevent.
 
-## Slice 4 — Intuition and figures
+## Slice 4 — Intuition and figures ✅ presentation done
 
 - **Presentation.** viewer.css gains the reading type scale, the
   affordance styles, the diagram class vocabulary and the added tokens.
@@ -196,6 +196,51 @@ included.
 **Pitfalls.** Sanitisation runs server-side *and* at render. A figure
 that loses content is kept with its strip count recorded, not dropped
 silently.
+
+**As built**, where it differs from the plan above:
+
+- **Attributes are an allowlist, not the contract's denylist.** The
+  presentation doc names ten presentation attributes to strip; a
+  per-element geometry allowlist removes those *and* everything nobody
+  enumerated (`on*`, namespaced attributes, `xlink:href`). The cost is
+  that a legitimate-but-unlisted attribute counts as a strip.
+- **`href` never survives**, so the contract's same-document `#id`
+  carve-out is moot: no element in the allowlist can carry one. The
+  only surviving reference form is `marker-*="url(#id)"`.
+- **A DTD ends the figure.** Nothing in the vocabulary needs one, and
+  entity expansion is the only way an SVG this size is expensive to
+  parse.
+- **Ids are namespaced twice** — by `<section id>-<index>` on the way
+  to disk, and by a render-scoped counter in the browser. Each pass is
+  self-contained, so a document that reaches a browser from somewhere
+  this server never wrote still cannot collide.
+- **`save_explainer` sanitises and returns the document it wrote**,
+  rather than a path. That is where `Figure.stripped` gets set, and the
+  caller fans out the same bytes the next `GET /explainer` will serve.
+  Putting it there means slices 2 and 3 get the guarantee without
+  remembering to ask for it.
+- **`--ui` was added to the token set.** The contract says chrome uses
+  "the UI sans stack" but names no token for it, and once prose is
+  serif the stack needs a name. `body` now uses it too.
+- **The affordance styles landed without their slots.** Callout, skip
+  box and term list are styled here because the stylesheet is one half
+  of the presentation contract; their schema fields and rendering are
+  slice 3's, which is where the prompt learns to emit them. Only the
+  figure slot exists on `Section` today.
+- **`prose_figure_guidance` is the threading seam, not a call site.**
+  The per-section route is slice 2's, so slice 4 lands the composed
+  guidance (vocabulary + the skeleton's family and cast) and the
+  generalised `carry_guidance(client, guidance)`; slice 2 calls them.
+  `format_figure_context` raises on an empty figure family — a caller
+  with none should omit the figure guidance rather than let each
+  section invent its own language.
+- **Prose is still plain text.** Markdown for section bodies, callout
+  bodies, captions and Map `why` cells is slice 2's `markdown-it` +
+  DOMPurify path; the type scale here is ready for it (`.explainer-body`
+  styles headings, lists, tables and code blocks).
+- **The toy-data notice is its own footer line**, not another item in
+  the coverage stats: it qualifies what was read rather than measuring
+  it.
 
 ## Slice 5 — Console reach
 
