@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,7 @@ async def run_pass(
     cache: CacheStore | None = None,
     trace_path: Path | None = None,
     cache_request: dict[str, Any] | None = None,
+    payload_extra: Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Run one LLM pass through the shared recipe.
 
@@ -95,6 +97,12 @@ async def run_pass(
     across the SDK/CLI driver split for the same logical model. The
     trace envelope records ``str(client.model)`` instead so the
     diagnostic surface carries the precise model identifier.
+
+    ``payload_extra`` supplies facts about the run that the model did not
+    submit — the explainer's Background pass records the files its tool
+    loop opened this way. They are merged into the payload *before* it is
+    cached, so a cache hit restores them too: provenance that survives
+    the prose it belongs to is the only kind worth rendering.
     """
     key = None
     if cache is not None:
@@ -132,6 +140,7 @@ async def run_pass(
                 key=key,
                 trace_path=trace_path,
                 cache_request=cache_request,
+                payload_extra=payload_extra,
             )
         except Exception as exc:
             if _GRAMMAR_TIMEOUT not in str(exc):
@@ -158,6 +167,7 @@ async def run_pass(
         key=key,
         trace_path=trace_path,
         cache_request=cache_request,
+        payload_extra=payload_extra,
     )
 
 
@@ -192,6 +202,7 @@ async def _drive_agent(
     key: CacheKey | None,
     trace_path: Path | None,
     cache_request: dict[str, Any] | None,
+    payload_extra: Callable[[], dict[str, Any]] | None,
 ) -> dict[str, Any] | None:
     """One attempt at the agent loop: drive, trace, account, cache."""
     async with agent.iter(
@@ -240,6 +251,8 @@ async def _drive_agent(
         )
 
     payload = submit_args_from_result(run_result)
+    if payload_extra is not None:
+        payload = {**payload, **payload_extra()}
 
     if cache is not None and key is not None:
         usage = run_result.usage  # pydantic-ai 2.x: property, not a method

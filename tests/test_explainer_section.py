@@ -397,3 +397,51 @@ def test_terms_land_as_a_definition_list(diff: AnnotatedDiff, doc) -> None:
         ids=build_json.viewer_id_index(diff),
     )
     assert [(t.term, t.definition) for t in section.terms] == [("ListRequest", "the paged request")]
+
+
+def test_a_submission_carrying_a_sources_key_cannot_forge_the_citation_line() -> None:
+    """The read list rides the payload so it survives the cache, but it
+    is not a submission field — a model that emits one is ignored."""
+    submission = explainer_section.ExplainerSectionSubmission.model_validate(
+        {"body": "x", "recorded_sources": ["invented.py"]}
+    )
+    assert not hasattr(submission, "recorded_sources")
+
+
+def test_the_recorded_read_list_rides_the_cache_with_the_prose(tmp_path) -> None:
+    """A cache hit that lost the citation line would have the section
+    claim it read nothing — which is exactly the claim the line exists to
+    make believable."""
+    import asyncio
+
+    from pydantic_ai.models.test import TestModel
+
+    from semantic_code_review.cache.store import CacheStore
+
+    cache = CacheStore(root=tmp_path / "cache", prompt_version="test")
+    agent = explainer_section.make_explainer_section_agent(TestModel(), "sys")
+    runs = 0
+
+    async def once() -> dict:
+        nonlocal runs
+        runs += 1
+        with agent.override(model=TestModel(custom_output_args={"body": "the system before"})):
+            payload = await explainer_section.run_pass(
+                explainer_section.PassMeta(name="explainer-background", submit_tool="submit_explainer_section"),
+                client=Client(model="anthropic:x"),
+                agent=agent,
+                user_content="u",
+                system="sys",
+                model="m",
+                cache_inputs=("base1234",),
+                cache=cache,
+                payload_extra=lambda: {"recorded_sources": [f"read-{runs}.py"]},
+            )
+        assert payload is not None
+        return payload
+
+    first = asyncio.run(once())
+    second = asyncio.run(once())
+    assert first["recorded_sources"] == ["read-1.py"]
+    # Served from cache: the prose AND the provenance that produced it.
+    assert second == first

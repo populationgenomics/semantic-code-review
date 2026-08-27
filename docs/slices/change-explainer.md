@@ -240,6 +240,13 @@ is the failure mode the cap exists to prevent.
   — this is the one pass that cites itself.
 - **Only `path` arguments count as a read.** `grep`'s `path_glob` is a
   filter over a search, not a file opened, so it is not recorded.
+- **The read list rides the cache with the prose.** `run_pass` grew
+  `payload_extra`, a supplier of run facts the model did not submit,
+  merged into the payload before it is cached. Without it a cache hit
+  would restore Background's prose and lose its citation line — the
+  section would then claim it read nothing, which is precisely the claim
+  the line exists to make believable. It is not a submission field, so a
+  model that emits one is ignored.
 - **The citation line renders even when empty**, as "Written without
   reading any file." A missing line and an empty one look the same, and
   the empty case is the one the affordance exists for.

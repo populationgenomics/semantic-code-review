@@ -458,6 +458,13 @@ def find_section(
 #: of these — a citation line has to list what was actually looked at.
 _PATH_ARGS = ("path",)
 
+#: Where the recorded read list rides in the pass payload. Not a field
+#: of `ExplainerSectionSubmission` — the model must not be able to write
+#: its own citation line — but it is merged into the payload before the
+#: cache stores it, so a cached Background keeps its provenance.
+#: `model_validate` ignores it.
+_SOURCES_KEY = "recorded_sources"
+
 
 class _ReadRecorder:
     """The paths a tool-using pass opened, in first-read order.
@@ -673,9 +680,13 @@ async def _run_section_pass(
             cache=cache,
             trace_path=trace_path,
             cache_request={"system": system_text, "user": user_text},
+            # The read list is not the model's to submit, but it has to
+            # ride the cache with the prose: a cached Background whose
+            # citation line came back empty would claim it read nothing.
+            payload_extra=lambda: {_SOURCES_KEY: list(recorder.paths)},
         )
     assert payload is not None  # `swallow_errors` is false
-    return payload, recorder.paths
+    return payload, [str(p) for p in payload.get(_SOURCES_KEY, [])]
 
 
 def _load(run_dir: Path) -> tuple[AnnotatedDiff, explainer_schema.ExplainerDocument]:
