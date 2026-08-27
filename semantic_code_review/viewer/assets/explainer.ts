@@ -22,7 +22,7 @@
 // explainer_figure.ts, which reduces them to the closed vocabulary in
 // docs/explainer-presentation.md.
 
-import { renderMarkdown } from "./console_render";
+import { renderMarkdown, renderInlineMarkdown } from "./console_render";
 import { ExplainerFigures } from "./explainer_figure";
 
 let _endpoint = "";
@@ -365,7 +365,9 @@ function _renderSkipBox(box: ExplainerSkipBox): HTMLElement {
 function _renderTerms(terms: ExplainerTerm[]): HTMLElement {
   const dl = _el("dl", "explainer-terms");
   for (const t of terms) {
-    dl.appendChild(_el("dt", null, t.term));
+    const dt = _el("dt", null);
+    renderInlineMarkdown(dt, t.term);
+    dl.appendChild(dt);
     const dd = _el("dd", null);
     dd.appendChild(_renderBody(t.definition));
     dl.appendChild(dd);
@@ -391,7 +393,8 @@ function _renderSources(section: ExplainerSection): HTMLElement | null {
 function _renderSubsection(section: ExplainerSection): HTMLElement {
   const el = _el("section", "explainer-subsection");
   el.dataset.sectionId = section.id;
-  const heading = _el("h3", "explainer-subsection-title", section.title);
+  const heading = _el("h3", "explainer-subsection-title");
+  renderInlineMarkdown(heading, section.title);
   heading.id = _headingId(section.id);
   el.appendChild(heading);
   if (section.body) el.appendChild(_renderBody(section.body));
@@ -547,7 +550,9 @@ function _chipify(root: HTMLElement): void {
     _REF_TOKEN.lastIndex = 0;
     for (let m = _REF_TOKEN.exec(text); m !== null; m = _REF_TOKEN.exec(text)) {
       if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
-      frag.appendChild(_refChip(m[1]));
+      const chip = _refChip(m[1]);
+      _labelRef(chip, m[1], _precedingText(node, m.index));
+      frag.appendChild(chip);
       last = m.index + m[0].length;
     }
     if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
@@ -563,25 +568,64 @@ function _inCode(node: Node): boolean {
   return false;
 }
 
-/** An inline reference is a link-out arrow, not a label.
+//: How much prose before a reference to search for the name it cites.
+//: One clause is enough — further back and an unrelated earlier mention
+//: would silently strip a label the sentence needs.
+const _NAMED_WINDOW = 80;
+
+/** The text immediately before `offset` in `node`, walking back into
+ *  earlier siblings so a name inside a code span still counts. */
+function _precedingText(node: Text, offset: number): string {
+  let out = (node.nodeValue || "").slice(0, offset);
+  let cur: Node | null = node;
+  while (out.length < _NAMED_WINDOW && cur) {
+    const prev: Node | null = cur.previousSibling;
+    if (!prev) { cur = cur.parentNode; if (!cur || cur.nodeName === "DIV") break; continue; }
+    out = (prev.textContent || "") + out;
+    cur = prev;
+  }
+  return out.slice(-_NAMED_WINDOW);
+}
+
+/** An inline reference: an arrow, labelled only when it has to be.
  *
- *  The prose has almost always just named the thing it is citing
- *  ("models/workbench.proto [F10] holds the message shapes"), so a chip
- *  carrying the full repo path repeats it at slab width and breaks the
- *  line. The arrow attaches to the phrase before it and the target
- *  moves to the tooltip, where it costs nothing to read past. */
+ *  Where the prose has just named its target — "models/workbench.proto
+ *  [F10] holds the message shapes" — a chip repeating the full path
+ *  breaks the line for no information, and a bare arrow reads as the
+ *  citation it is. Where it has not, the reference is carrying the
+ *  sentence: "[F11] declares the three RPCs" and "everything under
+ *  [F0], [F1], [F14] is the protoc output" both become unreadable rows
+ *  of anonymous glyphs. So the label is dropped only when it would be a
+ *  repetition, and the basename stands in otherwise — never the full
+ *  path, which is what made the chip a slab. */
 function _refChip(id: string): HTMLElement {
   const isFile = id.charAt(0) === "F";
   const target = isFile ? _fileLabel(id) : _hunkLabel(id);
-  const btn = _el("button", "explainer-ref explainer-arrow", "\u2197");
+  const btn = _el("button", "explainer-ref explainer-arrow");
   btn.dataset.refId = id;
-  btn.title = isFile ? `Open ${target} in the diff` : `Open ${target} in the diff`;
+  btn.title = `Open ${target} in the diff`;
   btn.setAttribute("aria-label", btn.title);
   btn.addEventListener("click", () => {
     if (isFile) _onOpenFile?.(id);
     else _onOpenHunk?.(id);
   });
   return btn;
+}
+
+/** Give a reference its label, or leave it bare. Split from `_refChip`
+ *  because only the caller walking the prose knows what came before. */
+function _labelRef(btn: HTMLElement, id: string, preceding: string): void {
+  const isFile = id.charAt(0) === "F";
+  const path = _fileLabel(id);
+  const base = path.slice(path.lastIndexOf("/") + 1);
+  const alreadyNamed = base.length > 0 && preceding.indexOf(base) !== -1;
+  if (alreadyNamed) {
+    btn.textContent = "\u2197";
+    return;
+  }
+  btn.classList.add("explainer-arrow-labelled");
+  const m = /^H\d+_(\d+)$/.exec(id);
+  btn.textContent = isFile || !m ? `${base} \u2197` : `${base}:${Number(m[1]) + 1} \u2197`;
 }
 
 /** Coverage, the dropped-reference count, and the toy-data notice —

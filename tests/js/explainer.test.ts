@@ -466,15 +466,37 @@ describe("prose rendering", () => {
     expect(body.querySelector("blockquote")!.textContent).toContain("[!GOTCHA]");
   });
 
-  test("an inline file reference becomes an arrow, with the path in its tooltip", () => {
-    // The prose has usually just named the file, so the arrow attaches to
-    // the phrase and the path moves to the tooltip rather than repeating
-    // itself at slab width mid-sentence.
+  test("a reference the prose has not named carries the basename", () => {
+    // Bare, this sentence reads "The contract lives in ↗." — the arrow is
+    // doing the work of a noun and cannot.
     withBody("The contract lives in [F0].");
+    const ref = Explainer.renderPane().querySelector(".explainer-arrow") as HTMLElement;
+    expect(ref.textContent).toBe("api.proto \u2197");
+    expect(ref.title).toContain("schema/api.proto");
+    expect(ref.dataset.refId).toBe("F0");
+  });
+
+  test("a reference the prose has just named goes bare", () => {
+    withBody("The file api.proto [F0] holds the message shapes.");
     const ref = Explainer.renderPane().querySelector(".explainer-arrow") as HTMLElement;
     expect(ref.textContent).toBe("\u2197");
     expect(ref.title).toContain("schema/api.proto");
-    expect(ref.dataset.refId).toBe("F0");
+  });
+
+  test("a name inside a code span still counts as having been said", () => {
+    // markdown-it puts it in its own element, so the search has to walk
+    // back past the boundary.
+    withBody("See `api.proto` [F0] for the shapes.");
+    const ref = Explainer.renderPane().querySelector(".explainer-arrow") as HTMLElement;
+    expect(ref.textContent).toBe("\u2197");
+  });
+
+  test("a run of references each keep their label", () => {
+    // "Everything under ↗, ↗, ↗ is generated" was the failure: a row of
+    // anonymous glyphs naming nothing.
+    withBody("Everything under [F0], [F1] is generated.");
+    const refs = Array.from(Explainer.renderPane().querySelectorAll(".explainer-arrow"));
+    expect(refs.map((r) => r.textContent)).toEqual(["api.proto \u2197", "api_pb.ts \u2197"]);
   });
 
   test("a hunk arrow names the file and the hunk's place in it, in its tooltip", () => {
@@ -495,11 +517,10 @@ describe("prose rendering", () => {
   });
 
   test("surrounding prose survives the arrow swap", () => {
-    // The token is replaced by the arrow glyph, so the sentence reads as
-    // written rather than having a path spliced into it.
     withBody("Read [F0] first, then [F1].");
     const body = Explainer.renderPane().querySelector(".explainer-body")!;
-    expect(body.textContent!.trim()).toBe("Read \u2197 first, then \u2197.");
+    expect(body.textContent!.trim())
+      .toBe("Read api.proto \u2197 first, then api_pb.ts \u2197.");
   });
 });
 

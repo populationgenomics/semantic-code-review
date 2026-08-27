@@ -1757,6 +1757,15 @@ body { padding-bottom: 30px; }
   cursor: pointer;
 }
 .explainer-arrow:hover { color: var(--fg); }
+/* A reference the prose did not already name carries the basename, so it
+   is a word in the sentence and takes the sentence's size. */
+.explainer-arrow-labelled {
+  font-family: var(--mono);
+  font-size: 0.82em;
+  vertical-align: baseline;
+  padding: 0;
+  white-space: nowrap;
+}
 
 .explainer-chip {
   padding: 1px 6px;
