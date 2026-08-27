@@ -18,6 +18,18 @@
   --minor: #8b949e;
   --info: #58a6ff;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  /* Overview mode's reading surface and figure vocabulary
+     (docs/explainer-presentation.md). Every figure class resolves to one of
+     these, so the model emits geometry and never picks a colour. */
+  --serif: ui-serif, Charter, "Bitstream Charter", "Iowan Old Style", Georgia, "Times New Roman", serif;
+  --accent2: #bc8cff;
+  --box: #1c2128;
+  --box-alt: #2a313c;
+  --accent-soft: rgba(88, 166, 255, 0.16);
+  --accent2-soft: rgba(188, 140, 255, 0.16);
+  --warn-soft: rgba(210, 153, 34, 0.16);
+  --ok-soft: rgba(63, 185, 80, 0.16);
 }
 
 @media (prefers-color-scheme: light) {
@@ -31,13 +43,21 @@
     --border: #d0d7de;
     --accent: #0969da;
     --ok: #1a7f37;
+    --serif: ui-serif, Charter, "Bitstream Charter", "Iowan Old Style", Georgia, "Times New Roman", serif;
+    --accent2: #8250df;
+    --box: #f6f8fa;
+    --box-alt: #eaeef2;
+    --accent-soft: rgba(9, 105, 218, 0.10);
+    --accent2-soft: rgba(130, 80, 223, 0.10);
+    --warn-soft: rgba(154, 103, 0, 0.10);
+    --ok-soft: rgba(26, 127, 55, 0.10);
   }
 }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--ui);
   font-size: 14px; line-height: 1.5;
 }
 
@@ -1497,57 +1517,225 @@ body { padding-bottom: 30px; }
 .post-modal-link:hover { text-decoration: underline; }
 
 /* --- Change explainer (ADR 0007) -----------------------------------------
-   Slice 1 carries only what the Map needs to be legible. The reading
-   type scale, the affordance styles and the figure class vocabulary
-   land with slice 4; until then this deliberately borrows the viewer's
-   own chrome rather than half-inventing a second look. */
-.explainer { max-width: 72ch; padding: 20px 24px; }
-.explainer-lede { font-size: 15px; line-height: 1.55; color: var(--fg); margin: 0 0 16px; }
-.explainer-status { color: var(--fg-muted); font-size: 13px; line-height: 1.5; }
+   Overview mode is a reading surface, so it takes its own type scale
+   rather than the diff's dense monospace chrome: serif body at the
+   measure, UI sans for every piece of chrome around it.
+
+   The affordance classes and the `d-`/`t`/`ln`/`head` figure vocabulary
+   below are one half of the contract in docs/explainer-presentation.md;
+   the prompt in augment/prompts.py is the other. A class the model uses
+   and this file does not define renders unstyled. */
+.explainer {
+  max-width: 72ch;
+  margin: 0 auto;
+  padding: 32px 28px 72px;
+  font-family: var(--serif);
+  font-size: 18px;
+  line-height: 1.62;
+  color: var(--fg);
+}
+.explainer-lede {
+  font-size: 20px; line-height: 1.5; color: var(--fg);
+  margin: 0 0 28px;
+}
+.explainer-status { font-family: var(--ui); color: var(--fg-muted); font-size: 14px; line-height: 1.5; }
 .explainer-error { color: var(--warn); }
-.explainer-section { margin: 0 0 28px; }
+.explainer-section { margin: 0 0 44px; }
 .explainer-section-title {
-  margin: 0 0 8px;
+  font-family: var(--ui);
+  margin: 0 0 14px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+.explainer-subsection-title {
+  font-family: var(--ui);
+  margin: 32px 0 10px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.explainer-body { margin: 0 0 16px; }
+.explainer-body h3, .explainer-body h4, .explainer-body h5 {
+  font-family: var(--ui); font-weight: 600; color: var(--fg);
+  margin: 28px 0 8px;
+}
+.explainer-body h3 { font-size: 17px; }
+.explainer-body h4 { font-size: 15px; }
+.explainer-body h5 { font-size: 14px; color: var(--fg-muted); }
+.explainer-body p, .explainer-body ul, .explainer-body ol { margin: 0 0 16px; }
+.explainer-body li { margin: 4px 0; }
+.explainer-body code { font-family: var(--mono); font-size: 0.82em; }
+.explainer-body pre {
+  font-family: var(--mono); font-size: 13px; line-height: 1.5;
+  background: var(--bg-alt); border: 1px solid var(--border); border-radius: 6px;
+  padding: 12px 14px; overflow-x: auto;
+}
+.explainer-body table { font-family: var(--ui); font-size: 14px; border-collapse: collapse; }
+.explainer-body th {
+  font-family: var(--ui); text-align: left; font-weight: 600;
+  border-bottom: 1px solid var(--border); padding: 0 12px 6px 0;
+}
+.explainer-body td { vertical-align: top; padding: 6px 12px 6px 0; border-bottom: 1px solid var(--border); }
+.explainer-generate {
+  font-family: var(--ui);
+  margin-top: 16px;
+  background: var(--accent); border: none; color: #fff;
+  padding: 7px 16px; font-size: 14px; border-radius: 6px; cursor: pointer;
+}
+
+/* Structured affordances. The model supplies content; every presentation
+   decision is here. */
+.explainer-callout {
+  margin: 24px 0;
+  padding: 12px 16px;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 0 6px 6px 0;
+  font-size: 16px;
+  line-height: 1.55;
+}
+.explainer-callout-edge { border-left-color: var(--warn); background: var(--warn-soft); }
+.explainer-callout-aside { border-left-color: var(--accent2); background: var(--accent2-soft); }
+.explainer-callout-title {
+  font-family: var(--ui);
+  margin: 0 0 6px;
+  font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--fg-muted);
+}
+.explainer-callout-body > :first-child { margin-top: 0; }
+.explainer-callout-body > :last-child { margin-bottom: 0; }
+
+.explainer-skip {
+  margin: 24px 0;
+  padding: 12px 16px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--fg-muted);
+  font-size: 15px;
+  line-height: 1.5;
+}
+.explainer-skip-link {
+  font-family: var(--ui);
+  background: transparent; border: none; padding: 0; cursor: pointer;
+  font-size: 14px; color: var(--accent);
+}
+.explainer-skip-link:hover { text-decoration: underline; }
+
+.explainer-terms { margin: 24px 0; }
+.explainer-terms dt {
+  font-family: var(--ui); font-weight: 600; font-size: 15px; color: var(--fg);
+  margin-top: 12px;
+}
+.explainer-terms dd { margin: 2px 0 0; padding: 0; color: var(--fg-muted); }
+
+/* Figures break the measure slightly — the doc's one licensed overflow. */
+.explainer-figure { margin: 28px -4ch; padding: 0; }
+.explainer-figure svg { display: block; width: 100%; height: auto; }
+.explainer-figure figcaption {
+  font-family: var(--ui);
+  margin: 8px 4ch 0;
+  font-size: 13px; line-height: 1.45;
+  color: var(--fg-muted);
+}
+.explainer-figure-stripped {
+  font-family: var(--ui);
+  margin: 4px 4ch 0;
   font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
   color: var(--fg-dim);
 }
-.explainer-body { font-size: 14px; line-height: 1.6; color: var(--fg); white-space: pre-wrap; }
-.explainer-generate {
-  margin-top: 12px;
-  background: var(--accent); border: none; color: #fff;
-  padding: 6px 14px; font-size: 13px; border-radius: 6px; cursor: pointer;
+.explainer-figure-empty {
+  margin: 0 4ch;
+  padding: 14px 16px;
+  border: 1px dashed var(--border); border-radius: 6px;
+  font-family: var(--ui); font-size: 13px; color: var(--fg-dim);
 }
-.explainer-map { border-collapse: collapse; width: 100%; }
+
+/* Figure class vocabulary. Scoped to the figure so a stray `d-box` in
+   the diff pane can never pick these up. Paint only: the model owns
+   every coordinate. */
+.explainer-figure svg text { font-family: var(--ui); font-size: 13px; fill: var(--fg); }
+
+.explainer-figure svg .d-box { fill: var(--box); stroke: var(--border); stroke-width: 1; }
+.explainer-figure svg .d-box-alt { fill: var(--box-alt); stroke: var(--border); stroke-width: 1; }
+.explainer-figure svg .d-box-acc { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+.explainer-figure svg .d-box-acc2 { fill: var(--accent2-soft); stroke: var(--accent2); stroke-width: 1.5; }
+.explainer-figure svg .d-box-warn { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1.5; }
+.explainer-figure svg .d-box-ok { fill: var(--ok-soft); stroke: var(--ok); stroke-width: 1.5; }
+.explainer-figure svg .d-frame {
+  fill: none; stroke: var(--fg-dim); stroke-width: 1; stroke-dasharray: 6 4;
+}
+.explainer-figure svg .d-fill-bg { fill: var(--bg); stroke: none; }
+
+.explainer-figure svg .t { fill: var(--fg); font-size: 13px; }
+.explainer-figure svg .t-b { fill: var(--fg); font-size: 13px; font-weight: 600; }
+.explainer-figure svg .t-sm { fill: var(--fg-muted); font-size: 11px; }
+.explainer-figure svg .t-cap {
+  fill: var(--fg-dim); font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+.explainer-figure svg .t-mono { fill: var(--fg); font-family: var(--mono); font-size: 12px; }
+.explainer-figure svg .t-mono-sm { fill: var(--fg-muted); font-family: var(--mono); font-size: 11px; }
+.explainer-figure svg .t-acc { fill: var(--accent); font-size: 11px; font-weight: 600; }
+.explainer-figure svg .t-warn { fill: var(--warn); font-size: 11px; font-weight: 600; }
+.explainer-figure svg .t-ok { fill: var(--ok); font-size: 11px; font-weight: 600; }
+
+.explainer-figure svg .ln { fill: none; stroke: var(--fg-muted); stroke-width: 1.5; }
+.explainer-figure svg .ln2 { fill: none; stroke: var(--accent2); stroke-width: 1.5; }
+.explainer-figure svg .ln-mut { fill: none; stroke: var(--fg-dim); stroke-width: 1; stroke-dasharray: 4 4; }
+.explainer-figure svg .ln-warn { fill: none; stroke: var(--warn); stroke-width: 1.5; }
+.explainer-figure svg .ln-ok { fill: none; stroke: var(--ok); stroke-width: 1.5; }
+.explainer-figure svg .ln-thin { fill: none; stroke: var(--border); stroke-width: 1; }
+
+.explainer-figure svg .head { fill: var(--fg-muted); stroke: none; }
+.explainer-figure svg .head2 { fill: var(--accent2); stroke: none; }
+.explainer-figure svg .head-mut { fill: var(--fg-dim); stroke: none; }
+.explainer-figure svg .head-warn { fill: var(--warn); stroke: none; }
+.explainer-figure svg .head-ok { fill: var(--ok); stroke: none; }
+
+.explainer-figure svg .hl { fill: var(--accent-soft); stroke: none; }
+.explainer-figure svg .chip { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1; }
+.explainer-figure svg .rule { fill: var(--border); stroke: none; }
+
+/* The Map: a two-column reading order, chrome-typeset so it scans as a
+   table rather than as prose. */
+.explainer-map { border-collapse: collapse; width: 100%; font-family: var(--ui); font-size: 15px; }
 .explainer-map th {
   text-align: left;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--fg-dim);
-  font-weight: 500;
-  padding: 0 12px 6px 0;
+  font-weight: 600;
+  padding: 0 14px 6px 0;
   border-bottom: 1px solid var(--border);
 }
 .explainer-map td {
   vertical-align: top;
-  padding: 8px 12px 8px 0;
+  padding: 10px 14px 10px 0;
   border-bottom: 1px solid var(--border);
-  font-size: 13px;
   line-height: 1.5;
 }
 .explainer-map-read { white-space: nowrap; }
 .explainer-map-why { color: var(--fg-muted); }
 .explainer-ref {
   background: transparent; border: none; padding: 0; cursor: pointer;
-  font-family: var(--mono); font-size: 12px; color: var(--accent);
+  font-family: var(--mono); font-size: 13px; color: var(--accent);
 }
 .explainer-ref:hover { text-decoration: underline; }
-.explainer-footnote {
-  margin-top: 24px;
-  padding-top: 10px;
+
+.explainer-footer {
+  font-family: var(--ui);
+  margin-top: 40px;
+  padding-top: 12px;
   border-top: 1px solid var(--border);
-  font-size: 11px;
-  color: var(--fg-dim);
+}
+.explainer-footnote { margin: 0; font-size: 12px; color: var(--fg-dim); }
+.explainer-toy-notice {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--warn);
 }
