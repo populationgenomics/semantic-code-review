@@ -21,7 +21,8 @@
 // neutralised.
 //
 // Slice 4 adds selection-awareness: the reviewer's page selection is
-// resolved (`console_selection.ts`) to a code / comment / plain hint,
+// resolved (`console_selection.ts`) to a code / comment / explainer /
+// plain hint,
 // shown as a clearable chip, and folded once into the turn it's
 // submitted with — turn-anchored, never re-injected.
 
@@ -195,7 +196,11 @@ function chipLabel(sel: ConsoleSelection): string {
     return `${sel.file}${span}`;
   }
   const snippet = sel.selection_text.replace(/\s+/g, " ").slice(0, 40);
-  const kind = sel.selection_kind === "comment" ? "comment" : "text";
+  const kind = sel.selection_kind === "comment"
+    ? "comment"
+    : sel.selection_kind === "explainer"
+      ? (sel.section_id || "document")
+      : "text";
   return `${kind}: “${snippet}${sel.selection_text.length > 40 ? "…" : ""}”`;
 }
 

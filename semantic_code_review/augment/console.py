@@ -19,9 +19,11 @@ shape, retained as a thin no-callback wrapper.
 
 Context discipline (ADR 0002): **seed compact, pull on demand.** The
 first turn carries the overview JSON + changed-file list + the
-deterministic `SymbolDelta` (all bounded); bulk content comes through
-tools, including `hunk(id)`. The seed rides the conversation's
-`message_history`, so it is paid once, not re-injected per turn.
+deterministic `SymbolDelta` + the change-explainer document's section
+list when one exists (all bounded); bulk content comes through tools,
+including `hunk(id)` and `section(id)`. The seed rides the
+conversation's `message_history`, so it is paid once, not re-injected
+per turn.
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models import Model
 
-from . import mcp_http_host, source_cache
+from . import explainer_schema, mcp_http_host, source_cache
 from .agents import Client
 from .hunks import overview_to_prompt_json
 from .tools import RepoTools, console_tool_functions
@@ -62,19 +64,27 @@ CONSOLE_SYSTEM = (
     "  - outline / symbol_at — deterministic tree-sitter symbol structure\n"
     "  - changed_symbols — the structural base->head delta\n"
     "  - list_dir / git_log — directory + history\n"
-    "  - hunk(id) — the exact diff text of a hunk, by its 'H<file>_<hunk>' id\n\n"
+    "  - hunk(id) — the exact diff text of a hunk, by its 'H<file>_<hunk>' id\n"
+    "  - section(id) — one section of the change-explainer document, by its id\n\n"
     "Ground every answer in the code. Prefer calling a tool over guessing; "
     "when you state a fact about the code, cite it as `path:line` so the "
     "reviewer can jump to it. The first message seeds you with the PR "
     "overview, the changed-file list, and the deterministic symbol delta — "
     "reach for tools for anything beyond that.\n\n"
+    "If the reviewer has generated a change-explainer document, the seed "
+    "also lists its sections — ids, titles and the references each one "
+    "anchors to, but no prose. Call section(id) for a body. The document is "
+    "generated, so treat its claims as something to check against the code, "
+    "not as ground truth.\n\n"
     "Be concise and direct. Answer the question asked; don't pad with "
     "restatements or caveats. If the code doesn't settle the question, say "
     "what you'd need to look at rather than speculating.\n\n"
     "The reviewer may pin a selection to a question — highlighted code "
-    "(with its enclosing hunk inlined) or a comment. When a turn carries "
-    "a '# Reviewer selection' block, treat it as the subject of 'this' in "
-    "the question and ground your answer in it.\n\n"
+    "(with its enclosing hunk inlined), a comment, or a claim from the "
+    "change-explainer document (with the section's prose and the hunks it "
+    "anchors to inlined). When a turn carries a '# Reviewer selection' "
+    "block, treat it as the subject of 'this' in the question and ground "
+    "your answer in it.\n\n"
     "Your answers render as GitHub-flavoured markdown: use code spans for "
     "identifiers and `path:line` citations, fenced code blocks (with a "
     "language) for snippets, and lists or short headings to structure a "
@@ -120,18 +130,28 @@ def make_console_agent(model: str | Model) -> Agent[RepoTools, str]:
     )
 
 
-def build_console_seed(diff: Any, *, symbol_delta_json: str | None) -> str:
+def build_console_seed(
+    diff: Any,
+    *,
+    symbol_delta_json: str | None,
+    explainer: explainer_schema.ExplainerDocument | None,
+) -> str:
     """Build the compact first-turn seed string.
 
     Carries the overview JSON, a one-line-per-file changed-file list,
-    and the deterministic `SymbolDelta` JSON when available. Everything
-    here is already computed and bounded; bulk content is left to tools.
+    the deterministic `SymbolDelta` JSON when available, and — when the
+    reviewer has generated one — the change-explainer document's section
+    list. Everything here is already computed and bounded; bulk content
+    is left to tools. The document's *prose* is deliberately not seeded:
+    it is unbounded, and `section(id)` pulls a body on demand.
     """
     files_lines: list[str] = []
-    for fp in diff.files:
+    for i, fp in enumerate(diff.files):
         role = fp.ann.role.value if getattr(fp.ann, "role", None) else "modified"
         summary = (getattr(fp.ann, "summary", "") or "").strip().replace("\n", " ")
-        line = f"- {fp.path} ({role})"
+        # The `F<i>` id is what the explainer's references address; without
+        # it a seeded reference names nothing the model can act on.
+        line = f"- F{i} {fp.path} ({role})"
         if summary:
             line += f" — {summary}"
         files_lines.append(line)
@@ -143,7 +163,38 @@ def build_console_seed(diff: Any, *, symbol_delta_json: str | None) -> str:
     ]
     if symbol_delta_json:
         parts.append(f"# Structural symbol delta (deterministic tree-sitter base->head)\n{symbol_delta_json}")
+    if explainer is not None:
+        parts.append(_explainer_section_list(explainer))
     return "\n\n".join(parts)
+
+
+def _explainer_section_list(doc: explainer_schema.ExplainerDocument) -> str:
+    """The document's section tree as one bounded block: ids, titles,
+    states and references, no bodies.
+
+    Indentation carries the tree; the ids are what `section(id)` takes.
+    """
+    lines = [
+        "# Change-explainer document",
+        "A generated document about this change. Titles and references only —"
+        " call section(id) for a body. Its claims are generated: check them"
+        " against the code.",
+        f"verdict: {doc.verdict}",
+    ]
+    if doc.verdict_note:
+        lines.append(f"note: {doc.verdict_note}")
+
+    def emit(sections: list[explainer_schema.Section], depth: int) -> None:
+        for section in sections:
+            refs = ", ".join(r.id for r in section.refs)
+            line = f"{'  ' * depth}- {section.id}: {section.title} [{section.state}]"
+            if refs:
+                line += f" — refs: {refs}"
+            lines.append(line)
+            emit(section.subsections, depth + 1)
+
+    emit(doc.sections, 0)
+    return "\n".join(lines)
 
 
 #: Defensive cap on the reviewer-supplied selection text folded into a
@@ -151,19 +202,25 @@ def build_console_seed(diff: Any, *, symbol_delta_json: str | None) -> str:
 #: payload is untrusted, so bound it rather than trust the client.
 _SELECTION_CAP = 4000
 
+#: How many of a section's anchored hunks an explainer selection inlines.
+#: A Code subsection can anchor to a dozen; past a handful the block stops
+#: being context and starts being the diff, and `hunk(id)` covers the rest.
+_SELECTION_HUNK_CAP = 8
+
 
 def _format_selection(selection: Any, repo_tools: RepoTools) -> str:
     """Render a reviewer's pinned selection as a prompt block, or ``""``.
 
-    The block names what was highlighted and quotes it; for a code
-    selection with a resolvable hunk id it also inlines the enclosing
-    hunk via the :meth:`RepoTools.hunk` accessor so the model sees the
-    selection in its diff context. Comment/plain selections carry just
-    the quoted text. An absent/empty/non-dict selection yields ``""``.
+    The block names what was highlighted and quotes it, then adds the
+    context that kind of selection can supply: a code selection inlines
+    its enclosing hunk, an explainer selection inlines the section's own
+    prose *and* the hunks that section anchors to (the claim and the code
+    the claim is about). Comment/plain selections carry just the quoted
+    text. An absent/empty/non-dict selection yields ``""``.
 
     Wire shape (from the viewer's `console_selection.ts`):
     ``{selection_text, selection_kind, file?, side?, hunk_id?,
-    line_range?}``.
+    line_range?, section_id?}``.
     """
     if not isinstance(selection, dict):
         return ""
@@ -174,32 +231,101 @@ def _format_selection(selection: Any, repo_tools: RepoTools) -> str:
         text = text[:_SELECTION_CAP] + "\n…(truncated)"
     kind = str(selection.get("selection_kind") or "plain")
 
-    where = ""
-    file = selection.get("file")
-    if kind == "code" and file:
-        where = f" in `{file}`"
-        rng = selection.get("line_range")
-        side = selection.get("side")
-        if isinstance(rng, (list, tuple)) and len(rng) == 2:
-            lo, hi = rng
-            span = f"line {lo}" if lo == hi else f"lines {lo}–{hi}"
-            side_txt = f", {side} side" if side in ("old", "new") else ""
-            where += f" ({span}{side_txt})"
-
     parts = [
-        f"# Reviewer selection ({kind}){where}",
+        f"# Reviewer selection ({kind}){_selection_where(kind, selection)}",
         "The reviewer highlighted this and is asking about it:",
         f"```\n{text}\n```",
     ]
     if kind == "code":
-        hunk_id = selection.get("hunk_id")
-        if hunk_id:
-            hunk_text = repo_tools.hunk(str(hunk_id))
-            # A bad/absent hunk id degrades to text-only — never surface
-            # the accessor's error string into the prompt.
-            if not hunk_text.startswith("error:"):
-                parts += ["Enclosing hunk:", f"```diff\n{hunk_text}\n```"]
+        parts += _code_context(selection, repo_tools)
+    elif kind == "explainer":
+        parts += _explainer_context(selection, repo_tools)
     return "\n".join(parts)
+
+
+def _selection_where(kind: str, selection: dict) -> str:
+    """The ` in …` clause of the selection header, or ``""``."""
+    if kind == "explainer":
+        section_id = selection.get("section_id")
+        return f" in section `{section_id}`" if section_id else ""
+    file = selection.get("file")
+    if kind != "code" or not file:
+        return ""
+    where = f" in `{file}`"
+    rng = selection.get("line_range")
+    side = selection.get("side")
+    if isinstance(rng, (list, tuple)) and len(rng) == 2:
+        lo, hi = rng
+        span = f"line {lo}" if lo == hi else f"lines {lo}–{hi}"
+        side_txt = f", {side} side" if side in ("old", "new") else ""
+        where += f" ({span}{side_txt})"
+    return where
+
+
+def _code_context(selection: dict, repo_tools: RepoTools) -> list[str]:
+    """The enclosing hunk of a code selection, as prompt lines."""
+    hunk_id = selection.get("hunk_id")
+    if not hunk_id:
+        return []
+    hunk_text = repo_tools.hunk(str(hunk_id))
+    # A bad/absent hunk id degrades to text-only — never surface the
+    # accessor's error string into the prompt.
+    if hunk_text.startswith("error:"):
+        return []
+    return ["Enclosing hunk:", f"```diff\n{hunk_text}\n```"]
+
+
+def _explainer_context(selection: dict, repo_tools: RepoTools) -> list[str]:
+    """The selected section's prose and its anchored hunks, as prompt lines.
+
+    A `pending` section renders as the accessor's "not written yet" —
+    the reviewer can still select the heading, and the hunks it anchors
+    to are the answerable part. A selection that landed in the document
+    but outside any section carries no ``section_id`` and gets nothing.
+    """
+    section_id = selection.get("section_id")
+    if not section_id:
+        return []
+    rendered = repo_tools.section(str(section_id))
+    if rendered.startswith("error:"):
+        return []
+    out = ["Section:", f"```\n{rendered}\n```"]
+
+    doc = repo_tools.explainer
+    if doc is None:
+        return out
+    section = explainer_schema.find_section(doc, str(section_id))
+    if section is None:
+        return out
+    hunk_refs = [r for r in section.refs if r.kind == "hunk"]
+    blocks = [t for t in (repo_tools.hunk(r.id) for r in hunk_refs[:_SELECTION_HUNK_CAP]) if not t.startswith("error:")]
+    if blocks:
+        joined = "\n\n".join(blocks)
+        out += ["Hunks this section anchors to:", f"```diff\n{joined}\n```"]
+    omitted = len(hunk_refs) - _SELECTION_HUNK_CAP
+    if omitted > 0:
+        out.append(f"({omitted} further anchored hunks omitted — call hunk(id) for them.)")
+    return out
+
+
+def _load_explainer(run_dir: Path, diff: Any) -> explainer_schema.ExplainerDocument | None:
+    """The run's change-explainer document, or None when there isn't one.
+
+    Absent (nobody pressed the button) and stale (the SHAs moved) are
+    both ordinary. Corruption is not, but it belongs to the explainer's
+    own routes, which raise on it — a console turn about something else
+    entirely should not die because the document is unreadable, so it is
+    logged and the turn proceeds without it.
+    """
+    try:
+        return explainer_schema.load_explainer(
+            run_dir,
+            base_sha=diff.pr.base_sha,
+            head_sha=diff.pr.head_sha,
+        )
+    except explainer_schema.ExplainerCorrupt:
+        log.warning("console: explainer.json is unreadable — the turn goes without it", exc_info=True)
+        return None
 
 
 def _prepare_turn(
@@ -237,6 +363,7 @@ def _prepare_turn(
         base_sha=diff.pr.base_sha,
         head_sha=diff.pr.head_sha,
         diff=diff,
+        explainer=_load_explainer(run_dir, diff),
         cache=source_cache.SourceCache(),
     )
 
@@ -255,7 +382,11 @@ def _prepare_turn(
             symbol_delta_json = repo_tools.compute_symbol_delta().model_dump_json()
         except Exception:  # noqa: BLE001 — seed is best-effort
             log.warning("console seed: symbol delta failed", exc_info=True)
-        seed = build_console_seed(diff, symbol_delta_json=symbol_delta_json)
+        seed = build_console_seed(
+            diff,
+            symbol_delta_json=symbol_delta_json,
+            explainer=repo_tools.explainer,
+        )
         prompt = f"{seed}\n\n{question_section}"
 
     return make_console_agent(client.model), prompt, repo_tools

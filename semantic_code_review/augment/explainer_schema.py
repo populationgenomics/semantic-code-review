@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Literal
 
@@ -228,6 +228,29 @@ def save_explainer(run_dir: Path, doc: ExplainerDocument) -> Path:
     return path
 
 
+def iter_sections(doc: ExplainerDocument) -> Iterator[Section]:
+    """Yield every section of the document, subsections after parents."""
+
+    def walk(sections: Iterable[Section]) -> Iterator[Section]:
+        for section in sections:
+            yield section
+            yield from walk(section.subsections)
+
+    yield from walk(doc.sections)
+
+
+def find_section(doc: ExplainerDocument, section_id: str) -> Section | None:
+    """Find a section by id anywhere in the tree, or None.
+
+    Top-level ids are the section kind; model-chosen subsections under
+    Code mint their own, so the lookup has to descend.
+    """
+    for section in iter_sections(doc):
+        if section.id == section_id:
+            return section
+    return None
+
+
 def validate_references(
     refs: Iterable[Reference],
     *,
@@ -273,6 +296,8 @@ __all__ = [
     "SkipBox",
     "Term",
     "explainer_path",
+    "find_section",
+    "iter_sections",
     "load_explainer",
     "save_explainer",
     "validate_references",
