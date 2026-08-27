@@ -74,6 +74,13 @@ FoldSummaryCallable = Callable[
 ExplainerCallable = Callable[[], Coroutine[Any, Any, dict]]
 
 
+#: Signature of the change-explainer per-section generator. Takes a
+#: section id and returns the whole document as a jsonable dict — a
+#: section write is a document write. Wired on the same terms as
+#: ``ExplainerCallable``.
+ExplainerSectionCallable = Callable[[str], Coroutine[Any, Any, dict]]
+
+
 #: Signature of the streaming console turn driver accepted by
 #: ``serve_review``. Called as ``(question, history, on_delta, on_tool,
 #: cancel)`` and awaited to ``(answer_text, new_history)``:
@@ -149,6 +156,7 @@ def run_review(opts: ReviewOptions) -> int:
     fold_summary_task: FoldSummaryCallable | None = None
     console_task: ConsoleCallable | None = None
     explainer_task: ExplainerCallable | None = None
+    explainer_section_task: ExplainerSectionCallable | None = None
     bind_debug_sink: Callable[[Callable[[dict], None]], None] | None = None
     if opts.augment:
         from ..augment.pipeline import augment_run_dir  # lazy: anthropic SDK
@@ -187,6 +195,12 @@ def run_review(opts: ReviewOptions) -> int:
                 cache=cache,
                 run_dir=run_dir,
             )
+            explainer_section_task = _build_explainer_section_task(
+                client=opts.client,
+                model=opts.model,
+                cache=cache,
+                run_dir=run_dir,
+            )
 
         # The console reuses the augment backend — SDK backends stream
         # token-by-token, CLI subprocess backends answer one-shot per turn
@@ -218,6 +232,7 @@ def run_review(opts: ReviewOptions) -> int:
         fold_summary=fold_summary_task,
         console=console_task,
         explainer=explainer_task,
+        explainer_section=explainer_section_task,
         port=opts.port,
         timeout=opts.timeout,
         open_browser=opts.open_browser,
@@ -260,6 +275,7 @@ def serve_review(
     fold_summary: FoldSummaryCallable | None = None,
     console: ConsoleCallable | None = None,
     explainer: ExplainerCallable | None = None,
+    explainer_section: ExplainerSectionCallable | None = None,
     post: PostCallable | None = None,
     post_meta: dict | None = None,
     port: int = 0,
@@ -354,6 +370,8 @@ def serve_review(
                 # overview, which only exists once the sidecar does.
                 if explainer is not None:
                     srv.set_explainer_generator(explainer)
+                if explainer_section is not None:
+                    srv.set_explainer_section_generator(explainer_section)
                 srv.publish("done", {"reason": "augment-complete"})
             if augment_error is not None and not isinstance(augment_error, Exception):
                 # KeyboardInterrupt / SystemExit shouldn't be swallowed —
@@ -439,6 +457,38 @@ def _build_explainer_task(
         doc = await generate_explainer_skeleton(
             client,
             run_dir=run_dir,
+            model=model,
+            cache=cache,
+            trace_dir=run_dir / "trace",
+        )
+        return document_to_payload(doc)
+
+    return task
+
+
+def _build_explainer_section_task(
+    *,
+    client: Client | None,
+    model: str,
+    cache: CacheStore | None,
+    run_dir: Path,
+) -> ExplainerSectionCallable:
+    """Construct the per-section prose generator ``serve_review``
+    installs alongside the skeleton one. Same capture, same lazy import;
+    the section id is the only per-call input.
+    """
+    # Lazy import: keeps pydantic-ai off the `--no-augment` path.
+    from ..augment.explainer import document_to_payload
+    from ..augment.explainer_section import generate_explainer_section
+
+    async def task(section_id: str) -> dict:
+        # As with the skeleton task: serve_review never wires this up
+        # without a backend, so a None here is a wiring bug.
+        assert client is not None, "explainer section task called without an LLM backend"
+        doc = await generate_explainer_section(
+            client,
+            run_dir=run_dir,
+            section_id=section_id,
             model=model,
             cache=cache,
             trace_dir=run_dir / "trace",

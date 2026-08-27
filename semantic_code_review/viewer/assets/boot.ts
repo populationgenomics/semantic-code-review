@@ -75,6 +75,9 @@ function boot(): void {
       // A Map row is "read this next", so it leaves the mode and brings
       // the file into view at whatever collapse level the diff is on.
       onOpenFile: (fileId) => Render.revealFile(fileId),
+      // A hunk chip is a claim about specific lines, so it unfolds them
+      // rather than only scrolling to the file.
+      onOpenHunk: (hunkId) => Render.revealHunk(hunkId),
     });
     // Pick up a document another tab (or an earlier session on this run
     // dir) already paid for, so the button opens it rather than

@@ -114,7 +114,7 @@ def make_explainer_skeleton_agent(model: str | Model, system: str) -> Agent[None
     No repo tools: Background is the only section granted them, and it
     is a separate call (slice 3). `system` is the fully-assembled
     instruction text, which differs by backend — see
-    :func:`_carry_guidance`.
+    :func:`carry_guidance`.
     """
     return Agent(
         model=model,
@@ -123,7 +123,7 @@ def make_explainer_skeleton_agent(model: str | Model, system: str) -> Agent[None
     )
 
 
-def _carry_guidance(client: Client) -> tuple[str, str]:
+def carry_guidance(client: Client, guidance: str) -> tuple[str, str]:
     """Split the prompt between argv and stdin for this backend.
 
     The CLI drivers put `system_text` on argv as `--system-prompt`, and
@@ -133,13 +133,16 @@ def _carry_guidance(client: Client) -> tuple[str, str]:
     keep the guidance in the system prompt, where it is the cacheable
     prefix.
 
+    Shared by every explainer pass; `guidance` is the pass's own bulk
+    block.
+
     Returns:
         `(system_text, user_prefix)`. Exactly one of them carries the
         guidance block; the model sees the same words either way.
     """
     if client.is_subprocess_backend:
-        return EXPLAINER_ROLE, EXPLAINER_SKELETON_GUIDANCE
-    return f"{EXPLAINER_ROLE}\n\n{EXPLAINER_SKELETON_GUIDANCE}", ""
+        return EXPLAINER_ROLE, guidance
+    return f"{EXPLAINER_ROLE}\n\n{guidance}", ""
 
 
 def format_skeleton_prompt(
@@ -331,7 +334,7 @@ async def generate_explainer_skeleton(
     from .hunks import overview_to_prompt_json
 
     diff = load_sidecar(sidecar)
-    system_text, user_prefix = _carry_guidance(client)
+    system_text, user_prefix = carry_guidance(client, EXPLAINER_SKELETON_GUIDANCE)
     user_text = format_skeleton_prompt(
         diff,
         overview_json=overview_to_prompt_json(diff, include_symbols=False),

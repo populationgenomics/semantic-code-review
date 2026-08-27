@@ -369,6 +369,19 @@ ConsoleAsker = Callable[..., Coroutine[Any, Any, Any]]
 ExplainerGenerator = Callable[[], Coroutine[Any, Any, dict[str, Any]]]
 
 
+#: `POST /explainer/section/<id>`. A path prefix rather than an exact
+#: match because the section id is in the path — it is passed straight
+#: to the generator, which 404s on anything it does not know.
+_EXPLAINER_SECTION_PREFIX = "/explainer/section/"
+
+
+#: Signature of the per-section prose generator, wired alongside the
+#: skeleton one. Called with a section id and awaited to the whole
+#: document as a jsonable dict — a section write is a document write, so
+#: the route fans out the document rather than a fragment of it.
+ExplainerSectionGenerator = Callable[[str], Coroutine[Any, Any, dict[str, Any]]]
+
+
 #: Signature of the post callback accepted by ``serve_review`` when the
 #: caller wants the viewer to handle confirm-and-post in-browser.
 #: Takes the comment IDs the reviewer selected in the confirmation
@@ -418,10 +431,14 @@ class ServerContext:
     # ``explainer_generator`` is wired later, once augmentation has left
     # a sidecar for the skeleton to be seeded from, and until then
     # /explainer/skeleton 409s the way /fold-summary does.
-    # ``explainer_busy`` gives one generation per server: a second POST
-    # while one is in flight gets 409 rather than a duplicate spend.
+    # ``explainer_busy`` gives one generation per server, skeleton and
+    # per-section alike: a second POST while one is in flight gets 409
+    # rather than a duplicate spend. It is also what keeps concurrent
+    # section writes from racing each other's read-modify-write of
+    # `explainer.json` — with one pass at a time there is no interleave.
     explainer_enabled: bool = False
     explainer_generator: ExplainerGenerator | None = None
+    explainer_section_generator: ExplainerSectionGenerator | None = None
     explainer_busy: bool = False
     # Optional, wired by serve_review when the caller wants posting to
     # happen via the in-browser confirmation modal (``scr pr``). When
@@ -695,6 +712,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/explainer/skeleton":
             self._handle_explainer_skeleton()
             return
+        if path.startswith(_EXPLAINER_SECTION_PREFIX):
+            self._handle_explainer_section(path[len(_EXPLAINER_SECTION_PREFIX) :])
+            return
         if path == "/console/cancel":
             self._handle_console_cancel()
             return
@@ -902,6 +922,72 @@ class _Handler(BaseHTTPRequestHandler):
             return
         except Exception as e:
             log.exception("explainer skeleton failed")
+            self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            return
+        finally:
+            with self.ctx.state_lock:
+                self.ctx.explainer_busy = False
+
+        _ctx_publish(self.ctx, "explainer", payload)
+        self._json(200, payload)
+
+    def _handle_explainer_section(self, section_id: str) -> None:
+        """Write one section's prose, persist it, fan the document out.
+
+        Generation is per-section and reviewer-initiated: the viewer
+        POSTs here the first time a `pending` section is opened. The
+        same one-pass-at-a-time rule as the skeleton applies, and it is
+        also what keeps two sections from interleaving their
+        read-modify-write of `explainer.json`.
+
+        A section whose anchored hunks are not all annotated is a 409
+        carrying the counts — the reviewer is told what it is waiting
+        for rather than handed prose written over the gaps. A pass that
+        raises is a 500, but the section is already persisted `failed`
+        and the updated document is fanned out first, so every tab sees
+        the retryable state.
+        """
+        if self.ctx.explainer_section_generator is None:
+            reason = (
+                "the change explainer is disabled for this review"
+                if not self.ctx.explainer_enabled
+                else "augmentation still in progress"
+            )
+            self._json(409, {"error": reason})
+            return
+
+        from ..augment.explainer import ExplainerNotReady
+        from ..augment.explainer_section import SectionFailed, SectionNotFound, SectionNotReady
+
+        with self.ctx.state_lock:
+            if self.ctx.explainer_busy:
+                self._json(409, {"error": "an explainer pass is already running"})
+                return
+            self.ctx.explainer_busy = True
+        try:
+            payload = asyncio.run(self.ctx.explainer_section_generator(section_id))
+        except SectionNotFound:
+            self._json(404, {"error": f"no section {section_id!r} in this document"})
+            return
+        except SectionNotReady as e:
+            self._json(
+                409,
+                {
+                    "error": f"{e.annotated} of {e.total} hunks under this section are annotated",
+                    "annotated": e.annotated,
+                    "total": e.total,
+                },
+            )
+            return
+        except ExplainerNotReady as e:
+            self._json(409, {"error": str(e)})
+            return
+        except SectionFailed as e:
+            _ctx_publish(self.ctx, "explainer", e.document)
+            self._json(500, {"error": str(e)})
+            return
+        except Exception as e:
+            log.exception("explainer section %s failed", section_id)
             self._json(500, {"error": f"{type(e).__name__}: {e}"})
             return
         finally:
@@ -1244,6 +1330,15 @@ class ReviewServer:
         disk. Before then /explainer/skeleton returns 409.
         """
         self.ctx.explainer_generator = generator
+
+    def set_explainer_section_generator(self, generator: ExplainerSectionGenerator | None) -> None:
+        """Install (or clear) the change-explainer per-section generator.
+
+        Wired at the same moment as the skeleton generator, and for the
+        same reason: a section is seeded with the hunk intents under it,
+        which only exist once the sidecar does.
+        """
+        self.ctx.explainer_section_generator = generator
 
     def update_viewer_json(self, viewer_json: dict[str, Any]) -> None:
         """Replace the JSON returned by ``GET /data.json``.

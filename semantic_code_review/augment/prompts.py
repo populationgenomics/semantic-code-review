@@ -289,3 +289,82 @@ EXPLAINER_SKELETON_GUIDANCE = (
     "Tone throughout: explanatory, not evaluative. You are orienting a reader, "
     "not judging the change."
 )
+
+
+# One bulk guidance block for all three prose sections rather than one
+# per section: on SDK backends it is the cacheable system prefix, and
+# three near-identical prefixes would be three cache entries that never
+# hit each other. What differs per section is a short brief, which rides
+# the user text alongside the seed.
+
+EXPLAINER_SECTION_GUIDANCE = (
+    "You are writing ONE section of that document. Another call wrote the skeleton "
+    "— the verdict, the reading Map, the figure family and the cast — and other "
+    "calls write the other sections. You are given the skeleton's decisions and "
+    "must write inside them, not restate or revise them.\n\n"
+    "You receive the change's overview, the document so far, the section you are "
+    "writing with its brief, the full list of the change's files with their viewer "
+    "ids, and — for the files this section was assigned — every hunk under them "
+    "with the intent already established for it. Those intents are the ground "
+    "truth about what each hunk does. Your job is the connective tissue between "
+    "them: what they add up to, in what order they make sense, and why the change "
+    "is shaped this way. Do not re-describe a hunk the intent already describes.\n\n"
+    "# body\n"
+    "Markdown. Headings (`###` and below — the section's own title is rendered by "
+    "the viewer, so do not repeat it), paragraphs, ordered and unordered lists, "
+    "code spans, fenced code blocks with a language, tables, emphasis and links. "
+    "No raw HTML: it is not interpreted. No diagrams — there is no diagram slot in "
+    "this section yet, and a fenced diagram renders as source.\n\n"
+    "Write for a reviewer who did not write the change and has not read it. "
+    "Several tight paragraphs beat a long one. Do not open by restating the "
+    "section's title or the change's summary.\n\n"
+    "# inline references\n"
+    "Where the prose points at code, name the code by its viewer id in square "
+    "brackets: `[F3]` for a whole file, `[H3_1]` for one hunk. The viewer turns "
+    "each into a chip the reviewer can click through to. Use them where a claim is "
+    "checkable against a specific place, not as decoration — a paragraph of chips "
+    "is a list of hunks, which the reviewer already has.\n\n"
+    "# refs\n"
+    "The ordered list of what this section is about, as the sidebar and the "
+    "coverage count read it. Narrow the files you were given to the hunks that "
+    "carry the section's claims where you can; leave it at files where the whole "
+    "file is the subject. An id that is not in the `# Files` or `# Anchored code` "
+    "lists addresses nothing and is dropped.\n\n"
+    "# toy_data\n"
+    "Set it when your worked examples use identifiers, counts or values you "
+    "invented rather than ones taken from the code. The document's footer then "
+    "says so. Inventing them is fine; leaving the reader to guess is not.\n\n"
+    "Tone: explanatory, not evaluative. You are orienting a reader, not judging "
+    "the change. State what is there; do not hedge with 'appears to' or 'likely' "
+    "when the intents already settle it, and do not assert what they do not."
+)
+
+
+#: Per-section brief. Short, so it rides the user text: the bulk block
+#: above is the cacheable prefix and must stay identical across the three
+#: sections for that to be worth anything.
+EXPLAINER_SECTION_BRIEFS: dict[str, str] = {
+    "background": (
+        "Background: the system as it stood BEFORE this change. What the pieces "
+        "involved are, how they fit together, and which existing constraint or "
+        "shortcoming the change is a response to. Nothing about the change itself "
+        "beyond what makes the ground legible — the other sections cover that. "
+        "Write the first paragraphs for a reader new to this codebase."
+    ),
+    "intuition": (
+        "Intuition: the idea of the change in one sitting. What it does, stated "
+        "plainly, and then the smallest worked example that makes it click — a "
+        "concrete value traced through the new path, or a before/after of one "
+        "call. Trace the data object the cast names. This is the section a reader "
+        "should be able to stop at and still have the change."
+    ),
+    "code": (
+        "Code: the walkthrough. Take the hunks in the order they make sense — "
+        "usually the Map's order — and say what each group of them establishes "
+        "and how the next follows from it. Break the walkthrough into subsections "
+        "where the change has natural parts (the contract, its consumers, the "
+        "tests); each subsection gets its own title and its own references. Give "
+        "the section body the through-line, and let the subsections carry the "
+        "detail."
+    ),
+}

@@ -1463,3 +1463,132 @@ def test_explainer_skeleton_failure_is_a_500_not_a_crash(tmp_path: Path) -> None
         assert srv.ctx.explainer_busy is False
     finally:
         srv.stop()
+
+
+def test_explainer_section_409s_before_the_generator_is_wired(tmp_path: Path) -> None:
+    srv = _explainer_server(tmp_path)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _request(srv.url() + "/explainer/section/code", "POST", {})
+        assert e.value.code == 409
+    finally:
+        srv.stop()
+
+
+def test_explainer_section_writes_broadcasts_and_serves(tmp_path: Path) -> None:
+    """Transport: the route dispatches on the section id, fans the whole
+    document out (a section write is a document write) and returns it."""
+    srv = _explainer_server(tmp_path)
+    try:
+        asked: list[str] = []
+
+        async def fake_generator(section_id: str) -> dict:
+            asked.append(section_id)
+            doc = _explainer_doc()
+            doc["sections"][0].update({"state": "ready", "body": "the system before."})
+            (tmp_path / "explainer.json").write_text(json.dumps(doc), encoding="utf-8")
+            return doc
+
+        srv.set_explainer_section_generator(fake_generator)
+
+        conn = HTTPConnection("127.0.0.1", int(srv.url().rsplit(":", 1)[1]), timeout=5)
+        conn.request("GET", "/events")
+        events_resp = conn.getresponse()
+        assert events_resp.status == 200
+        events_resp.fp.readline()
+        events_resp.fp.readline()
+        for _ in range(50):
+            with srv.ctx.state_lock:
+                if srv.ctx.subscribers:
+                    break
+            time.sleep(0.01)
+
+        code, body = _request(srv.url() + "/explainer/section/background", "POST", {})
+        assert code == 200
+        assert asked == ["background"]
+        assert body["sections"][0]["body"] == "the system before."
+
+        events_resp.fp.readline()  # id
+        assert events_resp.fp.readline() == b"event: explainer\n"
+        conn.close()
+    finally:
+        srv.stop()
+
+
+def test_explainer_section_reports_what_it_is_waiting_for(tmp_path: Path) -> None:
+    """Prose over half the intents reads as fluently as prose over all of
+    them, so the reviewer is told the counts rather than handed the
+    prose."""
+    srv = _explainer_server(tmp_path)
+    try:
+        from semantic_code_review.augment.explainer_section import SectionNotReady
+
+        async def fake_generator(section_id: str) -> dict:
+            raise SectionNotReady(12, 31)
+
+        srv.set_explainer_section_generator(fake_generator)
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _request(srv.url() + "/explainer/section/code", "POST", {})
+        assert e.value.code == 409
+        payload = json.loads(e.value.read())
+        assert (payload["annotated"], payload["total"]) == (12, 31)
+    finally:
+        srv.stop()
+
+
+def test_explainer_section_404s_on_a_section_that_is_not_there(tmp_path: Path) -> None:
+    srv = _explainer_server(tmp_path)
+    try:
+        from semantic_code_review.augment.explainer_section import SectionNotFound
+
+        async def fake_generator(section_id: str) -> dict:
+            raise SectionNotFound(section_id)
+
+        srv.set_explainer_section_generator(fake_generator)
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _request(srv.url() + "/explainer/section/nonesuch", "POST", {})
+        assert e.value.code == 404
+    finally:
+        srv.stop()
+
+
+def test_a_failed_section_is_broadcast_so_every_tab_sees_it_retryable(tmp_path: Path) -> None:
+    """The pass raised, but the section is persisted `failed` — the other
+    tabs must not sit on `pending` forever."""
+    srv = _explainer_server(tmp_path)
+    try:
+        from semantic_code_review.augment.explainer_section import SectionFailed
+
+        failed = _explainer_doc()
+        failed["sections"][0]["state"] = "failed"
+
+        async def fake_generator(section_id: str) -> dict:
+            raise SectionFailed("RuntimeError: model said no", failed)
+
+        srv.set_explainer_section_generator(fake_generator)
+
+        conn = HTTPConnection("127.0.0.1", int(srv.url().rsplit(":", 1)[1]), timeout=5)
+        conn.request("GET", "/events")
+        events_resp = conn.getresponse()
+        events_resp.fp.readline()
+        events_resp.fp.readline()
+        for _ in range(50):
+            with srv.ctx.state_lock:
+                if srv.ctx.subscribers:
+                    break
+            time.sleep(0.01)
+
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _request(srv.url() + "/explainer/section/background", "POST", {})
+        assert e.value.code == 500
+        assert "model said no" in json.loads(e.value.read())["error"]
+
+        events_resp.fp.readline()  # id
+        assert events_resp.fp.readline() == b"event: explainer\n"
+        frame = json.loads(events_resp.fp.readline().split(b"data: ", 1)[1])
+        assert frame["sections"][0]["state"] == "failed"
+        conn.close()
+        # The busy flag is released, so a retry is possible.
+        assert srv.ctx.explainer_busy is False
+    finally:
+        srv.stop()

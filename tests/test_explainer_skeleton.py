@@ -57,7 +57,7 @@ def diff() -> AnnotatedDiff:
 
 def test_sdk_backend_carries_the_guidance_in_the_system_prompt() -> None:
     """SDK backends cache on the system prefix, so the bulk block lives there."""
-    system, prefix = explainer._carry_guidance(Client(model="anthropic:x"))
+    system, prefix = explainer.carry_guidance(Client(model="anthropic:x"), EXPLAINER_SKELETON_GUIDANCE)
     assert EXPLAINER_ROLE in system
     assert EXPLAINER_SKELETON_GUIDANCE in system
     assert prefix == ""
@@ -67,15 +67,19 @@ def test_subprocess_backend_keeps_the_guidance_off_argv() -> None:
     """`--system-prompt` is argv, and a long command line is parsed
     quadratically by the endpoint agent on CPG laptops. Only the short
     fixed role string may ride it."""
-    system, prefix = explainer._carry_guidance(Client(model="anthropic:x", is_subprocess_backend=True))
+    system, prefix = explainer.carry_guidance(
+        Client(model="anthropic:x", is_subprocess_backend=True), EXPLAINER_SKELETON_GUIDANCE
+    )
     assert system == EXPLAINER_ROLE
     assert prefix == EXPLAINER_SKELETON_GUIDANCE
     assert EXPLAINER_SKELETON_GUIDANCE not in system
 
 
 def test_both_carriers_show_the_model_the_same_words() -> None:
-    sdk_system, sdk_prefix = explainer._carry_guidance(Client(model="anthropic:x"))
-    cli_system, cli_prefix = explainer._carry_guidance(Client(model="anthropic:x", is_subprocess_backend=True))
+    sdk_system, sdk_prefix = explainer.carry_guidance(Client(model="anthropic:x"), EXPLAINER_SKELETON_GUIDANCE)
+    cli_system, cli_prefix = explainer.carry_guidance(
+        Client(model="anthropic:x", is_subprocess_backend=True), EXPLAINER_SKELETON_GUIDANCE
+    )
     assert f"{sdk_system}\n\n{sdk_prefix}".strip() == f"{cli_system}\n\n{cli_prefix}".strip()
 
 

@@ -239,6 +239,24 @@ function revealFile(fileId: string): void {
   if (el) el.scrollIntoView({ block: "start" });
 }
 
+/** Leave overview mode and open `hunkId`.
+ *
+ *  Unlike `revealFile`, this unfolds: a hunk reference in the prose is
+ *  the claim "read this hunk", and landing on a folded header would
+ *  make the reviewer press again to see what the sentence was about.
+ *  The unfold is a `user`-owned override, so the collapse level is
+ *  untouched. */
+function revealHunk(hunkId: string): void {
+  setMode("diff");
+  const parts = hunkId.replace("H", "").split("_");
+  const file = _data.files && _data.files[Number(parts[0])];
+  if (file) _state.overrides[file.id] = false;
+  _state.overrides[hunkId] = false;
+  render();
+  const el = document.querySelector('.hunk[data-id="' + _cssEscape(hunkId) + '"]');
+  if (el) el.scrollIntoView({ block: "start" });
+}
+
 /** A sidebar filter changed. Reveal the newly focused hunks' code (an
  *  ephemeral state, distinct from a stored fold override) and re-render.
  *  Boot wires this to the sidebar's onFilterChange. */
@@ -1104,6 +1122,7 @@ export const Render = {
   mode,
   setMode,
   revealFile,
+  revealHunk,
   markExplainerReady,
   applyFilterChange,
   renderHunkReplace,

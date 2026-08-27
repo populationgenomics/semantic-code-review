@@ -12,10 +12,15 @@
 // has no span set, and leaving it restores the reviewer's zoom and
 // hand-set folds without a latch.
 //
-// Slice 1 renders the Map. The three prose sections arrive `pending`
-// and say so; generating them is slice 2, and the markdown/figure
-// vocabulary is slice 4. Nothing here renders model-authored markup:
-// the Map's `why` is plain text until the markdown path lands.
+// Prose arrives one section at a time, on the reviewer's press: a
+// section nobody opens is never paid for. Bodies render through the
+// shared markdown-it (`html: false`) + DOMPurify path the console uses
+// — model prose derives from a diff that may be hostile, so it never
+// reaches innerHTML unsanitised. Inline `[F3]` / `[H3_1]` tokens become
+// chips after sanitisation, built as DOM nodes rather than injected
+// markup. The figure vocabulary is slice 4.
+
+import { renderMarkdown } from "./console_render";
 
 let _endpoint = "";
 let _doc: ExplainerDocument | null = null;
@@ -35,10 +40,28 @@ let _onChange: (() => void) | null = null;
 // it to "leave overview mode and reveal that file"; the reveal itself
 // is render.ts's business.
 let _onOpenFile: ((fileId: string) => void) | null = null;
+// Same, for an inline hunk chip. A hunk reference means "read this
+// hunk", so the reveal unfolds it — unlike a file reference, which only
+// scrolls.
+let _onOpenHunk: ((hunkId: string) => void) | null = null;
+
+// Per-section generation state, keyed by section id. Distinct from the
+// section's own `state`: this is what THIS tab is doing about it, and
+// it is dropped on every fresh document.
+type SectionPhase =
+  | { kind: "error"; message: string }
+  | { kind: "waiting"; annotated: number; total: number };
+let _sectionPhase: Record<string, SectionPhase> = Object.create(null);
+// One section at a time. The server serialises explainer passes anyway
+// (a concurrent POST is a 409), so the queue is what turns "opened three
+// sections quickly" into three writes rather than two rejections.
+let _writing: string | null = null;
+const _queue: string[] = [];
 
 interface ExplainerInitOptions {
   onChange?: () => void;
   onOpenFile?: (fileId: string) => void;
+  onOpenHunk?: (hunkId: string) => void;
 }
 
 function init(endpoint: string, data: ViewerData, opts: ExplainerInitOptions = {}): void {
@@ -50,8 +73,12 @@ function init(endpoint: string, data: ViewerData, opts: ExplainerInitOptions = {
   // A page that boots after augmentation finished can press the button
   // straight away; one that boots mid-pass waits for `overview`.
   _ready = !data.pending;
+  _sectionPhase = Object.create(null);
+  _writing = null;
+  _queue.length = 0;
   if (opts.onChange) _onChange = opts.onChange;
   if (opts.onOpenFile) _onOpenFile = opts.onOpenFile;
+  if (opts.onOpenHunk) _onOpenHunk = opts.onOpenHunk;
   _lsKey = "scr-explainer-section:" + (data.pr && data.pr.head_sha ? data.pr.head_sha : "local");
   // Deliberately a different key from the sidebar's `scr-active-group:`
   // pill. Sharing one would make entering overview mode overwrite the
@@ -115,14 +142,61 @@ async function generate(): Promise<void> {
   }
 }
 
+/** Ask the server to write one section's prose. No-op for a section
+ *  that is already written, or already queued here: the call is not
+ *  free and a second press must not buy the same paragraph twice. */
+function generateSection(id: string): void {
+  const section = _findSection(id);
+  if (!section || section.kind === "map" || section.state === "ready") return;
+  if (_writing === id || _queue.indexOf(id) !== -1) return;
+  _queue.push(id);
+  delete _sectionPhase[id];
+  _onChange?.();
+  void _drainQueue();
+}
+
+async function _drainQueue(): Promise<void> {
+  if (_writing !== null) return;
+  while (_queue.length > 0) {
+    const id = _queue.shift() as string;
+    _writing = id;
+    _onChange?.();
+    await _writeSection(id);
+    _writing = null;
+    _onChange?.();
+  }
+}
+
+async function _writeSection(id: string): Promise<void> {
+  try {
+    const r = await fetch(`${_endpoint}/explainer/section/${encodeURIComponent(id)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const payload = await r.json().catch(() => ({}));
+    if (r.status === 409 && typeof payload.total === "number") {
+      // Not an error: the hunks this section is anchored to aren't all
+      // annotated, and prose over the gaps reads exactly as fluently as
+      // prose over the whole thing.
+      _sectionPhase[id] = { kind: "waiting", annotated: payload.annotated || 0, total: payload.total };
+      return;
+    }
+    if (!r.ok) throw new Error(payload.error || `POST /explainer/section/${id} -> ${r.status}`);
+    _adopt(payload as ExplainerDocument, { keepPhases: true });
+  } catch (e) {
+    _sectionPhase[id] = { kind: "error", message: String(e instanceof Error ? e.message : e) };
+  }
+}
+
 /** Take a document off the SSE bus. Another tab pressed the button; the
  *  spend is already made, so this tab shows the result rather than
  *  offering to pay for it again. */
 function onEvent(payload: SseExplainerEvent): void {
-  _adopt(payload);
+  _adopt(payload, { keepPhases: true });
 }
 
-function _adopt(doc: ExplainerDocument): void {
+function _adopt(doc: ExplainerDocument, opts: { keepPhases?: boolean } = {}): void {
   // Loud but not fatal: a payload this shape is a server bug, and
   // throwing out of a click handler would wedge the pane with no way
   // back. Surface it where the reviewer can see it instead.
@@ -135,7 +209,14 @@ function _adopt(doc: ExplainerDocument): void {
   _doc = doc;
   _phase = "ready";
   _error = "";
-  if (_activeSectionId === null || !doc.sections.some((s) => s.id === _activeSectionId)) {
+  // A whole new document (a regenerate, or a first load) invalidates
+  // every per-section note; a section write leaves its neighbours'
+  // alone.
+  if (!opts.keepPhases) _sectionPhase = Object.create(null);
+  for (const s of _walk(doc.sections)) {
+    if (s.state === "ready") delete _sectionPhase[s.id];
+  }
+  if (_activeSectionId === null || !_findSection(_activeSectionId)) {
     _activeSectionId = doc.sections.length > 0 ? doc.sections[doc.sections.length - 1].id : null;
   }
   _onChange?.();
@@ -143,6 +224,22 @@ function _adopt(doc: ExplainerDocument): void {
 
 function sections(): ExplainerSection[] {
   return _doc ? _doc.sections : [];
+}
+
+/** Every section and subsection, depth-first in document order. */
+function _walk(nodes: ExplainerSection[]): ExplainerSection[] {
+  const out: ExplainerSection[] = [];
+  for (const s of nodes) {
+    out.push(s);
+    out.push(..._walk(s.subsections || []));
+  }
+  return out;
+}
+
+function _findSection(id: string): ExplainerSection | null {
+  if (!_doc) return null;
+  for (const s of _walk(_doc.sections)) if (s.id === id) return s;
+  return null;
 }
 
 function activeSectionId(): string | null {
@@ -154,6 +251,11 @@ function setActiveSection(id: string): void {
   try {
     localStorage.setItem(_lsKey, `explainer:${id}`);
   } catch (_) { /* ignore */ }
+  // Opening a section that has never been written is the press that
+  // pays for it. Nothing generates on load: the pane stacks every
+  // section, so writing on render would buy all three unasked.
+  const section = _findSection(id);
+  if (section && section.state === "pending") generateSection(id);
   const heading = document.getElementById(_headingId(id));
   if (heading) heading.scrollIntoView({ block: "start" });
   _onChange?.();
@@ -217,15 +319,79 @@ function _renderSection(section: ExplainerSection): HTMLElement {
     el.appendChild(_renderMap(section));
     return el;
   }
-  if (section.state === "pending") {
-    el.appendChild(_el("p", "explainer-status", "Not written yet."));
-  } else if (section.state === "failed") {
-    el.appendChild(_el("p", "explainer-status explainer-error", "This section could not be written."));
-  } else if (section.body) {
-    // Plain text until the markdown + DOMPurify path lands (slice 2).
-    el.appendChild(_el("p", "explainer-body", section.body));
-  }
+  for (const node of _proseNodes(section)) el.appendChild(node);
+  for (const sub of section.subsections || []) el.appendChild(_renderSubsection(sub));
   return el;
+}
+
+/** A model-chosen part of the walkthrough. It carries its own
+ *  references and its own sidebar node, but it is never generated on
+ *  its own — its parent's pass wrote it. */
+function _renderSubsection(section: ExplainerSection): HTMLElement {
+  const el = _el("section", "explainer-subsection");
+  el.dataset.sectionId = section.id;
+  const heading = _el("h3", "explainer-subsection-title", section.title);
+  heading.id = _headingId(section.id);
+  el.appendChild(heading);
+  if (section.body) el.appendChild(_renderBody(section.body));
+  return el;
+}
+
+/** The body of one prose section: what it says, or what this tab is
+ *  doing about the fact that it does not say anything yet. */
+function _proseNodes(section: ExplainerSection): HTMLElement[] {
+  if (_writing === section.id) {
+    return [_el("p", "explainer-status", "Writing this section…")];
+  }
+  if (_queue.indexOf(section.id) !== -1) {
+    return [_el("p", "explainer-status", "Queued behind another section…")];
+  }
+  const phase = _sectionPhase[section.id];
+  if (phase && phase.kind === "waiting") {
+    return [
+      _el(
+        "p",
+        "explainer-status",
+        `${phase.annotated} of ${phase.total} hunks under this section are annotated.`
+        + " Writing now would narrate over the gaps.",
+      ),
+      _sectionButton(section.id, "Check again"),
+    ];
+  }
+  if (phase && phase.kind === "error") {
+    return [
+      _el("p", "explainer-status explainer-error", `Could not write this section: ${phase.message}`),
+      _sectionButton(section.id, "Try again"),
+    ];
+  }
+  if (section.state === "failed") {
+    return [
+      _el("p", "explainer-status explainer-error", "This section could not be written."),
+      _sectionButton(section.id, "Try again"),
+    ];
+  }
+  if (section.state === "pending") {
+    return [
+      _el("p", "explainer-status", "Not written yet."),
+      _sectionButton(section.id, "Write this section"),
+    ];
+  }
+  return section.body ? [_renderBody(section.body)] : [];
+}
+
+function _sectionButton(id: string, label: string): HTMLElement {
+  const btn = _el("button", "explainer-generate", label);
+  btn.addEventListener("click", () => generateSection(id));
+  return btn;
+}
+
+/** Markdown → sanitised HTML through the shared console pipeline, then
+ *  the reference tokens the prompt asks for swapped into chips. */
+function _renderBody(markdown: string): HTMLElement {
+  const body = _el("div", "explainer-body");
+  renderMarkdown(body, markdown);
+  _chipify(body);
+  return body;
 }
 
 function _renderMap(section: ExplainerSection): HTMLElement {
@@ -256,13 +422,65 @@ function _renderMapRow(row: ExplainerMapRow): HTMLElement {
   return tr;
 }
 
+//: `[F3]` / `[H3_1]` — the inline reference form the section prompt
+//: asks for. Anchored on the bracket so a bare `F3` in prose is left
+//: alone.
+const _REF_TOKEN = /\[(F\d+|H\d+_\d+)\]/g;
+
+/** Swap inline reference tokens in rendered prose for clickable chips.
+ *
+ *  Runs over the sanitised DOM, building elements rather than splicing
+ *  HTML — the prose derives from a diff that may be hostile, and a
+ *  second innerHTML pass would hand it a way back in. Code spans and
+ *  blocks are skipped: a `[F3]` inside a snippet is the snippet's. */
+function _chipify(root: HTMLElement): void {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const texts: Text[] = [];
+  for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) texts.push(n as Text);
+  for (const node of texts) {
+    if (_inCode(node)) continue;
+    const text = node.nodeValue || "";
+    if (!/\[(F\d+|H\d+_\d+)\]/.test(text)) continue;
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    _REF_TOKEN.lastIndex = 0;
+    for (let m = _REF_TOKEN.exec(text); m !== null; m = _REF_TOKEN.exec(text)) {
+      if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+      frag.appendChild(_refChip(m[1]));
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    node.parentNode?.replaceChild(frag, node);
+  }
+}
+
+function _inCode(node: Node): boolean {
+  for (let p = node.parentElement; p !== null; p = p.parentElement) {
+    const tag = p.tagName.toLowerCase();
+    if (tag === "code" || tag === "pre") return true;
+  }
+  return false;
+}
+
+function _refChip(id: string): HTMLElement {
+  const isFile = id.charAt(0) === "F";
+  const btn = _el("button", "explainer-ref explainer-chip", isFile ? _fileLabel(id) : _hunkLabel(id));
+  btn.dataset.refId = id;
+  btn.title = isFile ? "Open this file in the diff" : "Open this hunk in the diff";
+  btn.addEventListener("click", () => {
+    if (isFile) _onOpenFile?.(id);
+    else _onOpenHunk?.(id);
+  });
+  return btn;
+}
+
 /** Coverage and the dropped-reference count, rendered rather than
  *  logged: references thinning out unnoticed is exactly the failure
  *  the count exists to catch. */
 function _renderFooter(doc: ExplainerDocument): HTMLElement | null {
   const bits: string[] = [];
   const covered = new Set<string>();
-  for (const s of doc.sections) for (const r of s.refs) covered.add(`${r.kind}:${r.id}`);
+  for (const s of _walk(doc.sections)) for (const r of s.refs) covered.add(`${r.kind}:${r.id}`);
   if (covered.size > 0) bits.push(`${covered.size} references`);
   if (doc.dropped_refs > 0) {
     bits.push(`${doc.dropped_refs} dropped (addressed nothing in this diff)`);
@@ -293,6 +511,16 @@ function _fileLabel(fileId: string): string {
   return _filePaths[fileId] || fileId;
 }
 
+/** `H3_1` as `path:2` — the hunk's position within its file, 1-based,
+ *  because "the second hunk of api.proto" is what a reader can act on
+ *  and `H3_1` is not. */
+function _hunkLabel(hunkId: string): string {
+  const m = /^H(\d+)_(\d+)$/.exec(hunkId);
+  if (!m) return hunkId;
+  const path = _filePaths[`F${m[1]}`];
+  return path ? `${path}:${Number(m[2]) + 1}` : hunkId;
+}
+
 function _headingId(sectionId: string): string {
   return `explainer-section-${sectionId}`;
 }
@@ -311,6 +539,7 @@ export const Explainer = {
   hasDocument,
   load,
   generate,
+  generateSection,
   onEvent,
   sections,
   activeSectionId,
