@@ -138,11 +138,12 @@ def test_skeleton_fills_the_map_and_leaves_prose_pending(diff: AnnotatedDiff) ->
         head_sha="head5678",
         ids=build_json.viewer_id_index(diff),
     )
-    assert [s.kind for s in doc.sections] == ["background", "intuition", "code", "map"]
-    assert [s.state for s in doc.sections] == ["pending", "pending", "pending", "ready"]
-    assert [s.body for s in doc.sections[:3]] == ["", "", ""]
+    # Map leads: it is the only section the skeleton fills.
+    assert [s.kind for s in doc.sections] == ["map", "background", "intuition", "code"]
+    assert [s.state for s in doc.sections] == ["ready", "pending", "pending", "pending"]
+    assert [s.body for s in doc.sections[1:]] == ["", "", ""]
 
-    map_section = doc.sections[-1]
+    map_section = doc.sections[0]
     assert [r.ref.id for r in map_section.map_rows] == ["F0", "F1"]
     assert map_section.map_rows[0].why == "the contract; every field below follows from it"
     # The section's refs mirror its rows, so the sidebar and the coverage
@@ -168,7 +169,7 @@ def test_map_rows_naming_nothing_are_dropped_and_counted(diff: AnnotatedDiff) ->
         head_sha="head5678",
         ids=build_json.viewer_id_index(diff),
     )
-    rows = doc.sections[-1].map_rows
+    rows = doc.sections[0].map_rows
     assert [r.ref.id for r in rows] == ["F0"]
     assert doc.dropped_refs == 3
 
@@ -202,4 +203,4 @@ def test_a_skeleton_document_round_trips_through_disk(tmp_path, diff: AnnotatedD
     explainer_schema.save_explainer(tmp_path, doc)
     loaded = explainer_schema.load_explainer(tmp_path, base_sha="base1234", head_sha="head5678")
     assert loaded == doc
-    assert explainer.document_to_payload(doc)["sections"][-1]["map_rows"][0]["ref"]["kind"] == "file"
+    assert explainer.document_to_payload(doc)["sections"][0]["map_rows"][0]["ref"]["kind"] == "file"

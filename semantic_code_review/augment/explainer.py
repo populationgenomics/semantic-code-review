@@ -207,8 +207,12 @@ def build_skeleton_document(
         refs=[row.ref for row in rows],
         map_rows=rows,
     )
-    sections = [] if submission.verdict == "not_warranted" else [_pending_section(k) for k in _PROSE_KINDS]
-    sections.append(map_section)
+    # Map leads. It is the only section the skeleton can fill, so it is what
+    # renders the moment the button is pressed; behind three pending sections
+    # the first screen would be entirely things that are not ready yet.
+    sections = [map_section]
+    if submission.verdict != "not_warranted":
+        sections.extend(_pending_section(k) for k in _PROSE_KINDS)
 
     return explainer_schema.ExplainerDocument(
         base_sha=base_sha,

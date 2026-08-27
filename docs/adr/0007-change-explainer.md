@@ -129,7 +129,12 @@ and "the pass failed".
 
 ### Sections — four fixed, model-chosen subsections under Code
 
-Top level is fixed: **Background**, **Intuition**, **Code**, **Map**.
+Top level is fixed: **Map**, **Background**, **Intuition**, **Code**.
+
+Map leads because it is the only section the skeleton can fill, so it
+is what renders the moment the button is pressed. Behind the three
+prose sections the first screen would be entirely things that are not
+ready yet.
 
 The top level is fixed for a structural reason, not an aesthetic one —
 the four behave differently:

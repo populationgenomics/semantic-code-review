@@ -133,6 +133,9 @@ not an empty state.
   it, so corruption cannot wedge the button.
 - **Styling** is the minimum that makes the Map legible; the reading
   type scale and the affordance vocabulary stay in slice 4.
+- **Map leads the document**, ahead of the three prose sections, so the
+  first screen after pressing the button is the section that is ready
+  rather than three that are not.
 
 ## Slice 2 — Code prose, lazily
 
