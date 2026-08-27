@@ -16,6 +16,7 @@ import pytest
 from pydantic_ai.models import Model
 from pydantic_ai.models.test import TestModel
 
+from semantic_code_review.augment import explainer_schema
 from semantic_code_review.augment.agents import Client
 from semantic_code_review.augment.console import (
     ConsoleCancelled,
@@ -110,7 +111,7 @@ def test_hunk_accessor_bad_id_and_oob() -> None:
 
 def test_build_console_seed_carries_bounded_context() -> None:
     diff = parse_augmented_diff(FIXTURE.read_text(encoding="utf-8"))
-    seed = build_console_seed(diff, symbol_delta_json='{"added":[]}')
+    seed = build_console_seed(diff, symbol_delta_json='{"added":[]}', explainer=None)
     assert "# PR overview" in seed
     assert "# Changed files" in seed
     assert "src/users.py" in seed
@@ -120,8 +121,142 @@ def test_build_console_seed_carries_bounded_context() -> None:
 
 def test_build_console_seed_omits_delta_when_absent() -> None:
     diff = parse_augmented_diff(FIXTURE.read_text(encoding="utf-8"))
-    seed = build_console_seed(diff, symbol_delta_json=None)
+    seed = build_console_seed(diff, symbol_delta_json=None, explainer=None)
     assert "# Structural symbol delta" not in seed
+
+
+# --- change-explainer reach (Slice 5) -----------------------------------
+
+
+def _document() -> explainer_schema.ExplainerDocument:
+    """A document over the one-file fixture: a ready Map, a pending
+    Background, and a Code section with one ready subsection."""
+    return explainer_schema.ExplainerDocument(
+        base_sha="base",
+        head_sha="head",
+        verdict="narrate",
+        sections=[
+            explainer_schema.Section(
+                id="map",
+                kind="map",
+                title="Map",
+                state="ready",
+                map_rows=[
+                    explainer_schema.MapRow(
+                        ref=explainer_schema.Reference(kind="file", id="F0"),
+                        why="the deactivation path lives here",
+                    )
+                ],
+            ),
+            explainer_schema.Section(id="background", kind="background", title="Background"),
+            explainer_schema.Section(
+                id="code",
+                kind="code",
+                title="Code",
+                state="ready",
+                body="The change is one guard.",
+                subsections=[
+                    explainer_schema.Section(
+                        id="code_guard",
+                        kind="code",
+                        title="The guard",
+                        state="ready",
+                        body="`deactivate` now refuses an already-inactive user.",
+                        refs=[explainer_schema.Reference(kind="hunk", id="H0_0")],
+                    )
+                ],
+            ),
+        ],
+    )
+
+
+def _explainer_tools() -> RepoTools:
+    diff = parse_augmented_diff(FIXTURE.read_text(encoding="utf-8"))
+    return RepoTools(
+        head_worktree=Path("/dev/null"),
+        repo_git=Path("/dev/null"),
+        base_sha="base",
+        head_sha="head",
+        diff=diff,
+        explainer=_document(),
+    )
+
+
+def test_console_agent_registers_section_accessor() -> None:
+    agent = make_console_agent("anthropic:claude-opus-4-7")
+    names = {t.name for t in agent._function_toolset.tools.values()}
+    assert {"hunk", "section"} <= names
+
+
+def test_find_section_descends_into_subsections() -> None:
+    doc = _document()
+    found = explainer_schema.find_section(doc, "code_guard")
+    assert found is not None
+    assert found.title == "The guard"
+    assert explainer_schema.find_section(doc, "nope") is None
+
+
+def test_section_accessor_renders_body_refs_and_subsections() -> None:
+    out = _explainer_tools().section("code")
+    assert "Code [id: code, state: ready]" in out
+    assert "The change is one guard." in out
+    assert "The guard [id: code_guard, state: ready]" in out
+    assert "references: H0_0" in out
+
+
+def test_section_accessor_resolves_file_refs_to_paths() -> None:
+    """A `F<i>` id names nothing the other tools accept, so the Map's
+    rows carry the path alongside it."""
+    out = _explainer_tools().section("map")
+    assert "F0 (src/users.py) — the deactivation path lives here" in out
+
+
+def test_section_accessor_on_a_pending_section_says_so() -> None:
+    """A section nobody has generated has no body to fabricate around."""
+    out = _explainer_tools().section("background")
+    assert "state: pending" in out
+    assert "not written yet" in out
+
+
+def test_section_accessor_unbound_and_unknown_id() -> None:
+    diff = parse_augmented_diff(FIXTURE.read_text(encoding="utf-8"))
+    unbound = RepoTools(
+        head_worktree=Path("/dev/null"),
+        repo_git=Path("/dev/null"),
+        base_sha="",
+        head_sha="",
+        diff=diff,
+    )
+    assert unbound.section("map").startswith("error: no change-explainer document")
+    assert _explainer_tools().section("nope").startswith("error: no section")
+
+
+def test_seed_carries_the_section_list_without_bodies() -> None:
+    diff = parse_augmented_diff(FIXTURE.read_text(encoding="utf-8"))
+    seed = build_console_seed(diff, symbol_delta_json=None, explainer=_document())
+    assert "# Change-explainer document" in seed
+    assert "map: Map [ready]" in seed
+    assert "background: Background [pending]" in seed
+    assert "code_guard: The guard [ready] — refs: H0_0" in seed
+    # Titles and references only: ADR 0002's "seed compact, pull on demand"
+    # is the whole reason the bodies come through `section(id)`.
+    assert "refuses an already-inactive user" not in seed
+    assert "The change is one guard." not in seed
+
+
+def test_seed_omits_the_document_block_when_there_is_none() -> None:
+    """Nobody pressed the button — an ordinary state, not an error."""
+    diff = parse_augmented_diff(FIXTURE.read_text(encoding="utf-8"))
+    seed = build_console_seed(diff, symbol_delta_json=None, explainer=None)
+    assert "Change-explainer" not in seed
+
+
+def test_seed_file_list_carries_viewer_file_ids() -> None:
+    """The document's references address `F<i>`; without the ids in the
+    seed a seeded reference names nothing."""
+    diff = parse_augmented_diff(FIXTURE.read_text(encoding="utf-8"))
+    seed = build_console_seed(diff, symbol_delta_json=None, explainer=None)
+    assert "- F0 src/users.py" in seed
 
 
 # --- selection folding (Slice 4) ----------------------------------------
@@ -203,6 +338,67 @@ def test_format_selection_caps_oversized_text() -> None:
     )
     assert "(truncated)" in block
     assert len(block) < 9000
+
+
+def test_format_selection_explainer_inlines_body_and_anchored_hunks() -> None:
+    """The richest of the four kinds: the claim *and* the code it is
+    about, so "why does it claim this?" arrives answerable."""
+    block = _format_selection(
+        {
+            "selection_text": "refuses an already-inactive user",
+            "selection_kind": "explainer",
+            "section_id": "code_guard",
+        },
+        _explainer_tools(),
+    )
+    assert "Reviewer selection (explainer) in section `code_guard`" in block
+    assert "Section:" in block
+    assert "The guard [id: code_guard, state: ready]" in block
+    assert "Hunks this section anchors to:" in block
+    assert "@@" in block
+    assert "src/users.py" in block
+
+
+def test_format_selection_explainer_pending_section_carries_no_prose() -> None:
+    """A `pending` section still resolves — the accessor says it is not
+    written rather than inventing a body — and anchors nothing."""
+    block = _format_selection(
+        {
+            "selection_text": "Background",
+            "selection_kind": "explainer",
+            "section_id": "background",
+        },
+        _explainer_tools(),
+    )
+    assert "not written yet" in block
+    assert "Hunks this section anchors to:" not in block
+
+
+def test_format_selection_explainer_without_a_document_is_text_only() -> None:
+    """The accessor's error string never reaches the prompt."""
+    block = _format_selection(
+        {
+            "selection_text": "a claim",
+            "selection_kind": "explainer",
+            "section_id": "code",
+        },
+        _bound_tools(),
+    )
+    assert "a claim" in block
+    assert "Section:" not in block
+    assert "error:" not in block
+
+
+def test_format_selection_explainer_outside_any_section() -> None:
+    """A selection in the pane's footer or lede carries no `section_id`;
+    it is still a selection, just without section context."""
+    block = _format_selection(
+        {"selection_text": "2 references", "selection_kind": "explainer"},
+        _explainer_tools(),
+    )
+    assert "# Reviewer selection (explainer)\n" in block
+    assert "2 references" in block
+    assert "Section:" not in block
 
 
 # --- turn driver --------------------------------------------------------

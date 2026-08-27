@@ -35,7 +35,7 @@ from pydantic_ai.tools import Tool
 
 from .. import git_ops, structural
 from ..structural import references as structural_references
-from . import source_cache
+from . import explainer_schema, source_cache
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +67,11 @@ class RepoTools:
     # the augment-side schemas stay off this module's import path;
     # left None on every augment/MCP path, where no sidecar exists yet.
     diff: Any = None
+    # Optional change-explainer document (ADR 0007), bound only by the
+    # review console so its `section(id)` accessor can pull one section's
+    # prose. None whenever nobody has generated a document for this run,
+    # which is the ordinary state.
+    explainer: explainer_schema.ExplainerDocument | None = None
     # Optional `(sha, path)` read/parse memo, owned by the run and shared
     # across every `RepoTools` it builds (ADR 0003 Slice 1). None ⇒ each
     # read/parse recomputes; behaviour is otherwise identical.
@@ -537,6 +542,68 @@ class RepoTools:
         text = parsed.header if not body else f"{parsed.header}\n{body}"
         return _cap(f"# {files[fi].path}\n{text}")
 
+    # --- change explainer (review console only) ---------------------------
+
+    def section(self, section_id: str) -> str:
+        """Read one section of the change-explainer document.
+
+        Returns the section's heading, its references into the diff, and
+        its prose (plus any subsections). The console's first message
+        lists every section's id, title and references but no bodies —
+        this is how a body is pulled. Follow a `H<file>_<hunk>` reference
+        with `hunk(id)` to read the code the prose is about.
+
+        Args:
+            section_id: Section id from the seeded section list — a top
+                level kind ('map', 'background', 'intuition', 'code') or
+                a model-chosen subsection id under Code.
+        """
+        if self.explainer is None:
+            return "error: no change-explainer document for this review — nobody has generated one"
+        section = explainer_schema.find_section(self.explainer, section_id)
+        if section is None:
+            return f"error: no section {section_id!r} in the document"
+        out: list[str] = []
+        self._render_section(section, depth=1, out=out)
+        return _cap("\n".join(out))
+
+    def _render_section(self, section: explainer_schema.Section, *, depth: int, out: list[str]) -> None:
+        out.append(f"{'#' * depth} {section.title} [id: {section.id}, state: {section.state}]")
+        if section.refs:
+            out.append("references: " + ", ".join(self._ref_label(r) for r in section.refs))
+        if section.state == "pending":
+            out.append("(not written yet — the reviewer has not opened this section)")
+        elif section.state == "failed":
+            out.append("(generation failed for this section)")
+        elif section.body:
+            out.append(section.body)
+        for row in section.map_rows:
+            out.append(f"- {self._ref_label(row.ref)} — {row.why}")
+        for sub in section.subsections:
+            out.append("")
+            self._render_section(sub, depth=depth + 1, out=out)
+
+    def _ref_label(self, ref: explainer_schema.Reference) -> str:
+        """`F3 (src/users.py)` / `H0_1` — the id, plus the path when it is
+        cheap to resolve, since the id alone is not something the other
+        tools accept.
+        """
+        if ref.kind != "file":
+            return ref.id
+        path = self._file_path(ref.id)
+        return f"{ref.id} ({path})" if path else ref.id
+
+    def _file_path(self, file_id: str) -> str | None:
+        """Path behind an `F<i>` id, or None when it addresses nothing."""
+        if self.diff is None or not file_id.startswith("F"):
+            return None
+        try:
+            fi = int(file_id[1:])
+        except ValueError:
+            return None
+        files = getattr(self.diff, "files", [])
+        return files[fi].path if 0 <= fi < len(files) else None
+
 
 def _parse_hunk_id(hunk_id: str) -> tuple[int, int]:
     """`"H{fi}_{hi}"` -> (fi, hi). Raises ValueError on malformed input.
@@ -691,15 +758,19 @@ TOOL_FUNCTIONS: list = [_make_tool_fn(n, m) for n, m in _exported_methods()]
 
 def console_tool_functions() -> list:
     """Tool surface for the review console: the shared `@_tool` surface
-    plus the console-only `hunk(id)` diff accessor.
+    plus the console-only `hunk(id)` and `section(id)` accessors.
 
-    `hunk` is deliberately *not* `@_tool`-marked — it needs a bound diff
-    that only exists once augmentation has produced the sidecar, so it
-    has no place on the augment-time per-hunk pass or the MCP server.
-    The console binds `RepoTools.diff` and wires this extended list as
-    its `tools=`.
+    Neither is `@_tool`-marked — both need state that exists only after
+    augmentation (the sidecar) or only once the reviewer has generated a
+    document, so they have no place on the augment-time per-hunk pass or
+    the MCP server. The console binds `RepoTools.diff` and
+    `RepoTools.explainer` and wires this extended list as its `tools=`.
     """
-    return [*TOOL_FUNCTIONS, _make_tool_fn("hunk", RepoTools.hunk)]
+    return [
+        *TOOL_FUNCTIONS,
+        _make_tool_fn("hunk", RepoTools.hunk),
+        _make_tool_fn("section", RepoTools.section),
+    ]
 
 
 def mcp_tool_schemas() -> list[dict[str, Any]]:
