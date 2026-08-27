@@ -139,7 +139,7 @@ not an empty state.
   first screen after pressing the button is the section that is ready
   rather than three that are not.
 
-## Slice 2 — Code prose, lazily
+## Slice 2 — Code prose, lazily ✅ done
 
 - **Server.** `POST /explainer/section/{id}` → one structured pass per
   section, seeded with the overview, the section's own references and
@@ -160,7 +160,47 @@ Ships as: a code walkthrough with connective tissue between hunks.
 the existing `state_lock`. A failed section is `failed`, retryable, and
 must not poison the document.
 
-## Slice 3 — Background, with tools and provenance
+**As built**, where it differs from the plan above:
+
+- **Serialised by `explainer_busy`, not by a write lock.** The plan says
+  "serialise per-section writes under the existing `state_lock`". What
+  landed is stronger: `state_lock` guards `explainer_busy`, and every
+  explainer pass — skeleton and section alike — takes it, so a second
+  POST while one is in flight is a 409. With one pass at a time there is
+  no interleaved read-modify-write of `explainer.json` to guard. The
+  viewer queues its own opens so the common single-tab case never sees
+  the 409; a second tab does, as an error with a retry.
+- **The route returns the whole document, not the section.** A section
+  write mutates `dropped_refs` and `toy_data` too, so a fragment would
+  be a partial answer the client has to merge. The SSE frame is the same
+  `explainer` event the skeleton publishes.
+- **A failed pass is a 500 *and* a broadcast.** `SectionFailed` carries
+  the persisted document; the route fans it out before answering 500, so
+  every other tab converges on `failed` rather than sitting on `pending`
+  forever.
+- **Nothing generates on render.** The pane stacks all four sections, so
+  "opening a section" cannot mean "it became visible" — that would buy
+  three calls the reviewer never asked for. Opening means selecting it
+  in the sidebar tree, or pressing the section's own button.
+- **Readiness is reachable but rare.** The plan implies a section can be
+  opened mid-augment. It cannot, today: slice 1 wires the generators only
+  after the augment pass completes, because both are seeded from the
+  sidecar, which does not exist before then. What does reach the check is
+  a hunk whose per-hunk call failed or was skipped — its intent is empty
+  and the section refuses rather than narrating over it. Making the
+  document reachable mid-pass needs the skeleton's seed to come from
+  somewhere other than `augmented.scr.json`; it is not in these slices.
+- **Inline references are `[F3]` / `[H3_1]` tokens in the prose**,
+  swapped for chips over the sanitised DOM. The prompt and the renderer
+  agree on the token form; see `docs/explainer-presentation.md`.
+- **Subsection ids are minted server-side** as `code-1`, `code-2`. The
+  ADR says subsections "mint their own ids"; a model-chosen id has to be
+  unique in the document and safe as a DOM id, and a title is neither.
+- **A hunk chip unfolds what it points at**; a file chip only scrolls,
+  as the Map's rows already did. A hunk reference is the claim "read
+  these lines", and landing on a folded header would need a second press.
+
+## Slice 3 — Background, with tools and provenance ✅ done
 
 - **Server.** Background's pass gets `RepoTools` (and an `McpHttpHost`
   on subprocess backends), with a **bounded turn budget**; the cap and
@@ -179,6 +219,37 @@ sources visible.
 **Pitfalls.** Tool grants are Background-only; the other passes stay
 seeded and tool-less. An unbounded agentic pass whose cost is invisible
 is the failure mode the cap exists to prevent.
+
+**As built**, where it differs from the plan above:
+
+- **The turn budget is a `run_pass` parameter.** `run_pass` grew
+  `request_limit`, which narrows the backend's own ceiling for one pass;
+  Background sets `BACKGROUND_TURN_CAP = 12`. The effective cap and the
+  requests made go to the trace envelope as
+  `turn_budget: {cap, used}` — recorded for *every* pass that declares a
+  ceiling, not only this one, since the number was already in hand.
+  `used` is the model-request count, including a final request that
+  errored, because that request was spent.
+- **Provenance is recorded, never submitted.** The plan says "the files
+  the pass read are recorded"; the shape that satisfies the ADR's "a
+  Background citing no reads is one that made it up" is one where the
+  model cannot write the citation line. So the read list comes off the
+  tool surface: `TOOL_FUNCTIONS` wrapped for the SDK path, the
+  `McpHttpHost` dispatch hook for the subprocess path, both feeding one
+  recorder. The wrappers live in `explainer_section.py`, not `tools.py`
+  — this is the one pass that cites itself.
+- **Only `path` arguments count as a read.** `grep`'s `path_glob` is a
+  filter over a search, not a file opened, so it is not recorded.
+- **The citation line renders even when empty**, as "Written without
+  reading any file." A missing line and an empty one look the same, and
+  the empty case is the one the affordance exists for.
+- **Background's cache key is `(pass, model, system, base_sha)`.** The
+  ADR says `base_sha` alone; `system` and the model are already part of
+  every `run_pass` key, and dropping them would serve a document written
+  by another model or under an older prompt.
+- **Callouts did not land.** `docs/explainer-presentation.md` lists them
+  alongside the skip box and term lists, but no slice claims them; they
+  belong with slice 4's affordance styles.
 
 ## Slice 4 — Intuition and figures
 

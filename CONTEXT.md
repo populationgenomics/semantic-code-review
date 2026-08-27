@@ -391,6 +391,15 @@ references into the diff (ADR 0007). Lives in `explainer.json` in the
 than by the augment pipeline, and filled section by section as the
 reviewer opens them.
 
+The four sections are not four calls of the same shape. The skeleton
+writes the Map and assigns each prose section the files it is about;
+Intuition and Code are then one seeded, tool-less call each, over the
+overview and the intents of the hunks under those files. Background also
+gets `RepoTools` under a bounded turn budget — it is the only section
+asserting facts about code *outside* the diff — and cites the files it
+opened, recorded from the tool surface rather than claimed by the model.
+It caches on `base_sha` alone, so it survives head movement.
+
 Not a partition of hunks: the themes axis stays the only one of those.
 References address a [[viewer-id]] — a file (`F<i>`) or a [[hunk]]
 (`H<fi>_<hi>`), never a line range — and are validated by membership,

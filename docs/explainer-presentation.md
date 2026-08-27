@@ -26,6 +26,22 @@ lists, `code` spans, fenced code blocks (highlighted by hljs; a
 Anything the model wants that markdown cannot express is a structured
 field below, not markup.
 
+### Inline references
+
+A reference inside prose is written as a bracketed viewer id — `[F3]`
+for a file, `[H3_1]` for a hunk. The renderer swaps each for a chip
+after sanitisation, building DOM nodes over the sanitised tree rather
+than a second HTML pass. Tokens inside `code` spans and fenced blocks
+are left alone: a `[F3]` in a snippet is the snippet's.
+
+A chip is labelled by what the reviewer can act on — the file's path,
+or `path:N` for the Nth hunk of that file — not by the raw id. Clicking
+a file chip leaves overview mode and scrolls; clicking a hunk chip also
+unfolds it, because a hunk reference is the claim "read these lines".
+
+A chip is not a substitute for the section's `refs` list, which is what
+the sidebar counts and the coverage footer reads.
+
 ## Structured affordances
 
 Each is a field on a section with a closed `kind` enum. The viewer
@@ -71,6 +87,18 @@ See [Figures](#figures). `alt` is required and becomes the SVG's
 
 Renders as a definition list. For introducing several names at once
 without a paragraph each.
+
+### Citation line
+
+```
+{ sources: [path] }
+```
+
+Not a model-supplied field: `sources` is recorded from the tool surface
+as a pass runs, so it states what was opened rather than what the model
+says it opened. Rendered under Background as a muted line, **including
+when it is empty** — a section citing nothing is the case the affordance
+exists to make visible.
 
 ### Map row
 
