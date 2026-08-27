@@ -197,7 +197,7 @@ included.
 that loses content is kept with its strip count recorded, not dropped
 silently.
 
-## Slice 5 — Console reach
+## Slice 5 — Console reach ✅ done
 
 - **Seed.** The console's first-turn seed grows the bounded section list
   (titles and references). Bodies come through a new `section(id)`
@@ -210,6 +210,38 @@ silently.
 
 Ships as: highlight a claim, ask the model to defend it, with the code
 already in context.
+
+**As built**, where it differs from the plan above:
+
+- **The seed's changed-file list gained `F<i>` ids.** The section list
+  carries references, and a reference the model cannot turn into a path
+  addresses nothing — the seed named files by path only. One id per
+  file; still bounded.
+- **`section(id)` renders the whole subtree**, not just the body: the
+  heading, `state`, the resolved references (`F0 (src/users.py)`), the
+  prose, the Map's rows, and any subsections, capped by the shared
+  20 KB `_cap`. The Code section's prose lives in its subsections, so a
+  body-only accessor would return the connective sentence and none of
+  the walkthrough.
+- **The explainer selection inlines `section(id)`'s rendering**, not the
+  raw body, so the claim arrives with the section's references
+  alongside it. Anchored *hunks* are capped at eight; past a handful the
+  block stops being context and becomes the diff, and `hunk(id)` covers
+  the rest.
+- **A corrupt `explainer.json` does not fail a console turn.** `GET
+  /explainer` raises `ExplainerCorrupt`; the console logs and proceeds
+  without the document, because a question about something else should
+  not die with the document.
+- **`section(id)` is unreachable on subprocess backends.** So is
+  `hunk(id)`, and for the same pre-existing reason: `mcp_tool_schemas`
+  and `mcp_dispatch` derive from the `@_tool`-marked surface, and both
+  console accessors are deliberately outside it. On the CLI path the
+  seeded section list and the selection block are all the document
+  reach there is. Fixing it means a console-flavoured MCP tool surface —
+  its own change.
+- **`build_console_seed`'s `explainer` argument has no default.** The
+  document being absent is an ordinary state, but it is the caller's to
+  state, not the function's to assume.
 
 ## Not in these slices
 
