@@ -19,6 +19,15 @@
   --info: #58a6ff;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  /* Left-bar geometry. Eight rules had grown four paddings, two widths
+     and three radii between them; these are the only values any of them
+     may use. A bar-only element rounds its left edge and nothing else —
+     it is a stripe beside the text, not a container. A boxed one rounds
+     all four corners, because it is. */
+  --bar-w: 3px;
+  --bar-pad: 12px;
+  --bar-radius: 3px;
+  --box-radius: 6px;
   /* Overview mode's reading surface and figure vocabulary
      (docs/explainer-presentation.md). Every figure class resolves to one of
      these, so the model emits geometry and never picks a colour. */
@@ -1592,7 +1601,6 @@ body { padding-bottom: 30px; }
   padding: 12px 16px;
   border-left: 3px solid var(--accent);
   background: var(--accent-soft);
-  border-radius: 0 6px 6px 0;
   font-size: 14px;
   line-height: 1.55;
 }
@@ -1806,4 +1814,54 @@ body { padding-bottom: 30px; }
   font-size: 15px;
   font-weight: 600;
   color: var(--fg);
+}
+
+/* --- Left-bar geometry ----------------------------------------------------
+   One width, one padding, one radius, applied last so each rule above
+   keeps only its colour. Bar-only elements round the left edge alone: no
+   box, and no radius or padding on the right, where there is no border to
+   round. A consecutive run reads as one continuous stripe — only the ends
+   of the run are rounded — so a column of one-line notes does not become a
+   ladder of separate little bars. */
+
+.context-note,
+.rmd-block blockquote,
+.console-text blockquote,
+.console-q,
+.comment-body.comment-body-html blockquote {
+  border-left-width: var(--bar-w);
+  border-left-style: solid;
+  padding-left: var(--bar-pad);
+  border-radius: var(--bar-radius) 0 0 var(--bar-radius);
+}
+
+/* A run of siblings is one stripe. `:has` picks the run's last member;
+   the adjacency rule picks every member but its first. */
+.rmd-block blockquote + blockquote,
+.console-text blockquote + blockquote,
+.comment-body.comment-body-html blockquote + blockquote,
+.console-q + .console-q,
+.context-note + .context-note {
+  border-top-left-radius: 0;
+}
+.rmd-block blockquote:has(+ blockquote),
+.console-text blockquote:has(+ blockquote),
+.comment-body.comment-body-html blockquote:has(+ blockquote),
+.console-q:has(+ .console-q),
+.context-note:has(+ .context-note) {
+  border-bottom-left-radius: 0;
+}
+
+/* The boxed family: same bar, but a container, so all four corners. */
+.diff .annot-box,
+.rmd-col .annot-box,
+.explainer-callout {
+  border-left-width: var(--bar-w);
+  border-radius: var(--box-radius);
+}
+
+/* The ungrouped tell is a state marker, not a container: it keeps the
+   dotted style that distinguishes it, at the shared width. */
+.hunk.ungrouped {
+  border-left-width: var(--bar-w) !important;
 }
