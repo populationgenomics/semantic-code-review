@@ -1624,12 +1624,23 @@ body { padding-bottom: 30px; }
 }
 .explainer-skip-link:hover { text-decoration: underline; }
 
+/* Each definition is a callout: a definition is exactly what the
+   `concept` kind was written for, so the two share one visual. Tighter
+   stacking than a standalone callout — a run of them is a glossary, not
+   a run of interruptions. */
 .explainer-terms { margin: 24px 0; }
-.explainer-terms dt {
-  font-family: var(--ui); font-weight: 600; font-size: 15px; color: var(--fg);
-  margin-top: 12px;
+.explainer-terms .explainer-callout-term { margin: 8px 0; }
+/* Not uppercased like an alert's fixed label: these are the model's
+   words, and often identifiers. */
+.explainer-term-title {
+  font-family: var(--ui);
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--fg);
 }
-.explainer-terms dd { margin: 2px 0 0; padding: 0; color: var(--fg-muted); }
+.explainer-terms dd { margin: 0; padding: 0; color: var(--fg-muted); }
 
 /* Figures break the measure slightly — the doc's one licensed overflow. */
 .explainer-figure { margin: 28px -4ch; padding: 0; }

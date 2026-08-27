@@ -362,15 +362,28 @@ function _renderSkipBox(box: ExplainerSkipBox): HTMLElement {
 
 /** Names the section introduces, as a definition list — cheaper to read
  *  than a paragraph each, and it keeps them out of the prose. */
+/** A term list, each entry a callout.
+ *
+ *  A definition *is* the `concept` callout — "a definition or
+ *  load-bearing idea" is what that kind was written for — so the two
+ *  share one visual rather than inventing a second way to say the same
+ *  thing. The pair stays inside a `dl`: HTML5 allows a `div` to group a
+ *  `dt`/`dd`, so the box costs nothing semantically.
+ *
+ *  The title is not uppercased the way an alert's fixed label is. These
+ *  are the model's words and often identifiers — `ServiceImpl<typeof
+ *  Workbench>` in caps is not the name of anything. */
 function _renderTerms(terms: ExplainerTerm[]): HTMLElement {
   const dl = _el("dl", "explainer-terms");
   for (const t of terms) {
-    const dt = _el("dt", null);
+    const box = _el("div", "explainer-callout explainer-callout-term");
+    const dt = _el("dt", "explainer-callout-title explainer-term-title");
     renderInlineMarkdown(dt, t.term);
-    dl.appendChild(dt);
-    const dd = _el("dd", null);
+    box.appendChild(dt);
+    const dd = _el("dd", "explainer-callout-body");
     dd.appendChild(_renderBody(t.definition));
-    dl.appendChild(dd);
+    box.appendChild(dd);
+    dl.appendChild(box);
   }
   return dl;
 }

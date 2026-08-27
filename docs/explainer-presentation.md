@@ -99,8 +99,21 @@ on the way to disk and rendered under the caption.
 { terms: [{ term: string, definition: markdown }] }
 ```
 
-Renders as a definition list. For introducing several names at once
-without a paragraph each.
+For introducing several names at once without a paragraph each. Each
+entry renders as a **concept callout** — a definition is exactly what
+that kind is for, so the two share one visual instead of inventing a
+second way to say the same thing. Stacked tighter than a standalone
+callout: a run of them is a glossary, not a run of interruptions.
+
+`term` is rendered as inline markdown, not text. These are the model's
+words and often identifiers, so they carry code spans, and unlike an
+alert's fixed label the title is not uppercased — `ServiceImpl<typeof
+Workbench>` in caps is not the name of anything.
+
+The same holds for every short schema string the model writes: a
+subsection's title goes through the same inline render. A field rendered
+as `textContent` while its body goes through markdown is how a backtick
+reaches the page.
 
 ### Citation line
 

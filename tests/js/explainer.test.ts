@@ -432,6 +432,23 @@ describe("prose rendering", () => {
     expect(body.textContent).toContain("after");
   });
 
+  test("each term renders as a callout, keeping the dl pairing", () => {
+    // A definition is what the `concept` kind was written for, so the two
+    // share a visual rather than inventing a second one.
+    boot();
+    Explainer.onEvent(proseDoc({
+      state: "ready",
+      body: "Prose.",
+      terms: [{ term: "`prompt` field", definition: "The free-text kickoff string." }],
+    }) as SseExplainerEvent);
+    const box = Explainer.renderPane().querySelector(".explainer-terms .explainer-callout")!;
+    expect(box).not.toBeNull();
+    // The name is inline markdown, not text: identifiers carry backticks.
+    expect(box.querySelector("dt")!.querySelector("code")!.textContent).toBe("prompt");
+    expect(box.querySelector("dd")!.textContent).toContain("free-text kickoff");
+    expect(box.parentElement!.tagName).toBe("DL");
+  });
+
   test("a [!NOTE] blockquote becomes a concept callout, in place", () => {
     // Markdown has no callout of its own; GitHub's alert convention is the
     // spelling a model already knows, and a blockquote keeps the callout
