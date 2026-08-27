@@ -29,7 +29,7 @@ from pydantic_ai.output import ToolOutput
 from ..cache.store import CacheStore
 from ..structural import SymbolDelta
 from ..viewer.build_json import ViewerIdIndex, viewer_id_index
-from . import explainer_schema
+from . import explainer_schema, prompts
 from .agents import Client
 from .pass_ import PassMeta, run_pass
 from .prompts import EXPLAINER_ROLE, EXPLAINER_SKELETON_GUIDANCE
@@ -133,8 +133,11 @@ def carry_guidance(client: Client, guidance: str) -> tuple[str, str]:
     keep the guidance in the system prompt, where it is the cacheable
     prefix.
 
-    Shared by every explainer pass; `guidance` is the pass's own bulk
-    block.
+    Args:
+        client: The backend handle; `is_subprocess_backend` chooses the
+            carrier.
+        guidance: The bulk block for this call — the skeleton's, or a
+            prose section's plus :func:`prose_figure_guidance`.
 
     Returns:
         `(system_text, user_prefix)`. Exactly one of them carries the
@@ -143,6 +146,21 @@ def carry_guidance(client: Client, guidance: str) -> tuple[str, str]:
     if client.is_subprocess_backend:
         return EXPLAINER_ROLE, guidance
     return f"{EXPLAINER_ROLE}\n\n{guidance}", ""
+
+
+def prose_figure_guidance(doc: explainer_schema.ExplainerDocument) -> str:
+    """Everything a prose call needs to draw a figure for this document.
+
+    The vocabulary block, which is fixed, plus the family and cast the
+    skeleton fixed for this change. Returns `""` when the skeleton fixed
+    no family: with nothing to keep three sections drawing the same
+    component the same way, the document is better off with no figures
+    than with three visual languages.
+    """
+    if not doc.figure_family.strip():
+        return ""
+    context = prompts.format_figure_context(doc.figure_family, doc.cast)
+    return f"{prompts.EXPLAINER_FIGURE_GUIDANCE}\n\n{context}"
 
 
 def format_skeleton_prompt(
@@ -363,8 +381,7 @@ async def generate_explainer_skeleton(
         head_sha=diff.pr.head_sha,
         ids=viewer_id_index(diff),
     )
-    explainer_schema.save_explainer(run_dir, doc)
-    return doc
+    return explainer_schema.save_explainer(run_dir, doc)
 
 
 def _symbol_delta(run_dir: Path, diff: AnnotatedDiff) -> SymbolDelta | None:

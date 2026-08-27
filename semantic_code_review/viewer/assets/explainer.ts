@@ -18,9 +18,12 @@
 // — model prose derives from a diff that may be hostile, so it never
 // reaches innerHTML unsanitised. Inline `[F3]` / `[H3_1]` tokens become
 // chips after sanitisation, built as DOM nodes rather than injected
-// markup. The figure vocabulary is slice 4.
+// markup. Figures are a structured slot rendered by
+// explainer_figure.ts, which reduces them to the closed vocabulary in
+// docs/explainer-presentation.md.
 
 import { renderMarkdown } from "./console_render";
+import { ExplainerFigures } from "./explainer_figure";
 
 let _endpoint = "";
 let _doc: ExplainerDocument | null = null;
@@ -322,6 +325,9 @@ function _renderSection(section: ExplainerSection): HTMLElement {
   if (section.skip_box) el.appendChild(_renderSkipBox(section.skip_box));
   if (section.terms && section.terms.length > 0) el.appendChild(_renderTerms(section.terms));
   for (const node of _proseNodes(section)) el.appendChild(node);
+  // Figures sit after the prose rather than inside it: they are a
+  // structured slot, not markup the model embedded in its markdown.
+  for (const figure of section.figures || []) el.appendChild(ExplainerFigures.renderFigure(figure));
   for (const sub of section.subsections || []) el.appendChild(_renderSubsection(sub));
   const sources = _renderSources(section);
   if (sources) el.appendChild(sources);
@@ -515,9 +521,10 @@ function _refChip(id: string): HTMLElement {
   return btn;
 }
 
-/** Coverage and the dropped-reference count, rendered rather than
- *  logged: references thinning out unnoticed is exactly the failure
- *  the count exists to catch. */
+/** Coverage, the dropped-reference count, and the toy-data notice —
+ *  rendered rather than logged. References thinning out unnoticed is
+ *  exactly the failure the count exists to catch, and a worked example
+ *  read as real data is the failure the notice exists to catch. */
 function _renderFooter(doc: ExplainerDocument): HTMLElement | null {
   const bits: string[] = [];
   const covered = new Set<string>();
@@ -526,11 +533,21 @@ function _renderFooter(doc: ExplainerDocument): HTMLElement | null {
   if (doc.dropped_refs > 0) {
     bits.push(`${doc.dropped_refs} dropped (addressed nothing in this diff)`);
   }
+  if (bits.length === 0 && !doc.toy_data) return null;
+  const footer = _el("div", "explainer-footer");
+  if (bits.length > 0) footer.appendChild(_el("p", "explainer-footnote", bits.join(" · ")));
   if (doc.toy_data) {
-    bits.push("identifiers, counts and values in worked examples are illustrative");
+    // Its own line, not another stat: it qualifies what the reader just
+    // read rather than measuring it.
+    footer.appendChild(
+      _el(
+        "p",
+        "explainer-toy-notice",
+        "Identifiers, counts and values in the worked examples above are illustrative, not taken from this codebase.",
+      ),
+    );
   }
-  if (bits.length === 0) return null;
-  return _el("p", "explainer-footnote", bits.join(" · "));
+  return footer;
 }
 
 function _generateButton(label: string): HTMLElement {

@@ -73,11 +73,13 @@ document; an unresolvable target drops the box.
 ### Figure
 
 ```
-{ svg: string, caption: markdown, alt: string }
+{ svg: string, caption: markdown, alt: string, stripped: int }
 ```
 
 See [Figures](#figures). `alt` is required and becomes the SVG's
-`aria-label`.
+`aria-label`; it is also what renders in place of a figure that lost
+everything. `stripped` is the sanitiser's, not the model's — it is set
+on the way to disk and rendered under the caption.
 
 ### Term list
 
@@ -123,25 +125,39 @@ Inline SVG in a structured slot — not embedded in prose markdown.
 
 ### Sanitiser rules
 
-Enforced server-side before the document is written, and again by
-DOMPurify's SVG profile at render:
+Enforced server-side on the way to disk (`augment/explainer_figures.py`,
+called from `save_explainer`, so every route that writes a document gets
+it), and again at render behind DOMPurify's SVG profile
+(`viewer/assets/explainer_figure.ts`), because a document can reach a
+browser from a run directory that server never wrote.
 
-- Presentation attributes are **stripped**: `fill`, `stroke`,
-  `stroke-width`, `stroke-dasharray`, `style`, `font-family`,
-  `font-size`, `font-weight`, `color`, `opacity`.
-- `class` is filtered to the vocabulary below; unknown classes are
-  removed.
-- `<script>`, event handlers (`on*`), `<foreignObject>`, external
-  references (`href`, `xlink:href` to anything but a same-document
-  `#id`) are removed.
 - Allowed elements: `svg`, `g`, `defs`, `marker`, `rect`, `circle`,
   `ellipse`, `line`, `polyline`, `polygon`, `path`, `text`, `tspan`,
-  `title`, `desc`.
-- `viewBox` is required; `width`/`height` are stripped (the stylesheet
-  sizes figures to the measure).
+  `title`, `desc`. Anything else goes with its subtree — `<script>`,
+  `<foreignObject>`, `<use>`, `<image>`.
+- Attributes are an **allowlist**, per element: the geometry each
+  element needs, plus `class` and `transform`. That removes the
+  presentation attributes the model must not choose — `fill`, `stroke`,
+  `stroke-width`, `stroke-dasharray`, `style`, `font-family`,
+  `font-size`, `font-weight`, `color`, `opacity` — and everything else
+  nobody enumerated, including `on*` handlers and every namespaced
+  attribute (`xlink:href`).
+- No element in the allowlist can carry an `href`, so external
+  references have nothing to hang on. The one surviving reference form
+  is `marker-start`/`-mid`/`-end`, which must match `url(#id)` exactly.
+- `class` is filtered to the vocabulary below; unknown classes are
+  removed, and a `class` left empty goes with them.
+- `viewBox` is required on the root; `width`/`height` there are stripped
+  (the stylesheet sizes figures to the measure). `width`/`height` on a
+  `rect` are geometry and stay.
+- A DTD ends the figure rather than being sanitised around: nothing in
+  the vocabulary needs one, and entity expansion is the only way an SVG
+  this size is expensive to parse.
 
-A figure that loses content to sanitisation is kept, and the strip count
-is recorded — the same drop/count/surface policy references use.
+A figure that loses content to sanitisation is kept and the strip count
+goes in its `stripped` field — the same drop/count/surface policy
+references use. A figure that loses *everything* (unparseable, wrong
+root, no `viewBox`) is still kept, rendering as its `alt` text.
 
 ### Class vocabulary
 
@@ -193,9 +209,10 @@ in both colour schemes without the model knowing which is active.
 | `rule` | thick rounded separator |
 
 Arrow heads are `<marker>` elements defined in the figure's own `defs`,
-with the head class applied to the marker's `path`. Marker ids must be
-unique within the figure; the renderer namespaces them per figure so two
-figures on one page cannot collide.
+with the head class applied to the marker's `path`. Ids are namespaced
+per figure by both sanitiser passes — by section id and index on the way
+to disk, by a render-scoped counter in the browser — so two figures on
+one page cannot collide whatever the model called them.
 
 ### Consistency across a document
 
@@ -221,8 +238,9 @@ dense monospace chrome.
 
 - Body: serif stack, ~18px, line-height ~1.62.
 - Measure: ~72ch for prose. Figures may exceed it slightly.
-- Headings, captions, labels and table headers: the UI sans stack, so
-  chrome reads as chrome and prose reads as prose.
+- Headings, captions, labels and table headers: `--ui`, the sans stack
+  the rest of the viewer uses, so chrome reads as chrome and prose reads
+  as prose.
 - Code spans and blocks: `--mono`, as elsewhere in the viewer.
 
 ## Tokens
@@ -240,7 +258,9 @@ tokens are reused (`--bg`, `--bg-alt`, `--bg-panel`, `--fg`,
 | `--accent-soft` / `--accent2-soft` | tinted fills behind their accents |
 | `--warn-soft` / `--ok-soft` | tinted fills behind their accents |
 | `--serif` | reading typeface stack |
+| `--ui` | the viewer's sans stack, named so the chrome inside a serif surface can ask for it |
 
 Each is defined in both the default (dark) block and the
 `prefers-color-scheme: light` block, matching the file's existing
-structure.
+structure. `--serif` carries the same value in both; `--ui` is defined
+once, at `:root`, because `body` uses it too.

@@ -17,11 +17,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
+
+from . import explainer_figures
 
 log = logging.getLogger(__name__)
 
@@ -91,6 +94,25 @@ class SkipBox(BaseModel):
     target_section_id: str
 
 
+class Figure(BaseModel):
+    """A diagram in a structured slot: inline SVG, a caption, and alt text.
+
+    `svg` on a persisted document has been through
+    :func:`explainer_figures.sanitize_svg`, so it carries geometry and
+    vocabulary classes only. `stripped` is what that removed — a figure
+    that lost content is kept and says so, rather than vanishing.
+
+    `alt` is required: a figure nobody can read without seeing it is
+    not an accessible document, and the renderer makes it the SVG's
+    `aria-label`.
+    """
+
+    svg: str
+    alt: str
+    caption: str = ""
+    stripped: int = 0
+
+
 class Section(BaseModel):
     """One section of the document.
 
@@ -115,6 +137,7 @@ class Section(BaseModel):
     #: citing no reads is one that made it up, and that is legible
     #: without judging the prose. Empty for the tool-less sections.
     sources: list[str] = Field(default_factory=list)
+    figures: list[Figure] = Field(default_factory=list)
     subsections: list[Section] = Field(default_factory=list)
 
 
@@ -215,17 +238,59 @@ def load_explainer(
     return doc
 
 
-def save_explainer(run_dir: Path, doc: ExplainerDocument) -> Path:
-    """Write the document atomically and return its path."""
+def sanitize_figures(doc: ExplainerDocument) -> ExplainerDocument:
+    """Reduce every figure to the drawing vocabulary; record what went.
+
+    Applied on the way to disk rather than at each call site, so every
+    route that writes a document — the skeleton, each prose section —
+    gets the guarantee without having to remember it. The renderer
+    sanitises again; see `explainer_figures`.
+
+    Returns:
+        A copy of the document with each figure's `svg` sanitised and
+        its `stripped` count set. The input is not mutated.
+    """
+    out = doc.model_copy(deep=True)
+    for section in _walk(out.sections):
+        for i, figure in enumerate(section.figures):
+            clean = explainer_figures.sanitize_svg(figure.svg, namespace=f"{_id_slug(section.id)}-{i}")
+            figure.svg = clean.svg
+            figure.stripped = clean.stripped
+    return out
+
+
+def _walk(sections: Iterable[Section]) -> Iterator[Section]:
+    for section in sections:
+        yield section
+        yield from _walk(section.subsections)
+
+
+def _id_slug(section_id: str) -> str:
+    """A section id reduced to something usable as an SVG id prefix.
+
+    Subsection ids are model-chosen, so they can carry anything.
+    """
+    slug = re.sub(r"[^A-Za-z0-9_-]", "-", section_id).strip("-")
+    return slug if slug and slug[0].isalpha() else f"s-{slug}"
+
+
+def save_explainer(run_dir: Path, doc: ExplainerDocument) -> ExplainerDocument:
+    """Sanitise the document's figures, write it atomically, hand it back.
+
+    Returns the document as written, not the one passed in: the strip
+    counts are set here, and the caller fans the same bytes out over
+    the SSE bus that the next `GET /explainer` will serve.
+    """
+    clean = sanitize_figures(doc)
     path = explainer_path(run_dir)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.parent.mkdir(parents=True, exist_ok=True)
     tmp.write_text(
-        json.dumps(doc.model_dump(), indent=2, ensure_ascii=False),
+        json.dumps(clean.model_dump(), indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
     os.replace(tmp, path)
-    return path
+    return clean
 
 
 def iter_sections(doc: ExplainerDocument) -> Iterator[Section]:
@@ -290,6 +355,7 @@ __all__ = [
     "SECTION_TITLES",
     "ExplainerCorrupt",
     "ExplainerDocument",
+    "Figure",
     "MapRow",
     "Reference",
     "Section",
@@ -299,6 +365,7 @@ __all__ = [
     "find_section",
     "iter_sections",
     "load_explainer",
+    "sanitize_figures",
     "save_explainer",
     "validate_references",
 ]
