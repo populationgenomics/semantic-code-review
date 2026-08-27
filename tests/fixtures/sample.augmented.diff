@@ -29,7 +29,8 @@
 #scr>   "themes": [
 #scr>     "api-surface",
 #scr>     "pagination"
-#scr>   ]
+#scr>   ],
+#scr>   "groups": []
 #scr> }
 diff --git a/src/users.py b/src/users.py
 --- a/src/users.py

@@ -460,13 +460,20 @@ function activeHunkIds(): Set<string> | null {
 /** Tag `.ungrouped` on every rendered hunk no themes-axis group claims,
  *  the dotted-border tell for the unfiltered view. A no-op under an
  *  active filter: the focused bodies carry no themeable `.hunk` headers,
- *  and render.ts already selected which hunks appear. */
+ *  and render.ts already selected which hunks appear.
+ *
+ *  Also a no-op when there are no groups at all — an overview that was
+ *  skipped, one that grouped nothing, or a document served before the
+ *  themes arrive. "No group claimed this" is only information against
+ *  hunks some group did claim; marking every hunk in the diff turns a
+ *  tell into wallpaper. */
 function applyFilter(): void {
   const filtered = _activePill !== null;
+  const grouped = THEMES_AXIS.groups.length > 0;
   document.querySelectorAll<HTMLElement>(".hunk").forEach((hunkEl) => {
     const hid = hunkEl.dataset.id || "";
     const inAnyGroup = (THEMES_AXIS.hunkCount[hid] || 0) > 0;
-    hunkEl.classList.toggle("ungrouped", !filtered && !inAnyGroup);
+    hunkEl.classList.toggle("ungrouped", grouped && !filtered && !inAnyGroup);
   });
 }
 

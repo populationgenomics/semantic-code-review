@@ -59,6 +59,7 @@ def _overview_to_jsonable(ov: Overview) -> dict[str, Any]:
         "symbols_removed": [s.model_dump() for s in ov.symbols_removed],
         "callgraph_edges": [e.model_dump(by_alias=True) for e in ov.callgraph_edges],
         "themes": list(ov.themes),
+        "groups": [g.model_dump() for g in ov.groups],
     }
 
 
