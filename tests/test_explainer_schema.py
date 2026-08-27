@@ -38,8 +38,8 @@ def _doc(**overrides) -> explainer_schema.ExplainerDocument:
 
 
 def test_save_then_load_round_trips(tmp_path: Path) -> None:
-    saved = explainer_schema.save_explainer(tmp_path, _doc())
-    assert saved == tmp_path / "explainer.json"
+    explainer_schema.save_explainer(tmp_path, _doc())
+    assert explainer_schema.explainer_path(tmp_path) == tmp_path / "explainer.json"
     loaded = explainer_schema.load_explainer(tmp_path, base_sha="aaaa1111", head_sha="bbbb2222")
     assert loaded is not None
     assert loaded.sections[0].map_rows[0].ref.id == "F0"

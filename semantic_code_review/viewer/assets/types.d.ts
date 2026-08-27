@@ -311,6 +311,18 @@ interface ExplainerMapRow {
   why: string;
 }
 
+/** A diagram in a structured slot. `svg` has already been through the
+ *  server-side sanitiser; the renderer runs the same rules again because
+ *  a document can reach a browser from a run dir this server never
+ *  wrote. `stripped` is what sanitisation removed — rendered, not
+ *  swallowed. `alt` is required and becomes the SVG's `aria-label`. */
+interface ExplainerFigure {
+  svg: string;
+  alt: string;
+  caption: string;
+  stripped: number;
+}
+
 type ExplainerSectionKind = "background" | "intuition" | "code" | "map";
 type ExplainerSectionState = "pending" | "ready" | "failed";
 
@@ -323,6 +335,7 @@ interface ExplainerSection {
   body: string;
   refs: ExplainerRef[];
   map_rows: ExplainerMapRow[];
+  figures: ExplainerFigure[];
   subsections: ExplainerSection[];
 }
 

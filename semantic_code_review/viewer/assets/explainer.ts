@@ -12,10 +12,12 @@
 // has no span set, and leaving it restores the reviewer's zoom and
 // hand-set folds without a latch.
 //
-// Slice 1 renders the Map. The three prose sections arrive `pending`
-// and say so; generating them is slice 2, and the markdown/figure
-// vocabulary is slice 4. Nothing here renders model-authored markup:
-// the Map's `why` is plain text until the markdown path lands.
+// Nothing here renders model-authored markup. Prose is plain text
+// until the markdown + DOMPurify path lands (slice 2); figures are a
+// structured slot rendered by explainer_figure.ts, which reduces them
+// to the closed vocabulary in docs/explainer-presentation.md.
+
+import { ExplainerFigures } from "./explainer_figure";
 
 let _endpoint = "";
 let _doc: ExplainerDocument | null = null;
@@ -219,12 +221,19 @@ function _renderSection(section: ExplainerSection): HTMLElement {
   }
   if (section.state === "pending") {
     el.appendChild(_el("p", "explainer-status", "Not written yet."));
-  } else if (section.state === "failed") {
+    return el;
+  }
+  if (section.state === "failed") {
     el.appendChild(_el("p", "explainer-status explainer-error", "This section could not be written."));
-  } else if (section.body) {
+    return el;
+  }
+  if (section.body) {
     // Plain text until the markdown + DOMPurify path lands (slice 2).
     el.appendChild(_el("p", "explainer-body", section.body));
   }
+  // Figures sit after the prose rather than inside it: they are a
+  // structured slot, not markup the model embedded in its markdown.
+  for (const figure of section.figures) el.appendChild(ExplainerFigures.renderFigure(figure));
   return el;
 }
 
@@ -256,9 +265,10 @@ function _renderMapRow(row: ExplainerMapRow): HTMLElement {
   return tr;
 }
 
-/** Coverage and the dropped-reference count, rendered rather than
- *  logged: references thinning out unnoticed is exactly the failure
- *  the count exists to catch. */
+/** Coverage, the dropped-reference count, and the toy-data notice —
+ *  rendered rather than logged. References thinning out unnoticed is
+ *  exactly the failure the count exists to catch, and a worked example
+ *  read as real data is the failure the notice exists to catch. */
 function _renderFooter(doc: ExplainerDocument): HTMLElement | null {
   const bits: string[] = [];
   const covered = new Set<string>();
@@ -267,11 +277,21 @@ function _renderFooter(doc: ExplainerDocument): HTMLElement | null {
   if (doc.dropped_refs > 0) {
     bits.push(`${doc.dropped_refs} dropped (addressed nothing in this diff)`);
   }
+  if (bits.length === 0 && !doc.toy_data) return null;
+  const footer = _el("div", "explainer-footer");
+  if (bits.length > 0) footer.appendChild(_el("p", "explainer-footnote", bits.join(" · ")));
   if (doc.toy_data) {
-    bits.push("identifiers, counts and values in worked examples are illustrative");
+    // Its own line, not another stat: it qualifies what the reader just
+    // read rather than measuring it.
+    footer.appendChild(
+      _el(
+        "p",
+        "explainer-toy-notice",
+        "Identifiers, counts and values in the worked examples above are illustrative, not taken from this codebase.",
+      ),
+    );
   }
-  if (bits.length === 0) return null;
-  return _el("p", "explainer-footnote", bits.join(" · "));
+  return footer;
 }
 
 function _generateButton(label: string): HTMLElement {

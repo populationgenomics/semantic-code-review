@@ -298,8 +298,7 @@ async def generate_explainer_skeleton(
         head_sha=diff.pr.head_sha,
         ids=viewer_id_index(diff),
     )
-    explainer_schema.save_explainer(run_dir, doc)
-    return doc
+    return explainer_schema.save_explainer(run_dir, doc)
 
 
 def _symbol_delta(run_dir: Path, diff: AnnotatedDiff) -> SymbolDelta | None:

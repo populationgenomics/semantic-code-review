@@ -33,6 +33,7 @@ function section(overrides: Partial<ExplainerSection> = {}): ExplainerSection {
     body: "",
     refs: [],
     map_rows: [],
+    figures: [],
     subsections: [],
     ...overrides,
   };
@@ -237,11 +238,18 @@ describe("footer", () => {
   test("the toy-data notice appears only when the document sets it", () => {
     boot();
     Explainer.onEvent(doc() as SseExplainerEvent);
-    expect(Explainer.renderPane().querySelector(".explainer-footnote")!.textContent)
-      .not.toContain("illustrative");
+    expect(Explainer.renderPane().querySelector(".explainer-toy-notice")).toBeNull();
     Explainer.onEvent(doc({ toy_data: true }) as SseExplainerEvent);
-    expect(Explainer.renderPane().querySelector(".explainer-footnote")!.textContent)
+    expect(Explainer.renderPane().querySelector(".explainer-toy-notice")!.textContent)
       .toContain("illustrative");
+  });
+
+  test("a document with nothing to footnote but toy data still gets the notice", () => {
+    boot();
+    Explainer.onEvent(doc({ toy_data: true, sections: [] }) as SseExplainerEvent);
+    const pane = Explainer.renderPane();
+    expect(pane.querySelector(".explainer-footnote")).toBeNull();
+    expect(pane.querySelector(".explainer-toy-notice")).not.toBeNull();
   });
 });
 
