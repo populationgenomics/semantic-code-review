@@ -416,6 +416,7 @@ def test_the_recorded_read_list_rides_the_cache_with_the_prose(tmp_path) -> None
 
     from pydantic_ai.models.test import TestModel
 
+    from semantic_code_review.augment import pass_
     from semantic_code_review.cache.store import CacheStore
 
     cache = CacheStore(root=tmp_path / "cache", prompt_version="test")
@@ -426,8 +427,8 @@ def test_the_recorded_read_list_rides_the_cache_with_the_prose(tmp_path) -> None
         nonlocal runs
         runs += 1
         with agent.override(model=TestModel(custom_output_args={"body": "the system before"})):
-            payload = await explainer_section.run_pass(
-                explainer_section.PassMeta(name="explainer-background", submit_tool="submit_explainer_section"),
+            payload = await pass_.run_pass(
+                pass_.PassMeta(name="explainer-background", submit_tool="submit_explainer_section"),
                 client=Client(model="anthropic:x"),
                 agent=agent,
                 user_content="u",
