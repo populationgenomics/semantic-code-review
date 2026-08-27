@@ -451,8 +451,48 @@ function _sectionButton(id: string, label: string): HTMLElement {
 function _renderBody(markdown: string): HTMLElement {
   const body = _el("div", "explainer-body");
   renderMarkdown(body, markdown);
+  _calloutify(body);
   _chipify(body);
   return body;
+}
+
+//: GitHub's alert convention, which is a blockquote whose first line is
+//: a bracketed kind. Markdown has no callout of its own, and this is the
+//: spelling a model already knows. Only these three map; the prompt asks
+//: for no others, and an unrecognised kind stays an ordinary blockquote
+//: rather than being silently restyled as something it did not ask for.
+const _ALERT_KINDS: Record<string, { cls: string; label: string }> = {
+  NOTE: { cls: "", label: "Concept" },
+  WARNING: { cls: "explainer-callout-edge", label: "Edge case" },
+  TIP: { cls: "explainer-callout-aside", label: "Aside" },
+};
+const _ALERT_HEAD = /^\s*\[!([A-Z]+)\]\s*/;
+
+/** Turn GitHub-style alert blockquotes into callouts.
+ *
+ *  Runs over the sanitised DOM for the same reason `_chipify` does: the
+ *  prose derives from a diff that may be hostile, so nothing goes back
+ *  through innerHTML. A callout placed inline in the prose is why this
+ *  is markdown rather than a schema field — a detached list of callouts
+ *  on the section has no position, and position is most of what a
+ *  callout is for. */
+function _calloutify(root: HTMLElement): void {
+  for (const quote of Array.from(root.querySelectorAll("blockquote"))) {
+    const first = quote.firstElementChild;
+    if (!first) continue;
+    const m = _ALERT_HEAD.exec(first.textContent || "");
+    if (!m) continue;
+    const kind = _ALERT_KINDS[m[1]];
+    if (!kind) continue;
+    // Drop the marker from the text it was read off, leaving the prose.
+    first.textContent = (first.textContent || "").replace(_ALERT_HEAD, "");
+    const box = _el("div", `explainer-callout${kind.cls ? " " + kind.cls : ""}`);
+    box.appendChild(_el("div", "explainer-callout-title", kind.label));
+    const inner = _el("div", "explainer-callout-body");
+    while (quote.firstChild) inner.appendChild(quote.firstChild);
+    box.appendChild(inner);
+    quote.parentNode?.replaceChild(box, quote);
+  }
 }
 
 function _renderMap(section: ExplainerSection): HTMLElement {

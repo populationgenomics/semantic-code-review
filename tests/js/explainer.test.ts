@@ -432,6 +432,40 @@ describe("prose rendering", () => {
     expect(body.textContent).toContain("after");
   });
 
+  test("a [!NOTE] blockquote becomes a concept callout, in place", () => {
+    // Markdown has no callout of its own; GitHub's alert convention is the
+    // spelling a model already knows, and a blockquote keeps the callout
+    // where the prose put it rather than in a detached list.
+    withBody("Before.\n\n> [!NOTE]\n> A `oneof` is a tagged union.\n\nAfter.");
+    const body = Explainer.renderPane().querySelector(".explainer-body")!;
+    const box = body.querySelector(".explainer-callout")!;
+    expect(box).not.toBeNull();
+    expect(box.querySelector(".explainer-callout-title")!.textContent).toBe("Concept");
+    expect(box.querySelector(".explainer-callout-body")!.textContent).toContain("tagged union");
+    // The marker itself is consumed, not left in the prose.
+    expect(box.textContent).not.toContain("[!NOTE]");
+    expect(body.querySelector("blockquote")).toBeNull();
+    // And it sits between the paragraphs it was written between.
+    const kids = Array.from(body.children).map((e) => e.className || e.tagName);
+    expect(kids[1]).toContain("explainer-callout");
+  });
+
+  test("the warning and tip kinds carry their own edge colour", () => {
+    withBody("> [!WARNING]\n> This drops a column.\n\n> [!TIP]\n> Skippable.");
+    const body = Explainer.renderPane().querySelector(".explainer-body")!;
+    expect(body.querySelector(".explainer-callout-edge")!.textContent).toContain("Edge case");
+    expect(body.querySelector(".explainer-callout-aside")!.textContent).toContain("Aside");
+  });
+
+  test("an unrecognised marker stays an ordinary blockquote", () => {
+    // Restyling a kind the prompt never offered would be inventing a
+    // meaning the model did not ask for.
+    withBody("> [!GOTCHA]\n> Invented by the model.");
+    const body = Explainer.renderPane().querySelector(".explainer-body")!;
+    expect(body.querySelector(".explainer-callout")).toBeNull();
+    expect(body.querySelector("blockquote")!.textContent).toContain("[!GOTCHA]");
+  });
+
   test("an inline file reference becomes an arrow, with the path in its tooltip", () => {
     // The prose has usually just named the file, so the arrow attaches to
     // the phrase and the path moves to the tooltip rather than repeating

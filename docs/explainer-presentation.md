@@ -49,15 +49,27 @@ styles them; the model supplies content only.
 
 ### Callout
 
+The one affordance that is **markdown, not a schema field** — GitHub's
+alert convention, a blockquote whose first line is a bracketed kind:
+
 ```
-{ kind: "concept" | "edge" | "aside", title: string, body: markdown }
+> [!NOTE]      → concept — a definition or load-bearing idea. Accent left border.
+> [!WARNING]   → edge    — an edge case or hazard. Warn left border.
+> [!TIP]       → aside   — tangential context. Secondary-accent left border.
 ```
 
-- `concept` — a definition or load-bearing idea. Accent left border.
-- `edge` — an edge case or hazard. Warn left border.
-- `aside` — tangential context. Secondary-accent left border.
+Markdown has no callout of its own, so the general rule above would make
+this a field. It is not, for one reason: a callout's *position* is most
+of what it is for, and a field hangs a detached list off the section with
+no place in the prose. The blockquote keeps it where the model put it.
 
-`title` renders as a small uppercase label above the body.
+The marker is consumed and replaced by a fixed uppercase label; the model
+does not choose the label, so the rule that it never chooses presentation
+survives. Three kinds only. An unrecognised marker stays an ordinary
+blockquote rather than being restyled as a meaning nobody asked for.
+
+Rendered by `_calloutify` over the sanitised DOM, for the same reason
+`_chipify` runs there: nothing goes back through `innerHTML`.
 
 ### Skip box
 

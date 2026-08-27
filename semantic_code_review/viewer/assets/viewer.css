@@ -1528,14 +1528,14 @@ body { padding-bottom: 30px; }
    the prompt in augment/prompts.py is the other. A class the model uses
    and this file does not define renders unstyled. */
 .explainer {
-  padding: 32px 28px 72px;
+  padding: 32px 52px 72px;
   font-family: var(--serif);
-  font-size: 18px;
-  line-height: 1.62;
+  font-size: 15px;
+  line-height: 1.58;
   color: var(--fg);
 }
 .explainer-lede {
-  font-size: 20px; line-height: 1.5; color: var(--fg);
+  font-size: 17px; line-height: 1.5; color: var(--fg);
   margin: 0 0 28px;
 }
 .explainer-status { font-family: var(--ui); color: var(--fg-muted); font-size: 14px; line-height: 1.5; }
@@ -1593,7 +1593,7 @@ body { padding-bottom: 30px; }
   border-left: 3px solid var(--accent);
   background: var(--accent-soft);
   border-radius: 0 6px 6px 0;
-  font-size: 16px;
+  font-size: 14px;
   line-height: 1.55;
 }
 .explainer-callout-edge { border-left-color: var(--warn); background: var(--warn-soft); }
