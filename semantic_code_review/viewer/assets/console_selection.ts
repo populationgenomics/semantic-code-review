@@ -6,10 +6,13 @@
 // `.file` resolution the comment gutter uses (`comments.ts`), and
 // classify the selection as code / comment / plain:
 //
-//   - code    — inside a diff row; resolves to (file, side, hunk_id,
-//               line_range) so the server can inline the enclosing hunk.
-//   - comment — inside a reviewer/LLM annotation; carries just the text.
-//   - plain   — anything else (prose, the overview); carries just the text.
+//   - code      — inside a diff row; resolves to (file, side, hunk_id,
+//                 line_range) so the server can inline the enclosing hunk.
+//   - comment   — inside a reviewer/LLM annotation; carries just the text.
+//   - explainer — inside the overview-mode document (ADR 0007); resolves
+//                 to the enclosing section id so the server can inline
+//                 that section's prose and the hunks it anchors to.
+//   - plain     — anything else (prose, the overview); carries just the text.
 //
 // Selections inside the console UI itself (the prompt, the drawer, the
 // footer) resolve to null so caret moves in the textarea don't register
@@ -18,13 +21,16 @@
 
 export interface ConsoleSelection {
   selection_text: string;
-  selection_kind: "code" | "comment" | "plain";
+  selection_kind: "code" | "comment" | "explainer" | "plain";
   file?: string;
   side?: "old" | "new";
   hunk_id?: string;
   /** [start, end] line numbers on `side`, inclusive; collapsed to a
    *  single line when the selection stays within one row. */
   line_range?: [number, number];
+  /** The explainer section the selection sits in. Absent when it landed
+   *  in the pane but outside any section — the lede or the footer. */
+  section_id?: string;
 }
 
 /** The element a (possibly text) node lives in, for `.closest()` walks. */
@@ -65,6 +71,22 @@ export function resolveSelection(sel: Selection | null): ConsoleSelection | null
   // drag across the transcript isn't a selection of the change.
   if (anchorEl.closest(".console-drawer, .console-input, #status-bar")) {
     return null;
+  }
+
+  // The change-explainer document. Matched here — ahead of the code and
+  // `plain` branches — because overview mode replaces the main pane, so a
+  // claim in the document is never inside a diff row and would otherwise
+  // fall through to `plain` and lose its section.
+  const explainerEl = anchorEl.closest(".explainer");
+  if (explainerEl) {
+    const out: ConsoleSelection = {
+      selection_text: text,
+      selection_kind: "explainer",
+    };
+    const sectionEl = anchorEl.closest(".explainer-section");
+    const sectionId = sectionEl?.getAttribute("data-section-id");
+    if (sectionId) out.section_id = sectionId;
+    return out;
   }
 
   // Comment / annotation text — reviewer threads and LLM annotations.
