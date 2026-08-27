@@ -491,6 +491,14 @@ describe("prose rendering", () => {
     expect(ref.textContent).toBe("\u2197");
   });
 
+  test("a hunk reference is labelled by its file, not by its raw id", () => {
+    // `_fileLabel` on a hunk id finds nothing and hands back "H1_1",
+    // which is not something a reviewer can act on.
+    withBody("The rename happens in [H1_1].");
+    const ref = Explainer.renderPane().querySelector(".explainer-arrow") as HTMLElement;
+    expect(ref.textContent).toBe("api_pb.ts:2 \u2197");
+  });
+
   test("a run of references each keep their label", () => {
     // "Everything under ↗, ↗, ↗ is generated" was the failure: a row of
     // anonymous glyphs naming nothing.

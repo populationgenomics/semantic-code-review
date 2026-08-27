@@ -615,17 +615,17 @@ function _refChip(id: string): HTMLElement {
 /** Give a reference its label, or leave it bare. Split from `_refChip`
  *  because only the caller walking the prose knows what came before. */
 function _labelRef(btn: HTMLElement, id: string, preceding: string): void {
-  const isFile = id.charAt(0) === "F";
-  const path = _fileLabel(id);
+  const m = /^H(\d+)_(\d+)$/.exec(id);
+  // A hunk's path is its file's — `_fileLabel` on a hunk id finds nothing
+  // and hands back the raw id, which is what a reviewer cannot act on.
+  const path = m ? _fileLabel(`F${m[1]}`) : _fileLabel(id);
   const base = path.slice(path.lastIndexOf("/") + 1);
-  const alreadyNamed = base.length > 0 && preceding.indexOf(base) !== -1;
-  if (alreadyNamed) {
+  if (base.length > 0 && preceding.indexOf(base) !== -1) {
     btn.textContent = "\u2197";
     return;
   }
   btn.classList.add("explainer-arrow-labelled");
-  const m = /^H\d+_(\d+)$/.exec(id);
-  btn.textContent = isFile || !m ? `${base} \u2197` : `${base}:${Number(m[1]) + 1} \u2197`;
+  btn.textContent = m ? `${base}:${Number(m[2]) + 1} \u2197` : `${base} \u2197`;
 }
 
 /** Coverage, the dropped-reference count, and the toy-data notice —

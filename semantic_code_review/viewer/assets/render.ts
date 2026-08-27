@@ -252,6 +252,14 @@ function revealHunk(hunkId: string): void {
   const file = _data.files && _data.files[Number(parts[0])];
   if (file) _state.overrides[file.id] = false;
   _state.overrides[hunkId] = false;
+  // Unfolding the hunk is not enough to show code. At the `hunks` level
+  // an open hunk still renders its segment *summaries* — the ladder's
+  // whole point — so a reference that landed here would arrive at a
+  // paraphrase of the thing it was citing. Open the segments too: a
+  // reference is a claim about specific lines, and the lines are what
+  // the reviewer came to check.
+  const hunk = file && (file.hunks || []).find((h) => h.id === hunkId);
+  if (hunk) for (const s of _displaySegments(hunk)) _state.overrides[s.id] = false;
   render();
   const el = document.querySelector('.hunk[data-id="' + _cssEscape(hunkId) + '"]');
   if (el) el.scrollIntoView({ block: "start" });
