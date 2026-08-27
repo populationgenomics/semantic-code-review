@@ -17,6 +17,7 @@
 
 import { Annotations } from "./annotations";
 import { Comments } from "./comments";
+import { Explainer } from "./explainer";
 import { FileRows } from "./file_rows";
 import { Folds } from "./folds";
 import { Progress } from "./progress";
@@ -28,8 +29,15 @@ import { blockDiff, matchRanges, wrapRanges, type CharRange } from "./text_highl
 
 type FoldMode = "files" | "hunks" | "segments" | "off";
 
+// Which renderer owns the main pane. Orthogonal to FoldMode, not a
+// fifth value of it (ADR 0007): overview mode hides nothing, it
+// replaces the pane, so `fold` and the per-item overrides are left
+// exactly as the reviewer set them and the return trip needs no latch.
+type ViewMode = "diff" | "overview";
+
 interface RenderState {
   fold: FoldMode;
+  mode: ViewMode;
   overrides: Record<string, boolean>;
   renderedDiffs: Record<string, HTMLElement>;
   // Ephemeral: reveal the focused hunks' code (set when a sidebar pill is
@@ -46,8 +54,15 @@ let _smells: Record<string, SmellCatalogueEntry> = {};
 // it up in _renderContent; setSymbolSearch repaints cells already in the
 // DOM. See setSymbolSearch / sidebar's active-pill callback.
 let _symbolSearch: string | null = null;
+// Whether the change explainer exists for this review (`--no-augment`
+// and `[augment].explainer = false` both switch it off server-side).
+// Gates the mode entirely: with it false there is no button, and a
+// `mode=overview` left in the URL is ignored rather than painting a
+// pane whose only control 409s.
+let _explainerEnabled = false;
 const _state: RenderState = {
   fold: "hunks",
+  mode: "diff",
   overrides: Object.create(null),
   renderedDiffs: Object.create(null),
   focusReveal: true,
@@ -62,7 +77,9 @@ const _state: RenderState = {
 function renderInit(data: ViewerData): void {
   _data = data;
   _smells = data.smells_catalogue || {};
+  _explainerEnabled = data.explainer === true;
   _state.fold = "hunks";
+  _state.mode = "diff";
   _state.overrides = Object.create(null);
   _state.renderedDiffs = Object.create(null);
   _state.focusReveal = true;
@@ -77,6 +94,11 @@ function render(): void {
   const app = document.getElementById("app");
   if (!app) return;
   app.innerHTML = "";
+  if (_state.mode === "overview") {
+    _renderOverviewMode(app);
+    return;
+  }
+  Sidebar.setSectionTree(null);
   app.appendChild(_renderPRPanel(_data.pr));
   for (const f of _data.files) {
     const el = _renderFile(f);
@@ -171,6 +193,50 @@ function _setGlobalFold(fold: FoldMode): void {
   // level, so focus-reveal stops forcing the focused hunks open.
   _state.focusReveal = false;
   render();
+}
+
+/** Paint the explainer's document into the main pane and swap the
+ *  sidebar to its section tree.
+ *
+ *  Deliberately short of everything the diff path does: no comment
+ *  replay, no annotation reflow, no slider repaint against a pane that
+ *  has no folds in it. `_state.fold` and `_state.overrides` are not
+ *  touched, so leaving the mode restores the reviewer's zoom and their
+ *  hand-set folds exactly. */
+function _renderOverviewMode(app: HTMLElement): void {
+  app.appendChild(Explainer.renderPane());
+  Sidebar.setSectionTree({
+    sections: Explainer.sections(),
+    activeId: Explainer.activeSectionId(),
+    onPick: (id) => Explainer.setActiveSection(id),
+  });
+  Sidebar.render();
+  _syncHash();
+  _updateModeButton();
+}
+
+function setMode(mode: ViewMode): void {
+  if (mode === "overview" && !_explainerEnabled) return;
+  if (_state.mode === mode) return;
+  _state.mode = mode;
+  // Entering the mode clears focus-reveal, as touching the collapse
+  // slider already does: the reveal belongs to a filter the reviewer is
+  // stepping away from, and it must not survive the round trip.
+  if (mode === "overview") _state.focusReveal = false;
+  render();
+}
+
+function mode(): ViewMode {
+  return _state.mode;
+}
+
+/** Leave overview mode and bring `fileId` into view at whatever
+ *  collapse level the reviewer left the diff on. Deliberately not a
+ *  fold change: the Map answers "read this next", not "expand this". */
+function revealFile(fileId: string): void {
+  setMode("diff");
+  const el = document.querySelector('.file[data-id="' + _cssEscape(fileId) + '"]');
+  if (el) el.scrollIntoView({ block: "start" });
 }
 
 /** A sidebar filter changed. Reveal the newly focused hunks' code (an
@@ -884,6 +950,32 @@ function _updateSliderButtons(): void {
     const btn = b as HTMLElement;
     btn.classList.toggle("active", btn.dataset.fold === _state.fold);
   });
+  _updateModeButton();
+}
+
+/** Repaint the overview-mode button: pressed state, and disabled until
+ *  the skeleton's inputs exist server-side (pressing earlier can only
+ *  409). Absent entirely when the feature is off for this review. */
+function _updateModeButton(): void {
+  const strip = document.querySelector(".mode-strip");
+  if (!_explainerEnabled) {
+    strip?.remove();
+    return;
+  }
+  const btn = document.getElementById("overview-btn") as HTMLButtonElement | null;
+  if (!btn) return;
+  btn.classList.toggle("active", _state.mode === "overview");
+  btn.disabled = !Explainer.isReady();
+  btn.title = Explainer.isReady()
+    ? "Reading guide for this change"
+    : "Available once the change overview lands";
+}
+
+/** Called by boot when the overview SSE event arrives. */
+function markExplainerReady(): void {
+  if (!_explainerEnabled) return;
+  Explainer.markReady();
+  _updateModeButton();
 }
 
 function _updateStatus(): void {
@@ -913,6 +1005,10 @@ function _updateStatus(): void {
 
 function _syncHash(): void {
   const parts = [`fold=${_state.fold}`];
+  // The mode rides alongside the collapse level rather than replacing
+  // it, so a reload into overview mode still restores the zoom the
+  // reviewer will return to.
+  if (_state.mode !== "diff") parts.push(`mode=${_state.mode}`);
   for (const [id, folded] of Object.entries(_state.overrides)) {
     parts.push(`${id}=${folded ? "f" : "o"}`);
   }
@@ -929,6 +1025,8 @@ function _restoreHash(): void {
     const [k, v] = kv.split("=");
     if (k === "fold" && ["files", "hunks", "segments", "off"].includes(v)) {
       _state.fold = v as FoldMode;
+    } else if (k === "mode") {
+      _state.mode = v === "overview" && _explainerEnabled ? "overview" : "diff";
     } else if (k && v != null) {
       _state.overrides[k] = (v === "f");
     }
@@ -967,6 +1065,16 @@ function _wireInputs(): void {
       if (f) _setGlobalFold(f);
     });
   });
+  const overview = document.getElementById("overview-btn");
+  if (overview) {
+    overview.addEventListener("click", () => {
+      const entering = _state.mode !== "overview";
+      setMode(entering ? "overview" : "diff");
+      // Generating is the press's whole point when nothing exists yet;
+      // the pane shows progress while the call is in flight.
+      if (entering && !Explainer.hasDocument()) void Explainer.generate();
+    });
+  }
   const reset = document.getElementById("reset-btn");
   if (reset) {
     reset.addEventListener("click", () => {
@@ -993,6 +1101,10 @@ function _wireInputs(): void {
 export const Render = {
   init: renderInit,
   render,
+  mode,
+  setMode,
+  revealFile,
+  markExplainerReady,
   applyFilterChange,
   renderHunkReplace,
   repaintHunkHeader,

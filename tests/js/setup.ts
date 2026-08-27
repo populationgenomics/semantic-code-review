@@ -1,6 +1,7 @@
 // Shared Vitest setup for the annotations module.
 //
-// jsdom does not implement `ResizeObserver` — we install a stub so
+// jsdom implements neither `ResizeObserver` nor `scrollIntoView` — we
+// install stubs so
 // `attach()` can hook into a ResizeObserver without exploding. Tests
 // that want to simulate a resize call `triggerResizeObservers()`
 // themselves.
@@ -28,6 +29,14 @@ import { afterEach, vi } from "vitest";
     get length() { return store.size; },
   };
   (globalThis as unknown as { localStorage: Storage }).localStorage = storage;
+}
+
+// jsdom implements no layout, so Element.scrollIntoView is absent
+// entirely (not a no-op). The viewer calls it to bring a Map row's file
+// or a document section's heading into view; without a stub the click
+// handler throws.
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = function scrollIntoView(): void { /* no layout in jsdom */ };
 }
 
 type RoCallback = (entries: ResizeObserverEntry[]) => void;

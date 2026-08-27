@@ -7,6 +7,10 @@
 // directory tree (single-child directory chains compressed into one
 // node, siblings sorted alphanumerically).
 //
+// In overview mode the three axes are replaced by the explainer's
+// section tree (setSectionTree), which is not a filter — see
+// _renderSectionTree.
+//
 // Filter semantics: one active pill at a time across all axes.
 // Clicking a pill sets the active pill and fires onFilterChange (a full
 // re-render); render.ts reads activeHunkIds() and renders the pill's
@@ -242,6 +246,10 @@ function render(): void {
   const sidebar = document.getElementById("group-sidebar");
   if (!sidebar) return;
   sidebar.innerHTML = "";
+  if (_sectionTree !== null) {
+    _renderSectionTree(sidebar, _sectionTree);
+    return;
+  }
   const populated = AXES.filter((a) => a.groups.length > 0);
   if (populated.length === 0) {
     sidebar.classList.add("empty");
@@ -271,6 +279,62 @@ function render(): void {
     }
     sidebar.appendChild(section);
   }
+}
+
+// --- Explainer section tree ------------------------------------------------
+// Overview mode replaces the three filter axes with the document's
+// section tree (ADR 0007). It is passed in rather than imported so this
+// module keeps no dependency on the explainer, and it deliberately does
+// NOT go through the pill machinery: a section is not a hunk filter, and
+// routing it through `setActivePill` would both break `activeHunkIds`
+// and overwrite the reviewer's diff-mode pill in localStorage.
+
+interface SectionTree {
+  sections: ExplainerSection[];
+  activeId: string | null;
+  onPick: (id: string) => void;
+}
+
+let _sectionTree: SectionTree | null = null;
+
+/** Swap the sidebar to the explainer's section tree, or back to the
+ *  filter axes with `null`. Caller re-renders. */
+function setSectionTree(tree: SectionTree | null): void {
+  _sectionTree = tree;
+}
+
+function _renderSectionTree(sidebar: HTMLElement, tree: SectionTree): void {
+  if (tree.sections.length === 0) {
+    sidebar.classList.add("empty");
+    return;
+  }
+  sidebar.classList.remove("empty");
+  const section = _el("div", "group-axis");
+  section.dataset.axis = "explainer";
+  const header = _el("div", "group-axis-header");
+  header.appendChild(_el("h3", null, "Document"));
+  section.appendChild(header);
+  for (const s of tree.sections) section.appendChild(_sectionNode(s, tree));
+  sidebar.appendChild(section);
+}
+
+function _sectionNode(s: ExplainerSection, tree: SectionTree): HTMLElement {
+  const node = _el("div", "group-tree-node");
+  const btn = _el("button", "group-btn");
+  btn.dataset.axis = "explainer";
+  btn.dataset.pillId = s.id;
+  btn.appendChild(_el("span", "group-btn-label", s.title));
+  if (s.state === "pending") btn.appendChild(_el("span", "group-btn-count", "…"));
+  else if (s.refs.length > 0) btn.appendChild(_el("span", "group-btn-count", String(s.refs.length)));
+  if (s.id === tree.activeId) btn.classList.add("active");
+  btn.addEventListener("click", () => tree.onPick(s.id));
+  node.appendChild(btn);
+  if (s.subsections.length > 0) {
+    const kids = _el("div", "group-tree-children");
+    for (const child of s.subsections) kids.appendChild(_sectionNode(child, tree));
+    node.appendChild(kids);
+  }
+  return node;
 }
 
 /** One pill button for a group. Shared by the flat Themes axis and the
@@ -501,6 +565,7 @@ function _el(tag: string, className: string | null, text?: string): HTMLElement 
 }
 
 export const Sidebar = {
+  setSectionTree,
   init,
   render,
   refreshThemes,

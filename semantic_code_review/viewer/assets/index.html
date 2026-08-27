@@ -20,6 +20,12 @@
       <button data-fold="segments" title="Collapse to segments (3)">Segments</button>
       <button data-fold="off" title="Fully expanded (4)">Off</button>
     </div>
+    <!-- Peer of the fold slider, not a member of it: overview mode is
+         orthogonal to the collapse level (ADR 0007), and keeping it out
+         of .fold-slider is what stops the level machinery claiming it. -->
+    <div class="mode-strip">
+      <button id="overview-btn" class="mode-btn" disabled title="Available once the change overview lands">Overview</button>
+    </div>
     <button id="reset-btn" class="reset-btn" title="Clear per-region overrides">Reset</button>
     <button id="help-btn" class="help-btn" title="Help (?)" aria-label="Help">?</button>
   </header>

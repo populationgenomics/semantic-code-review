@@ -88,6 +88,10 @@ interface FetchResponse {
 }
 const fetchResponses: FetchResponse[] = [];
 const fetchCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+// `GET /explainer` is answered by URL rather than from the positional
+// queue: boot fires it behind /comments and PostModal's /post-config,
+// so its position depends on wiring the test has no reason to know.
+let explainerLoadResponse: FetchResponse | null = null;
 
 function queueFetchResponse(r: FetchResponse): void {
   fetchResponses.push(r);
@@ -98,6 +102,7 @@ function queueFetchResponse(r: FetchResponse): void {
 interface ViewerData {
   version?: string;
   pending?: boolean;
+  explainer?: boolean;
   pr?: Record<string, unknown>;
   smells_catalogue?: Record<string, unknown>;
   files?: Array<Record<string, unknown>>;
@@ -108,6 +113,11 @@ interface BootOptions {
   /** Body the /comments fetch fired by Comments.init should resolve to.
    *  Defaults to an empty array. */
   comments?: unknown[];
+  /** Response for the `GET /explainer` pre-fetch boot fires when
+   *  `data.explainer` is set. Must be queued between /comments and
+   *  anything the test adds, so it goes here rather than at the call
+   *  site. */
+  explainer?: FetchResponse;
 }
 
 async function bootViewer(data: ViewerData, opts: BootOptions = {}): Promise<void> {
@@ -127,6 +137,9 @@ async function bootViewer(data: ViewerData, opts: BootOptions = {}): Promise<voi
         <button data-fold="hunks"></button>
         <button data-fold="segments"></button>
         <button data-fold="off"></button>
+      </div>
+      <div class="mode-strip">
+        <button id="overview-btn" class="mode-btn" disabled></button>
       </div>
       <button id="reset-btn"></button>
       <button id="help-btn"></button>
@@ -158,6 +171,9 @@ async function bootViewer(data: ViewerData, opts: BootOptions = {}): Promise<voi
   // empty default) rather than whatever the test queues later.
   queueFetchResponse({ status: 200, body: data });
   queueFetchResponse({ status: 200, body: { comments: opts.comments ?? [] } });
+  explainerLoadResponse = data.explainer
+    ? (opts.explainer ?? { status: 404, body: { error: "no explainer document" } })
+    : null;
   // Execute viewer.js as a fresh IIFE in the current realm so it
   // picks up our stubs. `new Function` ensures strict-mode + clean
   // scope. The IIFE returns synchronously; the boot continues on
@@ -231,9 +247,12 @@ beforeEach(() => {
   window.history.replaceState(null, "", window.location.pathname + window.location.search);
   (globalThis as unknown as { EventSource: typeof EventSource }).EventSource =
     EventSourceStub as unknown as typeof EventSource;
+  explainerLoadResponse = null;
   vi.spyOn(globalThis, "fetch").mockImplementation(((url: string, init?: RequestInit) => {
     fetchCalls.push({ url, init });
-    const next = fetchResponses.shift() ?? { status: 200, body: {} };
+    const next = (url === "/explainer" && explainerLoadResponse !== null)
+      ? explainerLoadResponse
+      : fetchResponses.shift() ?? { status: 200, body: {} };
     return Promise.resolve({
       status: next.status,
       ok: next.status >= 200 && next.status < 300,
@@ -1942,5 +1961,131 @@ describe("rendered markdown mode", () => {
     (document.querySelector(".md-toggle") as HTMLElement).click();
     await new Promise<void>((r) => setTimeout(r, 0));
     expect(document.querySelector(".comment-thread-entry")!.textContent).toContain("reads well");
+  });
+});
+
+describe("overview mode (ADR 0007)", () => {
+  const DOC = {
+    version: 1,
+    base_sha: "b", head_sha: "h",
+    verdict: "narrate",
+    verdict_note: "a cursor threaded through",
+    figure_family: "", cast: [], toy_data: false, dropped_refs: 0,
+    sections: [
+      {
+        id: "background", kind: "background", title: "Background",
+        state: "pending", body: "", refs: [], map_rows: [], subsections: [],
+      },
+      {
+        id: "map", kind: "map", title: "Map", state: "ready", body: "",
+        refs: [{ kind: "file", id: "F0" }],
+        map_rows: [{ ref: { kind: "file", id: "F0" }, why: "the contract" }],
+        subsections: [],
+      },
+    ],
+  };
+
+  async function bootWithExplainer(
+    explainer: { status: number; body: unknown },
+    dataOverrides: Partial<ViewerData> = {},
+  ): Promise<void> {
+    await bootViewer(makeData({ explainer: true, ...dataOverrides }), { explainer });
+    await new Promise<void>((r) => setTimeout(r, 0));
+  }
+
+  test("the button is absent entirely when the feature is off", async () => {
+    await bootViewer(makeData({ explainer: false }));
+    expect(document.querySelector(".mode-strip")).toBeNull();
+  });
+
+  test("the button is disabled until the overview lands, then enabled", async () => {
+    await bootWithExplainer({ status: 404, body: {} }, { pending: true });
+    const btn = document.getElementById("overview-btn") as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    lastEventSource().dispatch("overview", { summary: "s", themes: [], groups: [] });
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect((document.getElementById("overview-btn") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  test("pressing with no document POSTs the skeleton and renders the Map", async () => {
+    await bootWithExplainer({ status: 404, body: {} }, { pending: false });
+    queueFetchResponse({ status: 200, body: DOC });
+    (document.getElementById("overview-btn") as HTMLButtonElement).click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    expect(fetchCalls.some((c) => c.url === "/explainer/skeleton")).toBe(true);
+    const rows = document.querySelectorAll("#app .explainer-map-row");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].querySelector(".explainer-ref")!.textContent).toBe("a.py");
+    // The diff is gone from the pane; overview mode replaces it.
+    expect(document.querySelector("#app .file")).toBeNull();
+  });
+
+  test("the sidebar swaps to the section tree and back", async () => {
+    await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
+    const btn = document.getElementById("overview-btn") as HTMLButtonElement;
+    btn.click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const axis = document.querySelector("#group-sidebar .group-axis") as HTMLElement;
+    expect(axis.dataset.axis).toBe("explainer");
+    expect(Array.from(axis.querySelectorAll(".group-btn-label")).map((e) => e.textContent))
+      .toEqual(["Background", "Map"]);
+
+    btn.click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(document.querySelector('#group-sidebar .group-axis[data-axis="explainer"]')).toBeNull();
+  });
+
+  test("the mode leaves the collapse level and the reviewer's folds alone", async () => {
+    await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
+    // Zoom in, then hand-collapse one hunk, then round-trip the mode.
+    (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+    const before = window.location.hash;
+    expect(before).toContain("fold=off");
+
+    const btn = document.getElementById("overview-btn") as HTMLButtonElement;
+    btn.click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    // The level is untouched while in the mode; only `mode=` is added.
+    expect(window.location.hash).toContain("fold=off");
+    expect(window.location.hash).toContain("mode=overview");
+
+    btn.click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(window.location.hash).toBe(before);
+    expect(document.querySelector('.fold-slider button[data-fold="off"]')!.classList.contains("active"))
+      .toBe(true);
+  });
+
+  test("entering the mode does not touch the diff-mode sidebar pill", async () => {
+    localStorage.setItem("scr-active-group:local", "files:BF0");
+    await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
+    (document.getElementById("overview-btn") as HTMLButtonElement).click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const tree = document.querySelector('#group-sidebar [data-pill-id="background"]') as HTMLElement;
+    tree.click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(localStorage.getItem("scr-active-group:local")).toBe("files:BF0");
+    expect(localStorage.getItem("scr-explainer-section:local")).toBe("explainer:background");
+  });
+
+  test("clicking a Map row leaves the mode and shows the diff again", async () => {
+    await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
+    (document.getElementById("overview-btn") as HTMLButtonElement).click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    (document.querySelector("#app .explainer-ref") as HTMLElement).click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(document.querySelector('.file[data-id="F0"]')).not.toBeNull();
+    expect(document.querySelector("#app .explainer")).toBeNull();
+  });
+
+  test("an SSE frame from another tab fills the pane without a POST", async () => {
+    await bootWithExplainer({ status: 404, body: {} }, { pending: false });
+    lastEventSource().dispatch("explainer", DOC);
+    await new Promise<void>((r) => setTimeout(r, 0));
+    (document.getElementById("overview-btn") as HTMLButtonElement).click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(document.querySelectorAll("#app .explainer-map-row")).toHaveLength(1);
+    expect(fetchCalls.some((c) => c.url === "/explainer/skeleton")).toBe(false);
   });
 });

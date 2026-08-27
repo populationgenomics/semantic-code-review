@@ -57,6 +57,18 @@ body {
 }
 .fold-slider button.active { background: var(--accent); color: #fff; }
 .fold-slider button:hover:not(.active) { background: var(--bg-panel); color: var(--fg); }
+/* Overview mode's button. A peer of the fold slider, styled to match
+   it, but structurally outside it: the mode is orthogonal to the
+   collapse level (ADR 0007). */
+.mode-strip { display: inline-flex; }
+.mode-btn {
+  background: transparent; border: 1px solid var(--border); color: var(--fg-muted);
+  padding: 4px 10px; font-size: 12px; border-radius: 6px; cursor: pointer;
+}
+.mode-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.mode-btn:disabled { opacity: 0.45; cursor: default; }
+.mode-btn:hover:not(.active):not(:disabled) { background: var(--bg-panel); color: var(--fg); }
+
 .help-btn, .reset-btn {
   background: transparent; border: 1px solid var(--border); color: var(--fg-muted);
   padding: 4px 10px; font-size: 12px; border-radius: 6px; cursor: pointer;
@@ -1483,3 +1495,59 @@ body { padding-bottom: 30px; }
   color: var(--accent); text-decoration: none;
 }
 .post-modal-link:hover { text-decoration: underline; }
+
+/* --- Change explainer (ADR 0007) -----------------------------------------
+   Slice 1 carries only what the Map needs to be legible. The reading
+   type scale, the affordance styles and the figure class vocabulary
+   land with slice 4; until then this deliberately borrows the viewer's
+   own chrome rather than half-inventing a second look. */
+.explainer { max-width: 72ch; padding: 20px 24px; }
+.explainer-lede { font-size: 15px; line-height: 1.55; color: var(--fg); margin: 0 0 16px; }
+.explainer-status { color: var(--fg-muted); font-size: 13px; line-height: 1.5; }
+.explainer-error { color: var(--warn); }
+.explainer-section { margin: 0 0 28px; }
+.explainer-section-title {
+  margin: 0 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-dim);
+}
+.explainer-body { font-size: 14px; line-height: 1.6; color: var(--fg); white-space: pre-wrap; }
+.explainer-generate {
+  margin-top: 12px;
+  background: var(--accent); border: none; color: #fff;
+  padding: 6px 14px; font-size: 13px; border-radius: 6px; cursor: pointer;
+}
+.explainer-map { border-collapse: collapse; width: 100%; }
+.explainer-map th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-dim);
+  font-weight: 500;
+  padding: 0 12px 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.explainer-map td {
+  vertical-align: top;
+  padding: 8px 12px 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.explainer-map-read { white-space: nowrap; }
+.explainer-map-why { color: var(--fg-muted); }
+.explainer-ref {
+  background: transparent; border: none; padding: 0; cursor: pointer;
+  font-family: var(--mono); font-size: 12px; color: var(--accent);
+}
+.explainer-ref:hover { text-decoration: underline; }
+.explainer-footnote {
+  margin-top: 24px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--fg-dim);
+}

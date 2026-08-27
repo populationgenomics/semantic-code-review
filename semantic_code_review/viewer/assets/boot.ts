@@ -11,6 +11,7 @@ import { Comments } from "./comments";
 import { Console } from "./console";
 import { DataStore, type FoldRegionAddress } from "./data_store";
 import { DebugDrawer } from "./debug_drawer";
+import { Explainer } from "./explainer";
 import { Folds } from "./folds";
 import { PostModal } from "./post_modal";
 import { Progress } from "./progress";
@@ -65,6 +66,21 @@ function boot(): void {
   // lazy /file-text backing for the md toggle; the callback repaints on
   // rendered-mode fold-level changes and chip reveals.
   Rendered.init(SESSION_ENDPOINT, () => Render.render());
+  // The change explainer only mounts when the server says the feature
+  // is on for this review; a --no-augment run has no backend to run it.
+  if (DATA.explainer) {
+    Explainer.setFilePaths(DATA);
+    Explainer.init(SESSION_ENDPOINT, DATA, {
+      onChange: () => Render.render(),
+      // A Map row is "read this next", so it leaves the mode and brings
+      // the file into view at whatever collapse level the diff is on.
+      onOpenFile: (fileId) => Render.revealFile(fileId),
+    });
+    // Pick up a document another tab (or an earlier session on this run
+    // dir) already paid for, so the button opens it rather than
+    // offering to generate a second one.
+    void Explainer.load();
+  }
   Render.init(DATA);       // wires hash + keyboard + initial paint
   Progress.init(DATA);
   installPrHeader(DATA);
@@ -183,6 +199,9 @@ function installSessionEvents(): void {
     overviewFailed: () => Progress.setOverviewState("failed"),
     overview: (payload) => {
       Progress.setOverviewState("ok");
+      // The skeleton is seeded with the overview and the symbol delta,
+      // both of which are now on disk — the button can be pressed.
+      Render.markExplainerReady();
       applyOverviewPatch(payload);
     },
     hunkStart: (payload) => {
@@ -202,8 +221,13 @@ function installSessionEvents(): void {
       // Augmentation is complete: the server has now installed the
       // console asker, so unlock the prompt.
       Console.markReady();
+      // Backstop for a page that missed the `overview` frame (a failed
+      // overview pass, or a tab that connected after it was replayed).
+      Render.markExplainerReady();
     },
     foldSummary: (payload) => applyFoldSummary(payload),
+    // Another tab pressed the button; adopt what it paid for.
+    explainer: (payload) => Explainer.onEvent(payload),
     // Console stream (Slice 2): the worker fans deltas/tool-activity
     // out here; Console filters by its own console_id and ignores the
     // rest. The single EventSource is shared with the augment events.
