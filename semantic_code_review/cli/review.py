@@ -107,6 +107,7 @@ def review(
         client=client,
         extra_review_prompt=extra_review_prompt,
         skip_globs=cfg.skip_globs,
+        explainer=cfg.explainer,
         show_progress=not verbose,
         debug=debug,
     )

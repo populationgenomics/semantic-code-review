@@ -359,6 +359,16 @@ FoldSummariser = Callable[..., Coroutine[Any, Any, dict]]
 ConsoleAsker = Callable[..., Coroutine[Any, Any, Any]]
 
 
+#: Signature of the change-explainer skeleton generator wired by
+#: ``serve_review`` once augmentation completes. Called with no
+#: arguments and awaited to the document as a jsonable dict — the
+#: closure owns model selection, cache, run dir and persistence, so the
+#: server stays diff-source-agnostic. Stored as ``Any`` to keep the
+#: augment-side schemas out of this stdlib-only module; the concrete
+#: signature lives in ``review/runner.py``.
+ExplainerGenerator = Callable[[], Coroutine[Any, Any, dict[str, Any]]]
+
+
 #: Signature of the post callback accepted by ``serve_review`` when the
 #: caller wants the viewer to handle confirm-and-post in-browser.
 #: Takes the comment IDs the reviewer selected in the confirmation
@@ -402,6 +412,17 @@ class ServerContext:
     # it — no cross-loop signalling.
     console_busy: bool = False
     console_cancel: threading.Event | None = None
+    # Change explainer (ADR 0007). ``explainer_enabled`` is known at
+    # construction and rides /data.json so the viewer can mount (or
+    # omit) the overview-mode button before any pass has run;
+    # ``explainer_generator`` is wired later, once augmentation has left
+    # a sidecar for the skeleton to be seeded from, and until then
+    # /explainer/skeleton 409s the way /fold-summary does.
+    # ``explainer_busy`` gives one generation per server: a second POST
+    # while one is in flight gets 409 rather than a duplicate spend.
+    explainer_enabled: bool = False
+    explainer_generator: ExplainerGenerator | None = None
+    explainer_busy: bool = False
     # Optional, wired by serve_review when the caller wants posting to
     # happen via the in-browser confirmation modal (``scr pr``). When
     # both are None the modal stays absent and Done exits the way it
@@ -481,13 +502,23 @@ class _Handler(BaseHTTPRequestHandler):
             # Stamp the runtime debug flag alongside the diff payload so the
             # viewer knows whether to mount the debug drawer. Merged at serve
             # time because update_viewer_json swaps viewer_json wholesale.
-            self._json(200, {**self.ctx.viewer_json, "debug": self.ctx.debug})
+            self._json(
+                200,
+                {
+                    **self.ctx.viewer_json,
+                    "debug": self.ctx.debug,
+                    "explainer": self.ctx.explainer_enabled,
+                },
+            )
             return
         if path == "/file-text":
             self._handle_file_text()
             return
         if path == "/comments":
             self._json(200, {"comments": [c.model_dump() for c in self.ctx.store.all()]})
+            return
+        if path == "/explainer":
+            self._handle_get_explainer()
             return
         if path == "/post-config":
             self._handle_post_config()
@@ -661,6 +692,9 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             self._handle_console_ask(payload)
             return
+        if path == "/explainer/skeleton":
+            self._handle_explainer_skeleton()
+            return
         if path == "/console/cancel":
             self._handle_console_cancel()
             return
@@ -777,6 +811,105 @@ class _Handler(BaseHTTPRequestHandler):
         # Caller's RPC response carries the summary so the requesting
         # tab doesn't need to wait for its own SSE event to round-trip.
         self._json(200, result)
+
+    # --- change explainer (ADR 0007) -----------------------------------
+
+    def _run_shas(self) -> tuple[str, str]:
+        """The `(base_sha, head_sha)` the current viewer JSON was built for.
+
+        The explainer document is invalidated wholesale when this pair
+        moves, so it is the identity a persisted document is checked
+        against on load.
+        """
+        pr = (self.ctx.viewer_json or {}).get("pr") or {}
+        return (str(pr.get("base_sha", "")), str(pr.get("head_sha", "")))
+
+    def _load_explainer_document(self) -> dict[str, Any] | None:
+        """The run's persisted document, or None when there isn't one.
+
+        Local import: the explainer schema is pydantic, and this module
+        is stdlib-only so a `--no-augment` review never pays for it.
+        """
+        from ..augment import explainer_schema
+
+        base_sha, head_sha = self._run_shas()
+        doc = explainer_schema.load_explainer(self.ctx.run_dir, base_sha=base_sha, head_sha=head_sha)
+        return None if doc is None else doc.model_dump(mode="json")
+
+    def _handle_get_explainer(self) -> None:
+        """Serve the persisted document, or 404 when none has been made.
+
+        404 is the "press the button" state, not an error: generation is
+        reviewer-initiated, and a document nobody asked for costs
+        nothing precisely because it does not exist.
+        """
+        if not self.ctx.explainer_enabled:
+            self._json(409, {"error": "the change explainer is disabled for this review"})
+            return
+        from ..augment.explainer_schema import ExplainerCorrupt
+
+        try:
+            payload = self._load_explainer_document()
+        except ExplainerCorrupt as e:
+            log.warning("explainer.json is unreadable: %s", e)
+            self._json(500, {"error": str(e)})
+            return
+        if payload is None:
+            self._json(404, {"error": "no explainer document for this diff"})
+            return
+        self._json(200, payload)
+
+    def _handle_explainer_skeleton(self) -> None:
+        """Generate the document skeleton, persist it, fan it out.
+
+        Idempotent against an existing document: a second press (or a
+        second tab) gets what is already on disk rather than paying for
+        the call again. One generation at a time — a concurrent POST
+        gets 409, mirroring the console's single-turn rule.
+        """
+        if self.ctx.explainer_generator is None:
+            reason = (
+                "the change explainer is disabled for this review"
+                if not self.ctx.explainer_enabled
+                else "augmentation still in progress"
+            )
+            self._json(409, {"error": reason})
+            return
+
+        from ..augment.explainer import ExplainerNotReady
+        from ..augment.explainer_schema import ExplainerCorrupt
+
+        try:
+            existing = self._load_explainer_document()
+        except ExplainerCorrupt:
+            # A torn or hand-edited document must not wedge the button:
+            # regenerating overwrites it, which is the intended repair.
+            log.warning("explainer.json is unreadable — regenerating", exc_info=True)
+            existing = None
+        if existing is not None:
+            self._json(200, existing)
+            return
+
+        with self.ctx.state_lock:
+            if self.ctx.explainer_busy:
+                self._json(409, {"error": "an explainer pass is already running"})
+                return
+            self.ctx.explainer_busy = True
+        try:
+            payload = asyncio.run(self.ctx.explainer_generator())
+        except ExplainerNotReady as e:
+            self._json(409, {"error": str(e)})
+            return
+        except Exception as e:
+            log.exception("explainer skeleton failed")
+            self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            return
+        finally:
+            with self.ctx.state_lock:
+                self.ctx.explainer_busy = False
+
+        _ctx_publish(self.ctx, "explainer", payload)
+        self._json(200, payload)
 
     # --- console (free-form Q&A) ---------------------------------------
 
@@ -1034,6 +1167,7 @@ class ReviewServer:
         post_callback: PostCallable | None = None,
         post_meta: dict[str, Any] | None = None,
         debug: bool = False,
+        explainer: bool = False,
     ) -> None:
         self.run_dir = run_dir
         self.store = CommentStore(run_dir / "comments.json")
@@ -1047,6 +1181,7 @@ class ReviewServer:
             post_callback=post_callback,
             post_meta=post_meta,
             debug=debug,
+            explainer_enabled=explainer,
         )
         self._host = host
         self._port = port
@@ -1100,6 +1235,15 @@ class ReviewServer:
         there's no augmented diff to ground the conversation against.
         """
         self.ctx.console_asker = asker
+
+    def set_explainer_generator(self, generator: ExplainerGenerator | None) -> None:
+        """Install (or clear) the change-explainer skeleton generator.
+
+        ``serve_review`` calls this once augmentation completes: the
+        skeleton is seeded with the overview, so it needs the sidecar on
+        disk. Before then /explainer/skeleton returns 409.
+        """
+        self.ctx.explainer_generator = generator
 
     def update_viewer_json(self, viewer_json: dict[str, Any]) -> None:
         """Replace the JSON returned by ``GET /data.json``.

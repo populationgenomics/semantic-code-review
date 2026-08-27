@@ -99,6 +99,7 @@ def pr(
         timeout=timeout,
         extra_review_prompt=extra_review_prompt,
         skip_globs=cfg.skip_globs,
+        explainer=cfg.explainer,
         client=client,
         yes=yes,
         debug=debug,

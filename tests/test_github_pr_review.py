@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import subprocess
@@ -241,22 +242,34 @@ def _pr_opts(tmp_path, *, augment: bool, debug: bool = False):
 def test_build_tasks_wires_console_when_augmenting(tmp_path) -> None:
     from semantic_code_review.review.pr_flow import _build_tasks
 
-    augment, fold, console, bind_debug = _build_tasks(_pr_opts(tmp_path, augment=True), tmp_path)
-    assert augment is not None
-    assert fold is not None
-    assert console is not None  # the console callback the server installs
+    tasks = _build_tasks(_pr_opts(tmp_path, augment=True), tmp_path)
+    assert tasks.augment is not None
+    assert tasks.fold_summary is not None
+    assert tasks.console is not None  # the console callback the server installs
+    assert tasks.explainer is not None  # opt-out, so on unless config says otherwise
     # Debug off by default → no sink binder.
-    assert bind_debug is None
+    assert tasks.bind_debug_sink is None
 
 
 def test_build_tasks_binds_debug_sink_when_debug(tmp_path) -> None:
     from semantic_code_review.review.pr_flow import _build_tasks
 
-    _augment, _fold, _console, bind_debug = _build_tasks(_pr_opts(tmp_path, augment=True, debug=True), tmp_path)
-    assert bind_debug is not None
+    tasks = _build_tasks(_pr_opts(tmp_path, augment=True, debug=True), tmp_path)
+    assert tasks.bind_debug_sink is not None
 
 
-def test_build_tasks_returns_none_quad_without_augment(tmp_path) -> None:
+def test_build_tasks_omits_the_explainer_when_it_is_disabled(tmp_path) -> None:
     from semantic_code_review.review.pr_flow import _build_tasks
 
-    assert _build_tasks(_pr_opts(tmp_path, augment=False), tmp_path) == (None, None, None, None)
+    opts = dataclasses.replace(_pr_opts(tmp_path, augment=True), explainer=False)
+    tasks = _build_tasks(opts, tmp_path)
+    # Everything else still wires; only the explainer drops out, so the
+    # server reports the feature disabled rather than "not ready yet".
+    assert tasks.console is not None
+    assert tasks.explainer is None
+
+
+def test_build_tasks_returns_an_empty_bundle_without_augment(tmp_path) -> None:
+    from semantic_code_review.review.pr_flow import _build_tasks, _ServerTasks
+
+    assert _build_tasks(_pr_opts(tmp_path, augment=False), tmp_path) == _ServerTasks()

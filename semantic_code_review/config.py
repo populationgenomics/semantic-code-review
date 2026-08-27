@@ -243,6 +243,12 @@ class ScrConfig:
     # under [augment].skip_globs = ["go.sum", "gen/**"]. Accumulated across
     # scopes (user + repo both contribute) rather than overridden.
     skip_globs: tuple[str, ...] = ()
+    # Change explainer (ADR 0007). Opt-out only: `[augment].explainer =
+    # false` disables it and there is no flag to enable it, because the
+    # reviewers who benefit most — someone opening a large change they
+    # did not write — are the ones who never configured it. Generation is
+    # press-triggered, so default-on costs nothing until it is used.
+    explainer: bool = True
     # Where each setting came from, for `scr config show`.
     sources: dict[str, str] = field(default_factory=dict)
 
@@ -326,6 +332,12 @@ class ScrConfig:
                 # Accumulate across scopes so user + repo patterns both apply.
                 self.skip_globs = (*self.skip_globs, *(g for g in globs if g))
                 self.sources["augment.skip_globs"] = source
+            explainer = augment.get("explainer")
+            if explainer is not None:
+                if not isinstance(explainer, bool):
+                    raise ConfigError(f"{source}: augment.explainer must be a boolean, got {type(explainer).__name__}")
+                self.explainer = explainer
+                self.sources["augment.explainer"] = source
 
     def _merge_backend(self, name: str, body: dict[str, Any], *, source: str) -> None:
         existing = self.backends.get(name)

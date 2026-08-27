@@ -60,7 +60,7 @@ def config_show() -> None:
             # credential source), and `config show` output ends up in logs
             # and screen-shares.
             typer.echo(f"  {k} = <redacted> (from {cfg.sources.get(f'env.{k}', '?')}, {applied})")
-    if cfg.extra_review_prompt is not None or cfg.skip_globs:
+    if cfg.extra_review_prompt is not None or cfg.skip_globs or not cfg.explainer:
         typer.echo("[augment]")
     if cfg.extra_review_prompt is not None:
         # Show line count + a leading snippet rather than the whole
@@ -75,6 +75,10 @@ def config_show() -> None:
         )
     if cfg.skip_globs:
         typer.echo(f"  skip_globs = {list(cfg.skip_globs)} (from {cfg.sources.get('augment.skip_globs', '?')})")
+    # Only shown when off: the explainer is opt-out, so "on" is the
+    # default and listing it every time would be noise.
+    if not cfg.explainer:
+        typer.echo(f"  explainer = false (from {cfg.sources.get('augment.explainer', '?')})")
 
 
 @config_app.command("edit")
@@ -276,4 +280,9 @@ _CONFIG_TEMPLATE = """\
 # lockfile/bundle/binary denylist. Accumulates with the user scope.
 # [augment]
 # skip_globs = ["go.sum", "gen/**", "*.generated.ts"]
+
+# The change explainer generates a reading guide for the diff on request
+# (a button in the viewer). Set to false to remove the button entirely.
+# [augment]
+# explainer = false
 """

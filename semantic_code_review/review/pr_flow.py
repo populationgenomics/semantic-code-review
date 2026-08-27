@@ -40,6 +40,7 @@ from .github import (
 from .github_graphql import post_review_via_graphql
 from .runner import (
     _build_console_task,
+    _build_explainer_task,
     _build_fold_summary_task,
     serve_review,
 )
@@ -77,6 +78,8 @@ class PrFlowOptions:
     # Extra file globs to skip in the LLM passes (config [augment].skip_globs).
     # Trailing + defaulted so existing constructors need no change.
     skip_globs: tuple[str, ...] = ()
+    # Change explainer (ADR 0007); opt-out via `[augment].explainer = false`.
+    explainer: bool = True
 
 
 def run_pr_flow(opts: PrFlowOptions) -> int:
@@ -114,7 +117,7 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
         _err("scr pr: meta.json is missing headRefOid; can't anchor review")
         return 2
 
-    augment_task, fold_summary_task, console_task, bind_debug_sink = _build_tasks(opts, run_dir)
+    tasks = _build_tasks(opts, run_dir)
     if not opts.augment:
         # Mirror cli/review.py's behaviour: copy raw → augmented so render
         # has something to parse when augment is skipped.
@@ -139,17 +142,18 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
 
     result = serve_review(
         run_dir,
-        augment=augment_task,
+        augment=tasks.augment,
         skip_globs=opts.skip_globs,
-        fold_summary=fold_summary_task,
-        console=console_task,
+        fold_summary=tasks.fold_summary,
+        console=tasks.console,
+        explainer=tasks.explainer,
         post=post_callback,
         post_meta=post_meta,
         port=opts.port,
         timeout=opts.timeout,
         open_browser=opts.open_browser,
         debug=opts.debug,
-        bind_debug_sink=bind_debug_sink,
+        bind_debug_sink=tasks.bind_debug_sink,
     )
 
     posted: PostResult | None = result.posted
@@ -222,24 +226,32 @@ def _resolve_pr_number(repo: str) -> tuple[int | None, int | None]:
     return None, picked
 
 
-def _build_tasks(
-    opts: PrFlowOptions,
-    run_dir: Path,
-) -> tuple[
-    Callable | None,
-    Callable | None,
-    Callable | None,
-    Callable[[Callable[[dict], None]], None] | None,
-]:
-    """Build the augment + fold-summary + console closures plus a debug-sink
-    binder, or all-``None`` when augmentation is skipped (the console grounds
-    its answers in the augment sidecar, so it's unavailable without it).
+@dataclass(frozen=True)
+class _ServerTasks:
+    """The optional closures ``serve_review`` is handed for one PR review.
+
+    Every field is None on a ``--no-augment`` run: each one needs either
+    an LLM backend or the augment sidecar, and often both.
+    """
+
+    augment: Callable | None = None
+    fold_summary: Callable | None = None
+    console: Callable | None = None
+    explainer: Callable | None = None
+    bind_debug_sink: Callable[[Callable[[dict], None]], None] | None = None
+
+
+def _build_tasks(opts: PrFlowOptions, run_dir: Path) -> _ServerTasks:
+    """Build the augment + fold-summary + console + explainer closures plus
+    a debug-sink binder, or an all-``None`` bundle when augmentation is
+    skipped (the console grounds its answers in the augment sidecar, so
+    it's unavailable without it).
 
     The binder, present only in ``--debug``, lets the server route the CLI
     driver's per-spawn records to its SSE fan-out (see ``serve_review``).
     """
     if not opts.augment:
-        return None, None, None, None
+        return _ServerTasks()
 
     # Imports inside: anthropic SDK + augment pipeline are lazy-loaded so
     # `--no-augment` runs (and `scr --help`) don't pay the cost.
@@ -286,7 +298,18 @@ def _build_tasks(
     bind_debug_sink: Callable[[Callable[[dict], None]], None] | None = None
     if opts.debug:
         bind_debug_sink = lambda sink, c=console_client: c.set_debug_sink(sink)  # noqa: E731
-    return augment_task, fold_summary_task, console_task, bind_debug_sink
+    explainer_task = (
+        _build_explainer_task(client=opts.client, model=opts.model, cache=cache, run_dir=run_dir)
+        if opts.explainer
+        else None
+    )
+    return _ServerTasks(
+        augment=augment_task,
+        fold_summary=fold_summary_task,
+        console=console_task,
+        explainer=explainer_task,
+        bind_debug_sink=bind_debug_sink,
+    )
 
 
 def _build_post_callback(

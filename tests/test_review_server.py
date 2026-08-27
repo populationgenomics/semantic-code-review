@@ -1253,3 +1253,213 @@ def test_format_markdown_nonempty() -> None:
     assert "> line one" in md
     assert "> line two" in md
     assert "2 comments total" in md
+
+
+# --- change explainer (ADR 0007) ----------------------------------------
+
+
+def _explainer_doc(base_sha: str = "base1234", head_sha: str = "head5678") -> dict:
+    return {
+        "version": 1,
+        "base_sha": base_sha,
+        "head_sha": head_sha,
+        "verdict": "narrate",
+        "verdict_note": "a cursor threaded from the proto to the client.",
+        "figure_family": "boxes are services",
+        "cast": ["ListRequest"],
+        "toy_data": False,
+        "sections": [
+            {"id": "background", "kind": "background", "title": "Background", "state": "pending"},
+            {
+                "id": "map",
+                "kind": "map",
+                "title": "Map",
+                "state": "ready",
+                "refs": [{"kind": "file", "id": "F0"}],
+                "map_rows": [{"ref": {"kind": "file", "id": "F0"}, "why": "the contract"}],
+            },
+        ],
+        "dropped_refs": 0,
+    }
+
+
+def _explainer_server(tmp_path: Path, *, enabled: bool = True) -> ReviewServer:
+    viewer_json = {
+        "version": "1",
+        "pr": {"base_sha": "base1234", "head_sha": "head5678"},
+        "files": [],
+    }
+    srv = ReviewServer(run_dir=tmp_path, viewer_json=viewer_json, explainer=enabled)
+    srv.start()
+    return srv
+
+
+def test_data_json_advertises_whether_the_explainer_exists(tmp_path: Path) -> None:
+    """The viewer decides whether to mount the overview-mode button on
+    its first /data.json, long before augmentation finishes — so the
+    flag rides the payload rather than waiting for the wire-up."""
+    for enabled in (True, False):
+        srv = _explainer_server(tmp_path, enabled=enabled)
+        try:
+            _code, data = _request(srv.url() + "/data.json")
+            assert data["explainer"] is enabled
+        finally:
+            srv.stop()
+
+
+def test_explainer_skeleton_409s_before_the_generator_is_wired(tmp_path: Path) -> None:
+    """A --no-augment review, or one still augmenting, has no backend to
+    run the pass — same contract as /fold-summary and /console/ask."""
+    srv = _explainer_server(tmp_path)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _request(srv.url() + "/explainer/skeleton", "POST", {})
+        assert e.value.code == 409
+        assert "augmentation" in json.loads(e.value.read())["error"]
+    finally:
+        srv.stop()
+
+
+def test_explainer_routes_409_when_the_feature_is_disabled(tmp_path: Path) -> None:
+    """Disabled is a different answer from not-ready, and the message
+    says so — otherwise the viewer tells the reviewer to wait forever."""
+    srv = _explainer_server(tmp_path, enabled=False)
+    try:
+        for method, path in (("POST", "/explainer/skeleton"), ("GET", "/explainer")):
+            with pytest.raises(urllib.error.HTTPError) as e:
+                _request(srv.url() + path, method, {} if method == "POST" else None)
+            assert e.value.code == 409
+            assert "disabled" in json.loads(e.value.read())["error"]
+    finally:
+        srv.stop()
+
+
+def test_get_explainer_404s_until_one_is_generated(tmp_path: Path) -> None:
+    """404 is the press-the-button state, not an error: generation is
+    reviewer-initiated and an ungenerated document costs nothing."""
+    srv = _explainer_server(tmp_path)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _request(srv.url() + "/explainer")
+        assert e.value.code == 404
+    finally:
+        srv.stop()
+
+
+def test_explainer_skeleton_persists_broadcasts_and_serves(tmp_path: Path) -> None:
+    """Transport: the route dispatches to the wired-in generator, fans
+    the document out over the SSE bus, and GET serves it afterwards."""
+    srv = _explainer_server(tmp_path)
+    try:
+        calls = []
+
+        async def fake_generator() -> dict:
+            calls.append(1)
+            doc = _explainer_doc()
+            (tmp_path / "explainer.json").write_text(json.dumps(doc), encoding="utf-8")
+            return doc
+
+        srv.set_explainer_generator(fake_generator)
+
+        conn = HTTPConnection("127.0.0.1", int(srv.url().rsplit(":", 1)[1]), timeout=5)
+        conn.request("GET", "/events")
+        events_resp = conn.getresponse()
+        assert events_resp.status == 200
+        events_resp.fp.readline()
+        events_resp.fp.readline()
+        for _ in range(50):
+            with srv.ctx.state_lock:
+                if srv.ctx.subscribers:
+                    break
+            time.sleep(0.01)
+
+        code, body = _request(srv.url() + "/explainer/skeleton", "POST", {})
+        assert code == 200
+        assert body["sections"][-1]["map_rows"][0]["why"] == "the contract"
+
+        events_resp.fp.readline()  # id
+        assert events_resp.fp.readline() == b"event: explainer\n"
+        frame = json.loads(events_resp.fp.readline().split(b"data: ", 1)[1])
+        assert frame["verdict"] == "narrate"
+        events_resp.fp.readline()  # trailing blank
+        conn.close()
+
+        # GET now serves what was persisted, and a second press reuses it
+        # rather than paying for the call twice.
+        code, served = _request(srv.url() + "/explainer")
+        assert code == 200
+        assert served["verdict_note"].startswith("a cursor")
+        _request(srv.url() + "/explainer/skeleton", "POST", {})
+        assert len(calls) == 1
+    finally:
+        srv.stop()
+
+
+def test_explainer_discards_a_document_from_another_diff(tmp_path: Path) -> None:
+    """The run moved on; the prose describes code that may be gone. The
+    document is dropped wholesale rather than re-anchored, so GET is
+    back to the press-the-button state."""
+    (tmp_path / "explainer.json").write_text(json.dumps(_explainer_doc(head_sha="stale999")), encoding="utf-8")
+    srv = _explainer_server(tmp_path)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _request(srv.url() + "/explainer")
+        assert e.value.code == 404
+    finally:
+        srv.stop()
+
+
+def test_explainer_skeleton_regenerates_over_a_corrupt_document(tmp_path: Path) -> None:
+    """A torn write must not wedge the button — regenerating is the
+    repair. GET still reports the corruption loudly."""
+    (tmp_path / "explainer.json").write_text("{ not json", encoding="utf-8")
+    srv = _explainer_server(tmp_path)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _request(srv.url() + "/explainer")
+        assert e.value.code == 500
+
+        async def fake_generator() -> dict:
+            return _explainer_doc()
+
+        srv.set_explainer_generator(fake_generator)
+        code, body = _request(srv.url() + "/explainer/skeleton", "POST", {})
+        assert code == 200
+        assert body["verdict"] == "narrate"
+    finally:
+        srv.stop()
+
+
+def test_explainer_skeleton_maps_not_ready_to_409(tmp_path: Path) -> None:
+    srv = _explainer_server(tmp_path)
+    try:
+        from semantic_code_review.augment.explainer import ExplainerNotReady
+
+        async def fake_generator() -> dict:
+            raise ExplainerNotReady("augmented.scr.json missing — augment not complete")
+
+        srv.set_explainer_generator(fake_generator)
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _request(srv.url() + "/explainer/skeleton", "POST", {})
+        assert e.value.code == 409
+        assert "augment not complete" in json.loads(e.value.read())["error"]
+    finally:
+        srv.stop()
+
+
+def test_explainer_skeleton_failure_is_a_500_not_a_crash(tmp_path: Path) -> None:
+    srv = _explainer_server(tmp_path)
+    try:
+
+        async def fake_generator() -> dict:
+            raise RuntimeError("model said no")
+
+        srv.set_explainer_generator(fake_generator)
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _request(srv.url() + "/explainer/skeleton", "POST", {})
+        assert e.value.code == 500
+        assert "model said no" in json.loads(e.value.read())["error"]
+        # The failure released the busy flag, so a retry is possible.
+        assert srv.ctx.explainer_busy is False
+    finally:
+        srv.stop()

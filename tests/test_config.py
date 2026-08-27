@@ -144,6 +144,37 @@ def test_augment_skip_globs_accumulate_across_scopes(tmp_path: Path) -> None:
     assert cfg.sources["augment.skip_globs"] == str(repo)
 
 
+def test_augment_explainer_defaults_on(tmp_path: Path) -> None:
+    """Opt-out, not opt-in: the reviewers who benefit most from a reading
+    guide are the ones who never configured one."""
+    cfg = ScrConfig.load(user_path=tmp_path / "absent.toml", repo_path=None)
+    assert cfg.explainer is True
+    assert "augment.explainer" not in cfg.sources
+
+
+def test_augment_explainer_can_be_turned_off(tmp_path: Path) -> None:
+    user = _write(tmp_path / "user.toml", "[augment]\nexplainer = false\n")
+    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    assert cfg.explainer is False
+    assert cfg.sources["augment.explainer"] == str(user)
+
+
+def test_augment_explainer_repo_scope_wins(tmp_path: Path) -> None:
+    """Unlike skip_globs (which accumulates), a boolean is overridden —
+    a repo that turns the explainer off means off."""
+    user = _write(tmp_path / "user.toml", "[augment]\nexplainer = true\n")
+    repo = _write(tmp_path / "repo.toml", "[augment]\nexplainer = false\n")
+    cfg = ScrConfig.load(user_path=user, repo_path=repo)
+    assert cfg.explainer is False
+    assert cfg.sources["augment.explainer"] == str(repo)
+
+
+def test_augment_explainer_rejects_non_boolean(tmp_path: Path) -> None:
+    user = _write(tmp_path / "user.toml", '[augment]\nexplainer = "no"\n')
+    with pytest.raises(ConfigError, match="explainer must be a boolean"):
+        ScrConfig.load(user_path=user, repo_path=None)
+
+
 def test_augment_skip_globs_rejects_non_list(tmp_path: Path) -> None:
     user = _write(tmp_path / "user.toml", '[augment]\nskip_globs = "go.sum"\n')
     with pytest.raises(ConfigError, match="skip_globs must be a list"):

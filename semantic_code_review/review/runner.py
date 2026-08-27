@@ -66,6 +66,14 @@ FoldSummaryCallable = Callable[
 ]
 
 
+#: Signature of the change-explainer skeleton generator accepted by
+#: ``serve_review``. Takes no arguments and returns the document as a
+#: jsonable dict — the closure captures the backend, cache and run dir.
+#: Wired only when an LLM backend is available *and* the feature is not
+#: disabled in config; otherwise ``/explainer/skeleton`` 409s.
+ExplainerCallable = Callable[[], Coroutine[Any, Any, dict]]
+
+
 #: Signature of the streaming console turn driver accepted by
 #: ``serve_review``. Called as ``(question, history, on_delta, on_tool,
 #: cancel)`` and awaited to ``(answer_text, new_history)``:
@@ -114,6 +122,11 @@ class ReviewOptions:
     extra_review_prompt: str | None = None
     # Extra file globs to skip in the LLM passes (config [augment].skip_globs).
     skip_globs: tuple[str, ...] = ()
+    # Change explainer (ADR 0007). Opt-out: `[augment].explainer = false`
+    # turns it off. There is no flag to turn it on, because the reviewers
+    # who benefit most are the ones who never configured it, and
+    # generation is press-triggered so default-on costs nothing.
+    explainer: bool = True
     show_progress: bool = True
     # `--debug` / SCR_DEBUG: surface each CLI-backend subprocess spawn (raw
     # argv + envelope) in the viewer's debug drawer.
@@ -135,6 +148,7 @@ def run_review(opts: ReviewOptions) -> int:
     augment_task: AugmentCallable | None = None
     fold_summary_task: FoldSummaryCallable | None = None
     console_task: ConsoleCallable | None = None
+    explainer_task: ExplainerCallable | None = None
     bind_debug_sink: Callable[[Callable[[dict], None]], None] | None = None
     if opts.augment:
         from ..augment.pipeline import augment_run_dir  # lazy: anthropic SDK
@@ -166,6 +180,14 @@ def run_review(opts: ReviewOptions) -> int:
             run_dir=run_dir,
         )
 
+        if opts.explainer:
+            explainer_task = _build_explainer_task(
+                client=opts.client,
+                model=opts.model,
+                cache=cache,
+                run_dir=run_dir,
+            )
+
         # The console reuses the augment backend — SDK backends stream
         # token-by-token, CLI subprocess backends answer one-shot per turn
         # (ADR 0002, Slice 5). When opts.client is None the augment path
@@ -195,6 +217,7 @@ def run_review(opts: ReviewOptions) -> int:
         skip_globs=opts.skip_globs,
         fold_summary=fold_summary_task,
         console=console_task,
+        explainer=explainer_task,
         port=opts.port,
         timeout=opts.timeout,
         open_browser=opts.open_browser,
@@ -236,6 +259,7 @@ def serve_review(
     skip_globs: tuple[str, ...] = (),
     fold_summary: FoldSummaryCallable | None = None,
     console: ConsoleCallable | None = None,
+    explainer: ExplainerCallable | None = None,
     post: PostCallable | None = None,
     post_meta: dict | None = None,
     port: int = 0,
@@ -275,6 +299,10 @@ def serve_review(
         post_callback=post,
         post_meta=post_meta,
         debug=debug,
+        # Known at construction, not at wire-up: the viewer needs to
+        # decide whether to mount the overview-mode button on its first
+        # /data.json, well before augmentation has finished.
+        explainer=explainer is not None,
     )
     srv.start()
     try:
@@ -322,6 +350,10 @@ def serve_review(
                 # backends, where /console/ask stays 409.
                 if console is not None:
                     srv.set_console_asker(console)
+                # Same gate again: the skeleton is seeded with the
+                # overview, which only exists once the sidecar does.
+                if explainer is not None:
+                    srv.set_explainer_generator(explainer)
                 srv.publish("done", {"reason": "augment-complete"})
             if augment_error is not None and not isinstance(augment_error, Exception):
                 # KeyboardInterrupt / SystemExit shouldn't be swallowed —
@@ -380,6 +412,38 @@ def _build_fold_summary_task(
             model=model,
             cache=cache,
         )
+
+    return task
+
+
+def _build_explainer_task(
+    *,
+    client: Client | None,
+    model: str,
+    cache: CacheStore | None,
+    run_dir: Path,
+) -> ExplainerCallable:
+    """Construct the change-explainer generator ``serve_review`` installs
+    once augmentation completes. Captures the LLM backend + cache +
+    run_dir so the server module stays independent of the augment-side
+    machinery.
+    """
+    # Lazy import: keeps pydantic-ai off the `--no-augment` path.
+    from ..augment.explainer import document_to_payload, generate_explainer_skeleton
+
+    async def task() -> dict:
+        # client is None only when augment is False, and serve_review
+        # never wires this task up in that case — a None here is a
+        # wiring bug, so fail loudly.
+        assert client is not None, "explainer task called without an LLM backend"
+        doc = await generate_explainer_skeleton(
+            client,
+            run_dir=run_dir,
+            model=model,
+            cache=cache,
+            trace_dir=run_dir / "trace",
+        )
+        return document_to_payload(doc)
 
     return task
 
