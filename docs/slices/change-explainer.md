@@ -66,7 +66,7 @@ backends. Nothing that scales with the change goes on argv.
 
 ---
 
-## Slice 1 — The Map, end to end
+## Slice 1 — The Map, end to end ✅ done
 
 The smallest thing that fixes the case in the ADR's Context: press a
 button, get a reading order.
@@ -97,6 +97,42 @@ Ships as: a reading order for any PR, on any backend.
 spans. Switching modes must not clobber the diff-mode sidebar pill in
 localStorage. `verdict: "not_warranted"` must render as a real answer,
 not an empty state.
+
+**As built**, where it differs from the plan above:
+
+- **View-state persistence.** This slice landed on `main`, where ADR
+  0006 is not merged: there is no `StoredViewState` and no
+  `visibility.ts`, and `RenderState.fold` persists in the URL hash. So
+  the mode is `RenderState.mode` and rides the hash as `mode=overview`
+  alongside `fold=`. When ADR 0006 lands, `mode` moves onto
+  `StoredViewState` and `_VERSION` goes to 2 with the discard-with-a-
+  warning path the ADR describes.
+- **Two localStorage keys, not one.** The plan says the section tree
+  "takes its own axis id in the `<axis>:<id>` key". With one key that
+  clobbers the diff-mode pill, which the same paragraph forbids, so the
+  section lives under `scr-explainer-section:<sha>` (value still
+  `explainer:<id>`) and the pill keeps `scr-active-group:<sha>`. The
+  section tree also bypasses the pill machinery entirely: a section is
+  not a hunk filter, and routing it through `setActivePill` would break
+  `activeHunkIds`.
+- **`verdict_note`.** The document shape needed a field to carry the
+  `not_warranted` answer; without one that verdict renders as an empty
+  document, which the pitfall forbids.
+- **`not_warranted` omits the prose sections** rather than writing them
+  `pending`. `pending` invites generation, and the verdict is precisely
+  the claim that generating them is not worth it.
+- **Prose-section references are not assigned by the skeleton.** The
+  shared-currency shape gives every section an ordered reference list,
+  but the slice's prompt bullet says "Map-only instructions", so the
+  three prose sections land with empty `refs`. Slice 2 seeds each
+  section pass with "the section's own references" — it will need the
+  skeleton submission to grow a per-section reference field first.
+- **Corrupt vs stale `explainer.json`.** A SHA or version mismatch is
+  discarded with a log line; an unparseable file raises
+  `ExplainerCorrupt` (500 on `GET /explainer`). Regenerating overwrites
+  it, so corruption cannot wedge the button.
+- **Styling** is the minimum that makes the Map legible; the reading
+  type scale and the affordance vocabulary stay in slice 4.
 
 ## Slice 2 — Code prose, lazily
 
