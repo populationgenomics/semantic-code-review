@@ -106,6 +106,28 @@ def build_pending_viewer_json(run_dir: Path, skip_globs: tuple[str, ...] = ()) -
     return data
 
 
+@dataclass(frozen=True)
+class ViewerIdIndex:
+    """Every viewer id one build of a diff addresses.
+
+    The [[change-explainer]] validates its references by membership here
+    (ADR 0007): a reference naming an id outside these sets is dropped,
+    counted and surfaced. Position-derived, so an index is valid only
+    for the build it came from.
+    """
+
+    files: frozenset[str]
+    hunks: frozenset[str]
+
+
+def viewer_id_index(diff: AnnotatedDiff) -> ViewerIdIndex:
+    """Enumerate the `F<i>` / `H<fi>_<hi>` ids this diff renders as."""
+    return ViewerIdIndex(
+        files=frozenset(f"F{fi}" for fi in range(len(diff.files))),
+        hunks=frozenset(f"H{fi}_{hi}" for fi, f in enumerate(diff.files) for hi in range(len(f.hunks))),
+    )
+
+
 def _group_blocks(diff: AnnotatedDiff) -> list[dict[str, Any]]:
     """Translate Overview.groups into viewer-friendly blocks.
 
