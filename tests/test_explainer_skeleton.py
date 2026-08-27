@@ -126,6 +126,11 @@ def _submission(**overrides) -> explainer.ExplainerSkeletonSubmission:
             {"file_id": "F0", "why": "  the contract; every field below follows from it  "},
             {"file_id": "F1", "why": "regenerated from the proto — confirm, do not read"},
         ],
+        "section_refs": [
+            {"section": "background", "file_ids": ["F0"]},
+            {"section": "intuition", "file_ids": ["F0"]},
+            {"section": "code", "file_ids": ["F0", "F1"]},
+        ],
     }
     payload.update(overrides)
     return explainer.ExplainerSkeletonSubmission.model_validate(payload)
@@ -153,6 +158,53 @@ def test_skeleton_fills_the_map_and_leaves_prose_pending(diff: AnnotatedDiff) ->
     assert doc.cast == ["ListRequest", "api_pb.ts"]
     assert doc.base_sha == "base1234"
     assert doc.head_sha == "head5678"
+
+
+def test_prose_sections_land_with_the_files_they_are_written_about(diff: AnnotatedDiff) -> None:
+    """A section's references are what its prose pass is seeded with, so
+    the skeleton has to assign them — a section with none is written
+    from the overview alone."""
+    doc = explainer.build_skeleton_document(
+        _submission(),
+        base_sha="base1234",
+        head_sha="head5678",
+        ids=build_json.viewer_id_index(diff),
+    )
+    by_kind = {s.kind: [r.id for r in s.refs] for s in doc.sections}
+    assert by_kind["background"] == ["F0"]
+    assert by_kind["intuition"] == ["F0"]
+    assert by_kind["code"] == ["F0", "F1"]
+    assert all(r.kind == "file" for s in doc.sections for r in s.refs)
+
+
+def test_a_section_the_skeleton_omitted_gets_no_references(diff: AnnotatedDiff) -> None:
+    doc = explainer.build_skeleton_document(
+        _submission(section_refs=[{"section": "code", "file_ids": ["F0"]}]),
+        base_sha="base1234",
+        head_sha="head5678",
+        ids=build_json.viewer_id_index(diff),
+    )
+    by_kind = {s.kind: s.refs for s in doc.sections}
+    assert by_kind["background"] == []
+    assert by_kind["intuition"] == []
+    assert [r.id for r in by_kind["code"]] == ["F0"]
+
+
+def test_section_references_are_deduped_and_bad_ones_counted(diff: AnnotatedDiff) -> None:
+    doc = explainer.build_skeleton_document(
+        _submission(
+            map_rows=[],
+            section_refs=[
+                {"section": "code", "file_ids": ["F0", "F0", "F7", "schema/api.proto"]},
+            ],
+        ),
+        base_sha="base1234",
+        head_sha="head5678",
+        ids=build_json.viewer_id_index(diff),
+    )
+    code = next(s for s in doc.sections if s.kind == "code")
+    assert [r.id for r in code.refs] == ["F0"]
+    assert doc.dropped_refs == 2
 
 
 def test_map_rows_naming_nothing_are_dropped_and_counted(diff: AnnotatedDiff) -> None:

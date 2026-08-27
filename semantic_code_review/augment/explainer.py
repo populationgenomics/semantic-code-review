@@ -62,6 +62,24 @@ class SkeletonMapRow(BaseModel):
     why: str = Field(description="One sentence: what this file teaches that the ones before it did not.")
 
 
+class SkeletonSectionRefs(BaseModel):
+    """The files one prose section is written about.
+
+    File ids only: the skeleton is shown files, not hunks. The
+    per-section pass expands each file into its hunks and their intents,
+    and may narrow its own references down to individual hunks from
+    there.
+    """
+
+    section: Literal["background", "intuition", "code"] = Field(
+        description="Which prose section these files belong to."
+    )
+    file_ids: list[str] = Field(
+        default_factory=list,
+        description="Viewer file ids from the `# Files` section, verbatim. May be empty.",
+    )
+
+
 class ExplainerSkeletonSubmission(BaseModel):
     """Wire format of `submit_explainer_skeleton`."""
 
@@ -83,6 +101,10 @@ class ExplainerSkeletonSubmission(BaseModel):
     map_rows: list[SkeletonMapRow] = Field(
         default_factory=list,
         description="The reading order: source of truth, then consumers, then tests and docs, then generated output.",
+    )
+    section_refs: list[SkeletonSectionRefs] = Field(
+        default_factory=list,
+        description="Which files each prose section is written about. One entry per section, at most.",
     )
 
 
@@ -199,6 +221,9 @@ def build_skeleton_document(
         if kept:
             rows.append(explainer_schema.MapRow(ref=kept[0], why=raw.why.strip()))
 
+    section_refs, n = _section_refs(submission.section_refs, ids=ids)
+    dropped += n
+
     map_section = explainer_schema.Section(
         id="map",
         kind="map",
@@ -212,7 +237,7 @@ def build_skeleton_document(
     # the first screen would be entirely things that are not ready yet.
     sections = [map_section]
     if submission.verdict != "not_warranted":
-        sections.extend(_pending_section(k) for k in _PROSE_KINDS)
+        sections.extend(_pending_section(k, section_refs.get(k, [])) for k in _PROSE_KINDS)
 
     return explainer_schema.ExplainerDocument(
         base_sha=base_sha,
@@ -226,12 +251,49 @@ def build_skeleton_document(
     )
 
 
-def _pending_section(kind: explainer_schema.SectionKind) -> explainer_schema.Section:
+def _section_refs(
+    submitted: list[SkeletonSectionRefs],
+    *,
+    ids: ViewerIdIndex,
+) -> tuple[dict[str, list[explainer_schema.Reference]], int]:
+    """Validated per-section file references, keyed by section kind.
+
+    A section's references are what its prose pass is seeded with, so an
+    invented file id here costs that section the code it was meant to be
+    written about. Same policy as everywhere else: dropped, counted, and
+    surfaced in the document's `dropped_refs`.
+
+    Returns:
+        `(refs_by_kind, dropped_count)`. A kind the model omitted is
+        absent from the mapping; duplicates within one kind are collapsed
+        keeping first-seen order.
+    """
+    out: dict[str, list[explainer_schema.Reference]] = {}
+    dropped = 0
+    for entry in submitted:
+        refs = [explainer_schema.Reference(kind="file", id=fid) for fid in entry.file_ids]
+        kept, n = explainer_schema.validate_references(refs, file_ids=ids.files, hunk_ids=ids.hunks)
+        dropped += n
+        bucket = out.setdefault(entry.section, [])
+        seen = {r.id for r in bucket}
+        for ref in kept:
+            if ref.id in seen:
+                continue
+            seen.add(ref.id)
+            bucket.append(ref)
+    return out, dropped
+
+
+def _pending_section(
+    kind: explainer_schema.SectionKind,
+    refs: list[explainer_schema.Reference],
+) -> explainer_schema.Section:
     return explainer_schema.Section(
         id=kind,
         kind=kind,
         title=explainer_schema.SECTION_TITLES[kind],
         state="pending",
+        refs=refs,
     )
 
 

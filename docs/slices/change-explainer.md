@@ -121,12 +121,14 @@ not an empty state.
 - **`not_warranted` omits the prose sections** rather than writing them
   `pending`. `pending` invites generation, and the verdict is precisely
   the claim that generating them is not worth it.
-- **Prose-section references are not assigned by the skeleton.** The
+- **Prose-section references were not assigned by the skeleton.** The
   shared-currency shape gives every section an ordered reference list,
   but the slice's prompt bullet says "Map-only instructions", so the
-  three prose sections land with empty `refs`. Slice 2 seeds each
-  section pass with "the section's own references" — it will need the
-  skeleton submission to grow a per-section reference field first.
+  three prose sections landed with empty `refs`. *Closed in slice 2*:
+  the submission grew `section_refs` (file ids per prose section, since
+  the skeleton is shown files and not hunks) and `_assemble` populates
+  them. A section's prose pass expands each file into its hunks and may
+  narrow to hunk references of its own.
 - **Corrupt vs stale `explainer.json`.** A SHA or version mismatch is
   discarded with a log line; an unparseable file raises
   `ExplainerCorrupt` (500 on `GET /explainer`). Regenerating overwrites

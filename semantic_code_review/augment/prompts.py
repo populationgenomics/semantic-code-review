@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from .schemas import SMELL_TAGS_TEXT
 
-PROMPT_VERSION = "p23"
+PROMPT_VERSION = "p24"
 
 
 # Field guidance shared by the single-hunk and batched forms of the
@@ -272,6 +272,20 @@ EXPLAINER_SKELETON_GUIDANCE = (
     "- `cast`: the handful of named components that recur across the change, plus "
     "the one data object worth tracing end to end through an example. Name them "
     "as they are named in the code.\n\n"
+    "# section_refs\n"
+    "The three prose sections — Background, Intuition, Code — are written by later "
+    "calls, one per section. Each of those calls sees only the files you assign it "
+    "here, with their hunks and hunk intents. Assigning a file is what puts the code "
+    "in front of the call that writes about it; omitting one is a decision that the "
+    "section has nothing to say about it.\n"
+    "- `background`: the files whose state BEFORE this change the reader has to "
+    "understand first. Often few, sometimes none.\n"
+    "- `intuition`: the one or two files where the idea of the change is clearest — "
+    "what a worked example would trace through.\n"
+    "- `code`: the files that carry the change. This is the walkthrough, so it should "
+    "cover the hand-written files a reviewer must actually read.\n"
+    "`file_ids` are viewer ids from the `# Files` section, verbatim. A file may "
+    "appear in more than one section.\n\n"
     "Tone throughout: explanatory, not evaluative. You are orienting a reader, "
     "not judging the change."
 )
