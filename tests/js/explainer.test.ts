@@ -672,6 +672,38 @@ describe("subsections", () => {
   });
 });
 
+// --- Figures ---------------------------------------------------------------
+
+describe("figures", () => {
+  const FIG = {
+    svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50">'
+      + '<rect class="d-box" x="0" y="0" width="10" height="10"/></svg>',
+    alt: "the request path",
+    caption: "",
+    stripped: 0,
+  };
+
+  test("a section's figures render after its prose", () => {
+    boot();
+    Explainer.onEvent(proseDoc({ state: "ready", body: "The walkthrough.", figures: [FIG] }) as SseExplainerEvent);
+    const fig = Explainer.renderPane().querySelector(".explainer-section .explainer-figure")!;
+    expect(fig.querySelector("svg")!.getAttribute("aria-label")).toBe("the request path");
+  });
+
+  test("a subsection's figures render too", () => {
+    boot();
+    Explainer.onEvent(proseDoc({
+      state: "ready",
+      body: "The walkthrough.",
+      subsections: [
+        section({ id: "code-1", kind: "code", title: "The contract", body: "one", map_rows: [], figures: [FIG] }),
+      ],
+    }) as SseExplainerEvent);
+    const fig = Explainer.renderPane().querySelector(".explainer-subsection .explainer-figure");
+    expect(fig).not.toBeNull();
+  });
+});
+
 // --- Provenance and Background's affordances -------------------------------
 
 describe("provenance", () => {

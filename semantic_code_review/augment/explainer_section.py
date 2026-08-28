@@ -137,31 +137,6 @@ class SubmittedRef(BaseModel):
     id: str = Field(description="The viewer id, verbatim from the `# Files` / `# Anchored code` lists.")
 
 
-class SubmittedSubsection(BaseModel):
-    """One model-chosen subsection. Only the Code section may have them."""
-
-    title: str = Field(description="A short noun phrase. Rendered as a heading and as a sidebar child node.")
-    body: str = Field(description="Markdown prose for this subsection.")
-    refs: list[SubmittedRef] = Field(
-        default_factory=list,
-        description="What this subsection is about, in reading order.",
-    )
-
-
-class SubmittedTerm(BaseModel):
-    """One entry of a term list."""
-
-    term: str = Field(description="The name as the code spells it.")
-    definition: str = Field(description="One or two sentences. Markdown.")
-
-
-class SubmittedSkipBox(BaseModel):
-    """Background's 'you already know this' escape hatch."""
-
-    body: str = Field(description="One sentence naming what the reader would already have to know.")
-    target_section_id: str = Field(description="The section to jump to: `intuition` or `code`.")
-
-
 class SubmittedFigure(BaseModel):
     """One diagram: inline SVG in a structured slot, not markup in prose.
 
@@ -188,6 +163,39 @@ class SubmittedFigure(BaseModel):
         default="",
         description="One sentence saying what to take from the figure. Inline markdown.",
     )
+
+
+class SubmittedSubsection(BaseModel):
+    """One model-chosen subsection. Only the Code section may have them."""
+
+    title: str = Field(description="A short noun phrase. Rendered as a heading and as a sidebar child node.")
+    body: str = Field(description="Markdown prose for this subsection.")
+    refs: list[SubmittedRef] = Field(
+        default_factory=list,
+        description="What this subsection is about, in reading order.",
+    )
+    figures: list[SubmittedFigure] = Field(
+        default_factory=list,
+        description=(
+            "Diagrams for this part of the walkthrough, on the same terms as the "
+            "section's own. A figure about one part belongs here, next to the prose "
+            "that reads it; one about the change as a whole belongs on the section."
+        ),
+    )
+
+
+class SubmittedTerm(BaseModel):
+    """One entry of a term list."""
+
+    term: str = Field(description="The name as the code spells it.")
+    definition: str = Field(description="One or two sentences. Markdown.")
+
+
+class SubmittedSkipBox(BaseModel):
+    """Background's 'you already know this' escape hatch."""
+
+    body: str = Field(description="One sentence naming what the reader would already have to know.")
+    target_section_id: str = Field(description="The section to jump to: `intuition` or `code`.")
 
 
 class SubmittedSection(BaseModel):
@@ -530,7 +538,7 @@ def _apply_one(
     scope, not a missing value.
     """
     kept, dropped = _validate(submission.refs, ids)
-    subsections, sub_dropped = _subsections(section, submission.subsections, ids)
+    subsections, sub_dropped = _subsections(doc, section, submission.subsections, ids)
 
     section.body = submission.body.strip()
     if kept:
@@ -542,7 +550,7 @@ def _apply_one(
         if t.term.strip()
     ]
     section.skip_box = _skip_box(doc, section, submission.skip_box)
-    section.figures = _figures(doc, section, submission.figures)
+    section.figures = _figures(doc, section.id, submission.figures)
     section.sources = list(sources) if sources else []
     section.state = "ready"
 
@@ -552,7 +560,7 @@ def _apply_one(
 
 def _figures(
     doc: explainer_schema.ExplainerDocument,
-    section: explainer_schema.Section,
+    owner_id: str,
     submitted: list[SubmittedFigure],
 ) -> list[explainer_schema.Figure]:
     """The section's diagrams, as submitted; sanitised on the way to disk.
@@ -571,7 +579,7 @@ def _figures(
     if not explainer_schema.figures_fixed(doc):
         log.warning(
             "explainer: %s submitted %d figures for a document with no figure family — dropped",
-            section.id,
+            owner_id,
             len(submitted),
         )
         return []
@@ -613,6 +621,7 @@ def _validate(
 
 
 def _subsections(
+    doc: explainer_schema.ExplainerDocument,
     section: explainer_schema.Section,
     submitted: list[SubmittedSubsection],
     ids: ViewerIdIndex,
@@ -632,18 +641,20 @@ def _subsections(
     for i, sub in enumerate(submitted, start=1):
         refs, n = _validate(sub.refs, ids)
         dropped += n
+        # Minted here, not by the model: an id has to be unique within
+        # the document and safe as a DOM id, and a title is neither. It
+        # also namespaces the subsection's figure ids.
+        sub_id = f"{section.id}-{i}"
         out.append(
             explainer_schema.Section(
-                # Minted here, not by the model: an id has to be unique
-                # within the document and safe as a DOM id, and a title
-                # is neither.
-                id=f"{section.id}-{i}",
+                id=sub_id,
                 kind=section.kind,
                 pass_id=section.pass_id,
                 title=sub.title.strip(),
                 state="ready",
                 body=sub.body.strip(),
                 refs=refs,
+                figures=_figures(doc, sub_id, sub.figures),
             )
         )
     return out, dropped

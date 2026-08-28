@@ -494,6 +494,11 @@ function _renderSubsection(section: ExplainerSection): HTMLElement {
   heading.id = _headingId(section.id);
   el.appendChild(heading);
   if (section.body) el.appendChild(_renderBody(section.body));
+  // A subsection's figures render like its parent's: the server
+  // sanitises and namespaces them wherever they sit in the tree, so a
+  // slot that renders at one depth and not the other is a figure that
+  // was written, cleaned, counted and never shown.
+  for (const figure of section.figures || []) el.appendChild(ExplainerFigures.renderFigure(figure));
   return el;
 }
 

@@ -512,6 +512,32 @@ def test_a_submitted_figure_lands_on_the_section(diff: AnnotatedDiff, doc) -> No
     assert figure.stripped == 0
 
 
+def test_a_subsection_carries_figures_of_its_own(diff: AnnotatedDiff, doc, tmp_path) -> None:
+    """The walkthrough's detail lives in its subsections, so a figure
+    about one part belongs beside that part's prose — and is stripped and
+    counted there on the same terms."""
+    section = explainer_section.find_section(doc, "code")
+    _apply(
+        doc,
+        section,
+        _submission(
+            subsections=[
+                {
+                    "title": "The contract",
+                    "body": "The proto states it.",
+                    "figures": [{"svg": _FIGURE_SVG, "alt": "the request path"}],
+                }
+            ]
+        ),
+        ids=build_json.viewer_id_index(diff),
+    )
+    written = explainer_schema.save_explainer(tmp_path, doc)
+
+    nested = explainer_section.find_section(written, "code").subsections[0].figures[0]
+    assert "hotpink" not in nested.svg
+    assert nested.stripped == 1
+
+
 def test_a_figure_the_call_was_never_given_the_rules_for_is_dropped(diff: AnnotatedDiff) -> None:
     """The guidance is omitted when the skeleton fixed no family, so a
     figure submitted anyway was drawn with no vocabulary — what the
