@@ -160,7 +160,14 @@ describe("the figure element", () => {
     expect(fig.querySelector("figcaption")!.textContent).toBe("how a read resolves");
   });
 
-  test("a caption is text, never markup", () => {
+  test("a caption is inline markdown, like every other short model string", () => {
+    const fig = renderFigure(figure({ caption: "what `ListRequest` carries" }));
+    const cap = fig.querySelector("figcaption")!;
+    expect(cap.querySelector("code")!.textContent).toBe("ListRequest");
+    expect(cap.querySelector("p")).toBeNull();
+  });
+
+  test("a caption's raw HTML is never interpreted", () => {
     const fig = renderFigure(figure({ caption: "<img src=x onerror=alert(1)>" }));
     expect(fig.querySelector("figcaption")!.querySelector("img")).toBeNull();
   });

@@ -19,6 +19,7 @@
 // (tests/test_explainer_figures.py) fails if the two copies drift.
 
 import DOMPurify from "dompurify";
+import { renderInlineMarkdown } from "./console_render";
 
 const FIGURE_CLASSES = new Set([
   "d-box",
@@ -162,8 +163,10 @@ export function renderFigure(figure: ExplainerFigure): HTMLElement {
 
   if (figure.caption) {
     const cap = document.createElement("figcaption");
-    // Plain text until the markdown path lands (slice 2).
-    cap.textContent = figure.caption;
+    // Inline markdown, like every other short string the model writes: a
+    // caption names identifiers, and rendering it as text is how a
+    // backtick reaches the page.
+    renderInlineMarkdown(cap, figure.caption);
     fig.appendChild(cap);
   }
   if (figure.stripped > 0) {
