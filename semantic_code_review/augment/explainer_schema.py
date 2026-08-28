@@ -319,6 +319,12 @@ def sanitize_figures(doc: ExplainerDocument) -> ExplainerDocument:
     gets the guarantee without having to remember it. The renderer
     sanitises again; see `explainer_figures`.
 
+    A document is written once per prose call, so a figure written by
+    the first call is sanitised again by every later one. The second
+    pass finds nothing left to remove, which is why the count is the
+    highest any pass recorded rather than the last one's: assigning it
+    would erase what the write that removed it counted.
+
     Returns:
         A copy of the document with each figure's `svg` sanitised and
         its `stripped` count set. The input is not mutated.
@@ -328,7 +334,7 @@ def sanitize_figures(doc: ExplainerDocument) -> ExplainerDocument:
         for i, figure in enumerate(section.figures):
             clean = explainer_figures.sanitize_svg(figure.svg, namespace=f"{_id_slug(section.id)}-{i}")
             figure.svg = clean.svg
-            figure.stripped = clean.stripped
+            figure.stripped = max(figure.stripped, clean.stripped)
     return out
 
 

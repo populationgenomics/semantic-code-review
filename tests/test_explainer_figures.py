@@ -228,6 +228,29 @@ def test_saving_a_document_sanitises_its_figures_and_records_the_count(tmp_path:
     assert loaded.sections[0].figures[0].svg == written.sections[0].figures[0].svg
 
 
+def test_a_strip_count_survives_the_documents_next_write(tmp_path: Path) -> None:
+    """Every prose call rewrites the whole document, so a figure the
+    first one wrote is sanitised again by the second — which finds
+    nothing left to remove. Recording that as zero would lose the count
+    the reader is shown."""
+    doc = _doc_with_figure(_svg('<rect class="d-box loud" x="0" y="0" width="4" height="4" fill="hotpink"/>'))
+    first = explainer_schema.save_explainer(tmp_path, doc)
+    second = explainer_schema.save_explainer(tmp_path, first)
+
+    assert second.sections[0].figures[0].stripped == first.sections[0].figures[0].stripped == 2
+
+
+def test_re_sanitising_a_figure_leaves_its_ids_where_they_were(tmp_path: Path) -> None:
+    """The prefix is applied once, not once per write: an id that grew
+    on every save would be a different id in the next document."""
+    doc = _doc_with_figure(_svg(_MARKER))
+    first = explainer_schema.save_explainer(tmp_path, doc)
+    second = explainer_schema.save_explainer(tmp_path, first)
+
+    assert 'id="intuition-0-arrow"' in first.sections[0].figures[0].svg
+    assert second.sections[0].figures[0].svg == first.sections[0].figures[0].svg
+
+
 def test_a_figure_that_loses_everything_is_kept_not_dropped(tmp_path: Path) -> None:
     written = explainer_schema.save_explainer(tmp_path, _doc_with_figure("<svg><rect>"))
     figure = written.sections[0].figures[0]

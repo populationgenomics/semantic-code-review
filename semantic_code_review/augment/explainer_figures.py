@@ -254,11 +254,25 @@ def _clean_value(name: str, value: str, *, namespace: str, counter: _Counter) ->
     if name == "class":
         return _clean_classes(value, counter=counter)
     if name == "id":
-        return f"{namespace}-{value}" if _ID.match(value) else None
+        return _namespaced(value, namespace) if _ID.match(value) else None
     if name in _MARKER_REFS:
         m = _URL_REF.match(value.strip())
-        return f"url(#{namespace}-{m.group(1)})" if m else None
+        return f"url(#{_namespaced(m.group(1), namespace)})" if m else None
     return value
+
+
+def _namespaced(value: str, namespace: str) -> str:
+    """`value` under `namespace`, applied at most once.
+
+    A document is written more than once — one prose pass per call — and
+    every write sanitises. Prefixing unconditionally would grow the id
+    on each of them, so an id that already carries this figure's
+    namespace is left alone. A model-chosen id that happens to start
+    with it is already unique to this figure, which is all the prefix is
+    for.
+    """
+    prefix = f"{namespace}-"
+    return value if value.startswith(prefix) else prefix + value
 
 
 def _clean_classes(value: str, *, counter: _Counter) -> str | None:
