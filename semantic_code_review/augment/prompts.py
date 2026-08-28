@@ -293,24 +293,30 @@ EXPLAINER_SKELETON_GUIDANCE = (
 )
 
 
-# One bulk guidance block for all three prose sections rather than one
-# per section: on SDK backends it is the cacheable system prefix, and
-# three near-identical prefixes would be three cache entries that never
-# hit each other. What differs per section is a short brief, which rides
-# the user text alongside the seed.
+# One bulk guidance block for both prose calls rather than one per
+# section: on SDK backends it is the cacheable system prefix, and
+# near-identical prefixes would be cache entries that never hit each
+# other. What differs per section is a short brief, which rides the user
+# text alongside the seed.
 
 EXPLAINER_SECTION_GUIDANCE = (
-    "You are writing ONE section of that document. Another call wrote the skeleton "
-    "— the verdict, the reading Map, the figure family and the cast — and other "
-    "calls write the other sections. You are given the skeleton's decisions and "
-    "must write inside them, not restate or revise them.\n\n"
-    "You receive the change's overview, the document so far, the section you are "
-    "writing with its brief, the full list of the change's files with their viewer "
-    "ids, and — for the files this section was assigned — every hunk under them "
-    "with the intent already established for it. Those intents are the ground "
-    "truth about what each hunk does. Your job is the connective tissue between "
-    "them: what they add up to, in what order they make sense, and why the change "
-    "is shaped this way. Do not re-describe a hunk the intent already describes.\n\n"
+    "You are writing the prose sections listed under `# Your sections`, and only "
+    "those. Another call wrote the skeleton — the verdict, the reading Map, the "
+    "figure family and the cast — and the document's other sections are written by "
+    "their own call. You are given the skeleton's decisions and must write inside "
+    "them, not restate or revise them.\n\n"
+    "Submit one entry in `sections` per section you were asked for, tagged with "
+    "that section's id, in the order you were given them. Where you are asked for "
+    "more than one, that is because they have to agree with each other: write them "
+    "as consecutive parts of one document, not as two answers to two questions.\n\n"
+    "You receive the change's overview, the document so far including any section "
+    "already written, the full list of the change's files with their viewer ids, "
+    "and — per section you are writing — its brief and every hunk under the files "
+    "it was assigned, with the intent already established for each. Those intents "
+    "are the ground truth about what each hunk does. Your job is the connective "
+    "tissue between them: what they add up to, in what order they make sense, and "
+    "why the change is shaped this way. Do not re-describe a hunk the intent "
+    "already describes.\n\n"
     "# body\n"
     "Markdown. Headings (`###` and below — the section's own title is rendered by "
     "the viewer, so do not repeat it), paragraphs, ordered and unordered lists, "
@@ -350,7 +356,7 @@ EXPLAINER_SECTION_GUIDANCE = (
     "The ordered list of what this section is about, as the sidebar and the "
     "coverage count read it. Narrow the files you were given to the hunks that "
     "carry the section's claims where you can; leave it at files where the whole "
-    "file is the subject. An id that is not in the `# Files` or `# Anchored code` "
+    "file is the subject. An id that is not in the `# Files` or `Anchored code` "
     "lists addresses nothing and is dropped.\n\n"
     "# toy_data\n"
     "Set it when your worked examples use identifiers, counts or values you "
@@ -377,42 +383,69 @@ EXPLAINER_SECTION_BRIEFS: dict[str, str] = {
         "Intuition: the idea of the change in one sitting. What it does, stated "
         "plainly, and then the smallest worked example that makes it click — a "
         "concrete value traced through the new path, or a before/after of one "
-        "call. Trace the data object the cast names. This is the section a reader "
-        "should be able to stop at and still have the change."
+        "call. Trace the data object the cast names. Take the example's "
+        "identifiers, literals and defaults out of the code rather than inventing "
+        "them; that is what the tools are for, and `toy_data` is the admission "
+        "you did not. This is the section a reader should be able to stop at and "
+        "still have the change."
     ),
     "code": (
         "Code: the walkthrough. Take the hunks in the order they make sense — "
         "usually the Map's order — and say what each group of them establishes "
-        "and how the next follows from it. Break the walkthrough into subsections "
-        "where the change has natural parts (the contract, its consumers, the "
-        "tests); each subsection gets its own title and its own references. Give "
-        "the section body the through-line, and let the subsections carry the "
-        "detail."
+        "and how the next follows from it. The connective tissue is the point, "
+        "and most of it is outside the hunks: whether a new function has callers "
+        "yet, what a changed one replaced, what a removal left behind. Those are "
+        "tool calls, not inferences. Break the walkthrough into subsections where "
+        "the change has natural parts (the contract, its consumers, the tests); "
+        "each subsection gets its own title and its own references. Give the "
+        "section body the through-line, and let the subsections carry the detail."
     ),
 }
 
 
-# Appended to EXPLAINER_SECTION_GUIDANCE for the Background pass only.
-# Background is the one section asserting facts about code OUTSIDE the
-# diff, so it is the one section granted the repo tools — and the one
-# that has to account for what it read.
+# Appended to EXPLAINER_SECTION_GUIDANCE for any prose call that has
+# budget left to spend on the worktree. Every prose section reaches
+# outside the diff: Background describes the system the change lands on,
+# and the walkthrough's connective tissue is exactly the set of
+# questions — is this called anywhere, what did it replace, what did a
+# removal leave behind — that the per-hunk seed cannot answer.
+
+EXPLAINER_TOOL_GUIDANCE = (
+    "# you can read the repository\n"
+    "`read_file` and `read_file_at` (the base SHA is in the overview), `grep` and "
+    "`grep_at`, `outline` and `symbol_at`, `references`, `changed_symbols`, "
+    "`list_dir`, `git_log`. The seed you were given is the diff and what each hunk "
+    "does; everything the change touches but does not contain is a tool call away, "
+    "and guessing at it instead is the failure this surface exists to prevent.\n\n"
+    "What is worth a call:\n"
+    "- Whether something the change adds is used anywhere yet — `references` "
+    "settles it, and 'added but unreferenced' is a fact a reviewer wants stated.\n"
+    "- What a changed function replaced, and what a removal left behind. "
+    "`changed_symbols` is the structural answer; `grep_at` against the base SHA "
+    "searches the tree as it was.\n"
+    "- The shape of a caller the diff only shows one line of.\n"
+    "- A real identifier, literal or default for a worked example, instead of an "
+    "invented one.\n\n"
+    "Every file you open is recorded and rendered under the prose as a citation "
+    "line — not your account of what you read, the actual calls. Prose citing "
+    "nothing is visibly prose that was made up. So read the code you are about to "
+    "describe.\n\n"
+    "Your budget is a small number of turns shared with the document's other "
+    "prose call, not an unbounded investigation. Spend it on the two or three "
+    "files that decide what you have to say, and stop when you can state how the "
+    "pieces fit; the reviewer wants the ground, not an inventory."
+)
+
+
+# Appended for the Background pass. Its two-layer structure, and the
+# affordances only it emits.
 
 EXPLAINER_BACKGROUND_GUIDANCE = (
-    "# Background has tools\n"
-    "You are writing Background, and unlike the other sections you can read the "
-    "repository: `read_file` and `read_file_at` (the base SHA is in the overview), "
-    "`grep` and `grep_at`, `outline` and `symbol_at`, `references`, "
-    "`changed_symbols`, `list_dir`, `git_log`. Background describes the system as "
-    "it stood BEFORE this change, which is mostly code the diff does not contain, "
-    "so answering from the seed alone means guessing.\n\n"
-    "Every file you open is recorded and rendered under the section as a citation "
-    "line — not your account of what you read, the actual calls. A Background "
-    "citing nothing is visibly one that was made up. So read the code you are "
-    "about to describe.\n\n"
-    "Your budget is a small number of turns, not an unbounded investigation. Spend "
-    "it on the two or three files the change lands on, at the base SHA, rather than "
-    "on a survey. Stop when you can state how the pieces fit; the reviewer wants "
-    "the ground, not an inventory.\n\n"
+    "# Background\n"
+    "Background describes the system as it stood BEFORE this change, which is "
+    "mostly code the diff does not contain. Read at the base SHA — `read_file_at` "
+    "and `grep_at` — rather than describing the post-change tree the plain "
+    "`read_file` and `grep` search.\n\n"
     "# skip_box\n"
     "Background is two layers: ground for a reader new to this codebase, then what "
     "the change lands on. A reader who already knows the system needs the second "

@@ -6,10 +6,11 @@ pattern: an async closure wired in after augment completes, results
 fanned out over the SSE bus. A document nobody opens costs nothing.
 
 The skeleton is one structured, tool-less call. It fixes the decisions
-later per-section calls must agree on (the verdict, the figure family
-and cast) and writes the reading **Map** in full — the cheapest section
-and the one worth the most at t=0. The three prose sections are written
-`pending`; filling them is slice 2's per-section route.
+the later prose calls must agree on (the verdict, the figure family and
+cast) and writes the reading **Map** in full — the cheapest section and
+the one worth the most at t=0. The three prose sections are written
+`pending`; filling them is the prose route in `explainer_section.py`,
+which writes them in two tool-using calls rather than three.
 
 The document's shape, its persistence and its reference validation live
 in `explainer_schema.py`.
@@ -40,10 +41,10 @@ log = logging.getLogger(__name__)
 
 _SKELETON = PassMeta(name="explainer-skeleton", submit_tool="submit_explainer_skeleton")
 
-#: Sections the skeleton leaves for the per-section prose route, in
-#: document order. The Map is appended after them: it is the section the
-#: skeleton actually fills.
-_PROSE_KINDS: tuple[explainer_schema.SectionKind, ...] = ("background", "intuition", "code")
+#: Sections the skeleton leaves for the prose route, in document order.
+#: Derived from the pass table rather than restated: the Map leads the
+#: document, and these follow in the order their calls write them.
+_PROSE_KINDS: tuple[explainer_schema.SectionKind, ...] = explainer_schema.prose_kinds()
 
 
 class ExplainerNotReady(RuntimeError):
@@ -111,8 +112,9 @@ class ExplainerSkeletonSubmission(BaseModel):
 def make_explainer_skeleton_agent(model: str | Model, system: str) -> Agent[None, ExplainerSkeletonSubmission]:
     """Agent for the skeleton pass.
 
-    No repo tools: Background is the only section granted them, and it
-    is a separate call (slice 3). `system` is the fully-assembled
+    No repo tools: the skeleton orders files it is already shown, and
+    it is on the critical path for the first screen. The prose passes
+    are where the worktree is read. `system` is the fully-assembled
     instruction text, which differs by backend — see
     :func:`carry_guidance`.
     """
@@ -248,6 +250,7 @@ def build_skeleton_document(
     map_section = explainer_schema.Section(
         id="map",
         kind="map",
+        pass_id=explainer_schema.SKELETON_PASS,
         title=explainer_schema.SECTION_TITLES["map"],
         state="ready",
         refs=[row.ref for row in rows],
@@ -312,6 +315,7 @@ def _pending_section(
     return explainer_schema.Section(
         id=kind,
         kind=kind,
+        pass_id=explainer_schema.pass_for_kind(kind),
         title=explainer_schema.SECTION_TITLES[kind],
         state="pending",
         refs=refs,

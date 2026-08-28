@@ -22,6 +22,7 @@ def _doc(**overrides) -> explainer_schema.ExplainerDocument:
             explainer_schema.Section(
                 id="map",
                 kind="map",
+                pass_id=explainer_schema.SKELETON_PASS,
                 title="Map",
                 state="ready",
                 map_rows=[
@@ -71,7 +72,44 @@ def test_load_discards_an_older_document_version(tmp_path: Path) -> None:
     assert explainer_schema.load_explainer(tmp_path, base_sha="aaaa1111", head_sha="bbbb2222") is None
 
 
-@pytest.mark.parametrize("body", ["{not json", '{"version": 1}'])
+def test_an_older_version_is_discarded_even_when_its_shape_no_longer_parses(tmp_path: Path) -> None:
+    """The version is checked before the models see the file. A bumped
+    version means the old shape is *expected* to be unparseable, and
+    reporting that as corruption would 500 the route on an ordinary
+    stale document."""
+    path = tmp_path / "explainer.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": explainer_schema.DOCUMENT_VERSION - 1,
+                "base_sha": "aaaa1111",
+                "head_sha": "bbbb2222",
+                "verdict": "narrate",
+                # No `pass_id`: the field this version bump added.
+                "sections": [{"id": "map", "kind": "map", "title": "Map", "state": "ready"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert explainer_schema.load_explainer(tmp_path, base_sha="aaaa1111", head_sha="bbbb2222") is None
+
+
+def test_the_pass_table_covers_every_prose_section_exactly_once() -> None:
+    """A section no call writes stays `pending` forever; one two calls
+    write is paid for twice."""
+    kinds = explainer_schema.prose_kinds()
+    assert sorted(kinds) == ["background", "code", "intuition"]
+    assert len(kinds) == len(set(kinds))
+    for kind in kinds:
+        assert kind in explainer_schema.kinds_in_pass(explainer_schema.pass_for_kind(kind))
+    with pytest.raises(KeyError):
+        explainer_schema.pass_for_kind("map")
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["{not json", json.dumps({"version": explainer_schema.DOCUMENT_VERSION})],
+)
 def test_load_raises_on_a_corrupt_document(tmp_path: Path, body: str) -> None:
     """Corruption is loud; a stale document is not. The two are different
     outcomes and the caller has to be able to tell them apart."""

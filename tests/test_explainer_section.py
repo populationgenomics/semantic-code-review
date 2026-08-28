@@ -1,4 +1,4 @@
-"""Change-explainer per-section prose: seed, readiness, apply step."""
+"""Change-explainer prose passes: seed, readiness, budget, apply step."""
 
 from __future__ import annotations
 
@@ -71,17 +71,19 @@ def _doc(**overrides) -> explainer_schema.ExplainerDocument:
         "figure_family": "boxes are services",
         "cast": ["ListRequest"],
         "sections": [
-            {"id": "map", "kind": "map", "title": "Map", "state": "ready"},
+            {"id": "map", "kind": "map", "pass_id": "skeleton", "title": "Map", "state": "ready"},
             {
                 "id": "background",
                 "kind": "background",
+                "pass_id": "background",
                 "title": "Background",
                 "refs": [{"kind": "file", "id": "F0"}],
             },
-            {"id": "intuition", "kind": "intuition", "title": "Intuition"},
+            {"id": "intuition", "kind": "intuition", "pass_id": "walkthrough", "title": "Intuition"},
             {
                 "id": "code",
                 "kind": "code",
+                "pass_id": "walkthrough",
                 "title": "Code",
                 "refs": [{"kind": "file", "id": "F0"}, {"kind": "file", "id": "F1"}],
             },
@@ -155,13 +157,13 @@ def test_a_section_with_no_references_is_trivially_ready(diff: AnnotatedDiff, do
 # --- Prompt shape --------------------------------------------------------
 
 
+def _prompt(diff, doc, *section_ids, overview_json: str = "{}") -> str:
+    targets = [explainer_section.find_section(doc, sid) for sid in section_ids]
+    return explainer_section.format_prose_prompt(diff, doc, targets, overview_json=overview_json)
+
+
 def test_the_seed_carries_the_intents_of_the_anchored_hunks(diff: AnnotatedDiff, doc) -> None:
-    text = explainer_section.format_section_prompt(
-        diff,
-        doc,
-        explainer_section.find_section(doc, "code"),
-        overview_json='{"summary": "pagination"}',
-    )
+    text = _prompt(diff, doc, "code", overview_json='{"summary": "pagination"}')
     assert "H0_0" in text
     assert "adds cursor" in text
     assert "H1_1" in text
@@ -175,23 +177,43 @@ def test_the_seed_carries_the_intents_of_the_anchored_hunks(diff: AnnotatedDiff,
     assert "Write the Code section." in text
 
 
+def test_a_merged_call_gets_a_brief_and_a_hunk_list_per_section(diff: AnnotatedDiff, doc) -> None:
+    """One call, two sections: each has to arrive with its own brief and
+    its own anchored code, or the model cannot tell them apart."""
+    text = _prompt(diff, doc, "intuition", "code")
+    assert text.index("`intuition` — Intuition") < text.index("`code` — Code")
+    assert "Intuition: the idea of the change" in text
+    assert "Code: the walkthrough" in text
+    assert "Write the Intuition and Code sections." in text
+
+
+def test_the_merged_call_is_seeded_with_the_map_and_the_finished_background(
+    diff: AnnotatedDiff,
+    doc,
+) -> None:
+    """A call that cannot see what the document already says either
+    repeats it or contradicts it."""
+    background = explainer_section.find_section(doc, "background")
+    background.state = "ready"
+    background.body = "The RPC layer paged by offset."
+    map_section = doc.sections[0]
+    map_section.map_rows = [
+        explainer_schema.MapRow(
+            ref=explainer_schema.Reference(kind="file", id="F0"),
+            why="the contract every field below follows from",
+        )
+    ]
+    text = _prompt(diff, doc, "intuition", "code")
+    assert "The RPC layer paged by offset." in text
+    assert "the contract every field below follows from" in text
+
+
 def test_a_section_the_skeleton_gave_nothing_is_told_so(diff: AnnotatedDiff, doc) -> None:
-    text = explainer_section.format_section_prompt(
-        diff,
-        doc,
-        explainer_section.find_section(doc, "intuition"),
-        overview_json="{}",
-    )
-    assert "assigned this section no files" in text
+    assert "assigned this section no files" in _prompt(diff, doc, "intuition")
 
 
 def test_only_the_anchored_hunks_carry_intents(diff: AnnotatedDiff, doc) -> None:
-    text = explainer_section.format_section_prompt(
-        diff,
-        doc,
-        explainer_section.find_section(doc, "background"),
-        overview_json="{}",
-    )
+    text = _prompt(diff, doc, "background")
     assert "H0_0" in text
     assert "H1_0" not in text
 
@@ -214,20 +236,33 @@ def test_an_unknown_section_id_is_not_found(doc) -> None:
 # --- Apply step ----------------------------------------------------------
 
 
-def _submission(**overrides) -> explainer_section.ExplainerSectionSubmission:
+def _submission(**overrides) -> explainer_section.SubmittedSection:
     payload = {
+        "section": "code",
         "body": "  The proto is the contract; everything below follows from it [F0].  ",
         "refs": [{"kind": "hunk", "id": "H0_0"}],
         "subsections": [],
         "toy_data": False,
     }
     payload.update(overrides)
-    return explainer_section.ExplainerSectionSubmission.model_validate(payload)
+    return explainer_section.SubmittedSection.model_validate(payload)
+
+
+def _apply(doc, section, entry=None, *, ids, sources=None) -> None:
+    """Apply one submitted entry to one section, as a pass of one."""
+    entry = entry if entry is not None else _submission()
+    explainer_section.apply_prose_submission(
+        doc,
+        [section],
+        explainer_section.ExplainerProseSubmission(sections=[entry.model_copy(update={"section": section.kind})]),
+        ids=ids,
+        sources=sources,
+    )
 
 
 def test_a_written_section_goes_ready_and_keeps_its_own_references(diff: AnnotatedDiff, doc) -> None:
     section = explainer_section.find_section(doc, "code")
-    explainer_section.apply_section_submission(doc, section, _submission(), ids=build_json.viewer_id_index(diff))
+    _apply(doc, section, _submission(), ids=build_json.viewer_id_index(diff))
     assert section.state == "ready"
     assert section.body == "The proto is the contract; everything below follows from it [F0]."
     # The model narrowed the skeleton's two files to one hunk.
@@ -237,13 +272,13 @@ def test_a_written_section_goes_ready_and_keeps_its_own_references(diff: Annotat
 
 def test_a_submission_that_narrows_nothing_leaves_the_skeleton_scope(diff: AnnotatedDiff, doc) -> None:
     section = explainer_section.find_section(doc, "code")
-    explainer_section.apply_section_submission(doc, section, _submission(refs=[]), ids=build_json.viewer_id_index(diff))
+    _apply(doc, section, _submission(refs=[]), ids=build_json.viewer_id_index(diff))
     assert [r.id for r in section.refs] == ["F0", "F1"]
 
 
 def test_invented_references_are_dropped_and_counted(diff: AnnotatedDiff, doc) -> None:
     section = explainer_section.find_section(doc, "code")
-    explainer_section.apply_section_submission(
+    _apply(
         doc,
         section,
         _submission(refs=[{"kind": "hunk", "id": "H9_9"}, {"kind": "file", "id": "F0"}]),
@@ -255,7 +290,7 @@ def test_invented_references_are_dropped_and_counted(diff: AnnotatedDiff, doc) -
 
 def test_code_subsections_become_child_sections_with_minted_ids(diff: AnnotatedDiff, doc) -> None:
     section = explainer_section.find_section(doc, "code")
-    explainer_section.apply_section_submission(
+    _apply(
         doc,
         section,
         _submission(
@@ -276,7 +311,7 @@ def test_subsections_outside_code_are_dropped(diff: AnnotatedDiff, doc) -> None:
     """The top level is fixed and Code is the only section whose parts
     are the model's to choose."""
     section = explainer_section.find_section(doc, "intuition")
-    explainer_section.apply_section_submission(
+    _apply(
         doc,
         section,
         _submission(subsections=[{"title": "invented", "body": "x", "refs": []}]),
@@ -287,13 +322,9 @@ def test_subsections_outside_code_are_dropped(diff: AnnotatedDiff, doc) -> None:
 
 def test_toy_data_latches_on_the_document(diff: AnnotatedDiff, doc) -> None:
     ids = build_json.viewer_id_index(diff)
-    explainer_section.apply_section_submission(
-        doc, explainer_section.find_section(doc, "intuition"), _submission(toy_data=True), ids=ids
-    )
+    _apply(doc, explainer_section.find_section(doc, "intuition"), _submission(toy_data=True), ids=ids)
     assert doc.toy_data is True
-    explainer_section.apply_section_submission(
-        doc, explainer_section.find_section(doc, "code"), _submission(toy_data=False), ids=ids
-    )
+    _apply(doc, explainer_section.find_section(doc, "code"), _submission(toy_data=False), ids=ids)
     # One section's invented example is enough for the footer to say so.
     assert doc.toy_data is True
 
@@ -301,13 +332,41 @@ def test_toy_data_latches_on_the_document(diff: AnnotatedDiff, doc) -> None:
 # --- Background: tools, budget, provenance -------------------------------
 
 
-def test_background_guidance_only_reaches_the_background_pass() -> None:
-    """Tool instructions handed to a tool-less pass describe a surface
-    that is not there."""
+def test_the_tool_block_is_shared_and_the_background_block_is_not() -> None:
+    """Every prose call reads the repository, so the tool vocabulary is
+    one block; only Background writes a skip box."""
+    from semantic_code_review.augment.prompts import (
+        EXPLAINER_BACKGROUND_GUIDANCE,
+        EXPLAINER_TOOL_GUIDANCE,
+    )
+
+    assert "`references`" in EXPLAINER_TOOL_GUIDANCE
+    assert "skip_box" not in EXPLAINER_TOOL_GUIDANCE
+    assert "skip_box" in EXPLAINER_BACKGROUND_GUIDANCE
+    # The shared block must not name tools: it is also the prefix of a
+    # call with no budget left to use them.
+    assert "read_file" not in EXPLAINER_SECTION_GUIDANCE
+
+
+def test_a_call_with_tools_is_told_about_them_and_one_without_is_not() -> None:
+    """Advertising a surface the pass cannot reach makes the model hedge
+    — the same reason skills are disabled on the CLI path."""
+    from semantic_code_review.augment.prompts import EXPLAINER_TOOL_GUIDANCE
+
+    doc = _doc()
+    walkthrough = [explainer_section.find_section(doc, k) for k in ("intuition", "code")]
+    assert EXPLAINER_TOOL_GUIDANCE in explainer_section._guidance(walkthrough, with_tools=True)
+    assert EXPLAINER_TOOL_GUIDANCE not in explainer_section._guidance(walkthrough, with_tools=False)
+
+
+def test_only_the_background_call_carries_the_background_block() -> None:
     from semantic_code_review.augment.prompts import EXPLAINER_BACKGROUND_GUIDANCE
 
-    assert "read_file" in EXPLAINER_BACKGROUND_GUIDANCE
-    assert "read_file" not in EXPLAINER_SECTION_GUIDANCE
+    doc = _doc()
+    background = [explainer_section.find_section(doc, "background")]
+    walkthrough = [explainer_section.find_section(doc, k) for k in ("intuition", "code")]
+    assert EXPLAINER_BACKGROUND_GUIDANCE in explainer_section._guidance(background, with_tools=True)
+    assert EXPLAINER_BACKGROUND_GUIDANCE not in explainer_section._guidance(walkthrough, with_tools=True)
 
 
 def test_the_read_recorder_keeps_first_read_order_without_duplicates() -> None:
@@ -338,19 +397,17 @@ def test_the_recording_wrappers_keep_the_tool_schema_intact() -> None:
 def test_background_records_what_it_read_and_the_others_record_nothing(diff: AnnotatedDiff, doc) -> None:
     ids = build_json.viewer_id_index(diff)
     background = explainer_section.find_section(doc, "background")
-    explainer_section.apply_section_submission(
-        doc, background, _submission(), ids=ids, sources=["schema/api.proto", "cmd/list.go"]
-    )
+    _apply(doc, background, ids=ids, sources=["schema/api.proto", "cmd/list.go"])
     assert background.sources == ["schema/api.proto", "cmd/list.go"]
 
     code = explainer_section.find_section(doc, "code")
-    explainer_section.apply_section_submission(doc, code, _submission(), ids=ids)
+    _apply(doc, code, _submission(), ids=ids)
     assert code.sources == []
 
 
 def test_the_skip_box_lands_on_background_with_a_target_that_resolves(diff: AnnotatedDiff, doc) -> None:
     section = explainer_section.find_section(doc, "background")
-    explainer_section.apply_section_submission(
+    _apply(
         doc,
         section,
         _submission(skip_box={"body": "If you know the RPC layer,", "target_section_id": "code"}),
@@ -363,7 +420,7 @@ def test_the_skip_box_lands_on_background_with_a_target_that_resolves(diff: Anno
 def test_a_skip_box_pointing_nowhere_is_dropped(diff: AnnotatedDiff, doc) -> None:
     """A jump to a section that is not there is worse than no jump."""
     section = explainer_section.find_section(doc, "background")
-    explainer_section.apply_section_submission(
+    _apply(
         doc,
         section,
         _submission(skip_box={"body": "skip", "target_section_id": "appendix"}),
@@ -374,7 +431,7 @@ def test_a_skip_box_pointing_nowhere_is_dropped(diff: AnnotatedDiff, doc) -> Non
 
 def test_only_background_gets_a_skip_box(diff: AnnotatedDiff, doc) -> None:
     section = explainer_section.find_section(doc, "code")
-    explainer_section.apply_section_submission(
+    _apply(
         doc,
         section,
         _submission(skip_box={"body": "skip", "target_section_id": "intuition"}),
@@ -385,7 +442,7 @@ def test_only_background_gets_a_skip_box(diff: AnnotatedDiff, doc) -> None:
 
 def test_terms_land_as_a_definition_list(diff: AnnotatedDiff, doc) -> None:
     section = explainer_section.find_section(doc, "background")
-    explainer_section.apply_section_submission(
+    _apply(
         doc,
         section,
         _submission(
@@ -402,8 +459,8 @@ def test_terms_land_as_a_definition_list(diff: AnnotatedDiff, doc) -> None:
 def test_a_submission_carrying_a_sources_key_cannot_forge_the_citation_line() -> None:
     """The read list rides the payload so it survives the cache, but it
     is not a submission field — a model that emits one is ignored."""
-    submission = explainer_section.ExplainerSectionSubmission.model_validate(
-        {"body": "x", "recorded_sources": ["invented.py"]}
+    submission = explainer_section.SubmittedSection.model_validate(
+        {"section": "code", "body": "x", "recorded_sources": ["invented.py"]}
     )
     assert not hasattr(submission, "recorded_sources")
 
@@ -420,15 +477,16 @@ def test_the_recorded_read_list_rides_the_cache_with_the_prose(tmp_path) -> None
     from semantic_code_review.cache.store import CacheStore
 
     cache = CacheStore(root=tmp_path / "cache", prompt_version="test")
-    agent = explainer_section.make_explainer_section_agent(TestModel(), "sys")
+    agent = explainer_section.make_explainer_prose_agent(TestModel(), "sys")
     runs = 0
 
     async def once() -> dict:
         nonlocal runs
         runs += 1
-        with agent.override(model=TestModel(custom_output_args={"body": "the system before"})):
+        args = {"sections": [{"section": "background", "body": "the system before"}]}
+        with agent.override(model=TestModel(custom_output_args=args)):
             payload = await pass_.run_pass(
-                pass_.PassMeta(name="explainer-background", submit_tool="submit_explainer_section"),
+                pass_.PassMeta(name="explainer-background", submit_tool="submit_explainer_prose"),
                 client=Client(model="anthropic:x"),
                 agent=agent,
                 user_content="u",
@@ -446,3 +504,163 @@ def test_the_recorded_read_list_rides_the_cache_with_the_prose(tmp_path) -> None
     assert first["recorded_sources"] == ["read-1.py"]
     # Served from cache: the prose AND the provenance that produced it.
     assert second == first
+
+
+# --- Passes, not sections ------------------------------------------------
+
+
+def test_addressing_either_half_of_a_merged_pair_runs_the_same_call(doc) -> None:
+    """The route names a section; what runs is the call that owns it."""
+    for section_id in ("intuition", "code"):
+        assert [s.id for s in explainer_section.pass_targets(doc, section_id)] == ["intuition", "code"]
+
+
+def test_background_stays_a_call_of_its_own(doc) -> None:
+    """Merging it would collapse its `base_sha` key to the narrower
+    `(base_sha, head_sha)` one, which is the whole reason it is split."""
+    assert [s.id for s in explainer_section.pass_targets(doc, "background")] == ["background"]
+
+
+def test_a_merged_call_lands_both_of_its_sections(diff: AnnotatedDiff, doc) -> None:
+    targets = explainer_section.pass_targets(doc, "code")
+    written = explainer_section.apply_prose_submission(
+        doc,
+        targets,
+        explainer_section.ExplainerProseSubmission(
+            sections=[
+                _submission(section="intuition", body="the idea"),
+                _submission(section="code", body="the walkthrough"),
+            ]
+        ),
+        ids=build_json.viewer_id_index(diff),
+        sources=["schema/api.proto"],
+    )
+    assert [s.id for s in written] == ["intuition", "code"]
+    assert [s.state for s in targets] == ["ready", "ready"]
+    # The read list belongs to the call, so both sections carry it.
+    assert all(s.sources == ["schema/api.proto"] for s in targets)
+
+
+def test_a_merged_call_that_returns_one_section_lands_it(diff: AnnotatedDiff, doc) -> None:
+    """Failing both because one is missing throws away prose that was
+    already paid for."""
+    targets = explainer_section.pass_targets(doc, "code")
+    explainer_section.apply_prose_submission(
+        doc,
+        targets,
+        explainer_section.ExplainerProseSubmission(sections=[_submission(section="intuition", body="the idea")]),
+        ids=build_json.viewer_id_index(diff),
+    )
+    intuition, code = targets
+    assert (intuition.state, intuition.body) == ("ready", "the idea")
+    # `failed`, not `pending`: pending is what the viewer auto-queues,
+    # and buying the same call again unasked is not a retry policy.
+    assert code.state == "failed"
+
+
+def test_a_section_the_call_was_not_asked_for_is_dropped(diff: AnnotatedDiff, doc) -> None:
+    targets = explainer_section.pass_targets(doc, "background")
+    explainer_section.apply_prose_submission(
+        doc,
+        targets,
+        explainer_section.ExplainerProseSubmission(
+            sections=[
+                _submission(section="background", body="ground"),
+                _submission(section="code", body="not yours"),
+            ]
+        ),
+        ids=build_json.viewer_id_index(diff),
+    )
+    assert explainer_section.find_section(doc, "background").body == "ground"
+    # Untouched: another call owns it.
+    assert explainer_section.find_section(doc, "code").state == "pending"
+
+
+def test_a_merged_call_is_ready_only_when_every_hunk_under_it_is(doc) -> None:
+    """The call writes both sections, so it needs both anchored sets."""
+    diff = _diff(intents=("adds cursor", "", "renames the field"))
+    targets = explainer_section.pass_targets(doc, "intuition")
+    refs = [ref for s in targets for ref in s.refs]
+    assert explainer_section.readiness(diff, refs) == (2, 3)
+
+
+# --- The document's shared turn budget ------------------------------------
+
+
+def test_the_budget_is_shared_across_the_documents_passes() -> None:
+    """A per-section cap is a cap on nothing: three sections at twelve is
+    a document at thirty-six, which nobody chose."""
+    doc = _doc()
+    assert explainer_section.DOCUMENT_TURN_BUDGET - doc.turns_used == explainer_section.DOCUMENT_TURN_BUDGET
+    doc.turns_used = 7
+    assert explainer_section.DOCUMENT_TURN_BUDGET - doc.turns_used == explainer_section.DOCUMENT_TURN_BUDGET - 7
+
+
+def test_a_pass_reports_the_requests_it_spent(tmp_path) -> None:
+    """The budget is metered off `run_pass`, and the figure it reports is
+    the one the trace records — the two cannot drift."""
+    import asyncio
+    import json
+
+    from pydantic_ai.models.test import TestModel
+
+    from semantic_code_review.augment import pass_
+
+    agent = explainer_section.make_explainer_prose_agent(TestModel(), "sys")
+    spent: list[int] = []
+    trace_path = tmp_path / "explainer-walkthrough.json"
+    args = {"sections": [{"section": "code", "body": "x"}]}
+    with agent.override(model=TestModel(custom_output_args=args)):
+        asyncio.run(
+            pass_.run_pass(
+                pass_.PassMeta(name="explainer-walkthrough", submit_tool="submit_explainer_prose"),
+                client=Client(model="anthropic:x"),
+                agent=agent,
+                user_content="u",
+                system="sys",
+                model="m",
+                cache_inputs=("u",),
+                request_limit=6,
+                trace_path=trace_path,
+                on_requests=spent.append,
+            )
+        )
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    assert sum(spent) == trace["turn_budget"]["used"]
+    assert trace["turn_budget"]["cap"] == 6
+
+
+def test_a_cached_pass_spends_nothing_against_the_budget(tmp_path) -> None:
+    """Prose the document already paid for must not narrow what is left
+    for the pass that has not run."""
+    import asyncio
+
+    from pydantic_ai.models.test import TestModel
+
+    from semantic_code_review.augment import pass_
+    from semantic_code_review.cache.store import CacheStore
+
+    cache = CacheStore(root=tmp_path / "cache", prompt_version="test")
+    agent = explainer_section.make_explainer_prose_agent(TestModel(), "sys")
+    args = {"sections": [{"section": "background", "body": "the system before"}]}
+    spent: list[int] = []
+
+    async def once() -> None:
+        with agent.override(model=TestModel(custom_output_args=args)):
+            await pass_.run_pass(
+                pass_.PassMeta(name="explainer-background", submit_tool="submit_explainer_prose"),
+                client=Client(model="anthropic:x"),
+                agent=agent,
+                user_content="u",
+                system="sys",
+                model="m",
+                cache_inputs=("base1234",),
+                cache=cache,
+                on_requests=spent.append,
+            )
+
+    asyncio.run(once())
+    first = sum(spent)
+    asyncio.run(once())
+    assert first > 0
+    assert sum(spent) == first

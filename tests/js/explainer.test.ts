@@ -24,10 +24,22 @@ function data(overrides: Partial<ViewerData> = {}): ViewerData {
   } as ViewerData;
 }
 
+//: Which call writes each section kind — the server's `PROSE_PASSES`
+//: as the viewer sees it. Intuition and Code share one, which is what
+//: the queue has to fold.
+const PASS_OF: Record<ExplainerSectionKind, string> = {
+  map: "skeleton",
+  background: "background",
+  intuition: "walkthrough",
+  code: "walkthrough",
+};
+
 function section(overrides: Partial<ExplainerSection> = {}): ExplainerSection {
+  const kind = overrides.kind ?? "map";
   return {
     id: "map",
     kind: "map",
+    pass_id: PASS_OF[kind],
     title: "Map",
     state: "ready",
     body: "",
@@ -44,7 +56,8 @@ function section(overrides: Partial<ExplainerSection> = {}): ExplainerSection {
 
 function doc(overrides: Partial<ExplainerDocument> = {}): ExplainerDocument {
   return {
-    version: 1,
+    version: 2,
+    turns_used: 0,
     base_sha: "base1234",
     head_sha: "head5678",
     verdict: "narrate",
@@ -383,32 +396,98 @@ describe("writing a section", () => {
     expect(Explainer.renderPane().querySelectorAll(".explainer-map-row")).toHaveLength(2);
   });
 
-  test("two sections opened at once are written one at a time", async () => {
-    boot();
-    Explainer.onEvent(doc({
-      sections: [
-        section(),
-        section({ id: "intuition", kind: "intuition", title: "Intuition", state: "pending" }),
-        section({ id: "code", kind: "code", title: "Code", state: "pending" }),
-      ],
-    }) as SseExplainerEvent);
+  function countingFetch(seen: string[]): { maxInFlight: () => number } {
     let inFlight = 0;
-    let maxInFlight = 0;
-    const seen: string[] = [];
+    let peak = 0;
     vi.spyOn(globalThis, "fetch").mockImplementation((async (url: string) => {
       seen.push(url);
       inFlight++;
-      maxInFlight = Math.max(maxInFlight, inFlight);
+      peak = Math.max(peak, inFlight);
       await Promise.resolve();
       inFlight--;
       return { status: 200, ok: true, json: () => Promise.resolve(doc()) } as Response;
     }) as typeof fetch);
-    Explainer.generateSection("intuition");
+    return { maxInFlight: () => peak };
+  }
+
+  test("two calls opened at once are written one at a time", async () => {
+    boot();
+    Explainer.onEvent(threeSectionDoc() as SseExplainerEvent);
+    const seen: string[] = [];
+    const f = countingFetch(seen);
+    Explainer.generateSection("background");
     Explainer.generateSection("code");
     await vi.waitFor(() => expect(seen).toHaveLength(2));
-    expect(maxInFlight).toBe(1);
+    expect(f.maxInFlight()).toBe(1);
+  });
+
+  test("both halves of a merged pass are one call, not two", async () => {
+    // Intuition and Code share a `pass_id`: pressing each would pay for
+    // the same walkthrough twice.
+    boot();
+    Explainer.onEvent(threeSectionDoc() as SseExplainerEvent);
+    const seen: string[] = [];
+    countingFetch(seen);
+    Explainer.generateSection("intuition");
+    Explainer.generateSection("code");
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    await Promise.resolve();
+    expect(seen).toEqual([`/explainer/section/intuition`]);
+  });
+
+  test("entering the mode queues one call per pass, not one per section", async () => {
+    boot();
+    const seen: string[] = [];
+    countingFetch(seen);
+    Explainer.onEvent(threeSectionDoc() as SseExplainerEvent);
+    Explainer.generateAllPending();
+    await vi.waitFor(() => expect(seen).toHaveLength(2));
+    expect(seen).toEqual([
+      "/explainer/section/background",
+      "/explainer/section/intuition",
+    ]);
+  });
+
+  test("a section left pending by its own call is not silently re-queued", async () => {
+    // The server marks a section its call did not return `failed`, not
+    // `pending`, so the auto-queue cannot buy the same call again.
+    boot();
+    Explainer.onEvent(doc({
+      sections: [
+        section(),
+        section({ id: "intuition", kind: "intuition", title: "Intuition", state: "ready", body: "x" }),
+        section({ id: "code", kind: "code", title: "Code", state: "failed" }),
+      ],
+    }) as SseExplainerEvent);
+    const seen: string[] = [];
+    countingFetch(seen);
+    Explainer.generateAllPending();
+    await Promise.resolve();
+    expect(seen).toHaveLength(0);
+  });
+
+  test("a merged call's failure is shown on both of its sections", async () => {
+    boot();
+    Explainer.onEvent(threeSectionDoc() as SseExplainerEvent);
+    mockFetch([{ status: 500, body: { error: "the pass raised" } }]);
+    Explainer.generateSection("code");
+    await vi.waitFor(() => {
+      const errors = Explainer.renderPane().querySelectorAll(".explainer-error");
+      expect(errors).toHaveLength(2);
+    });
   });
 });
+
+function threeSectionDoc(): ExplainerDocument {
+  return doc({
+    sections: [
+      section(),
+      section({ id: "background", kind: "background", title: "Background", state: "pending" }),
+      section({ id: "intuition", kind: "intuition", title: "Intuition", state: "pending" }),
+      section({ id: "code", kind: "code", title: "Code", state: "pending" }),
+    ],
+  });
+}
 
 // --- Markdown and reference chips -----------------------------------------
 
@@ -593,9 +672,9 @@ describe("subsections", () => {
   });
 });
 
-// --- Background's provenance and affordances -------------------------------
+// --- Provenance and Background's affordances -------------------------------
 
-describe("Background", () => {
+describe("provenance", () => {
   function backgroundDoc(overrides: Partial<ExplainerSection> = {}): ExplainerDocument {
     return doc({
       sections: [
@@ -616,18 +695,49 @@ describe("Background", () => {
     expect(line.textContent).toContain("cmd/list.go");
   });
 
-  test("a Background that read nothing says so — that is the whole point", () => {
+  test("a section that read nothing says so — that is the whole point", () => {
     boot();
     Explainer.onEvent(backgroundDoc({ body: "The RPC layer.", sources: [] }) as SseExplainerEvent);
     expect(Explainer.renderPane().querySelector(".explainer-sources")!.textContent)
       .toBe("Written without reading any file.");
   });
 
-  test("a section that was never granted tools carries no citation line", () => {
+  test("every prose section can carry one — not just Background", () => {
     boot();
     Explainer.onEvent(doc({
-      sections: [section({ id: "code", kind: "code", title: "Code", state: "ready", body: "x" })],
+      sections: [
+        section({ id: "code", kind: "code", title: "Code", state: "ready", body: "x", sources: ["api.py"] }),
+      ],
     }) as SseExplainerEvent);
+    expect(Explainer.renderPane().querySelector(".explainer-sources")!.textContent)
+      .toContain("api.py");
+  });
+
+  test("a merged pass cites once, under the last section it wrote", () => {
+    // The read list belongs to the call. Repeating the identical
+    // sentence under each of a merged pair says nothing the first did.
+    boot();
+    Explainer.onEvent(doc({
+      sections: [
+        section({
+          id: "intuition", kind: "intuition", title: "Intuition",
+          state: "ready", body: "the idea", sources: ["api.py"],
+        }),
+        section({
+          id: "code", kind: "code", title: "Code",
+          state: "ready", body: "the walkthrough", sources: ["api.py"],
+        }),
+      ],
+    }) as SseExplainerEvent);
+    const pane = Explainer.renderPane();
+    expect(pane.querySelectorAll(".explainer-sources")).toHaveLength(1);
+    const code = pane.querySelector('[data-section-id="code"]')!;
+    expect(code.querySelector(".explainer-sources")).not.toBeNull();
+  });
+
+  test("the Map carries no citation line — the skeleton reads nothing", () => {
+    boot();
+    Explainer.onEvent(doc() as SseExplainerEvent);
     expect(Explainer.renderPane().querySelector(".explainer-sources")).toBeNull();
   });
 

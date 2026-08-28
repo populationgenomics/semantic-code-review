@@ -12,8 +12,11 @@
 // has no span set, and leaving it restores the reviewer's zoom and
 // hand-set folds without a latch.
 //
-// Prose arrives one section at a time, on the reviewer's press: a
-// section nobody opens is never paid for. Bodies render through the
+// Prose arrives on the reviewer's press: prose nobody asks for is never
+// paid for. A press names a section but buys a *call*, and a call may
+// write more than one section (`pass_id` says which share one), so the
+// queue is keyed on the pass — otherwise entering the mode would buy
+// the merged walkthrough twice. Bodies render through the
 // shared markdown-it (`html: false`) + DOMPurify path the console uses
 // — model prose derives from a diff that may be hostile, so it never
 // reaches innerHTML unsanitised. Inline `[F3]` / `[H3_1]` tokens become
@@ -55,9 +58,12 @@ type SectionPhase =
   | { kind: "error"; message: string }
   | { kind: "waiting"; annotated: number; total: number };
 let _sectionPhase: Record<string, SectionPhase> = Object.create(null);
-// One section at a time. The server serialises explainer passes anyway
-// (a concurrent POST is a 409), so the queue is what turns "opened three
-// sections quickly" into three writes rather than two rejections.
+// One call at a time. The server serialises explainer passes anyway (a
+// concurrent POST is a 409), so the queue is what turns "opened every
+// section at once" into writes rather than rejections. Entries are
+// section ids, but membership is tested by pass: two sections of one
+// call are one entry, and asking for the second while the first is in
+// flight is asking for what is already running.
 let _writing: string | null = null;
 const _queue: string[] = [];
 
@@ -124,14 +130,17 @@ async function load(): Promise<void> {
 
 /** Ask the server to generate the skeleton. No-op when one is already
  *  in hand or a generation is in flight — the call is not free. */
-/** Queue every prose section that has not been written.
+/** Queue every prose call the document still needs.
  *
  *  Entering overview mode is the decision to spend; asking again per
  *  section asks twice for one choice. The server runs one pass at a
- *  time, so a run of three costs the same wall-clock whether the
- *  reviewer clicks them or not — the difference is only whether they
- *  have to sit and watch for each one to finish before starting the
- *  next.
+ *  time, so the run costs the same wall-clock whether the reviewer
+ *  clicks each one or not — the difference is only whether they have to
+ *  sit and watch each finish before starting the next.
+ *
+ *  Iterating sections and letting `generateSection` fold the ones that
+ *  share a pass: the merged walkthrough is two pending sections and one
+ *  call, and enqueuing per section would pay for it twice.
  *
  *  Nothing is queued under `not_warranted`: the skeleton's whole answer
  *  is that prose would not beat reading the hunks. */
@@ -140,6 +149,23 @@ function generateAllPending(): void {
   for (const s of _doc.sections) {
     if (s.kind !== "map" && s.state === "pending") generateSection(s.id);
   }
+}
+
+/** The call that writes a section, or null when it has no document
+ *  entry. Sections of one pass share it. */
+function _passOf(id: string): string | null {
+  const section = _findSection(id);
+  return section ? section.pass_id : null;
+}
+
+/** True when a call for this section's pass is already running or
+ *  queued. Asking for the second half of a merged pass while the first
+ *  is in flight is asking for what is already running. */
+function _passInFlight(id: string): boolean {
+  const wanted = _passOf(id);
+  if (wanted === null) return false;
+  if (_writing !== null && _passOf(_writing) === wanted) return true;
+  return _queue.some((queued) => _passOf(queued) === wanted);
 }
 
 async function generate(): Promise<void> {
@@ -164,17 +190,24 @@ async function generate(): Promise<void> {
   }
 }
 
-/** Ask the server to write one section's prose. No-op for a section
- *  that is already written, or already queued here: the call is not
- *  free and a second press must not buy the same paragraph twice. */
+/** Ask the server to write a section's prose. No-op for a section that
+ *  is already written, or whose call is already running or queued: the
+ *  call is not free and a second press must not buy the same paragraph
+ *  twice. */
 function generateSection(id: string): void {
   const section = _findSection(id);
   if (!section || section.kind === "map" || section.state === "ready") return;
-  if (_writing === id || _queue.indexOf(id) !== -1) return;
+  if (_passInFlight(id)) return;
   _queue.push(id);
-  delete _sectionPhase[id];
+  for (const s of _sectionsInPass(section.pass_id)) delete _sectionPhase[s.id];
   _onChange?.();
   void _drainQueue();
+}
+
+/** Every top-level section one call writes, in document order. */
+function _sectionsInPass(passId: string): ExplainerSection[] {
+  if (!_doc) return [];
+  return _doc.sections.filter((s) => s.kind !== "map" && s.pass_id === passId);
 }
 
 //: Backoff before retrying a section the server was too busy to write.
@@ -194,6 +227,19 @@ async function _drainQueue(): Promise<void> {
 }
 
 async function _writeSection(id: string): Promise<void> {
+  // The POST names a section, but the outcome belongs to its whole
+  // call: a merged pass that is waiting or failed is waiting or failed
+  // for both of its sections, and marking only the one the reviewer
+  // happened to press leaves its sibling claiming it was never asked
+  // for.
+  const passId = _passOf(id);
+  const affected = passId === null ? [id] : _sectionsInPass(passId).map((s) => s.id);
+  const setPhase = (phase: SectionPhase | null): void => {
+    for (const sid of affected) {
+      if (phase === null) delete _sectionPhase[sid];
+      else _sectionPhase[sid] = phase;
+    }
+  };
   try {
     const r = await fetch(`${_endpoint}/explainer/section/${encodeURIComponent(id)}`, {
       method: "POST",
@@ -202,18 +248,18 @@ async function _writeSection(id: string): Promise<void> {
     });
     const payload = await r.json().catch(() => ({}));
     if (r.status === 409 && typeof payload.total === "number") {
-      // Not an error: the hunks this section is anchored to aren't all
+      // Not an error: the hunks this call is anchored to aren't all
       // annotated, and prose over the gaps reads exactly as fluently as
       // prose over the whole thing.
-      _sectionPhase[id] = { kind: "waiting", annotated: payload.annotated || 0, total: payload.total };
+      setPhase({ kind: "waiting", annotated: payload.annotated || 0, total: payload.total });
       return;
     }
     if (r.status === 409 && payload.retry) {
       // Another pass holds the server's slot — one per server, shared by
-      // the skeleton and every section. It clears on its own, so this is
-      // a wait, not a failure: re-queue rather than making the reviewer
-      // press again for a condition that resolves itself.
-      delete _sectionPhase[id];
+      // the skeleton and every prose call. It clears on its own, so this
+      // is a wait, not a failure: re-queue rather than making the
+      // reviewer press again for a condition that resolves itself.
+      setPhase(null);
       _queue.push(id);   // renders as "Queued behind another section…"
       window.setTimeout(() => void _drainQueue(), _RETRY_MS);
       return;
@@ -221,7 +267,7 @@ async function _writeSection(id: string): Promise<void> {
     if (!r.ok) throw new Error(payload.error || `POST /explainer/section/${id} -> ${r.status}`);
     _adopt(payload as ExplainerDocument, { keepPhases: true });
   } catch (e) {
-    _sectionPhase[id] = { kind: "error", message: String(e instanceof Error ? e.message : e) };
+    setPhase({ kind: "error", message: String(e instanceof Error ? e.message : e) });
   }
 }
 
@@ -406,16 +452,27 @@ function _renderTerms(terms: ExplainerTerm[]): HTMLElement {
   return dl;
 }
 
-/** What the section's pass actually opened. Recorded from the tool
- *  surface, so a section citing nothing is visibly one that read
- *  nothing — which is legible without judging the prose. */
+/** What the call that wrote this section actually opened. Recorded from
+ *  the tool surface, so prose citing nothing is visibly prose that read
+ *  nothing — which is legible without judging it.
+ *
+ *  One line per *call*, under the last section that call wrote: the read
+ *  list belongs to the call, and repeating the identical sentence under
+ *  each of a merged pair says nothing the first one did not. */
 function _renderSources(section: ExplainerSection): HTMLElement | null {
-  if (section.state !== "ready" || section.kind !== "background") return null;
+  if (section.state !== "ready" || section.kind === "map") return null;
+  if (!_isLastOfPass(section)) return null;
   const sources = section.sources || [];
   const text = sources.length > 0
     ? `Read while writing this: ${sources.join(", ")}`
     : "Written without reading any file.";
   return _el("p", "explainer-sources", text);
+}
+
+/** True when no later top-level section shares this one's pass. */
+function _isLastOfPass(section: ExplainerSection): boolean {
+  const siblings = _sectionsInPass(section.pass_id);
+  return siblings.length === 0 || siblings[siblings.length - 1].id === section.id;
 }
 
 /** A model-chosen part of the walkthrough. It carries its own
@@ -435,10 +492,12 @@ function _renderSubsection(section: ExplainerSection): HTMLElement {
 /** The body of one prose section: what it says, or what this tab is
  *  doing about the fact that it does not say anything yet. */
 function _proseNodes(section: ExplainerSection): HTMLElement[] {
-  if (_writing === section.id) {
+  // By pass, not by id: the reviewer pressed one section of a merged
+  // call, and the other one is being written too.
+  if (_writing !== null && _passOf(_writing) === section.pass_id) {
     return [_el("p", "explainer-status", "Writing this section…")];
   }
-  if (_queue.indexOf(section.id) !== -1) {
+  if (_queue.some((queued) => _passOf(queued) === section.pass_id)) {
     return [_el("p", "explainer-status", "Queued behind another section…")];
   }
   const phase = _sectionPhase[section.id];

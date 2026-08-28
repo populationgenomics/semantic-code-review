@@ -343,6 +343,12 @@ interface ExplainerSection {
   id: string;
   kind: ExplainerSectionKind;
   title: string;
+  /** Which server-side call writes this section. Sections do not map
+   *  one-to-one onto calls — Intuition and Code share one — so this is
+   *  what keeps one press from buying one call twice, and what groups
+   *  the citation line under the prose it accounts for. A subsection
+   *  carries its parent's. The Map's is `"skeleton"`. */
+  pass_id: string;
   state: ExplainerSectionState;
   /** Markdown prose. Empty until the section's own pass runs. */
   body: string;
@@ -351,9 +357,10 @@ interface ExplainerSection {
   terms: ExplainerTerm[];
   skip_box: ExplainerSkipBox | null;
   figures: ExplainerFigure[];
-  /** Repo paths the section's pass actually opened, recorded from the
-   *  tool surface rather than claimed by the model. Rendered as a
-   *  citation line; empty for the tool-less sections. */
+  /** Repo paths this section's pass actually opened, recorded from the
+   *  tool surface rather than claimed by the model. It is the *pass's*
+   *  read list, so every section one call wrote carries the same one
+   *  and the viewer renders it once, under the last of them. */
   sources: string[];
   subsections: ExplainerSection[];
 }
@@ -369,6 +376,10 @@ interface ExplainerDocument {
   figure_family: string;
   cast: string[];
   toy_data: boolean;
+  /** Model requests the document's prose calls have spent between them,
+   *  against one shared budget. Persisted, so a reload does not
+   *  re-grant it. */
+  turns_used: number;
   sections: ExplainerSection[];
   /** References the model emitted that addressed nothing, dropped
    *  server-side. Rendered, because references thinning out unnoticed

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from semantic_code_review.augment import explainer_schema
 from semantic_code_review.review.comments import Comment, format_markdown
 from semantic_code_review.review.server import ReviewServer
 
@@ -1260,7 +1261,7 @@ def test_format_markdown_nonempty() -> None:
 
 def _explainer_doc(base_sha: str = "base1234", head_sha: str = "head5678") -> dict:
     return {
-        "version": 1,
+        "version": explainer_schema.DOCUMENT_VERSION,
         "base_sha": base_sha,
         "head_sha": head_sha,
         "verdict": "narrate",
@@ -1268,11 +1269,19 @@ def _explainer_doc(base_sha: str = "base1234", head_sha: str = "head5678") -> di
         "figure_family": "boxes are services",
         "cast": ["ListRequest"],
         "toy_data": False,
+        "turns_used": 0,
         "sections": [
-            {"id": "background", "kind": "background", "title": "Background", "state": "pending"},
+            {
+                "id": "background",
+                "kind": "background",
+                "pass_id": "background",
+                "title": "Background",
+                "state": "pending",
+            },
             {
                 "id": "map",
                 "kind": "map",
+                "pass_id": "skeleton",
                 "title": "Map",
                 "state": "ready",
                 "refs": [{"kind": "file", "id": "F0"}],

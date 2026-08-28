@@ -206,6 +206,7 @@ def _doc_with_figure(svg: str) -> explainer_schema.ExplainerDocument:
             explainer_schema.Section(
                 id="intuition",
                 kind="intuition",
+                pass_id="walkthrough",
                 title="Intuition",
                 state="ready",
                 figures=[explainer_schema.Figure(svg=svg, alt="the request path", caption="how a read resolves")],
@@ -242,6 +243,7 @@ def test_subsection_figures_are_sanitised_too(tmp_path: Path) -> None:
         explainer_schema.Section(
             id="the proto",
             kind="code",
+            pass_id="walkthrough",
             title="The proto",
             figures=[explainer_schema.Figure(svg=_svg('<rect fill="red" x="0" y="0" width="1" height="1"/>'), alt="a")],
         )
@@ -258,6 +260,7 @@ def test_a_model_chosen_subsection_id_still_yields_a_usable_id_prefix(tmp_path: 
         explainer_schema.Section(
             id="4 the/proto!",
             kind="code",
+            pass_id="walkthrough",
             title="The proto",
             figures=[explainer_schema.Figure(svg=_svg('<defs><marker id="a" viewBox="0 0 1 1"/></defs>'), alt="a")],
         )

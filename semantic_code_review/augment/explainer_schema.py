@@ -33,7 +33,9 @@ EXPLAINER_FILENAME = "explainer.json"
 #: Bump when the persisted shape changes incompatibly. A document at a
 #: different version is discarded on load, the same way a SHA mismatch
 #: is — the document is cheap to regenerate and never worth migrating.
-DOCUMENT_VERSION = 1
+#: Checked before the document is parsed, so a shape the current models
+#: reject is discarded rather than raising :class:`ExplainerCorrupt`.
+DOCUMENT_VERSION = 2
 
 
 RefKind = Literal["file", "hunk"]
@@ -51,6 +53,56 @@ SECTION_TITLES: dict[SectionKind, str] = {
     "code": "Code",
     "map": "Map",
 }
+
+#: The Map's pass. Written by the skeleton, so it is not addressable by
+#: the per-section prose route.
+SKELETON_PASS = "skeleton"
+
+#: Which prose sections one call writes, in document order. The section
+#: taxonomy and the call structure are separate axes: the four sections
+#: are what a reader navigates, a pass is what gets paid for.
+#:
+#: Background is its own call because it is keyed on `base_sha` alone —
+#: it describes the system before the change, so it survives head
+#: movement and every prompt-iteration re-run on the branch. Merging it
+#: with anything would collapse it to the narrower `(base_sha,
+#: head_sha)` key. Intuition and Code share that narrower key already,
+#: are the two that most need to agree with each other, and re-paying
+#: the large seed twice is the dominant cost on backends where the user
+#: prompt is not cached.
+PROSE_PASSES: tuple[tuple[str, tuple[SectionKind, ...]], ...] = (
+    ("background", ("background",)),
+    ("walkthrough", ("intuition", "code")),
+)
+
+
+def prose_kinds() -> tuple[SectionKind, ...]:
+    """Every prose section kind, in document order."""
+    return tuple(kind for _, kinds in PROSE_PASSES for kind in kinds)
+
+
+def pass_for_kind(kind: SectionKind) -> str:
+    """The id of the call that writes sections of this kind.
+
+    Raises:
+        KeyError: `kind` is the Map, which the skeleton writes.
+    """
+    for pass_id, kinds in PROSE_PASSES:
+        if kind in kinds:
+            return pass_id
+    raise KeyError(kind)
+
+
+def kinds_in_pass(pass_id: str) -> tuple[SectionKind, ...]:
+    """The section kinds one prose call writes.
+
+    Raises:
+        KeyError: No prose pass with that id.
+    """
+    for candidate, kinds in PROSE_PASSES:
+        if candidate == pass_id:
+            return kinds
+    raise KeyError(pass_id)
 
 
 class Reference(BaseModel):
@@ -118,13 +170,21 @@ class Section(BaseModel):
 
     `state` is the generation state of this section's prose, not of the
     document: the skeleton writes every prose section `pending` and each
-    prose call flips one to `ready` (or `failed`, which is retryable and
-    must not poison its neighbours).
+    prose call flips the sections it writes to `ready` (or `failed`,
+    which is retryable and must not poison its neighbours).
+
+    `pass_id` is which call writes this section — see `PROSE_PASSES`.
+    Sections do not map one-to-one onto calls, so it is carried on the
+    document rather than re-derived: the viewer needs it to keep one
+    press from buying one call twice, and a reader needs it to know
+    which prose a citation line accounts for. A subsection carries its
+    parent's.
     """
 
     id: str
     kind: SectionKind
     title: str
+    pass_id: str
     state: SectionState = "pending"
     body: str = ""
     refs: list[Reference] = Field(default_factory=list)
@@ -133,9 +193,11 @@ class Section(BaseModel):
     skip_box: SkipBox | None = None
     #: Repo paths the section's pass actually opened, in first-read
     #: order — recorded from the tool surface, never from the model's
-    #: account of itself. Rendered as a citation line: a Background
-    #: citing no reads is one that made it up, and that is legible
-    #: without judging the prose. Empty for the tool-less sections.
+    #: account of itself. Rendered as a citation line: a section citing
+    #: no reads is one that made it up, and that is legible without
+    #: judging the prose. It is the *pass's* read list, so every section
+    #: one call wrote carries the same one and the viewer renders it
+    #: once per pass.
     sources: list[str] = Field(default_factory=list)
     figures: list[Figure] = Field(default_factory=list)
     subsections: list[Section] = Field(default_factory=list)
@@ -162,6 +224,13 @@ class ExplainerDocument(BaseModel):
     #: Set when any section's worked examples use invented identifiers,
     #: counts or values; the footer says so.
     toy_data: bool = False
+    #: Model requests the document's prose passes have spent between
+    #: them, against the shared budget in `explainer_section`. Persisted
+    #: because the passes are separated in time — a reload, a second tab
+    #: or a restart must not re-grant a budget that has already been
+    #: spent — and because a ceiling nobody can see is one nobody can
+    #: tune. A cache hit spends nothing and adds nothing.
+    turns_used: int = 0
     sections: list[Section] = Field(default_factory=list)
     #: References the model emitted that addressed no file or hunk in
     #: this diff. Dropped, counted here, and rendered — thinning
@@ -213,18 +282,22 @@ def load_explainer(
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         raise ExplainerCorrupt(f"{path} is not readable JSON: {e}") from e
+    # Before parsing, not after: an older version is a *different* shape,
+    # so validating it first would report an expected outcome of a bumped
+    # version as corruption.
+    version = raw.get("version") if isinstance(raw, dict) else None
+    if version != DOCUMENT_VERSION:
+        log.warning(
+            "%s was written at document version %r (want %d) — discarded",
+            path,
+            version,
+            DOCUMENT_VERSION,
+        )
+        return None
     try:
         doc = ExplainerDocument.model_validate(raw)
     except ValidationError as e:
         raise ExplainerCorrupt(f"{path} does not parse as an explainer document: {e}") from e
-    if doc.version != DOCUMENT_VERSION:
-        log.warning(
-            "%s was written at document version %d (want %d) — discarded",
-            path,
-            doc.version,
-            DOCUMENT_VERSION,
-        )
-        return None
     if (doc.base_sha, doc.head_sha) != (base_sha, head_sha):
         log.info(
             "%s describes %s..%s but the run is %s..%s — discarded",
@@ -352,7 +425,9 @@ def validate_references(
 __all__ = [
     "DOCUMENT_VERSION",
     "EXPLAINER_FILENAME",
+    "PROSE_PASSES",
     "SECTION_TITLES",
+    "SKELETON_PASS",
     "ExplainerCorrupt",
     "ExplainerDocument",
     "Figure",
@@ -364,7 +439,10 @@ __all__ = [
     "explainer_path",
     "find_section",
     "iter_sections",
+    "kinds_in_pass",
     "load_explainer",
+    "pass_for_kind",
+    "prose_kinds",
     "sanitize_figures",
     "save_explainer",
     "validate_references",

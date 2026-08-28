@@ -139,6 +139,7 @@ def _document() -> explainer_schema.ExplainerDocument:
             explainer_schema.Section(
                 id="map",
                 kind="map",
+                pass_id="skeleton",
                 title="Map",
                 state="ready",
                 map_rows=[
@@ -148,10 +149,11 @@ def _document() -> explainer_schema.ExplainerDocument:
                     )
                 ],
             ),
-            explainer_schema.Section(id="background", kind="background", title="Background"),
+            explainer_schema.Section(id="background", kind="background", pass_id="background", title="Background"),
             explainer_schema.Section(
                 id="code",
                 kind="code",
+                pass_id="walkthrough",
                 title="Code",
                 state="ready",
                 body="The change is one guard.",
@@ -159,6 +161,7 @@ def _document() -> explainer_schema.ExplainerDocument:
                     explainer_schema.Section(
                         id="code_guard",
                         kind="code",
+                        pass_id="walkthrough",
                         title="The guard",
                         state="ready",
                         body="`deactivate` now refuses an already-inactive user.",

@@ -375,10 +375,11 @@ ExplainerGenerator = Callable[[], Coroutine[Any, Any, dict[str, Any]]]
 _EXPLAINER_SECTION_PREFIX = "/explainer/section/"
 
 
-#: Signature of the per-section prose generator, wired alongside the
-#: skeleton one. Called with a section id and awaited to the whole
-#: document as a jsonable dict — a section write is a document write, so
-#: the route fans out the document rather than a fragment of it.
+#: Signature of the prose generator, wired alongside the skeleton one.
+#: Called with a section id and awaited to the whole document as a
+#: jsonable dict — a prose call may write more than one section, and a
+#: section write is a document write either way, so the route fans out
+#: the document rather than a fragment of it.
 ExplainerSectionGenerator = Callable[[str], Coroutine[Any, Any, dict[str, Any]]]
 
 
@@ -937,18 +938,25 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(200, payload)
 
     def _handle_explainer_section(self, section_id: str) -> None:
-        """Write one section's prose, persist it, fan the document out.
+        """Write the prose for the call that owns a section; fan it out.
 
-        Generation is per-section and reviewer-initiated: the viewer
-        POSTs here the first time a `pending` section is opened. The
-        same one-pass-at-a-time rule as the skeleton applies, and it is
-        also what keeps two sections from interleaving their
-        read-modify-write of `explainer.json`.
+        The route addresses a section; what runs is the pass that writes
+        it, and a pass may write more than one (ADR 0007 addendum —
+        Intuition and Code are merged). POSTing either of a merged pair
+        runs the same call and lands both, which is why the response is
+        the whole document rather than the section: a caller that does
+        not know they are merged still sees everything that changed.
 
-        A section whose anchored hunks are not all annotated is a 409
+        Generation is reviewer-initiated: the viewer POSTs here the
+        first time a `pending` section is opened. The same
+        one-pass-at-a-time rule as the skeleton applies, and it is also
+        what keeps two calls from interleaving their read-modify-write
+        of `explainer.json`.
+
+        A call whose anchored hunks are not all annotated is a 409
         carrying the counts — the reviewer is told what it is waiting
         for rather than handed prose written over the gaps. A pass that
-        raises is a 500, but the section is already persisted `failed`
+        raises is a 500, but its sections are already persisted `failed`
         and the updated document is fanned out first, so every tab sees
         the retryable state.
         """

@@ -1,29 +1,37 @@
-"""Per-section prose for the change explainer (ADR 0007, slices 2-3).
+"""Prose for the change explainer (ADR 0007 and its addendum).
 
 The skeleton (`explainer.py`) writes the Map and leaves Background,
-Intuition and Code `pending`. Each of those is filled by one structured
-call from `POST /explainer/section/{id}`, on first open — a section
-nobody opens is never paid for.
+Intuition and Code `pending`. `POST /explainer/section/{id}` fills them,
+on the reviewer's press — prose nobody asks for is never paid for.
 
-The passes differ in what they are given, not in what they emit:
+Sections and calls are separate axes. `explainer_schema.PROSE_PASSES`
+maps the three prose sections onto two calls: Background alone, then
+Intuition and Code together. A POST names a section; what runs is the
+call that owns it, and every section that call writes lands. The route
+stays coherent for a caller that does not know two of them are merged —
+it addresses a section, and the response is the whole document either
+way.
 
-- **Intuition** and **Code** are seeded and tool-less: the overview, the
-  skeleton's fixed decisions, and — for the files the skeleton assigned
-  the section — every hunk under them with its established intent.
-  Connective tissue between those intents is the thing forty independent
-  per-hunk calls structurally cannot produce.
-- **Background** also gets `RepoTools`, under a bounded turn budget,
-  because it is the only section asserting facts about code *outside*
-  the diff. What it opened is recorded from the tool surface and
-  rendered as a citation line, and its answer is cached on `base_sha`
-  alone — it describes the system before the change, so it survives head
-  movement and prompt-iteration re-runs on the same branch.
+Both passes get `RepoTools`. Background asserts facts about code the
+diff does not contain; the walkthrough's job is the connective tissue
+between hunks, and the questions that produce it — is this new function
+called anywhere, what did this replace, did a removal leave something
+behind — are what `references` and `changed_symbols` answer and what
+the seed does not contain. What a pass opened is recorded off the tool
+surface, never from the model's account of itself, and rendered as a
+citation line under the prose that call wrote.
+
+The tool loop is metered against one budget for the whole document
+(`DOCUMENT_TURN_BUDGET`), carried on the document because the passes
+are separated in time. A pass that needs six turns gets six; one that
+needs none costs nothing; and the document cannot spend a per-section
+cap twice over.
 
 A section whose anchored hunks are not all annotated is refused rather
 than written: prose built on half the intents reads exactly as fluently
-as prose built on all of them. A pass that raises leaves its section
-`failed` — retryable, and it must not poison its neighbours — with the
-updated document attached so the route can fan the state out.
+as prose built on all of them. A pass that raises leaves the sections it
+was writing `failed` — retryable, and it must not poison its neighbours
+— with the updated document attached so the route can fan the state out.
 """
 
 from __future__ import annotations
@@ -48,6 +56,7 @@ from .prompts import (
     EXPLAINER_BACKGROUND_GUIDANCE,
     EXPLAINER_SECTION_BRIEFS,
     EXPLAINER_SECTION_GUIDANCE,
+    EXPLAINER_TOOL_GUIDANCE,
 )
 from .schemas import AnnotatedDiff
 from .tools import TOOL_FUNCTIONS, RepoTools
@@ -55,12 +64,31 @@ from .tools import TOOL_FUNCTIONS, RepoTools
 log = logging.getLogger(__name__)
 
 
-#: Requests Background's agentic loop may make before pydantic-ai cuts
-#: it off. Small on purpose: the section wants the two or three files the
-#: change lands on, not a survey. The cap and the count actually used go
-#: to `trace/`, because an agentic pass whose cost is invisible is the
-#: failure mode the cap exists to prevent.
-BACKGROUND_TURN_CAP = 12
+#: Model requests the document's prose passes may spend between them,
+#: across every call, however far apart in time.
+#:
+#: The unit is the document, not the section, for two reasons. A
+#: per-section cap is a cap on nothing: three sections at twelve is a
+#: document at thirty-six, and nobody chose thirty-six. And the passes
+#: do not want equal shares — one lands on a subsystem nobody has to be
+#: told about and reads nothing, the next needs six files. A shared
+#: total gives each what it needs until the document as a whole has had
+#: enough.
+#:
+#: The spend is tracked on `ExplainerDocument.turns_used`, so it
+#: survives a reload, a second tab and a restart, and is scoped exactly
+#: the way the document is: a new `(base_sha, head_sha)` is a new
+#: document and a fresh budget. A cache hit adds nothing.
+DOCUMENT_TURN_BUDGET = 18
+
+#: Remaining budget below which a pass runs with no tools at all rather
+#: than with a ceiling it cannot finish under. One request buys a read
+#: and nothing else; a loop cut off mid-investigation loses the pass
+#: after spending the most on it, and telling a model about tools it has
+#: no budget to use makes it hedge. Below this the pass is seeded and
+#: tool-less — which is what every prose pass was before the addendum,
+#: so it is a known-good shape, not a degraded guess.
+MIN_TOOL_TURNS = 2
 
 
 class SectionNotFound(KeyError):
@@ -72,7 +100,7 @@ class SectionNotFound(KeyError):
 
 
 class SectionNotReady(RuntimeError):
-    """The hunks this section is anchored to are not all annotated yet.
+    """The hunks this call is anchored to are not all annotated yet.
 
     Prose built on half the hunk intents reads exactly as fluently as
     prose built on all of them, which is why this is a refusal rather
@@ -87,7 +115,7 @@ class SectionNotReady(RuntimeError):
 
 
 class SectionFailed(RuntimeError):
-    """The section's pass raised; the document records it as `failed`.
+    """A prose call raised; its sections are recorded `failed`.
 
     Carries the persisted document so the route can fan the `failed`
     state out to every tab rather than leaving the other readers on
@@ -134,9 +162,12 @@ class SubmittedSkipBox(BaseModel):
     target_section_id: str = Field(description="The section to jump to: `intuition` or `code`.")
 
 
-class ExplainerSectionSubmission(BaseModel):
-    """Wire format of `submit_explainer_section`."""
+class SubmittedSection(BaseModel):
+    """One section of a prose call's answer."""
 
+    section: Literal["background", "intuition", "code"] = Field(
+        description="Which of the sections you were asked for this entry fills."
+    )
     body: str = Field(description="The section's prose, as markdown.")
     refs: list[SubmittedRef] = Field(
         default_factory=list,
@@ -160,23 +191,36 @@ class ExplainerSectionSubmission(BaseModel):
     )
 
 
-def make_explainer_section_agent(
+class ExplainerProseSubmission(BaseModel):
+    """Wire format of `submit_explainer_prose`.
+
+    A list because one call writes one *or more* sections — Intuition
+    and Code are merged into a single pass, and a section that came back
+    lands even if its sibling did not.
+    """
+
+    sections: list[SubmittedSection] = Field(
+        default_factory=list,
+        description="One entry per section you were asked to write, in the order you were given them.",
+    )
+
+
+def make_explainer_prose_agent(
     model: str | Model,
     system: str,
     *,
     tools: list | None = None,
-) -> Agent[RepoTools, ExplainerSectionSubmission]:
-    """Agent for one prose section.
+) -> Agent[RepoTools, ExplainerProseSubmission]:
+    """Agent for one prose call.
 
-    `tools` is empty for the seeded passes — their seed is the only code
-    they may speak about — and the recording `RepoTools` surface for
-    Background. `deps_type` is declared either way so one agent shape
-    serves both.
+    `tools` is the recording `RepoTools` surface, or empty when the
+    document's turn budget has nothing left to fund a tool loop with.
+    `deps_type` is declared either way so one agent shape serves both.
     """
     return Agent(
         model=model,
         deps_type=RepoTools,
-        output_type=ToolOutput(ExplainerSectionSubmission, name="submit_explainer_section"),
+        output_type=ToolOutput(ExplainerProseSubmission, name="submit_explainer_prose"),
         instructions=system,
         tools=tools or [],
     )
@@ -223,39 +267,53 @@ def readiness(diff: AnnotatedDiff, refs: list[explainer_schema.Reference]) -> tu
     return annotated, len(pairs)
 
 
-def format_section_prompt(
+def format_prose_prompt(
     diff: AnnotatedDiff,
     doc: explainer_schema.ExplainerDocument,
-    section: explainer_schema.Section,
+    targets: list[explainer_schema.Section],
     *,
     overview_json: str,
 ) -> str:
-    """Assemble one section call's user text.
+    """Assemble one prose call's user text.
 
-    Carries the overview, the skeleton's fixed decisions, the section
-    list (so a cross-reference resolves), the whole file id map, and the
-    established intent of every hunk this section is anchored to.
+    Carries the overview, the skeleton's fixed decisions, the reading
+    Map, the prose already written by the document's other calls, the
+    whole file id map, and — per section this call writes — its brief and
+    the established intent of every hunk it is anchored to.
+
+    Args:
+        diff: The run's annotated diff.
+        doc: The document as persisted.
+        targets: The sections this call writes, in document order.
+        overview_json: The change overview, as the skeleton was seeded
+            with it.
     """
     parts = [
         f"# Change overview\n{overview_json}",
         "",
-        _format_document_context(doc, section),
+        _format_document_context(doc, targets),
         "",
         _format_file_ids(diff),
         "",
-        _format_anchored_code(diff, section.refs),
+        _format_assignments(diff, targets),
         "",
-        f"# Your section: {section.title}\n{EXPLAINER_SECTION_BRIEFS[section.kind]}",
-        "",
-        f"Write the {section.title} section.",
+        _format_closing(targets),
     ]
     return "\n".join(parts) + "\n"
 
 
 def _format_document_context(
     doc: explainer_schema.ExplainerDocument,
-    section: explainer_schema.Section,
+    targets: list[explainer_schema.Section],
 ) -> str:
+    """The skeleton's decisions, the Map, and the prose already written.
+
+    The Map and any finished section go in verbatim rather than as
+    titles: a call that cannot see what the document already says either
+    repeats it or contradicts it, and the merged walkthrough is written
+    against a Background that has usually already run.
+    """
+    mine = {s.id for s in targets}
     lines = ["# The document so far"]
     if doc.verdict_note:
         lines.append(f"Shape of the change: {doc.verdict_note}")
@@ -265,10 +323,52 @@ def _format_document_context(
         lines.append(f"Recurring cast: {', '.join(doc.cast)}")
     lines.append("Sections, in document order:")
     for s in doc.sections:
-        marker = "  <- yours" if s.id == section.id else ""
+        marker = "  <- yours" if s.id in mine else ""
         lines.append(f"  {s.id}  {s.title}  ({s.state}){marker}")
-    lines.append("The Map is written and each other section is written by its own call. Do not reproduce them.")
+    lines.append("Do not reproduce a section that is not yours; build on it.")
+    for s in doc.sections:
+        if s.id in mine:
+            continue
+        written = _written_section(s)
+        if written:
+            lines += ["", written]
     return "\n".join(lines)
+
+
+def _written_section(section: explainer_schema.Section) -> str:
+    """A finished section as the next call should see it, or `""`."""
+    if section.kind == "map":
+        rows = [f"  {row.ref.id}  {row.why}" for row in section.map_rows]
+        return "\n".join([f"## {section.title} (written — the reading order)", *rows]) if rows else ""
+    if section.state != "ready" or not section.body.strip():
+        return ""
+    return f"## {section.title} (written)\n{section.body.strip()}"
+
+
+def _format_assignments(
+    diff: AnnotatedDiff,
+    targets: list[explainer_schema.Section],
+) -> str:
+    """Each section this call writes: its brief and its anchored hunks."""
+    lines = [
+        "# Your sections",
+        f"Write {'these' if len(targets) > 1 else 'this'}, one entry in `sections` each, in this order.",
+    ]
+    for section in targets:
+        lines += [
+            "",
+            f"## `{section.id}` — {section.title}",
+            EXPLAINER_SECTION_BRIEFS[section.kind],
+            "",
+            _format_anchored_code(diff, section.refs),
+        ]
+    return "\n".join(lines)
+
+
+def _format_closing(targets: list[explainer_schema.Section]) -> str:
+    titles = " and ".join(s.title for s in targets)
+    plural = "sections" if len(targets) > 1 else "section"
+    return f"Write the {titles} {plural}."
 
 
 def _format_file_ids(diff: AnnotatedDiff) -> str:
@@ -287,12 +387,12 @@ def _format_anchored_code(diff: AnnotatedDiff, refs: list[explainer_schema.Refer
     pairs = anchored_hunks(diff, refs)
     if not pairs:
         return (
-            "# Anchored code\n"
-            "The skeleton assigned this section no files. Write from the overview and "
-            "the document's decisions alone, and reference nothing you cannot support."
+            "### Anchored code\n"
+            "The skeleton assigned this section no files. Write from the overview, the "
+            "document's decisions and the repository, and reference nothing you cannot support."
         )
     lines = [
-        "# Anchored code",
+        "### Anchored code",
         "The hunks this section is about, with the intent already established for each.",
     ]
     current = -1
@@ -328,22 +428,70 @@ def _hunk_index(hunk_id: str) -> tuple[int, int] | None:
 # --- Apply ----------------------------------------------------------------
 
 
-def apply_section_submission(
+def apply_prose_submission(
+    doc: explainer_schema.ExplainerDocument,
+    targets: list[explainer_schema.Section],
+    submission: ExplainerProseSubmission,
+    *,
+    ids: ViewerIdIndex,
+    sources: list[str] | None = None,
+) -> list[explainer_schema.Section]:
+    """Fold a `submit_explainer_prose` payload into the call's sections.
+
+    One call writes one or more sections, and a section that came back
+    lands whether or not its sibling did: failing both because one is
+    missing throws away prose that was paid for. A target with no entry
+    is left `failed` — retryable, and distinct from `pending`, which
+    would have the viewer buy the same call again unasked.
+
+    Args:
+        doc: The document, mutated in place.
+        targets: The sections this call was asked for, in document order.
+        submission: What came back.
+        ids: The viewer id maps references are validated against.
+        sources: The pass's recorded read list, off the tool surface —
+            never from the submission. Every section the call wrote
+            carries it.
+
+    Returns:
+        The targets that were written, in document order.
+    """
+    by_id = {s.id: s for s in targets}
+    written: list[explainer_schema.Section] = []
+    for entry in submission.sections:
+        section = by_id.get(entry.section)
+        if section is None:
+            log.warning(
+                "explainer: prose call returned a %r section it was not asked for — dropped",
+                entry.section,
+            )
+            continue
+        if section in written:
+            log.warning("explainer: prose call returned %r twice — later entry dropped", entry.section)
+            continue
+        _apply_one(doc, section, entry, ids=ids, sources=sources)
+        written.append(section)
+    for section in targets:
+        if section not in written:
+            log.warning("explainer: prose call returned no %r section — left failed", section.id)
+            section.state = "failed"
+    return written
+
+
+def _apply_one(
     doc: explainer_schema.ExplainerDocument,
     section: explainer_schema.Section,
-    submission: ExplainerSectionSubmission,
+    submission: SubmittedSection,
     *,
     ids: ViewerIdIndex,
     sources: list[str] | None = None,
 ) -> None:
-    """Fold a `submit_explainer_section` payload into `section`, in place.
+    """Fold one submitted section into `section`, in place.
 
     References the model invented are dropped and counted into the
     document's `dropped_refs`. A submission that narrows nothing leaves
     the skeleton's references standing — that is the section's assigned
-    scope, not a missing value. `sources` is the recorded read list for a
-    tool-using pass; it comes from the tool surface, never from the
-    submission.
+    scope, not a missing value.
     """
     kept, dropped = _validate(submission.refs, ids)
     subsections, sub_dropped = _subsections(section, submission.subsections, ids)
@@ -426,6 +574,7 @@ def _subsections(
                 # is neither.
                 id=f"{section.id}-{i}",
                 kind=section.kind,
+                pass_id=section.pass_id,
                 title=sub.title.strip(),
                 state="ready",
                 body=sub.body.strip(),
@@ -451,6 +600,23 @@ def find_section(
     raise SectionNotFound(section_id)
 
 
+def pass_targets(
+    doc: explainer_schema.ExplainerDocument,
+    section_id: str,
+) -> list[explainer_schema.Section]:
+    """Every section written by the call that owns `section_id`.
+
+    A POST names one section; what runs is its pass, and a pass may
+    write more than one. Order is document order, which is the order the
+    call is asked to write them in.
+
+    Raises:
+        SectionNotFound: No fillable section with that id.
+    """
+    addressed = find_section(doc, section_id)
+    return [s for s in doc.sections if s.kind != "map" and s.pass_id == addressed.pass_id]
+
+
 # --- Provenance -----------------------------------------------------------
 
 #: Tool arguments that name a file the pass opened. `grep`'s
@@ -459,7 +625,7 @@ def find_section(
 _PATH_ARGS = ("path",)
 
 #: Where the recorded read list rides in the pass payload. Not a field
-#: of `ExplainerSectionSubmission` — the model must not be able to write
+#: of `SubmittedSection` — the model must not be able to write
 #: its own citation line — but it is merged into the payload before the
 #: cache stores it, so a cached Background keeps its provenance.
 #: `model_validate` ignores it.
@@ -525,7 +691,12 @@ async def generate_explainer_section(
     cache: CacheStore | None = None,
     trace_dir: Path | None = None,
 ) -> explainer_schema.ExplainerDocument:
-    """Fill one section of the run's document and persist the result.
+    """Write the prose for the call that owns `section_id`; persist it.
+
+    The route is per-section and the call may not be: a POST to
+    `intuition` or to `code` runs the one walkthrough pass and lands
+    both. The whole document comes back either way, so a caller that
+    does not know they are merged still sees everything that changed.
 
     Args:
         client: The LLM backend handle. Chooses the guidance carrier.
@@ -538,20 +709,20 @@ async def generate_explainer_section(
         trace_dir: Optional `trace/` directory for the call envelope.
 
     Returns:
-        The whole document, with that section `ready`.
+        The whole document, with the call's sections `ready`.
 
     Raises:
-        ExplainerNotReady: No sidecar, or no document to fill a section
-            of.
+        ExplainerNotReady: No sidecar, or no document to write prose
+            into.
         SectionNotFound: No fillable section with that id.
-        SectionNotReady: The section's anchored hunks are not all
+        SectionNotReady: The call's anchored hunks are not all
             annotated.
-        SectionFailed: The pass raised. The section is persisted
+        SectionFailed: The pass raised. Its sections are persisted
             `failed`; the document rides on the exception.
     """
     diff, doc = _load(run_dir)
-    section = find_section(doc, section_id)
-    annotated, total = readiness(diff, section.refs)
+    targets = pass_targets(doc, section_id)
+    annotated, total = readiness(diff, [ref for s in targets for ref in s.refs])
     if annotated < total:
         raise SectionNotReady(annotated, total)
 
@@ -559,42 +730,51 @@ async def generate_explainer_section(
     # that only want the prompt assembly or the apply step.
     from .hunks import overview_to_prompt_json
 
-    is_background = section.kind == "background"
-    guidance = EXPLAINER_SECTION_GUIDANCE
-    if is_background:
-        guidance = f"{guidance}\n\n{EXPLAINER_BACKGROUND_GUIDANCE}"
-    system_text, user_prefix = carry_guidance(client, guidance)
-    user_text = format_section_prompt(
+    pass_id = targets[0].pass_id
+    budget = max(0, DOCUMENT_TURN_BUDGET - doc.turns_used)
+    with_tools = budget >= MIN_TOOL_TURNS
+    system_text, user_prefix = carry_guidance(client, _guidance(targets, with_tools=with_tools))
+    user_text = format_prose_prompt(
         diff,
         doc,
-        section,
+        targets,
         overview_json=overview_to_prompt_json(diff, include_symbols=False),
     )
     if user_prefix:
         user_text = f"{user_prefix}\n\n{user_text}"
 
+    spend = _Spend()
     try:
-        payload, sources = await _run_section_pass(
+        payload, sources = await _run_prose_pass(
             client,
             run_dir=run_dir,
             diff=diff,
-            section=section,
+            pass_id=pass_id,
+            base_sha=diff.pr.base_sha,
             system_text=system_text,
             user_text=user_text,
             model=model,
+            budget=budget if with_tools else None,
             cache=cache,
             trace_dir=trace_dir,
+            spend=spend,
         )
     except Exception as e:
-        section.state = "failed"
+        for section in targets:
+            section.state = "failed"
+        # Charged even though nothing landed: a loop that died at its
+        # ceiling spent every request it made, and a budget a failing
+        # pass can retry against for free is not a budget.
+        doc.turns_used += spend.requests
         explainer_schema.save_explainer(run_dir, doc)
-        log.exception("explainer section %s failed", section_id)
+        log.exception("explainer pass %s failed", pass_id)
         raise SectionFailed(f"{type(e).__name__}: {e}", doc.model_dump(mode="json")) from e
 
-    apply_section_submission(
+    doc.turns_used += spend.requests
+    apply_prose_submission(
         doc,
-        section,
-        ExplainerSectionSubmission.model_validate(payload),
+        targets,
+        ExplainerProseSubmission.model_validate(payload),
         ids=viewer_id_index(diff),
         sources=sources,
     )
@@ -602,40 +782,78 @@ async def generate_explainer_section(
     return doc
 
 
-async def _run_section_pass(
+def _guidance(targets: list[explainer_schema.Section], *, with_tools: bool) -> str:
+    """The bulk guidance block for this call.
+
+    One shared body so the two passes share a cacheable prefix on SDK
+    backends, plus the blocks that only some calls earn: the tool
+    vocabulary when there is budget to use it, and Background's
+    two-layer / skip-box / terms rules when it is the section being
+    written. A pass with no budget is not told about tools at all —
+    advertising a surface it cannot reach makes the model hedge.
+    """
+    blocks = [EXPLAINER_SECTION_GUIDANCE]
+    if with_tools:
+        blocks.append(EXPLAINER_TOOL_GUIDANCE)
+    if any(s.kind == "background" for s in targets):
+        blocks.append(EXPLAINER_BACKGROUND_GUIDANCE)
+    return "\n\n".join(blocks)
+
+
+class _Spend:
+    """Model requests one pass made, accumulated across grammar retries."""
+
+    def __init__(self) -> None:
+        self.requests = 0
+
+    def charge(self, requests: int) -> None:
+        self.requests += requests
+
+
+async def _run_prose_pass(
     client: Client,
     *,
     run_dir: Path,
     diff: AnnotatedDiff,
-    section: explainer_schema.Section,
+    pass_id: str,
+    base_sha: str,
     system_text: str,
     user_text: str,
     model: str,
+    budget: int | None,
     cache: CacheStore | None,
     trace_dir: Path | None,
+    spend: _Spend,
 ) -> tuple[dict[str, Any], list[str]]:
-    """Drive one section's pass; return `(payload, files_read)`.
+    """Drive one prose call; return `(payload, files_read)`.
 
-    Intuition and Code are one tool-less call keyed on their own prompt.
-    Background gets the repo tools, `BACKGROUND_TURN_CAP` requests to
-    spend, and a cache key of `base_sha` alone — it describes the system
-    before the change, so it is invariant across head movement and across
-    prompt-iteration re-runs on the same branch, which is the whole
-    reason it is a separate call.
+    `budget` is the requests left to the whole document, or None when
+    there are too few to fund a tool loop — in which case the pass runs
+    seeded and tool-less under the backend's own ceiling.
+
+    Background's cache key is `base_sha` alone: it describes the system
+    before the change, so it is invariant across head movement and
+    across prompt-iteration re-runs on the same branch, which is the
+    reason it stays its own call. Every other pass is keyed on its
+    assembled user text, which is strictly narrower than
+    `(base_sha, head_sha)` — the seed carries the hunk intents, and
+    prose written over a different set of them is different prose.
     """
-    trace_path = (trace_dir / f"explainer-{section.id}.json") if trace_dir is not None else None
-    if section.kind != "background":
+    trace_path = (trace_dir / f"explainer-{pass_id}.json") if trace_dir is not None else None
+    cache_inputs: tuple[Any, ...] = (base_sha,) if pass_id == "background" else (user_text,)
+    if budget is None:
         payload = await run_pass(
-            PassMeta(name=f"explainer-{section.kind}", submit_tool="submit_explainer_section"),
+            PassMeta(name=f"explainer-{pass_id}", submit_tool="submit_explainer_prose"),
             client=client,
-            agent=make_explainer_section_agent(client.model, system_text),
+            agent=make_explainer_prose_agent(client.model, system_text),
             user_content=user_text,
             system=system_text,
             model=model,
-            cache_inputs=(user_text,),
+            cache_inputs=cache_inputs,
             cache=cache,
             trace_path=trace_path,
             cache_request={"system": system_text, "user": user_text},
+            on_requests=spend.charge,
         )
         assert payload is not None  # `swallow_errors` is false
         return payload, []
@@ -661,12 +879,12 @@ async def _run_section_pass(
             stack.callback(client.set_mcp_endpoint, None)
         payload = await run_pass(
             PassMeta(
-                name="explainer-background",
-                submit_tool="submit_explainer_section",
+                name=f"explainer-{pass_id}",
+                submit_tool="submit_explainer_prose",
                 tool_names=tuple(fn.__name__ for fn in TOOL_FUNCTIONS),
             ),
             client=client,
-            agent=make_explainer_section_agent(
+            agent=make_explainer_prose_agent(
                 client.model,
                 system_text,
                 tools=_recording_tool_functions(recorder),
@@ -674,16 +892,17 @@ async def _run_section_pass(
             user_content=user_text,
             system=system_text,
             model=model,
-            cache_inputs=(diff.pr.base_sha,),
+            cache_inputs=cache_inputs,
             deps=repo_tools,
-            request_limit=BACKGROUND_TURN_CAP,
+            request_limit=budget,
             cache=cache,
             trace_path=trace_path,
             cache_request={"system": system_text, "user": user_text},
             # The read list is not the model's to submit, but it has to
-            # ride the cache with the prose: a cached Background whose
+            # ride the cache with the prose: a cached section whose
             # citation line came back empty would claim it read nothing.
             payload_extra=lambda: {_SOURCES_KEY: list(recorder.paths)},
+            on_requests=spend.charge,
         )
     assert payload is not None  # `swallow_errors` is false
     return payload, [str(p) for p in payload.get(_SOURCES_KEY, [])]
@@ -712,16 +931,19 @@ def _load(run_dir: Path) -> tuple[AnnotatedDiff, explainer_schema.ExplainerDocum
 
 
 __all__ = [
-    "BACKGROUND_TURN_CAP",
-    "ExplainerSectionSubmission",
+    "DOCUMENT_TURN_BUDGET",
+    "MIN_TOOL_TURNS",
+    "ExplainerProseSubmission",
     "SectionFailed",
     "SectionNotFound",
     "SectionNotReady",
+    "SubmittedSection",
     "anchored_hunks",
-    "apply_section_submission",
+    "apply_prose_submission",
     "find_section",
-    "format_section_prompt",
+    "format_prose_prompt",
     "generate_explainer_section",
-    "make_explainer_section_agent",
+    "make_explainer_prose_agent",
+    "pass_targets",
     "readiness",
 ]
