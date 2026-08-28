@@ -216,7 +216,7 @@ def test_picker_garbage_returns_none() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _pr_opts(tmp_path, *, augment: bool, debug: bool = False):
+def _pr_opts(tmp_path, *, augment: bool, debug: bool = False, explainer_prompt: str | None = None):
     from semantic_code_review.augment.agents import Client
     from semantic_code_review.review.pr_flow import PrFlowOptions
 
@@ -236,6 +236,7 @@ def _pr_opts(tmp_path, *, augment: bool, debug: bool = False):
         client=Client(model="anthropic:claude-opus-4-7"),
         yes=True,
         debug=debug,
+        explainer_prompt=explainer_prompt,
     )
 
 
@@ -305,6 +306,62 @@ def test_both_entry_paths_wire_the_same_server_generators(tmp_path) -> None:
     shared = {"augment", "fold_summary", "console", "explainer", "explainer_section", "skip_globs"}
     assert shared <= served_kwargs(runner.run_review)
     assert shared <= served_kwargs(pr_flow.run_pr_flow)
+
+
+def test_both_entry_paths_hand_the_explainer_its_house_style(tmp_path) -> None:
+    """Same class of guard, one layer down.
+
+    `[augment].explainer_prompt` reaches the passes through the two task
+    builders, not through `serve_review`, so the keyword-set comparison
+    above cannot see it. The builders are shared and `house_style` has no
+    default, which makes an omission a `TypeError` — but a flow could
+    still hardcode `house_style=None` and go quiet. Compare the keywords
+    each flow actually names.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from semantic_code_review.review import pr_flow, runner
+
+    def kwargs_passed_to(fn, callee: str) -> set[str]:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == callee:
+                names |= {kw.arg for kw in node.keywords if kw.arg}
+        return names
+
+    def value_passed_for(fn, callee: str, keyword: str) -> set[str]:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        values: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == callee:
+                for kw in node.keywords:
+                    if kw.arg == keyword:
+                        values.add(ast.unparse(kw.value))
+        return values
+
+    for callee in ("_build_explainer_task", "_build_explainer_section_task"):
+        for flow in (runner.run_review, pr_flow._build_tasks):
+            assert "house_style" in kwargs_passed_to(flow, callee), f"{flow.__name__} → {callee}"
+            assert value_passed_for(flow, callee, "house_style") == {"opts.explainer_prompt"}
+
+
+def test_a_disabled_explainer_gets_no_house_style_either(tmp_path) -> None:
+    """`explainer = false` means no document, so nothing to style. Both
+    generators go unwired together, as they already do."""
+    import dataclasses
+
+    from semantic_code_review.review.pr_flow import _build_tasks
+
+    opts = dataclasses.replace(
+        _pr_opts(tmp_path, augment=True, explainer_prompt="name the dataset"),
+        explainer=False,
+    )
+    tasks = _build_tasks(opts, tmp_path)
+    assert tasks.explainer is None
+    assert tasks.explainer_section is None
 
 
 def test_build_tasks_returns_an_empty_bundle_without_augment(tmp_path) -> None:

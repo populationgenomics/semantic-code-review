@@ -134,6 +134,13 @@ class ReviewOptions:
     # who benefit most are the ones who never configured it, and
     # generation is press-triggered so default-on costs nothing.
     explainer: bool = True
+    # House style for the explainer document: inline
+    # `[augment].explainer_prompt`, or the file named by
+    # `--explainer-prompt`. Appended to the guidance of the three
+    # explainer passes and nothing else — the per-hunk pass has no
+    # channel for it, so the intents a document's claims are checked
+    # against stay hermetic.
+    explainer_prompt: str | None = None
     show_progress: bool = True
     # `--debug` / SCR_DEBUG: surface each CLI-backend subprocess spawn (raw
     # argv + envelope) in the viewer's debug drawer.
@@ -194,12 +201,14 @@ def run_review(opts: ReviewOptions) -> int:
                 model=opts.model,
                 cache=cache,
                 run_dir=run_dir,
+                house_style=opts.explainer_prompt,
             )
             explainer_section_task = _build_explainer_section_task(
                 client=opts.client,
                 model=opts.model,
                 cache=cache,
                 run_dir=run_dir,
+                house_style=opts.explainer_prompt,
             )
 
         # The console reuses the augment backend — SDK backends stream
@@ -440,11 +449,19 @@ def _build_explainer_task(
     model: str,
     cache: CacheStore | None,
     run_dir: Path,
+    house_style: str | None,
 ) -> ExplainerCallable:
     """Construct the change-explainer generator ``serve_review`` installs
     once augmentation completes. Captures the LLM backend + cache +
     run_dir so the server module stays independent of the augment-side
     machinery.
+
+    ``house_style`` is the reviewed repo's ``[augment].explainer_prompt``
+    text (or ``--explainer-prompt``), appended to the explainer passes'
+    guidance. It has no default: ``scr review`` and ``scr pr`` build
+    their bundles independently, and that is how the per-section
+    generator came to be missing from the PR path — an omission here is
+    a ``TypeError`` rather than a silently unstyled document.
     """
     # Lazy import: keeps pydantic-ai off the `--no-augment` path.
     from ..augment.explainer import document_to_payload, generate_explainer_skeleton
@@ -458,6 +475,7 @@ def _build_explainer_task(
             client,
             run_dir=run_dir,
             model=model,
+            house_style=house_style,
             cache=cache,
             trace_dir=run_dir / "trace",
         )
@@ -472,10 +490,12 @@ def _build_explainer_section_task(
     model: str,
     cache: CacheStore | None,
     run_dir: Path,
+    house_style: str | None,
 ) -> ExplainerSectionCallable:
     """Construct the per-section prose generator ``serve_review``
-    installs alongside the skeleton one. Same capture, same lazy import;
-    the section id is the only per-call input.
+    installs alongside the skeleton one. Same capture, same lazy import,
+    same no-default ``house_style``; the section id is the only
+    per-call input.
     """
     # Lazy import: keeps pydantic-ai off the `--no-augment` path.
     from ..augment.explainer import document_to_payload
@@ -490,6 +510,7 @@ def _build_explainer_section_task(
             run_dir=run_dir,
             section_id=section_id,
             model=model,
+            house_style=house_style,
             cache=cache,
             trace_dir=run_dir / "trace",
         )

@@ -260,3 +260,77 @@ def test_a_skeleton_document_round_trips_through_disk(tmp_path, diff: AnnotatedD
     loaded = explainer_schema.load_explainer(tmp_path, base_sha="base1234", head_sha="head5678")
     assert loaded == doc
     assert explainer.document_to_payload(doc)["sections"][0]["map_rows"][0]["ref"]["kind"] == "file"
+
+
+# --- House style ---------------------------------------------------------
+
+
+def test_the_house_style_block_says_the_built_in_rules_win() -> None:
+    """It is the reviewed repo's preference, not an override.
+
+    The structural rules are enforced downstream of the prompt — the SVG
+    element/class allowlists in `explainer_figures.py` and reference
+    validation by membership — so a note asking for a hardcoded fill or
+    an invented reference loses either way. The framing is so the model
+    does not spend the call deciding which text governs.
+    """
+    from semantic_code_review.augment import prompts
+
+    block = prompts.format_house_style("write every section as a limerick")
+    assert "write every section as a limerick" in block
+    assert "the rules above win" in block
+    # Delimited and attributed: the note ships in the reviewed repo's
+    # `.scr/config.toml`, which whoever wrote the diff may also have written.
+    assert "<<<house-style>>>" in block
+    assert "<<<end house-style>>>" in block
+
+
+@pytest.mark.parametrize("subprocess_backend", [False, True])
+def test_editing_the_house_style_re_runs_the_skeleton(diff: AnnotatedDiff, tmp_path, subprocess_backend: bool) -> None:
+    """The note is in the skeleton's cache key on both carriers.
+
+    `run_pass` folds the *system* text into the key, and on a subprocess
+    backend the guidance is not in the system text — `carry_guidance`
+    puts it on stdin, so it arrives in the user text instead. Both are in
+    the key, which is why the note needs no key of its own; an author
+    iterating on it must not be served the previous document.
+    """
+    import asyncio
+
+    from pydantic_ai.models.test import TestModel
+
+    from semantic_code_review.augment.agents import Client
+    from semantic_code_review.cache.store import CacheStore
+    from semantic_code_review.format.sidecar import dump_sidecar
+
+    dump_sidecar(diff, tmp_path / "augmented.scr.json")
+    cache_root = tmp_path / "cache"
+    cache = CacheStore(root=cache_root, prompt_version="test")
+    args = {"verdict": "narrate", "verdict_note": "a cursor threaded from the proto."}
+
+    def run(house_style: str | None) -> None:
+        client = Client(
+            model=TestModel(custom_output_args=args),
+            is_subprocess_backend=subprocess_backend,
+        )
+        asyncio.run(
+            explainer.generate_explainer_skeleton(
+                client,
+                run_dir=tmp_path,
+                model="m",
+                house_style=house_style,
+                cache=cache,
+            )
+        )
+
+    def entries() -> int:
+        return len(list(cache_root.rglob("*.json")))
+
+    run(None)
+    assert entries() == 1
+    run("terse, and name the dataset")
+    assert entries() == 2
+    run("terse, and name the dataset")
+    assert entries() == 2  # same note, same key — a cache worth having
+    run("terse, and always name the dataset")
+    assert entries() == 3

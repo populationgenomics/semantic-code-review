@@ -81,6 +81,11 @@ class PrFlowOptions:
     skip_globs: tuple[str, ...] = ()
     # Change explainer (ADR 0007); opt-out via `[augment].explainer = false`.
     explainer: bool = True
+    # House style for the explainer document: inline
+    # `[augment].explainer_prompt`, or the file named by
+    # `--explainer-prompt`. Reaches the three explainer passes only; the
+    # per-hunk pass has no channel for it.
+    explainer_prompt: str | None = None
 
 
 def run_pr_flow(opts: PrFlowOptions) -> int:
@@ -308,9 +313,19 @@ def _build_tasks(opts: PrFlowOptions, run_dir: Path) -> _ServerTasks:
     explainer_task = None
     explainer_section_task = None
     if opts.explainer:
-        explainer_task = _build_explainer_task(client=opts.client, model=opts.model, cache=cache, run_dir=run_dir)
+        explainer_task = _build_explainer_task(
+            client=opts.client,
+            model=opts.model,
+            cache=cache,
+            run_dir=run_dir,
+            house_style=opts.explainer_prompt,
+        )
         explainer_section_task = _build_explainer_section_task(
-            client=opts.client, model=opts.model, cache=cache, run_dir=run_dir
+            client=opts.client,
+            model=opts.model,
+            cache=cache,
+            run_dir=run_dir,
+            house_style=opts.explainer_prompt,
         )
     return _ServerTasks(
         augment=augment_task,

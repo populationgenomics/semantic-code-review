@@ -57,6 +57,7 @@ from .prompts import (
     EXPLAINER_SECTION_BRIEFS,
     EXPLAINER_SECTION_GUIDANCE,
     EXPLAINER_TOOL_GUIDANCE,
+    format_house_style,
 )
 from .schemas import AnnotatedDiff
 from .tools import TOOL_FUNCTIONS, RepoTools
@@ -764,6 +765,7 @@ async def generate_explainer_section(
     run_dir: Path,
     section_id: str,
     model: str,
+    house_style: str | None,
     cache: CacheStore | None = None,
     trace_dir: Path | None = None,
 ) -> explainer_schema.ExplainerDocument:
@@ -781,6 +783,8 @@ async def generate_explainer_section(
         section_id: A fillable section id (`background`, `intuition`,
             `code`).
         model: The user-facing model string, for the cache key.
+        house_style: The reviewed repo's house-style note, or None. No
+            default, on the same terms as the skeleton's.
         cache: Optional response cache.
         trace_dir: Optional `trace/` directory for the call envelope.
 
@@ -811,7 +815,7 @@ async def generate_explainer_section(
     pass_id = targets[0].pass_id
     budget = max(0, DOCUMENT_TURN_BUDGET - doc.turns_used)
     with_tools = budget >= MIN_TOOL_TURNS
-    guidance = _guidance(doc, targets, with_tools=with_tools)
+    guidance = _guidance(doc, targets, with_tools=with_tools, house_style=house_style)
     system_text, user_prefix = carry_guidance(client, guidance)
     user_text = format_prose_prompt(
         diff,
@@ -869,13 +873,15 @@ def _guidance(
     targets: list[explainer_schema.Section],
     *,
     with_tools: bool,
+    house_style: str | None,
 ) -> str:
     """The bulk guidance block for this call.
 
     One shared body so the two passes share a cacheable prefix on SDK
     backends, plus the blocks that only some calls earn: the tool
     vocabulary when there is budget to use it, the drawing vocabulary
-    and this document's figure family, and Background's two-layer /
+    and this document's figure family, the reviewed repo's house-style
+    note when it configured one, and Background's two-layer /
     skip-box / terms rules when it is the section being written. A pass
     with no budget is not told about tools at all — advertising a
     surface it cannot reach makes the model hedge, which is the same
@@ -884,6 +890,9 @@ def _guidance(
 
     The document-wide blocks come before the section-specific one, so
     the two passes of one document share as long a prefix as they can.
+    The house-style note is document-wide, so it sits with them rather
+    than last; its standing does not depend on where it lands, because
+    `format_house_style` states it outright.
     """
     blocks = [EXPLAINER_SECTION_GUIDANCE]
     if with_tools:
@@ -891,6 +900,8 @@ def _guidance(
     figures = prose_figure_guidance(doc)
     if figures:
         blocks.append(figures)
+    if house_style is not None:
+        blocks.append(format_house_style(house_style))
     if any(s.kind == "background" for s in targets):
         blocks.append(EXPLAINER_BACKGROUND_GUIDANCE)
     return "\n\n".join(blocks)
@@ -946,6 +957,10 @@ async def _run_prose_pass(
     reviewer iterating on the prompt is deliberately changing. The
     walkthrough pass keys on its user text, which already carries the
     guidance, so it was never affected.
+
+    The reviewed repo's house-style note is part of `guidance`, so
+    changing it moves Background's key for the same reason and needs no
+    key of its own.
     """
     trace_path = (trace_dir / f"explainer-{pass_id}.json") if trace_dir is not None else None
     cache_inputs: tuple[Any, ...] = (base_sha, guidance) if pass_id == "background" else (user_text,)

@@ -355,8 +355,10 @@ def test_a_call_with_tools_is_told_about_them_and_one_without_is_not() -> None:
 
     doc = _doc()
     walkthrough = [explainer_section.find_section(doc, k) for k in ("intuition", "code")]
-    assert EXPLAINER_TOOL_GUIDANCE in explainer_section._guidance(doc, walkthrough, with_tools=True)
-    assert EXPLAINER_TOOL_GUIDANCE not in explainer_section._guidance(doc, walkthrough, with_tools=False)
+    assert EXPLAINER_TOOL_GUIDANCE in explainer_section._guidance(doc, walkthrough, with_tools=True, house_style=None)
+    assert EXPLAINER_TOOL_GUIDANCE not in explainer_section._guidance(
+        doc, walkthrough, with_tools=False, house_style=None
+    )
 
 
 def test_only_the_background_call_carries_the_background_block() -> None:
@@ -365,8 +367,12 @@ def test_only_the_background_call_carries_the_background_block() -> None:
     doc = _doc()
     background = [explainer_section.find_section(doc, "background")]
     walkthrough = [explainer_section.find_section(doc, k) for k in ("intuition", "code")]
-    assert EXPLAINER_BACKGROUND_GUIDANCE in explainer_section._guidance(doc, background, with_tools=True)
-    assert EXPLAINER_BACKGROUND_GUIDANCE not in explainer_section._guidance(doc, walkthrough, with_tools=True)
+    assert EXPLAINER_BACKGROUND_GUIDANCE in explainer_section._guidance(
+        doc, background, with_tools=True, house_style=None
+    )
+    assert EXPLAINER_BACKGROUND_GUIDANCE not in explainer_section._guidance(
+        doc, walkthrough, with_tools=True, house_style=None
+    )
 
 
 def test_the_read_recorder_keeps_first_read_order_without_duplicates() -> None:
@@ -481,6 +487,7 @@ def test_a_prose_call_is_told_the_documents_figure_family(doc) -> None:
         doc,
         [explainer_section.find_section(doc, k) for k in ("intuition", "code")],
         with_tools=True,
+        house_style=None,
     )
     assert EXPLAINER_FIGURE_GUIDANCE in guidance
     assert "boxes are services" in guidance
@@ -494,7 +501,9 @@ def test_a_document_with_no_figure_family_is_told_nothing_about_figures() -> Non
     from semantic_code_review.augment.prompts import EXPLAINER_FIGURE_GUIDANCE
 
     doc = _doc(figure_family="")
-    guidance = explainer_section._guidance(doc, [explainer_section.find_section(doc, "code")], with_tools=True)
+    guidance = explainer_section._guidance(
+        doc, [explainer_section.find_section(doc, "code")], with_tools=True, house_style=None
+    )
     assert EXPLAINER_FIGURE_GUIDANCE not in guidance
 
 
@@ -585,6 +594,7 @@ def test_a_submitted_figure_reaches_the_persisted_document_sanitised(tmp_path) -
             run_dir=tmp_path,
             section_id="intuition",
             model="m",
+            house_style=None,
         )
     )
 
@@ -835,3 +845,128 @@ def test_background_cache_key_moves_when_the_guidance_does() -> None:
     # And the property the key exists for still holds: the same guidance at
     # the same base SHA is the same key, whatever the head is doing.
     assert before == store.key("explainer-background", "m", role, base, "guidance v1")
+
+
+# --- House style ----------------------------------------------------------
+
+
+def test_every_prose_pass_is_told_the_house_style(doc) -> None:
+    """One note for the document, so both calls write to the same one."""
+    from semantic_code_review.augment.prompts import format_house_style
+
+    block = format_house_style("name the dataset in every example")
+    background = [explainer_section.find_section(doc, "background")]
+    walkthrough = [explainer_section.find_section(doc, k) for k in ("intuition", "code")]
+    for targets in (background, walkthrough):
+        with_note = explainer_section._guidance(
+            doc, targets, with_tools=True, house_style="name the dataset in every example"
+        )
+        assert block in with_note
+        assert block not in explainer_section._guidance(doc, targets, with_tools=True, house_style=None)
+
+
+def test_the_house_style_sits_with_the_document_wide_blocks(doc) -> None:
+    """It is the same for both passes, so it belongs in the prefix they
+    share rather than after Background's own block, which only one of
+    them gets. Its standing does not depend on where it lands —
+    `format_house_style` states that outright."""
+    from semantic_code_review.augment.prompts import (
+        EXPLAINER_BACKGROUND_GUIDANCE,
+        format_house_style,
+    )
+
+    guidance = explainer_section._guidance(
+        doc,
+        [explainer_section.find_section(doc, "background")],
+        with_tools=True,
+        house_style="terse",
+    )
+    assert guidance.index(format_house_style("terse")) < guidance.index(EXPLAINER_BACKGROUND_GUIDANCE)
+
+
+def test_editing_the_house_style_re_runs_the_background_pass(tmp_path) -> None:
+    """Background keys on `(base_sha, guidance)` rather than on its user
+    text, so it survives a moving head — the property that also made it
+    immune to a prompt edit until `guidance` joined the key. The house
+    style rides `guidance`; this is what keeps that true.
+    """
+    import asyncio
+
+    from pydantic_ai.models.test import TestModel
+
+    from semantic_code_review.cache.store import CacheStore
+    from semantic_code_review.format.sidecar import dump_sidecar
+
+    dump_sidecar(_diff(), tmp_path / "augmented.scr.json")
+    cache_root = tmp_path / "cache"
+    cache = CacheStore(root=cache_root, prompt_version="test")
+    args = {"sections": [{"section": "background", "body": "the system before"}]}
+
+    def run(house_style: str | None) -> None:
+        # A fresh document per run: the pass flips its section to `ready`
+        # and charges the budget, and neither is the input under test.
+        explainer_schema.save_explainer(tmp_path, _doc())
+        client = Client(model=TestModel(custom_output_args=args, call_tools=[]))
+        asyncio.run(
+            explainer_section.generate_explainer_section(
+                client,
+                run_dir=tmp_path,
+                section_id="background",
+                model="m",
+                house_style=house_style,
+                cache=cache,
+            )
+        )
+
+    def entries() -> int:
+        return len(list(cache_root.rglob("*.json")))
+
+    run(None)
+    assert entries() == 1
+    run("terse, and name the dataset")
+    assert entries() == 2
+    run("terse, and name the dataset")
+    assert entries() == 2
+    run("terse, and always name the dataset")
+    assert entries() == 3
+
+
+def test_editing_the_house_style_re_runs_the_walkthrough_pass(tmp_path) -> None:
+    """The walkthrough keys on its assembled user text. On an SDK backend
+    that text does not carry the guidance — the system prompt does, and
+    `run_pass` folds that in too."""
+    import asyncio
+
+    from pydantic_ai.models.test import TestModel
+
+    from semantic_code_review.cache.store import CacheStore
+    from semantic_code_review.format.sidecar import dump_sidecar
+
+    dump_sidecar(_diff(), tmp_path / "augmented.scr.json")
+    cache_root = tmp_path / "cache"
+    cache = CacheStore(root=cache_root, prompt_version="test")
+    args = {"sections": [{"section": "intuition", "body": "a cursor rides the request"}]}
+
+    def run(house_style: str | None) -> None:
+        explainer_schema.save_explainer(tmp_path, _doc())
+        client = Client(model=TestModel(custom_output_args=args, call_tools=[]))
+        asyncio.run(
+            explainer_section.generate_explainer_section(
+                client,
+                run_dir=tmp_path,
+                section_id="intuition",
+                model="m",
+                house_style=house_style,
+                cache=cache,
+            )
+        )
+
+    def entries() -> int:
+        return len(list(cache_root.rglob("*.json")))
+
+    run(None)
+    assert entries() == 1
+    run("terse, and name the dataset")
+    assert entries() == 2
+    run("terse, and name the dataset")
+    assert entries() == 2

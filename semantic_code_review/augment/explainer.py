@@ -329,6 +329,7 @@ async def generate_explainer_skeleton(
     *,
     run_dir: Path,
     model: str,
+    house_style: str | None,
     cache: CacheStore | None = None,
     trace_dir: Path | None = None,
 ) -> explainer_schema.ExplainerDocument:
@@ -338,6 +339,11 @@ async def generate_explainer_skeleton(
         client: The LLM backend handle. Chooses the guidance carrier.
         run_dir: The run directory; must already hold `augmented.scr.json`.
         model: The user-facing model string, for the cache key.
+        house_style: The reviewed repo's house-style note, or None. No
+            default: a repo that configured none is an ordinary state,
+            but it is the caller's to state — the wiring bug this
+            catches is a flow that never threads the config field
+            through at all.
         cache: Optional response cache.
         trace_dir: Optional `trace/` directory for the call envelope.
 
@@ -358,7 +364,10 @@ async def generate_explainer_skeleton(
     from .hunks import overview_to_prompt_json
 
     diff = load_sidecar(sidecar)
-    system_text, user_prefix = carry_guidance(client, EXPLAINER_SKELETON_GUIDANCE)
+    guidance = EXPLAINER_SKELETON_GUIDANCE
+    if house_style is not None:
+        guidance = f"{guidance}\n\n{prompts.format_house_style(house_style)}"
+    system_text, user_prefix = carry_guidance(client, guidance)
     user_text = format_skeleton_prompt(
         diff,
         overview_json=overview_to_prompt_json(diff, include_symbols=False),
