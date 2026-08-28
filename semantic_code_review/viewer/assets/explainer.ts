@@ -124,6 +124,24 @@ async function load(): Promise<void> {
 
 /** Ask the server to generate the skeleton. No-op when one is already
  *  in hand or a generation is in flight — the call is not free. */
+/** Queue every prose section that has not been written.
+ *
+ *  Entering overview mode is the decision to spend; asking again per
+ *  section asks twice for one choice. The server runs one pass at a
+ *  time, so a run of three costs the same wall-clock whether the
+ *  reviewer clicks them or not — the difference is only whether they
+ *  have to sit and watch for each one to finish before starting the
+ *  next.
+ *
+ *  Nothing is queued under `not_warranted`: the skeleton's whole answer
+ *  is that prose would not beat reading the hunks. */
+function generateAllPending(): void {
+  if (_doc === null || _doc.verdict !== "narrate") return;
+  for (const s of _doc.sections) {
+    if (s.kind !== "map" && s.state === "pending") generateSection(s.id);
+  }
+}
+
 async function generate(): Promise<void> {
   if (_doc !== null || _phase === "loading") return;
   _phase = "loading";
@@ -138,6 +156,7 @@ async function generate(): Promise<void> {
     const payload = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(payload.error || `POST /explainer/skeleton -> ${r.status}`);
     _adopt(payload as ExplainerDocument);
+    generateAllPending();
   } catch (e) {
     _phase = "error";
     _error = String(e instanceof Error ? e.message : e);
@@ -268,9 +287,8 @@ function setActiveSection(id: string): void {
   try {
     localStorage.setItem(_lsKey, `explainer:${id}`);
   } catch (_) { /* ignore */ }
-  // Opening a section that has never been written is the press that
-  // pays for it. Nothing generates on load: the pane stacks every
-  // section, so writing on render would buy all three unasked.
+  // Still queues on selection, for the section that failed or that a
+  // reviewer reached before the auto-queue drained.
   const section = _findSection(id);
   if (section && section.state === "pending") generateSection(id);
   const heading = document.getElementById(_headingId(id));
@@ -718,6 +736,7 @@ export const Explainer = {
   load,
   generate,
   generateSection,
+  generateAllPending,
   onEvent,
   sections,
   activeSectionId,

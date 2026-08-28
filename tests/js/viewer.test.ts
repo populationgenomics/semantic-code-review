@@ -1972,9 +1972,12 @@ describe("overview mode (ADR 0007)", () => {
     verdict_note: "a cursor threaded through",
     figure_family: "", cast: [], toy_data: false, dropped_refs: 0,
     sections: [
+      // `ready`, so entering the mode does not auto-queue a prose call
+      // these cases have no stubbed response for. The auto-queue has its
+      // own case below.
       {
         id: "background", kind: "background", title: "Background",
-        state: "pending", body: "", refs: [], map_rows: [], subsections: [],
+        state: "ready", body: "Ground.", refs: [], map_rows: [], subsections: [],
       },
       {
         id: "map", kind: "map", title: "Map", state: "ready", body: "",
@@ -2019,6 +2022,21 @@ describe("overview mode (ADR 0007)", () => {
     expect(rows[0].querySelector(".explainer-ref")!.textContent).toBe("a.py");
     // The diff is gone from the pane; overview mode replaces it.
     expect(document.querySelector("#app .file")).toBeNull();
+  });
+
+  test("entering the mode queues every section the skeleton left pending", async () => {
+    // Pressing Overview is the decision to spend; a button per section
+    // asks twice for one choice.
+    const pending = {
+      ...DOC,
+      sections: DOC.sections.map((s) =>
+        s.kind === "map" ? s : { ...s, state: "pending", body: "" }),
+    };
+    await bootWithExplainer({ status: 200, body: pending }, { pending: false });
+    queueFetchResponse({ status: 200, body: pending });
+    (document.getElementById("overview-btn") as HTMLButtonElement).click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(fetchCalls.some((c) => c.url === "/explainer/section/background")).toBe(true);
   });
 
   test("the sidebar swaps to the section tree and back", async () => {

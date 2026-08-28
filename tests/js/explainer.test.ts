@@ -142,8 +142,9 @@ describe("document acquisition", () => {
     expect(calls[0].url).toBe("/explainer/skeleton");
     expect(calls[0].init?.method).toBe("POST");
     expect(Explainer.hasDocument()).toBe(true);
-    // Once for the loading state, once for the result.
-    expect(repaints).toBe(2);
+    // Loading, the result, then one per section the skeleton left
+    // pending as the auto-queue takes them.
+    expect(repaints).toBeGreaterThanOrEqual(2);
   });
 
   test("a failed generation shows the server's reason and offers a retry", async () => {

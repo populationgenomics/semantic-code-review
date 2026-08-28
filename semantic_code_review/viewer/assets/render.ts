@@ -1097,8 +1097,13 @@ function _wireInputs(): void {
       const entering = _state.mode !== "overview";
       setMode(entering ? "overview" : "diff");
       // Generating is the press's whole point when nothing exists yet;
-      // the pane shows progress while the call is in flight.
-      if (entering && !Explainer.hasDocument()) void Explainer.generate();
+      // the pane shows progress while the call is in flight. With a
+      // document already in hand, the sections it left pending are
+      // queued instead — entering the mode is the decision to spend,
+      // and a second press per section asks twice for one choice.
+      if (!entering) return;
+      if (Explainer.hasDocument()) Explainer.generateAllPending();
+      else void Explainer.generate();
     });
   }
   const reset = document.getElementById("reset-btn");
