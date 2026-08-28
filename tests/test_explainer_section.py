@@ -811,3 +811,27 @@ def test_a_cached_pass_spends_nothing_against_the_budget(tmp_path) -> None:
     asyncio.run(once())
     assert first > 0
     assert sum(spent) == first
+
+
+def test_background_cache_key_moves_when_the_guidance_does() -> None:
+    """Editing the prompt must invalidate Background, on every backend.
+
+    `run_pass` folds the *system* text into the key, but on a subprocess
+    backend the bulk guidance is not in the system text — `carry_guidance`
+    puts it on stdin. Background keys on `base_sha` rather than its user
+    text so it outlives a moving head, which left the key
+    `(name, model, short-role, base_sha)`: editing the prompt served the
+    previous prose forever.
+    """
+    from semantic_code_review.cache.store import CacheStore
+
+    store = CacheStore(prompt_version="test")
+    role = "short fixed role"
+    base = "base1234"
+    before = store.key("explainer-background", "m", role, base, "guidance v1")
+    after = store.key("explainer-background", "m", role, base, "guidance v2")
+    assert before != after
+
+    # And the property the key exists for still holds: the same guidance at
+    # the same base SHA is the same key, whatever the head is doing.
+    assert before == store.key("explainer-background", "m", role, base, "guidance v1")

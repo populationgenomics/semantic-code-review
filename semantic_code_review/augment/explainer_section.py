@@ -811,7 +811,8 @@ async def generate_explainer_section(
     pass_id = targets[0].pass_id
     budget = max(0, DOCUMENT_TURN_BUDGET - doc.turns_used)
     with_tools = budget >= MIN_TOOL_TURNS
-    system_text, user_prefix = carry_guidance(client, _guidance(doc, targets, with_tools=with_tools))
+    guidance = _guidance(doc, targets, with_tools=with_tools)
+    system_text, user_prefix = carry_guidance(client, guidance)
     user_text = format_prose_prompt(
         diff,
         doc,
@@ -829,6 +830,7 @@ async def generate_explainer_section(
             diff=diff,
             pass_id=pass_id,
             base_sha=diff.pr.base_sha,
+            guidance=guidance,
             system_text=system_text,
             user_text=user_text,
             model=model,
@@ -911,6 +913,7 @@ async def _run_prose_pass(
     diff: AnnotatedDiff,
     pass_id: str,
     base_sha: str,
+    guidance: str,
     system_text: str,
     user_text: str,
     model: str,
@@ -925,16 +928,27 @@ async def _run_prose_pass(
     there are too few to fund a tool loop — in which case the pass runs
     seeded and tool-less under the backend's own ceiling.
 
-    Background's cache key is `base_sha` alone: it describes the system
-    before the change, so it is invariant across head movement and
-    across prompt-iteration re-runs on the same branch, which is the
-    reason it stays its own call. Every other pass is keyed on its
-    assembled user text, which is strictly narrower than
-    `(base_sha, head_sha)` — the seed carries the hunk intents, and
-    prose written over a different set of them is different prose.
+    Background is keyed on `(base_sha, guidance)`: it describes the system
+    before the change, so it is invariant across head movement and across
+    prompt-iteration re-runs on the same branch, which is the reason it
+    stays its own call. Every other pass is keyed on its assembled user
+    text, which is strictly narrower than `(base_sha, head_sha)` — the
+    seed carries the hunk intents, and prose written over a different set
+    of them is different prose.
+
+    `guidance` is in Background's key because `run_pass` folds in the
+    *system* text, and on a subprocess backend the bulk guidance is not
+    in the system text — `carry_guidance` puts it on stdin, where argv
+    cannot take it. Without it the key is `(name, model, short-role,
+    base_sha)`, so editing the prompt on the CLI path served the previous
+    prose forever: the property that makes this cache worth having, that
+    it outlives a moving head, also made it immune to the one input a
+    reviewer iterating on the prompt is deliberately changing. The
+    walkthrough pass keys on its user text, which already carries the
+    guidance, so it was never affected.
     """
     trace_path = (trace_dir / f"explainer-{pass_id}.json") if trace_dir is not None else None
-    cache_inputs: tuple[Any, ...] = (base_sha,) if pass_id == "background" else (user_text,)
+    cache_inputs: tuple[Any, ...] = (base_sha, guidance) if pass_id == "background" else (user_text,)
     if budget is None:
         payload = await run_pass(
             PassMeta(name=f"explainer-{pass_id}", submit_tool="submit_explainer_prose"),
