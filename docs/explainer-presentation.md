@@ -90,8 +90,12 @@ document; an unresolvable target drops the box.
 
 See [Figures](#figures). `alt` is required and becomes the SVG's
 `aria-label`; it is also what renders in place of a figure that lost
-everything. `stripped` is the sanitiser's, not the model's — it is set
-on the way to disk and rendered under the caption.
+everything. `caption` is inline markdown, as every short string the
+model writes is. `stripped` is the sanitiser's, not the model's — it is
+set on the way to disk and rendered under the caption. Each prose call
+rewrites the whole document, so it is the highest count any write
+recorded: the second pass over an already-clean figure finds nothing to
+remove, and that is not the figure losing nothing.
 
 ### Term list
 

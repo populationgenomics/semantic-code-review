@@ -269,9 +269,7 @@ is the failure mode the cap exists to prevent.
   alongside the skip box and term lists, but no slice claims them; they
   belong with slice 4's affordance styles.
 
-## Slice 4 — Intuition and figures
-
-## Slice 4 — Intuition and figures ✅ presentation done
+## Slice 4 — Intuition and figures ✅ done
 
 - **Presentation.** viewer.css gains the reading type scale, the
   affordance styles, the diagram class vocabulary and the added tokens.
@@ -289,8 +287,6 @@ included.
 **Pitfalls.** Sanitisation runs server-side *and* at render. A figure
 that loses content is kept with its strip count recorded, not dropped
 silently.
-
-## Slice 5 — Console reach ✅ done
 
 **As built**, where it differs from the plan above:
 
@@ -320,24 +316,39 @@ silently.
 - **The affordance styles landed without their slots.** Callout, skip
   box and term list are styled here because the stylesheet is one half
   of the presentation contract; their schema fields and rendering are
-  slice 3's, which is where the prompt learns to emit them. Only the
-  figure slot exists on `Section` today.
-- **`prose_figure_guidance` is the threading seam, not a call site.**
-  The per-section route is slice 2's, so slice 4 lands the composed
-  guidance (vocabulary + the skeleton's family and cast) and the
-  generalised `carry_guidance(client, guidance)`; slice 2 calls them.
-  `format_figure_context` raises on an empty figure family — a caller
-  with none should omit the figure guidance rather than let each
-  section invent its own language.
-- **Prose is still plain text.** Markdown for section bodies, callout
-  bodies, captions and Map `why` cells is slice 2's `markdown-it` +
-  DOMPurify path; the type scale here is ready for it (`.explainer-body`
-  styles headings, lists, tables and code blocks).
+  slice 3's, which is where the prompt learns to emit them.
 - **The toy-data notice is its own footer line**, not another item in
   the coverage stats: it qualifies what was read rather than measuring
   it.
+- **The submission end was joined later.** Slices 2–4 were built in
+  parallel worktrees, and what merged had a figure sanitiser, a renderer
+  and a guidance block with no way for a model to emit a figure:
+  `prose_figure_guidance` had no caller and `SubmittedSection` had no
+  `figures`. A run over `themis-internal#448` fixed a family and an
+  eight-name cast and wrote four sections with no figures. What closed
+  it:
+  - `SubmittedFigure` (`svg`, `alt` required, `caption`), on both a
+    section and a subsection. `stripped` is not a submission field.
+  - `prose_figure_guidance(doc)` in the prose call's guidance, ahead of
+    the Background-only block so both passes of one document share as
+    long a cacheable prefix as they can.
+  - A figure submitted by a call that was given no figure rules is
+    dropped, as a skip box outside Background is: with no family it was
+    drawn in no vocabulary. `explainer_schema.figures_fixed` is the one
+    predicate both halves ask.
+  - The prose pass returns the document `save_explainer` wrote. It was
+    returning the one in hand, so the SSE frame carried the model's own
+    SVG with `stripped` still zero — the wire and the disk disagreeing
+    about what the reader is looking at.
+  - A figure's strip count is the highest any write recorded. Every
+    prose call rewrites the whole document, so the second one
+    re-sanitised the first one's figures, found nothing left to remove
+    and recorded that zero over the count. The id prefix had the same
+    shape of problem, and is now applied once rather than per write.
+  - A caption renders as inline markdown, and a subsection's figures
+    render at all.
 
-## Slice 5 — Console reach
+## Slice 5 — Console reach ✅ done
 
 - **Seed.** The console's first-turn seed grows the bounded section list
   (titles and references). Bodies come through a new `section(id)`
