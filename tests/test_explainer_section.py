@@ -355,8 +355,8 @@ def test_a_call_with_tools_is_told_about_them_and_one_without_is_not() -> None:
 
     doc = _doc()
     walkthrough = [explainer_section.find_section(doc, k) for k in ("intuition", "code")]
-    assert EXPLAINER_TOOL_GUIDANCE in explainer_section._guidance(walkthrough, with_tools=True)
-    assert EXPLAINER_TOOL_GUIDANCE not in explainer_section._guidance(walkthrough, with_tools=False)
+    assert EXPLAINER_TOOL_GUIDANCE in explainer_section._guidance(doc, walkthrough, with_tools=True)
+    assert EXPLAINER_TOOL_GUIDANCE not in explainer_section._guidance(doc, walkthrough, with_tools=False)
 
 
 def test_only_the_background_call_carries_the_background_block() -> None:
@@ -365,8 +365,8 @@ def test_only_the_background_call_carries_the_background_block() -> None:
     doc = _doc()
     background = [explainer_section.find_section(doc, "background")]
     walkthrough = [explainer_section.find_section(doc, k) for k in ("intuition", "code")]
-    assert EXPLAINER_BACKGROUND_GUIDANCE in explainer_section._guidance(background, with_tools=True)
-    assert EXPLAINER_BACKGROUND_GUIDANCE not in explainer_section._guidance(walkthrough, with_tools=True)
+    assert EXPLAINER_BACKGROUND_GUIDANCE in explainer_section._guidance(doc, background, with_tools=True)
+    assert EXPLAINER_BACKGROUND_GUIDANCE not in explainer_section._guidance(doc, walkthrough, with_tools=True)
 
 
 def test_the_read_recorder_keeps_first_read_order_without_duplicates() -> None:
@@ -454,6 +454,127 @@ def test_terms_land_as_a_definition_list(diff: AnnotatedDiff, doc) -> None:
         ids=build_json.viewer_id_index(diff),
     )
     assert [(t.term, t.definition) for t in section.terms] == [("ListRequest", "the paged request")]
+
+
+# --- Figures --------------------------------------------------------------
+
+_FIGURE_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40">'
+    '<rect class="d-box" x="0" y="0" width="50" height="20" fill="hotpink"/>'
+    '<text class="t-mono" x="4" y="14">ListRequest</text></svg>'
+)
+
+
+def _figure_submission(**overrides):
+    return _submission(
+        figures=[{"svg": _FIGURE_SVG, "alt": "the cursor threaded through the request", "caption": "one read"}],
+        **overrides,
+    )
+
+
+def test_a_prose_call_is_told_the_documents_figure_family(doc) -> None:
+    """The skeleton fixes the family and the cast; a call that is not
+    told them draws a fourth visual language, or nothing at all."""
+    from semantic_code_review.augment.prompts import EXPLAINER_FIGURE_GUIDANCE
+
+    guidance = explainer_section._guidance(
+        doc,
+        [explainer_section.find_section(doc, k) for k in ("intuition", "code")],
+        with_tools=True,
+    )
+    assert EXPLAINER_FIGURE_GUIDANCE in guidance
+    assert "boxes are services" in guidance
+    assert "ListRequest" in guidance
+
+
+def test_a_document_with_no_figure_family_is_told_nothing_about_figures() -> None:
+    """Advertising the slot with nothing to keep two passes drawing the
+    same component the same way is how a document gets three visual
+    languages."""
+    from semantic_code_review.augment.prompts import EXPLAINER_FIGURE_GUIDANCE
+
+    doc = _doc(figure_family="")
+    guidance = explainer_section._guidance(doc, [explainer_section.find_section(doc, "code")], with_tools=True)
+    assert EXPLAINER_FIGURE_GUIDANCE not in guidance
+
+
+def test_a_submitted_figure_lands_on_the_section(diff: AnnotatedDiff, doc) -> None:
+    section = explainer_section.find_section(doc, "code")
+    _apply(doc, section, _figure_submission(), ids=build_json.viewer_id_index(diff))
+
+    assert len(section.figures) == 1
+    figure = section.figures[0]
+    assert figure.alt == "the cursor threaded through the request"
+    assert figure.caption == "one read"
+    # Unsanitised here on purpose: `save_explainer` is the one place that
+    # strips a figure and counts what went, so doing it here too would
+    # count the same loss twice.
+    assert figure.stripped == 0
+
+
+def test_a_figure_the_call_was_never_given_the_rules_for_is_dropped(diff: AnnotatedDiff) -> None:
+    """The guidance is omitted when the skeleton fixed no family, so a
+    figure submitted anyway was drawn with no vocabulary — what the
+    sanitiser would leave of it is unpainted geometry."""
+    doc = _doc(figure_family="")
+    section = explainer_section.find_section(doc, "code")
+    _apply(doc, section, _figure_submission(), ids=build_json.viewer_id_index(diff))
+
+    assert section.figures == []
+
+
+def test_a_submitted_figure_reaches_the_persisted_document_sanitised(tmp_path) -> None:
+    """The whole route in one test: the prose call submits a figure, the
+    apply step lands it, `save_explainer` strips the paint the model may
+    not choose and records what it took, and the next reader loads that
+    from disk."""
+    import asyncio
+
+    from pydantic_ai.models.test import TestModel
+
+    from semantic_code_review.format.sidecar import dump_sidecar
+
+    diff = _diff()
+    dump_sidecar(diff, tmp_path / "augmented.scr.json")
+    explainer_schema.save_explainer(tmp_path, _doc())
+
+    args = {
+        "sections": [
+            {
+                "section": "intuition",
+                "body": "A cursor rides the request [F0].",
+                "figures": [
+                    {"svg": _FIGURE_SVG, "alt": "the cursor threaded through the request", "caption": "one read"}
+                ],
+            },
+            {"section": "code", "body": "The proto is the contract [F0]."},
+        ]
+    }
+    # `call_tools=[]`: the pass is tool-enabled, but a fake model that
+    # calls every tool once would be exercising RepoTools, not this.
+    client = Client(model=TestModel(custom_output_args=args, call_tools=[]))
+    returned = asyncio.run(
+        explainer_section.generate_explainer_section(
+            client,
+            run_dir=tmp_path,
+            section_id="intuition",
+            model="m",
+        )
+    )
+
+    loaded = explainer_schema.load_explainer(tmp_path, base_sha="base1234", head_sha="head5678")
+    assert loaded is not None
+    for doc in (returned, loaded):
+        section = explainer_section.find_section(doc, "intuition")
+        assert section.state == "ready"
+        assert len(section.figures) == 1
+        figure = section.figures[0]
+        assert "hotpink" not in figure.svg
+        assert 'class="d-box"' in figure.svg
+        assert 'width="50"' in figure.svg
+        # Kept and counted, never silently dropped.
+        assert figure.stripped == 1
+        assert figure.alt == "the cursor threaded through the request"
 
 
 def test_a_submission_carrying_a_sources_key_cannot_forge_the_citation_line() -> None:

@@ -50,7 +50,7 @@ from ..cache.store import CacheStore
 from ..viewer.build_json import ViewerIdIndex, viewer_id_index
 from . import explainer_schema, mcp_http_host, source_cache
 from .agents import Client
-from .explainer import ExplainerNotReady, carry_guidance
+from .explainer import ExplainerNotReady, carry_guidance, prose_figure_guidance
 from .pass_ import PassMeta, run_pass
 from .prompts import (
     EXPLAINER_BACKGROUND_GUIDANCE,
@@ -162,6 +162,34 @@ class SubmittedSkipBox(BaseModel):
     target_section_id: str = Field(description="The section to jump to: `intuition` or `code`.")
 
 
+class SubmittedFigure(BaseModel):
+    """One diagram: inline SVG in a structured slot, not markup in prose.
+
+    `stripped` is not here. What the sanitiser removed is recorded on
+    the way to disk, so the count the reader is shown is not the model's
+    to report.
+    """
+
+    svg: str = Field(
+        description=(
+            "One root `<svg>` with a `viewBox` and no width or height. Geometry and "
+            "vocabulary class names only: every `fill`, `stroke`, `style`, font and "
+            "opacity attribute is removed before the figure is stored, and the shape "
+            "then renders unpainted."
+        )
+    )
+    alt: str = Field(
+        description=(
+            "Required. One sentence saying what the figure shows, for a reader who "
+            "cannot see it — and what renders in its place if it cannot be drawn."
+        )
+    )
+    caption: str = Field(
+        default="",
+        description="One sentence saying what to take from the figure. Inline markdown.",
+    )
+
+
 class SubmittedSection(BaseModel):
     """One section of a prose call's answer."""
 
@@ -184,6 +212,14 @@ class SubmittedSection(BaseModel):
     skip_box: SubmittedSkipBox | None = Field(
         default=None,
         description="Background only: lets a reader who knows the system skip its first layer.",
+    )
+    figures: list[SubmittedFigure] = Field(
+        default_factory=list,
+        description=(
+            "Diagrams for this section, in reading order, drawn to the figure family "
+            "you were given. Only where you were given the figure rules: without them "
+            "a figure has no vocabulary to draw in and is dropped."
+        ),
     )
     toy_data: bool = Field(
         default=False,
@@ -506,11 +542,40 @@ def _apply_one(
         if t.term.strip()
     ]
     section.skip_box = _skip_box(doc, section, submission.skip_box)
+    section.figures = _figures(doc, section, submission.figures)
     section.sources = list(sources) if sources else []
     section.state = "ready"
 
     doc.dropped_refs += dropped + sub_dropped
     doc.toy_data = doc.toy_data or submission.toy_data
+
+
+def _figures(
+    doc: explainer_schema.ExplainerDocument,
+    section: explainer_schema.Section,
+    submitted: list[SubmittedFigure],
+) -> list[explainer_schema.Figure]:
+    """The section's diagrams, as submitted; sanitised on the way to disk.
+
+    Nothing is cleaned here: `save_explainer` reduces every figure in the
+    document to the drawing vocabulary and records what that removed, so
+    doing it twice would only mean two counts of the same loss.
+
+    A figure a call was never given the figure rules for is dropped —
+    the same treatment a skip box outside Background gets, and for the
+    same reason. Without the family it has no vocabulary to draw in, and
+    what the sanitiser leaves of it is unpainted geometry.
+    """
+    if not submitted:
+        return []
+    if not explainer_schema.figures_fixed(doc):
+        log.warning(
+            "explainer: %s submitted %d figures for a document with no figure family — dropped",
+            section.id,
+            len(submitted),
+        )
+        return []
+    return [explainer_schema.Figure(svg=f.svg.strip(), alt=f.alt.strip(), caption=f.caption.strip()) for f in submitted]
 
 
 def _skip_box(
@@ -709,7 +774,9 @@ async def generate_explainer_section(
         trace_dir: Optional `trace/` directory for the call envelope.
 
     Returns:
-        The whole document, with the call's sections `ready`.
+        The whole document as it was persisted — the call's sections
+        `ready`, and their figures reduced to the drawing vocabulary
+        with the strip counts set.
 
     Raises:
         ExplainerNotReady: No sidecar, or no document to write prose
@@ -733,7 +800,7 @@ async def generate_explainer_section(
     pass_id = targets[0].pass_id
     budget = max(0, DOCUMENT_TURN_BUDGET - doc.turns_used)
     with_tools = budget >= MIN_TOOL_TURNS
-    system_text, user_prefix = carry_guidance(client, _guidance(targets, with_tools=with_tools))
+    system_text, user_prefix = carry_guidance(client, _guidance(doc, targets, with_tools=with_tools))
     user_text = format_prose_prompt(
         diff,
         doc,
@@ -766,9 +833,9 @@ async def generate_explainer_section(
         # ceiling spent every request it made, and a budget a failing
         # pass can retry against for free is not a budget.
         doc.turns_used += spend.requests
-        explainer_schema.save_explainer(run_dir, doc)
+        written = explainer_schema.save_explainer(run_dir, doc)
         log.exception("explainer pass %s failed", pass_id)
-        raise SectionFailed(f"{type(e).__name__}: {e}", doc.model_dump(mode="json")) from e
+        raise SectionFailed(f"{type(e).__name__}: {e}", written.model_dump(mode="json")) from e
 
     doc.turns_used += spend.requests
     apply_prose_submission(
@@ -778,23 +845,39 @@ async def generate_explainer_section(
         ids=viewer_id_index(diff),
         sources=sources,
     )
-    explainer_schema.save_explainer(run_dir, doc)
-    return doc
+    # The written document, not the one in hand: the figures are
+    # sanitised and their strip counts set on the way to disk, and the
+    # route fans this out as the frame every tab renders.
+    return explainer_schema.save_explainer(run_dir, doc)
 
 
-def _guidance(targets: list[explainer_schema.Section], *, with_tools: bool) -> str:
+def _guidance(
+    doc: explainer_schema.ExplainerDocument,
+    targets: list[explainer_schema.Section],
+    *,
+    with_tools: bool,
+) -> str:
     """The bulk guidance block for this call.
 
     One shared body so the two passes share a cacheable prefix on SDK
     backends, plus the blocks that only some calls earn: the tool
-    vocabulary when there is budget to use it, and Background's
-    two-layer / skip-box / terms rules when it is the section being
-    written. A pass with no budget is not told about tools at all —
-    advertising a surface it cannot reach makes the model hedge.
+    vocabulary when there is budget to use it, the drawing vocabulary
+    and this document's figure family, and Background's two-layer /
+    skip-box / terms rules when it is the section being written. A pass
+    with no budget is not told about tools at all — advertising a
+    surface it cannot reach makes the model hedge, which is the same
+    reason a document with no figure family is told nothing about
+    figures.
+
+    The document-wide blocks come before the section-specific one, so
+    the two passes of one document share as long a prefix as they can.
     """
     blocks = [EXPLAINER_SECTION_GUIDANCE]
     if with_tools:
         blocks.append(EXPLAINER_TOOL_GUIDANCE)
+    figures = prose_figure_guidance(doc)
+    if figures:
+        blocks.append(figures)
     if any(s.kind == "background" for s in targets):
         blocks.append(EXPLAINER_BACKGROUND_GUIDANCE)
     return "\n\n".join(blocks)
@@ -937,6 +1020,7 @@ __all__ = [
     "SectionFailed",
     "SectionNotFound",
     "SectionNotReady",
+    "SubmittedFigure",
     "SubmittedSection",
     "anchored_hunks",
     "apply_prose_submission",
