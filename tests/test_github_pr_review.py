@@ -267,6 +267,44 @@ def test_build_tasks_omits_the_explainer_when_it_is_disabled(tmp_path) -> None:
     # server reports the feature disabled rather than "not ready yet".
     assert tasks.console is not None
     assert tasks.explainer is None
+    assert tasks.explainer_section is None
+
+
+def test_build_tasks_wires_both_explainer_generators(tmp_path) -> None:
+    """The skeleton and the per-section pass go together.
+
+    `scr pr` shipped with only the skeleton wired: the Map rendered, and
+    every prose section then 409'd with "augmentation still in progress"
+    long after augmentation had finished, because that is the message an
+    unbound generator produces.
+    """
+    from semantic_code_review.review.pr_flow import _build_tasks
+
+    tasks = _build_tasks(_pr_opts(tmp_path, augment=True), tmp_path)
+    assert tasks.explainer is not None
+    assert tasks.explainer_section is not None
+
+
+def test_both_entry_paths_wire_the_same_server_generators(tmp_path) -> None:
+    """`scr review` and `scr pr` must hand `serve_review` the same set.
+
+    The two flows build their task bundles independently, so a generator
+    added to one is silently absent from the other — which is exactly how
+    the per-section pass came to be missing from the PR path. Compare the
+    keyword names each flow actually passes.
+    """
+    import inspect
+
+    from semantic_code_review.review import pr_flow, runner
+
+    def served_kwargs(fn) -> set[str]:
+        src = inspect.getsource(fn)
+        body = src[src.index("serve_review(") :]
+        return {ln.strip().split("=", 1)[0] for ln in body.splitlines() if "=" in ln and ln.strip().endswith(",")}
+
+    shared = {"augment", "fold_summary", "console", "explainer", "explainer_section", "skip_globs"}
+    assert shared <= served_kwargs(runner.run_review)
+    assert shared <= served_kwargs(pr_flow.run_pr_flow)
 
 
 def test_build_tasks_returns_an_empty_bundle_without_augment(tmp_path) -> None:

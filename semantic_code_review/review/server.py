@@ -889,12 +889,15 @@ class _Handler(BaseHTTPRequestHandler):
         gets 409, mirroring the console's single-turn rule.
         """
         if self.ctx.explainer_generator is None:
-            reason = (
-                "the change explainer is disabled for this review"
-                if not self.ctx.explainer_enabled
-                else "augmentation still in progress"
-            )
-            self._json(409, {"error": reason})
+            # Two states, one of which clears itself: the feature is off
+            # for this review (permanent), or the generator is not bound
+            # yet because augmentation has not finished (transient, so
+            # `retry` — the caller re-queues rather than latching the
+            # section to `failed` for a condition that resolves).
+            if not self.ctx.explainer_enabled:
+                self._json(409, {"error": "the change explainer is disabled for this review"})
+                return
+            self._json(409, {"error": "augmentation still in progress", "retry": True})
             return
 
         from ..augment.explainer import ExplainerNotReady
@@ -961,12 +964,15 @@ class _Handler(BaseHTTPRequestHandler):
         the retryable state.
         """
         if self.ctx.explainer_section_generator is None:
-            reason = (
-                "the change explainer is disabled for this review"
-                if not self.ctx.explainer_enabled
-                else "augmentation still in progress"
-            )
-            self._json(409, {"error": reason})
+            # Two states, one of which clears itself: the feature is off
+            # for this review (permanent), or the generator is not bound
+            # yet because augmentation has not finished (transient, so
+            # `retry` — the caller re-queues rather than latching the
+            # section to `failed` for a condition that resolves).
+            if not self.ctx.explainer_enabled:
+                self._json(409, {"error": "the change explainer is disabled for this review"})
+                return
+            self._json(409, {"error": "augmentation still in progress", "retry": True})
             return
 
         from ..augment.explainer import ExplainerNotReady

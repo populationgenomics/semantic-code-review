@@ -180,6 +180,14 @@ async function generate(): Promise<void> {
       body: "{}",
     });
     const payload = await r.json().catch(() => ({}));
+    if (r.status === 409 && payload.retry) {
+      // Augmentation has not finished, or another pass holds the slot.
+      // Both clear on their own, so this is a wait rather than a failure.
+      _phase = "absent";
+      _onChange?.();
+      window.setTimeout(() => void generate(), _RETRY_MS);
+      return;
+    }
     if (!r.ok) throw new Error(payload.error || `POST /explainer/skeleton -> ${r.status}`);
     _adopt(payload as ExplainerDocument);
     generateAllPending();

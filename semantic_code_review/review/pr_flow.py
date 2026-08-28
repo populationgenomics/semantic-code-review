@@ -40,6 +40,7 @@ from .github import (
 from .github_graphql import post_review_via_graphql
 from .runner import (
     _build_console_task,
+    _build_explainer_section_task,
     _build_explainer_task,
     _build_fold_summary_task,
     serve_review,
@@ -147,6 +148,7 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
         fold_summary=tasks.fold_summary,
         console=tasks.console,
         explainer=tasks.explainer,
+        explainer_section=tasks.explainer_section,
         post=post_callback,
         post_meta=post_meta,
         port=opts.port,
@@ -238,6 +240,7 @@ class _ServerTasks:
     fold_summary: Callable | None = None
     console: Callable | None = None
     explainer: Callable | None = None
+    explainer_section: Callable | None = None
     bind_debug_sink: Callable[[Callable[[dict], None]], None] | None = None
 
 
@@ -298,16 +301,23 @@ def _build_tasks(opts: PrFlowOptions, run_dir: Path) -> _ServerTasks:
     bind_debug_sink: Callable[[Callable[[dict], None]], None] | None = None
     if opts.debug:
         bind_debug_sink = lambda sink, c=console_client: c.set_debug_sink(sink)  # noqa: E731
-    explainer_task = (
-        _build_explainer_task(client=opts.client, model=opts.model, cache=cache, run_dir=run_dir)
-        if opts.explainer
-        else None
-    )
+    # Both explainer generators or neither: a skeleton without the
+    # per-section pass yields a document whose every prose section
+    # refuses, and the refusal a bare `None` produces reads "augmentation
+    # still in progress" long after augmentation has finished.
+    explainer_task = None
+    explainer_section_task = None
+    if opts.explainer:
+        explainer_task = _build_explainer_task(client=opts.client, model=opts.model, cache=cache, run_dir=run_dir)
+        explainer_section_task = _build_explainer_section_task(
+            client=opts.client, model=opts.model, cache=cache, run_dir=run_dir
+        )
     return _ServerTasks(
         augment=augment_task,
         fold_summary=fold_summary_task,
         console=console_task,
         explainer=explainer_task,
+        explainer_section=explainer_section_task,
         bind_debug_sink=bind_debug_sink,
     )
 
