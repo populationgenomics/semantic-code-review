@@ -533,10 +533,11 @@ def format_figure_context(figure_family: str, cast: Sequence[str]) -> str:
         A guidance block naming both.
 
     Raises:
-        ValueError: `figure_family` is empty. A caller with no family to
-            hand over has nothing to keep the figures consistent, and
-            should leave the figure guidance out of the call entirely
-            rather than let each section invent its own.
+        ValueError: `figure_family` is empty — a precondition, not a
+            branch a caller is meant to take. A document with no family
+            has nothing to keep its figures consistent and turns figures
+            off entirely; `explainer_schema.figures_fixed` is the
+            question to ask before calling this.
     """
     if not figure_family.strip():
         raise ValueError("no figure family was fixed for this document; omit the figure guidance instead")

@@ -157,9 +157,11 @@ def prose_figure_guidance(doc: explainer_schema.ExplainerDocument) -> str:
     skeleton fixed for this change. Returns `""` when the skeleton fixed
     no family: with nothing to keep three sections drawing the same
     component the same way, the document is better off with no figures
-    than with three visual languages.
+    than with three visual languages. `explainer_schema.figures_fixed`
+    is that condition, and the apply step drops what a call with no
+    guidance submits anyway.
     """
-    if not doc.figure_family.strip():
+    if not explainer_schema.figures_fixed(doc):
         return ""
     context = prompts.format_figure_context(doc.figure_family, doc.cast)
     return f"{prompts.EXPLAINER_FIGURE_GUIDANCE}\n\n{context}"

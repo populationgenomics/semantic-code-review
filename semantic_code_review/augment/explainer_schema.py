@@ -395,6 +395,20 @@ def find_section(doc: ExplainerDocument, section_id: str) -> Section | None:
     return None
 
 
+def figures_fixed(doc: ExplainerDocument) -> bool:
+    """Whether the skeleton fixed a figure family, so figures are on.
+
+    The one predicate the two halves of the figure route share: the
+    prose guidance carries the drawing vocabulary only when it can also
+    say what the shapes mean in *this* change, and a figure submitted
+    without one is dropped rather than rendered. With no family there is
+    nothing keeping two passes from drawing the same component two ways,
+    and a figure drawn outside the vocabulary is one the sanitiser
+    reduces to unpainted geometry.
+    """
+    return bool(doc.figure_family.strip())
+
+
 def validate_references(
     refs: Iterable[Reference],
     *,
@@ -443,6 +457,7 @@ __all__ = [
     "SkipBox",
     "Term",
     "explainer_path",
+    "figures_fixed",
     "find_section",
     "iter_sections",
     "kinds_in_pass",
