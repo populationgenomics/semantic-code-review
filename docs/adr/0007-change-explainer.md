@@ -373,3 +373,123 @@ see Presentation.
   hunks is what forty independent per-hunk calls structurally cannot
   produce, so it is kept for v1 — but it is the first section to cut if
   the document reads bloated.
+
+---
+
+## Addendum — prose passes, one tool grant, one budget (2026-08-28)
+
+Amends **Sections** and **Quality** above. The taxonomy stands; the
+claim that it maps onto calls does not.
+
+### Sections are not calls
+
+The Sections table reads as one row per call. It is now one row per
+*thing a reader navigates*; what gets paid for is a **pass**, and
+`explainer_schema.PROSE_PASSES` is the mapping:
+
+| Pass | Sections | Cache key | Tools |
+|---|---|---|---|
+| skeleton | Map | `(base_sha, head_sha)` | no |
+| background | Background | `base_sha` | yes |
+| walkthrough | Intuition, Code | assembled user text | yes |
+
+Background stays its own call for the reason the table already gives:
+it is keyed on `base_sha` alone, so it survives head movement and every
+prompt-iteration re-run on the branch, and merging it with anything
+would collapse it to the narrower key. Intuition and Code share the
+narrower key already, are the two that most need to agree with each
+other, and re-paying the large seed twice is the dominant cost on
+backends where the user prompt is not cached. The walkthrough is seeded
+with the Map and with Background's finished text.
+
+The walkthrough's key is the assembled user text rather than
+`(base_sha, head_sha)` literally, because the seed carries the hunk
+intents: prose written over a different set of them is different prose,
+and the pair alone would serve one for the other. `run_pass` already
+folds the pass name, the model and the system text into every key.
+
+A section carries its `pass_id` in the document. The viewer needs it —
+otherwise entering the mode enqueues two sections and buys one call
+twice — and a reader needs it to know which prose a citation line
+accounts for.
+
+### Every prose pass gets `RepoTools`
+
+The original grant was Background-only, on the argument that Intuition
+and Code are "re-expressions of data the pipeline already computed".
+That was wrong, and wrong in a way the rest of this ADR already
+implies:
+
+- Code's job is stated here as "connective tissue between hunks … what
+  forty independent per-hunk calls structurally cannot produce". The
+  questions that produce it — is this new function called anywhere,
+  what did this replace, did a removal leave something behind — are
+  what `references` and `changed_symbols` answer, and are exactly what
+  is *not* in the seed. A seeded, tool-less call is as blind to them as
+  the forty it was meant to improve on.
+- Intuition's worked examples need real identifiers and literals. With
+  no tools it invents them and sets `toy_data` to excuse it, which
+  turns an affordance for the rare case into the ordinary one.
+- The prior art in Context runs as an ordinary agent with full tool
+  access over the whole document. The outputs judged good came from a
+  tool-enabled agent; granting tools to one section of three and
+  keeping the verdict was not a fair reading of the evidence.
+
+On subprocess backends this means the per-request `McpHttpHost` the
+console already opens, not just the pydantic-ai `deps` path.
+
+### One budget for the document
+
+`BACKGROUND_TURN_CAP = 12` was a per-section cap. A per-section cap on
+three tool-using sections is a document at thirty-six turns, which
+nobody chose; and the passes do not want equal shares. It is replaced
+by `DOCUMENT_TURN_BUDGET`, a total for the whole document, tracked as
+`turns_used` on `explainer.json`.
+
+Persisted, not held in memory: the passes are separated in time, and a
+reload, a second tab or a restart must not re-grant a budget already
+spent. The scope is exactly the document's — a new `(base_sha,
+head_sha)` is a new document and a fresh budget. A cache hit spends
+nothing and adds nothing, so re-opening a document that is already
+written costs no budget.
+
+Each call's ceiling is what is left. Below `MIN_TOOL_TURNS` the pass
+runs with no tools and is not told about them — a ceiling it cannot
+finish under loses the pass after spending the most on it, and
+advertising an unreachable surface makes the model hedge, which is the
+same reason skills are disabled on the `claude-cli` path. The cap and
+the spend still reach `trace/` as `turn_budget`.
+
+Fixing this surfaced that `turn_budget.used` was over-reporting by one
+on every successful pass: it counted trace *iterations*, and a run that
+ends on a tool return the model never saw has one more iteration than
+it made requests. It is now the driver's own request count — the figure
+`UsageLimits` meters `request_limit` against, so the budget and the
+ceiling that enforces it cannot disagree.
+
+### Provenance generalises
+
+`Section.sources` and the read recorder were Background-only, and the
+viewer rendered the citation line only for `kind === "background"`.
+Every pass that can read now records and shows what it read, on the
+same terms: off the tool surface, never from the model's self-report.
+The list belongs to the *call*, so every section one call wrote carries
+it and the viewer renders one line under the last of them.
+
+This strengthens **Quality** rather than changing it. The affordance
+was "a Background citing no reads is one that made it up"; it now
+covers the walkthrough, which is the section whose claims about code
+outside the diff are hardest to check by eye.
+
+### What a POST to a merged section does
+
+`POST /explainer/section/{id}` still addresses a section. It runs the
+pass that owns it and lands every section that pass writes; the
+response is the whole document, as it already was. A caller that does
+not know Intuition and Code are merged sees both written and nothing
+inconsistent.
+
+A call that comes back with one of its two sections lands the one it
+got. The other is left `failed`, not `pending`: failing both discards
+prose that was paid for, and `pending` is what the viewer auto-queues,
+so it would buy the same call again unasked.

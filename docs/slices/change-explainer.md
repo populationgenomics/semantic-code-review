@@ -42,15 +42,18 @@ Two things are genuinely new and carry the risk:
 
 ```
 { version, base_sha, head_sha, verdict, figure_family, cast,
-  toy_data: bool, sections: [Section], dropped_refs: int }
+  toy_data: bool, turns_used: int, sections: [Section],
+  dropped_refs: int }
 ```
 
 `verdict` is `"narrate"` or `"not_warranted"`. A section carries an id,
-a kind (`background` | `intuition` | `code` | `map`), a title, an
-ordered list of references, its subsections, its structured
+a kind (`background` | `intuition` | `code` | `map`), a `pass_id`, a
+title, an ordered list of references, its subsections, its structured
 affordances, and a `state` of `pending` | `ready` | `failed`. The
 skeleton writes every section with `state: "pending"` and no prose; each
-prose call flips one to `ready`.
+prose call flips the sections *it* writes to `ready`. `pass_id` is which
+call that is: sections do not map one-to-one onto calls (slice 6).
+`turns_used` is the document's shared tool-turn spend.
 
 **Invalidation** is wholesale on `(base_sha, head_sha)`. On load, a
 document whose SHAs do not match the run's is discarded, not migrated.
@@ -220,16 +223,22 @@ sources visible.
 seeded and tool-less. An unbounded agentic pass whose cost is invisible
 is the failure mode the cap exists to prevent.
 
+> The first pitfall was wrong and slice 6 reverses it — every prose pass
+> reads the repository now. The second stands, and slice 6 tightens it:
+> the cap is the document's, not the section's.
+
 **As built**, where it differs from the plan above:
 
 - **The turn budget is a `run_pass` parameter.** `run_pass` grew
-  `request_limit`, which narrows the backend's own ceiling for one pass;
-  Background sets `BACKGROUND_TURN_CAP = 12`. The effective cap and the
-  requests made go to the trace envelope as
+  `request_limit`, which narrows the backend's own ceiling for one pass.
+  The effective cap and the requests made go to the trace envelope as
   `turn_budget: {cap, used}` — recorded for *every* pass that declares a
   ceiling, not only this one, since the number was already in hand.
   `used` is the model-request count, including a final request that
-  errored, because that request was spent.
+  errored, because that request was spent. *Superseded in slice 6*:
+  Background's `BACKGROUND_TURN_CAP = 12` became a document-wide
+  `DOCUMENT_TURN_BUDGET`, and `used` became the driver's own count
+  rather than the trace's iteration count.
 - **Provenance is recorded, never submitted.** The plan says "the files
   the pass read are recorded"; the shape that satisfies the ADR's "a
   Background citing no reads is one that made it up" is one where the
@@ -237,7 +246,9 @@ is the failure mode the cap exists to prevent.
   tool surface: `TOOL_FUNCTIONS` wrapped for the SDK path, the
   `McpHttpHost` dispatch hook for the subprocess path, both feeding one
   recorder. The wrappers live in `explainer_section.py`, not `tools.py`
-  — this is the one pass that cites itself.
+  — this is the one pass that cites itself. *Generalised in slice 6*:
+  every prose pass cites itself, and the read list belongs to the call
+  rather than to one section.
 - **Only `path` arguments count as a read.** `grep`'s `path_glob` is a
   filter over a search, not a file opened, so it is not recorded.
 - **The read list rides the cache with the prose.** `run_pass` grew
@@ -371,6 +382,76 @@ already in context.
 - **`build_console_seed`'s `explainer` argument has no default.** The
   document being absent is an ordinary state, but it is the caller's to
   state, not the function's to assume.
+
+## Slice 6 — Passes, not sections ✅ done
+
+Reverses slice 3's Background-only tool grant and merges two of the
+three prose calls. Rationale and the amended decision table live in the
+**ADR 0007 addendum**; this records what landed.
+
+- **Passes.** `explainer_schema.PROSE_PASSES` maps the three prose
+  sections onto two calls: `background` (Background alone, keyed on
+  `base_sha`) and `walkthrough` (Intuition and Code together). Every
+  section carries its `pass_id`.
+- **Tools everywhere.** Both prose passes get `RepoTools`, with the
+  per-request `McpHttpHost` on subprocess backends. The tool vocabulary
+  moved out of `EXPLAINER_BACKGROUND_GUIDANCE` into a shared
+  `EXPLAINER_TOOL_GUIDANCE`; what stays Background-only is its
+  two-layer structure, its skip box and its term list.
+- **One budget.** `DOCUMENT_TURN_BUDGET` for the whole document,
+  tracked as `turns_used` on `explainer.json`; each call's ceiling is
+  what is left.
+- **Provenance for every pass.** The read list is the *call's*, so both
+  sections of a merged pass carry it and the viewer renders one line
+  under the last of them.
+
+**As built**, where it differs from the ADR addendum:
+
+- **The walkthrough's cache key is the assembled user text**, not
+  `(base_sha, head_sha)` — as slice 2's per-section key already was. The
+  seed carries the hunk intents, and prose written over a different set
+  of them is different prose; the pair alone would serve one for the
+  other. Background keeps `base_sha`.
+- **`DOCUMENT_TURN_BUDGET = 18`, `MIN_TOOL_TURNS = 2`.** Eighteen is
+  more than the twelve one section used to get and well under the
+  thirty-six three per-section caps would have allowed. Below two turns
+  remaining a pass runs seeded and tool-less rather than under a ceiling
+  it cannot finish under — and is not told about the tools, since an
+  advertised-but-unreachable surface makes the model hedge. That
+  tool-less shape is what every prose pass was before this slice, so
+  the exhausted path is known-good rather than a degraded guess.
+- **`turn_budget.used` was over-reporting by one.** It counted trace
+  *iterations*; a run that ends on a tool return the model never saw has
+  one more iteration than it made requests, which is every successful
+  `ToolOutput` pass. `run_pass` now reports the driver's own request
+  count through a new `on_requests` callback, and passes the same figure
+  to the trace writer — so a shared budget and the `UsageLimits` ceiling
+  that enforces it cannot disagree. Pre-existing; found by metering
+  against it.
+- **`DOCUMENT_VERSION` → 2, and the version is checked before the
+  document is parsed.** `pass_id` is required, so a v1 document no
+  longer validates — and the old order (parse, then compare versions)
+  would have reported an ordinary stale document as `ExplainerCorrupt`
+  and 500'd `GET /explainer`. The version field exists precisely to
+  detect a shape change before the models see it.
+- **The route did not change shape.** `POST /explainer/section/{id}`
+  still addresses a section; it runs the pass that owns it and returns
+  the whole document, which slice 2 already established. Posting either
+  half of the merged pair runs the same call.
+- **A partial answer lands, and the missing section goes `failed`.**
+  Not `pending`: `pending` is what `generateAllPending` picks up, so it
+  would buy the same call again unasked. `failed` renders as "Try
+  again", which re-runs the pass — the right retry for a section its own
+  call did not return.
+- **The viewer's queue is keyed on the pass**, and so are the in-flight,
+  waiting and error states: a merged call that is writing, waiting or
+  failed is all three for both of its sections, and marking only the one
+  the reviewer pressed leaves its sibling claiming it was never asked
+  for.
+- **The submission grew an envelope.** `submit_explainer_prose` takes
+  `sections: [{section, body, refs, …}]` rather than one section's
+  fields at the top level — one call, one *or more* answers, and the
+  partial case falls out of iterating what came back.
 
 ## Not in these slices
 

@@ -123,9 +123,14 @@ reaches the page.
 
 Not a model-supplied field: `sources` is recorded from the tool surface
 as a pass runs, so it states what was opened rather than what the model
-says it opened. Rendered under Background as a muted line, **including
-when it is empty** — a section citing nothing is the case the affordance
-exists to make visible.
+says it opened. Rendered under any prose section as a muted line,
+**including when it is empty** — a section citing nothing is the case
+the affordance exists to make visible.
+
+The list belongs to the *call*, not the section: every section one pass
+wrote carries the same one, and the line renders once, under the last of
+them. Two identical citation sentences under a merged pair say nothing
+the first one did not.
 
 ### Map row
 

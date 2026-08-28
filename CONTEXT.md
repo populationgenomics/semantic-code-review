@@ -391,14 +391,18 @@ references into the diff (ADR 0007). Lives in `explainer.json` in the
 than by the augment pipeline, and filled section by section as the
 reviewer opens them.
 
-The four sections are not four calls of the same shape. The skeleton
-writes the Map and assigns each prose section the files it is about;
-Intuition and Code are then one seeded, tool-less call each, over the
-overview and the intents of the hunks under those files. Background also
-gets `RepoTools` under a bounded turn budget — it is the only section
-asserting facts about code *outside* the diff — and cites the files it
-opened, recorded from the tool surface rather than claimed by the model.
-It caches on `base_sha` alone, so it survives head movement.
+The four sections are not four calls: sections are what a reader
+navigates, a **pass** is what gets paid for, and `PROSE_PASSES` maps
+between them. The skeleton writes the Map and assigns each prose section
+the files it is about. Background is then one call keyed on `base_sha`
+alone, so it survives head movement; Intuition and Code are one merged
+call keyed on its seed, since they are the two that most need to agree
+and the seed is the dominant cost to re-pay. Both prose passes get
+`RepoTools` under one turn budget shared by the whole document
+(`turns_used` on the file), and both cite the files they opened —
+recorded from the tool surface rather than claimed by the model, and
+rendered once per call. Every section carries its `pass_id`, so the
+viewer never buys one call twice (ADR 0007 addendum).
 
 Not a partition of hunks: the themes axis stays the only one of those.
 References address a [[viewer-id]] — a file (`F<i>`) or a [[hunk]]
