@@ -18,6 +18,15 @@ Markdown, rendered by `markdown-it` with `html: false` and passed
 through DOMPurify — the path `console_render.ts` already uses. Raw HTML
 in prose is not interpreted, by configuration, not by convention.
 
+Fenced code blocks are highlighted by hljs and are a first-class part of
+the prose, not a fallback: the prompt asks for a verbatim extract where
+the code says it better than a sentence about the code would — a
+signature that is the whole contract, a guard whose condition is the
+point. Bounded to the lines that carry the claim, with the claim stated
+next to them, and anchored by a reference so the reader can reach the
+full context. An unbounded quote is the diff again, which the reviewer
+already has.
+
 Allowed and styled: headings (h3–h5 within a section; h2 is the section
 title and is emitted by the viewer), paragraphs, ordered and unordered
 lists, `code` spans, fenced code blocks (highlighted by hljs; a
@@ -247,6 +256,20 @@ with the head class applied to the marker's `path`. Ids are namespaced
 per figure by both sanitiser passes — by section id and index on the way
 to disk, by a render-scoped counter in the browser — so two figures on
 one page cannot collide whatever the model called them.
+
+### Quantity and kind
+
+The prompt asks for figures freely — a section of a large change usually
+earns two or three — and names the kinds worth reaching for beyond a
+component-and-arrow diagram: a state machine, a fan-out, a decision
+ladder, a screen sketch, a before-and-after pair, a trust boundary.
+
+That is a deliberate reversal. The guidance originally closed with "draw
+a figure only where a spatial relationship is doing work", which read as
+a discouragement and produced two figures where the hand-run prior art
+produced seven on the same change. The mechanism was never the
+constraint; the dial was set conservatively and the ambition of the
+repertoire was never named at all.
 
 ### Consistency across a document
 
