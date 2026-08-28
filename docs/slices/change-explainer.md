@@ -464,6 +464,50 @@ three prose calls. Rationale and the amended decision table live in the
   fields at the top level — one call, one *or more* answers, and the
   partial case falls out of iterating what came back.
 
+## House style — the reviewed repo's own note ✅ done
+
+Not in the plan above; added after slice 6. `[augment].explainer_prompt`
+(inline) and `--explainer-prompt PATH` (per run, both `scr review` and
+`scr pr`) carry a note from the repo under review about how a document
+like this reads there. Rationale and the boundary live in the **ADR 0007
+addendum of 2026-08-28**; this records what landed.
+
+**As built**:
+
+- **Three passes, not four.** The note joins the guidance of the
+  skeleton and the two prose passes. It is not a pass of its own —
+  that is `extra_prompt`, whose output is `line_notes` on hunks.
+- **The per-hunk pass has no channel for it.** `augment_run_dir` takes
+  no parameter for the note, so the isolation is the absence of a
+  channel rather than a check inside one. What holds it there is a test
+  comparing the per-hunk pass's system text and user prompts byte for
+  byte with the note set and unset, driven through `pr_flow._build_tasks`
+  — the layer that does hold it. Conventional, not structural: a later
+  change could thread a config field into `hunks.py`, and the test is
+  what would notice.
+- **`house_style` has no default at any seam it crosses**, including
+  both shared task builders. Omitting it is a `TypeError`, which is the
+  cheapest available fix for the failure mode that lost the per-section
+  generator on the PR path; a source-inspection test additionally checks
+  that neither flow hardcodes `None`.
+- **No cache key of its own.** It rides `guidance`, which is in the
+  system text on SDK backends and in the user text on subprocess ones,
+  and both are in `run_pass`'s key. The tests run each pass twice and
+  count cache entries rather than restating the key's contents — the
+  shape of test that would have caught the bug the previous commit
+  fixed.
+- **It sits with the document-wide guidance blocks**, before
+  Background's section-specific one, so the two prose passes share as
+  long a cacheable prefix as they can. Its standing does not depend on
+  its position: `format_house_style` states that the built-in rules win.
+- **Parsing is shared with `extra_prompt`.** One `_inline_prompt`
+  helper: same type check, same "whitespace means unset", same
+  scope-override.
+- **`--explainer-prompt` with `[augment].explainer = false` exits 2.**
+  The flag is an explicit request for a document that will not be
+  generated. The inline config value in the same situation stays silent
+  — a setting is not a request.
+
 ## Not in these slices
 
 - Regenerate-a-section-with-a-nudge (`PARKED_IDEAS.md` #3).

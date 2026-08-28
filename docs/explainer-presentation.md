@@ -12,6 +12,14 @@ Governing rule: **the model never chooses presentation.** It emits prose
 and geometry. Every colour, font, weight, stroke width and spacing
 decision lives here.
 
+Nor does the reviewed repository. `[augment].explainer_prompt` (ADR
+0007's second addendum) adds house style — voice, level of detail — to
+the explainer passes' guidance, and it does not widen this vocabulary.
+What it asks for beyond the closed set is dropped by the same two
+mechanisms everything else is: the sanitiser's element and `class`
+allowlists, and reference validation by membership. Neither consults the
+prompt.
+
 ## Prose
 
 Markdown, rendered by `markdown-it` with `html: false` and passed

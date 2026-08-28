@@ -493,3 +493,88 @@ A call that comes back with one of its two sections lands the one it
 got. The other is left `failed`, not `pending`: failing both discards
 prose that was paid for, and `pending` is what the viewer auto-queues,
 so it would buy the same call again unasked.
+
+---
+
+## Addendum — house style for the document, hermetic annotations (2026-08-28)
+
+Adds to **Prompt carrier** and **Quality**. Nothing above is reversed.
+
+### The decision
+
+`[augment].explainer_prompt`, and `--explainer-prompt PATH` on both
+`scr review` and `scr pr`, carry a note from the repository under review
+about how a document like this reads there — voice, level of detail, what
+a reader of that codebase already knows. It is appended to the guidance
+of the three explainer passes: the skeleton, and the two prose passes.
+It is not a pass of its own, which is where it differs from
+`extra_prompt`: that runs a whole PR-level review call whose output is
+`line_notes` on hunks.
+
+Resolution, scope merging (user then repo, repo wins) and `scr config
+show` reporting mirror `extra_prompt` exactly. Both are read by one
+parser, so a whitespace-only body means "unset" for both.
+
+### Why the annotations stay hermetic
+
+There is no channel from this note to the per-hunk pass, and there must
+not be one.
+
+The hunk intents are the ground truth the document is written from, and
+clicking a reference is how a reviewer checks a claim against the code
+it is about. That check is worth something only if the two were produced
+independently. One instruction able to reshape both would let the
+document and the annotations agree because the same text shaped them
+rather than because both are right — which is the failure that leaves no
+trace, because agreement is what the reviewer is looking for.
+
+So the note reaches the document and stops. `augment_run_dir` takes no
+parameter for it. The guard is that the per-hunk pass's system text and
+user prompts are byte-identical with the note set and unset, compared
+through the flow layer that holds it — nothing structurally prevents a
+later change from threading a config field into `hunks.py`, since it
+would just be another field in scope.
+
+### Standing, and what enforces it
+
+The block is framed as the repository's preference, not as instructions
+that outrank the built-in guidance. That framing is for the model's
+benefit, not for safety: the structural rules are enforced downstream of
+the prompt and do not depend on being obeyed.
+
+- Figures: the element and `class` allowlists in
+  `augment/explainer_figures.py`, applied in `save_explainer` on the way
+  to disk and again behind DOMPurify's SVG profile at render. A note
+  asking for a hardcoded fill loses there.
+- References: validated by membership in the two id maps. A note asking
+  for an invented reference loses there, counted into `dropped_refs`.
+- Sections: the four top-level sections and the pass table are code. A
+  note cannot add one, and the schema has no field for what it might
+  ask for beyond them.
+
+The note is delimited in the prompt and attributed to the repository, so
+a sentence inside it that reads as an instruction to the model is
+presented as what it is.
+
+### Trust
+
+The note can arrive in a committed `.scr/config.toml`, authored by
+whoever wrote the diff. This does not widen scr's trust boundary: the
+same file can already set `extra_prompt`, which buys a whole review
+pass, so the decision to trust a repo's `.scr/` exists and this follows
+it.
+
+It is also the deliberate, opt-in replacement for something scr removed.
+Plain `claude -p` reads the reviewed repo's `CLAUDE.md`; scr's augment
+calls pass `--setting-sources ""`, so they do not — verified against the
+CLI with a codeword probe. A repo that wants its conventions to reach
+the reviewer now says so in one named field that reaches one document,
+rather than through implicit inheritance into every pass.
+
+### Cache
+
+The note needs no cache key of its own. `run_pass` folds the system text
+into every key, and where `carry_guidance` puts the guidance on stdin
+instead it lands in the user text, which is also in the key. Background
+keys on `(base_sha, guidance)` for the reason the previous addendum's
+fix records, and the note is part of `guidance`.

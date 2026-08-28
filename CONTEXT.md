@@ -413,6 +413,15 @@ moving diff: it is discarded wholesale when `(base_sha, head_sha)`
 changes, since re-anchoring prose that describes vanished code yields a
 correct pointer to a wrong sentence.
 
+The reviewed repo can add **house style** to the three explainer passes
+— `[augment].explainer_prompt`, or `--explainer-prompt PATH` per run
+(ADR 0007's second addendum). It reaches the document and nothing else:
+`augment_run_dir` has no parameter for it, because the hunk intents are
+what the document's claims are checked against and one instruction able
+to shape both would let the two agree for the wrong reason. It also
+widens nothing structural — the figure allowlists and reference
+validation by membership do not consult the prompt.
+
 Rendered in **overview mode**, which is orthogonal to [[fold-level]]
 rather than a fifth value of it — it hides nothing, so it has no span
 set, and leaving it restores the reviewer's zoom and hand-set folds
