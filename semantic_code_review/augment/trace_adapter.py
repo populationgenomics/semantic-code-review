@@ -249,6 +249,7 @@ def write_pydantic_ai_trace(
     tool_names: list[str],
     submit_tool: str,
     turn_cap: int | None = None,
+    requests_used: int = 0,
 ) -> None:
     """Render an `AgentRunResult` into the legacy trace shape and write it."""
     submit_args = _submit_args_from_output(getattr(result, "output", None))
@@ -261,6 +262,7 @@ def write_pydantic_ai_trace(
         submit_tool=submit_tool,
         submit_args=submit_args,
         turn_cap=turn_cap,
+        requests_used=requests_used,
     )
 
 
@@ -275,6 +277,7 @@ def write_partial_trace(
     submit_args: dict[str, Any] | None = None,
     error: BaseException | None = None,
     turn_cap: int | None = None,
+    requests_used: int = 0,
 ) -> None:
     """Write a trace for a (possibly partial) message history.
 
@@ -370,9 +373,11 @@ def write_partial_trace(
     if turn_cap is not None:
         # A ceiling nobody can see is a ceiling nobody can tune, and an
         # agentic pass whose cost is invisible is the failure the cap
-        # exists to prevent. `used` counts model requests, which is what
-        # the limit counts — including a final one that errored.
-        trace["turn_budget"] = {"cap": turn_cap, "used": len(iterations)}
+        # exists to prevent. `used` is the driver's own request count —
+        # what `UsageLimits` meters and what a caller charges a shared
+        # budget against — not `len(iterations)`, which counts one more
+        # whenever the run ends on a tool return the model never saw.
+        trace["turn_budget"] = {"cap": turn_cap, "used": requests_used}
     if error is not None:
         trace["error"] = {"type": type(error).__name__, "message": str(error)}
     trace_path.parent.mkdir(parents=True, exist_ok=True)

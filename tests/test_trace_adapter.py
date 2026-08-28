@@ -402,8 +402,43 @@ def test_the_turn_budget_records_the_cap_and_what_was_spent(tmp_path: Path) -> N
         tool_names=["read_file"],
         submit_tool="submit",
         turn_cap=12,
+        requests_used=2,
     )
     assert json.loads(trace_path.read_text())["turn_budget"] == {"cap": 12, "used": 2}
+
+
+def test_the_spend_is_the_drivers_count_not_the_iteration_count(tmp_path: Path) -> None:
+    """A run that ends on a tool return the model never saw has one more
+    iteration than it made requests. `used` is what a shared budget is
+    charged against, so it follows the driver, not the display."""
+    messages = [
+        ModelRequest(parts=[UserPromptPart(content="q", timestamp=_ts())], timestamp=_ts()),
+        ModelResponse(
+            parts=[ToolCallPart(tool_name="submit", args={}, tool_call_id="c1")],
+            usage=RequestUsage(input_tokens=10, output_tokens=2),
+            model_name="m",
+            finish_reason="tool_calls",
+            timestamp=_ts(),
+        ),
+        ModelRequest(
+            parts=[ToolReturnPart(tool_name="submit", content="ok", tool_call_id="c1", timestamp=_ts())],
+            timestamp=_ts(),
+        ),
+    ]
+    trace_path = tmp_path / "budget.json"
+    write_partial_trace(
+        messages,
+        trace_path=trace_path,
+        model="m",
+        system="s",
+        tool_names=[],
+        submit_tool="submit",
+        turn_cap=12,
+        requests_used=1,
+    )
+    trace = json.loads(trace_path.read_text())
+    assert len(trace["iterations"]) == 2
+    assert trace["turn_budget"] == {"cap": 12, "used": 1}
 
 
 def test_a_pass_that_declared_no_ceiling_records_no_budget(tmp_path: Path) -> None:
