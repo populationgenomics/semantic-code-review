@@ -13,6 +13,7 @@ from . import app
 from ._shared import (
     configure_logging,
     get_config,
+    resolve_explainer_prompt,
     resolve_extra_review_prompt,
     select_client,
 )
@@ -68,6 +69,17 @@ def review(
             "[augment].extra_prompt in the config."
         ),
     ),
+    explainer_prompt: Path = typer.Option(
+        None,
+        "--explainer-prompt",
+        help=(
+            "Path to a markdown/text file of house style for the change "
+            "explainer — how a document about a change should read in "
+            "this repo. Appended to the explainer passes' guidance and "
+            "nothing else; the per-hunk annotations are unaffected. "
+            "Overrides [augment].explainer_prompt in the config."
+        ),
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
     debug: bool = typer.Option(
         False,
@@ -84,6 +96,7 @@ def review(
     model = cfg.resolve_model(backend=backend, cli_value=model)
     runs_root = runs_root or default_runs_root()
     extra_review_prompt = resolve_extra_review_prompt(extra_prompt) if augment else None
+    house_style = resolve_explainer_prompt(explainer_prompt) if augment else None
     # Resolve the backend up-front so a misconfiguration fails fast, before
     # we spend time building the diff / worktrees.
     client = select_client(backend, model=model) if augment else None
@@ -108,6 +121,7 @@ def review(
         extra_review_prompt=extra_review_prompt,
         skip_globs=cfg.skip_globs,
         explainer=cfg.explainer,
+        explainer_prompt=house_style,
         show_progress=not verbose,
         debug=debug,
     )

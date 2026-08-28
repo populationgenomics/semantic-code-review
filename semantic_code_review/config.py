@@ -249,6 +249,17 @@ class ScrConfig:
     # did not write — are the ones who never configured it. Generation is
     # press-triggered, so default-on costs nothing until it is used.
     explainer: bool = True
+    # Inline house-style text for the change-explainer document: how a
+    # reading guide should read in this repo. Set under
+    # [augment].explainer_prompt = """...""". None disables. The CLI
+    # --explainer-prompt flag loads from a file path and overrides this
+    # for the current run.
+    #
+    # Unlike extra_prompt this is not a pass of its own: it is appended
+    # to the guidance of the three explainer passes, and reaches nothing
+    # else. The per-hunk annotations stay hermetic, because they are
+    # what a reviewer checks the document's claims against.
+    explainer_prompt: str | None = None
     # Where each setting came from, for `scr config show`.
     sources: dict[str, str] = field(default_factory=dict)
 
@@ -317,14 +328,14 @@ class ScrConfig:
 
         augment = raw.get("augment")
         if isinstance(augment, dict):
-            extra = augment.get("extra_prompt")
+            extra = _inline_prompt(augment, "extra_prompt", source=source)
             if extra is not None:
-                if not isinstance(extra, str):
-                    raise ConfigError(f"{source}: augment.extra_prompt must be a string, got {type(extra).__name__}")
-                text = extra.strip()
-                if text:
-                    self.extra_review_prompt = text
-                    self.sources["augment.extra_prompt"] = source
+                self.extra_review_prompt = extra
+                self.sources["augment.extra_prompt"] = source
+            house_style = _inline_prompt(augment, "explainer_prompt", source=source)
+            if house_style is not None:
+                self.explainer_prompt = house_style
+                self.sources["augment.explainer_prompt"] = source
             globs = augment.get("skip_globs")
             if globs is not None:
                 if not isinstance(globs, list) or not all(isinstance(g, str) for g in globs):
@@ -446,6 +457,25 @@ def _parse(path: Path) -> dict[str, Any]:
             return tomllib.load(fh)
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"{path}: invalid TOML: {e}") from e
+
+
+def _inline_prompt(augment: dict[str, Any], key: str, *, source: str) -> str | None:
+    """One `[augment]` inline-prompt string, or None when absent or blank.
+
+    Shared by `extra_prompt` and `explainer_prompt`: both are bodies of
+    prose, both scope-override rather than accumulate, and a
+    whitespace-only value is read as "not set" so a config keeping an
+    empty triple-quoted block does not configure an empty prompt.
+
+    Raises:
+        ConfigError: The value is present and not a string.
+    """
+    raw = augment.get(key)
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ConfigError(f"{source}: augment.{key} must be a string, got {type(raw).__name__}")
+    return raw.strip() or None
 
 
 def _pick_str(body: dict[str, Any], key: str, fallback: str | None) -> str | None:

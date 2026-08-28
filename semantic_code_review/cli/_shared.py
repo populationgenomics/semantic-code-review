@@ -125,26 +125,59 @@ def select_client(backend: str, *, model: str) -> Client:
     return _backends.get(backend, config=cfg).resolve(model=model)
 
 
+def _read_prompt_file(cli_path: Path, *, label: str) -> str:
+    """Load a prompt body off a CLI-named file.
+
+    A missing, unreadable or empty file exits 2 rather than falling back
+    to the config: the user named a file, and quietly reviewing without
+    it is a silently different review.
+    """
+    try:
+        text = cli_path.read_text(encoding="utf-8").strip()
+    except OSError as e:
+        typer.echo(f"scr: {label} {cli_path}: {e}", err=True)
+        raise typer.Exit(code=2) from None
+    if not text:
+        typer.echo(f"scr: {label} {cli_path} is empty", err=True)
+        raise typer.Exit(code=2)
+    return text
+
+
 def resolve_extra_review_prompt(cli_path: Path | None) -> str | None:
     """CLI --extra-prompt path wins, otherwise the inline config value.
 
-    The CLI flag loads the prompt off the given file (a missing /
-    unreadable / empty file is a hard error — the user asked for an
-    extra-review pass and we shouldn't silently degrade). When no CLI
-    flag is set, we fall through to the inline ``[augment].extra_prompt``
+    The CLI flag loads the prompt off the given file. When no CLI flag
+    is set, we fall through to the inline ``[augment].extra_prompt``
     string from the config.
     """
     if cli_path is not None:
-        try:
-            text = cli_path.read_text(encoding="utf-8").strip()
-        except OSError as e:
-            typer.echo(f"scr: extra-review prompt {cli_path}: {e}", err=True)
-            raise typer.Exit(code=2) from None
-        if not text:
-            typer.echo(f"scr: extra-review prompt {cli_path} is empty", err=True)
-            raise typer.Exit(code=2)
-        return text
+        return _read_prompt_file(cli_path, label="extra-review prompt")
     return get_config().extra_review_prompt
+
+
+def resolve_explainer_prompt(cli_path: Path | None) -> str | None:
+    """CLI --explainer-prompt path wins, otherwise the inline config value.
+
+    Same resolution order as :func:`resolve_extra_review_prompt`, over
+    ``[augment].explainer_prompt``. The text is house style for the
+    change-explainer document only; it reaches no other pass.
+
+    The flag against a disabled explainer exits 2. ``[augment].explainer
+    = false`` lives in a file the user may not have read today, so
+    accepting a house style for a document that will never be generated
+    is a silent no-op on an explicit request.
+    """
+    if cli_path is not None:
+        if not get_config().explainer:
+            typer.echo(
+                "scr: --explainer-prompt was given but [augment].explainer = false "
+                f"(from {get_config().sources.get('augment.explainer', '?')}) — "
+                "no explainer document will be generated",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        return _read_prompt_file(cli_path, label="explainer house-style prompt")
+    return get_config().explainer_prompt
 
 
 __all__ = [
@@ -152,6 +185,7 @@ __all__ = [
     "configure_logging",
     "get_config",
     "load_dotenv",
+    "resolve_explainer_prompt",
     "resolve_extra_review_prompt",
     "select_client",
 ]

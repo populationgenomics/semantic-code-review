@@ -690,3 +690,94 @@ def test_write_inline_prompt_creates_file_when_absent(tmp_path: Path) -> None:
     write_inline_extra_prompt(cfg_path, "fresh prompt")
     cfg = ScrConfig.load(user_path=cfg_path, repo_path=None)
     assert cfg.extra_review_prompt == "fresh prompt"
+
+
+# ---------------------------------------------------------------------------
+# [augment].explainer_prompt — house style for the change explainer
+# ---------------------------------------------------------------------------
+
+
+def test_augment_explainer_prompt_loaded_inline(tmp_path: Path) -> None:
+    """`[augment].explainer_prompt` lands stripped, attributed to its file."""
+    user = _write(
+        tmp_path / "user.toml",
+        '''
+[augment]
+explainer_prompt = """
+Assume the reader knows Hail and not the cohort model.
+Name the dataset in every example.
+"""
+''',
+    )
+    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    assert cfg.explainer_prompt is not None
+    assert cfg.explainer_prompt.startswith("Assume the reader knows Hail")
+    assert cfg.explainer_prompt.endswith("in every example.")
+    assert cfg.sources["augment.explainer_prompt"] == str(user)
+
+
+def test_augment_explainer_prompt_defaults_to_none(tmp_path: Path) -> None:
+    cfg = ScrConfig.load(user_path=tmp_path / "absent.toml", repo_path=None)
+    assert cfg.explainer_prompt is None
+    assert "augment.explainer_prompt" not in cfg.sources
+
+
+def test_augment_explainer_prompt_empty_string_is_ignored(tmp_path: Path) -> None:
+    """A config keeping an empty triple-quoted block has configured no
+    house style, not an empty one."""
+    user = _write(tmp_path / "user.toml", '[augment]\nexplainer_prompt = "   \\n   "\n')
+    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    assert cfg.explainer_prompt is None
+    assert "augment.explainer_prompt" not in cfg.sources
+
+
+def test_augment_explainer_prompt_repo_overrides_user(tmp_path: Path) -> None:
+    """Overridden, not accumulated: two house styles concatenated are not
+    a house style. The repo under review has the last word."""
+    user = _write(tmp_path / "user.toml", '[augment]\nexplainer_prompt = "how I like documents to read"\n')
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    repo = _write(repo_dir / "repo.toml", '[augment]\nexplainer_prompt = "how this repo explains itself"\n')
+
+    cfg = ScrConfig.load(user_path=user, repo_path=repo)
+    assert cfg.explainer_prompt == "how this repo explains itself"
+    assert cfg.sources["augment.explainer_prompt"] == str(repo)
+
+    inherited = ScrConfig.load(user_path=user, repo_path=None)
+    assert inherited.explainer_prompt == "how I like documents to read"
+
+
+def test_augment_explainer_prompt_rejects_non_string(tmp_path: Path) -> None:
+    user = _write(tmp_path / "user.toml", "[augment]\nexplainer_prompt = 42\n")
+    with pytest.raises(ConfigError, match="augment.explainer_prompt must be a string"):
+        ScrConfig.load(user_path=user, repo_path=None)
+
+
+def test_the_two_inline_prompts_are_independent(tmp_path: Path) -> None:
+    """Different features on one table: an extra-review pass and the
+    explainer's house style. Setting one must not read as the other."""
+    user = _write(
+        tmp_path / "user.toml",
+        '[augment]\nextra_prompt = "look for races"\nexplainer_prompt = "name the dataset"\n',
+    )
+    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    assert cfg.extra_review_prompt == "look for races"
+    assert cfg.explainer_prompt == "name the dataset"
+
+
+def test_the_config_templates_explainer_prompt_example_parses(tmp_path: Path) -> None:
+    """Uncommenting the template's example must give valid TOML.
+
+    The example is a triple-quoted TOML block sitting inside a
+    triple-quoted Python string, so its quotes are escaped; the escaping
+    is easy to get wrong in a way nothing else notices.
+    """
+    import tomllib
+
+    from semantic_code_review.cli import config_cmd
+
+    text = config_cmd._CONFIG_TEMPLATE
+    block = text[text.index('# [augment]\n# explainer_prompt = """') :]
+    uncommented = "\n".join(ln.removeprefix("# ").removeprefix("#") for ln in block.splitlines())
+    parsed = tomllib.loads(uncommented)
+    assert "Name the dataset" in parsed["augment"]["explainer_prompt"]
