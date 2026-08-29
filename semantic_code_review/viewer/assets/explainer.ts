@@ -56,6 +56,7 @@ let _onOpenHunk: ((hunkId: string) => void) | null = null;
 // it is dropped on every fresh document.
 type SectionPhase =
   | { kind: "error"; message: string }
+  | { kind: "queued" }
   | { kind: "waiting"; annotated: number; total: number };
 let _sectionPhase: Record<string, SectionPhase> = Object.create(null);
 // One call at a time. The server serialises explainer passes anyway (a
@@ -84,6 +85,7 @@ function init(endpoint: string, data: ViewerData, opts: ExplainerInitOptions = {
   _ready = !data.pending;
   _sectionPhase = Object.create(null);
   _writing = null;
+  _deferred.length = 0;
   _queue.length = 0;
   if (opts.onChange) _onChange = opts.onChange;
   if (opts.onOpenFile) _onOpenFile = opts.onOpenFile;
@@ -165,6 +167,7 @@ function _passInFlight(id: string): boolean {
   const wanted = _passOf(id);
   if (wanted === null) return false;
   if (_writing !== null && _passOf(_writing) === wanted) return true;
+  if (_deferred.some((d) => _passOf(d) === wanted)) return true;
   return _queue.some((queued) => _passOf(queued) === wanted);
 }
 
@@ -219,8 +222,28 @@ function _sectionsInPass(passId: string): ExplainerSection[] {
 }
 
 //: Backoff before retrying a section the server was too busy to write.
-//: One pass takes tens of seconds, so polling faster buys nothing.
-const _RETRY_MS = 4000;
+//: Fallback only. A deferred call is normally woken by the `explainer`
+//: SSE frame the finishing pass publishes; this covers a frame that
+//: never arrives (a dropped stream, a pass that died without emitting).
+//: Short values are what made the pane flash: every poll rendered
+//: "Writing…" on the way out and "Queued…" on the way back.
+const _RETRY_MS = 30000;
+
+//: Calls the server refused as busy. Kept out of `_queue` on purpose:
+//: re-queueing from inside `_writeSection` lands back in the drain
+//: loop's own `while`, which retries immediately and spins — the timer
+//: never paces anything. These move back only when something wakes
+//: them.
+const _deferred: string[] = [];
+
+/** Move everything the server was too busy for back into the queue and
+ *  drain. Called when a pass finishes (the SSE frame) or the fallback
+ *  timer fires. */
+function _wakeDeferred(): void {
+  if (_deferred.length === 0) return;
+  _queue.push(..._deferred.splice(0, _deferred.length));
+  void _drainQueue();
+}
 
 async function _drainQueue(): Promise<void> {
   if (_writing !== null) return;
@@ -267,9 +290,14 @@ async function _writeSection(id: string): Promise<void> {
       // the skeleton and every prose call. It clears on its own, so this
       // is a wait, not a failure: re-queue rather than making the
       // reviewer press again for a condition that resolves itself.
-      setPhase(null);
-      _queue.push(id);   // renders as "Queued behind another section…"
-      window.setTimeout(() => void _drainQueue(), _RETRY_MS);
+      // Hold the section visibly queued rather than clearing its phase:
+      // the drain loop sets `_writing` before every attempt, so a
+      // cleared phase renders "Writing…" for the length of each retry
+      // and "Queued…" between them. The phase outranks `_writing` in
+      // the render, so the pane stays still until the outcome changes.
+      setPhase({ kind: "queued" });
+      _deferred.push(id);
+      window.setTimeout(_wakeDeferred, _RETRY_MS);
       return;
     }
     if (!r.ok) throw new Error(payload.error || `POST /explainer/section/${id} -> ${r.status}`);
@@ -284,6 +312,9 @@ async function _writeSection(id: string): Promise<void> {
  *  offering to pay for it again. */
 function onEvent(payload: SseExplainerEvent): void {
   _adopt(payload, { keepPhases: true });
+  // A pass just finished, so the server's single slot is free. Whatever
+  // deferred on a busy 409 can go now, without waiting out the fallback.
+  _wakeDeferred();
 }
 
 function _adopt(doc: ExplainerDocument, opts: { keepPhases?: boolean } = {}): void {
@@ -507,6 +538,10 @@ function _renderSubsection(section: ExplainerSection): HTMLElement {
 function _proseNodes(section: ExplainerSection): HTMLElement[] {
   // By pass, not by id: the reviewer pressed one section of a merged
   // call, and the other one is being written too.
+  const phase0 = _sectionPhase[section.id];
+  if (phase0 && phase0.kind === "queued") {
+    return [_el("p", "explainer-status", "Queued behind another section…")];
+  }
   if (_writing !== null && _passOf(_writing) === section.pass_id) {
     return [_el("p", "explainer-status", "Writing this section…")];
   }

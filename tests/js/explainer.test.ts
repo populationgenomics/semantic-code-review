@@ -529,6 +529,39 @@ describe("prose rendering", () => {
     expect(box.parentElement!.tagName).toBe("DL");
   });
 
+  test("a section deferred by a busy server stays visibly queued", async () => {
+    // The drain loop sets `_writing` before every attempt, so a retry
+    // that cleared its phase rendered "Writing…" for the length of the
+    // attempt and "Queued…" between them — a 4-second flash, per
+    // section. The phase now outranks the flag.
+    boot();
+    Explainer.onEvent(proseDoc({ state: "pending", body: "" }) as SseExplainerEvent);
+    mockFetch([{ status: 409, body: { error: "an explainer pass is already running", retry: true } }]);
+    Explainer.generateSection("code");
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const text = Explainer.renderPane().textContent || "";
+    expect(text).toContain("Queued behind another section");
+    expect(text).not.toContain("Writing this section");
+  });
+
+  test("an arriving document wakes a deferred section", async () => {
+    // The finishing pass frees the server's single slot, so the SSE
+    // frame is the signal to retry — not a timer.
+    boot();
+    Explainer.onEvent(proseDoc({ state: "pending", body: "" }) as SseExplainerEvent);
+    const calls = mockFetch([
+      { status: 409, body: { error: "an explainer pass is already running", retry: true } },
+      { status: 200, body: proseDoc({ state: "ready", body: "Written." }) },
+    ]);
+    Explainer.generateSection("code");
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(calls).toHaveLength(1);
+
+    Explainer.onEvent(proseDoc({ state: "pending", body: "" }) as SseExplainerEvent);
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(calls).toHaveLength(2);
+  });
+
   test("a [!NOTE] blockquote becomes a concept callout, in place", () => {
     // Markdown has no callout of its own; GitHub's alert convention is the
     // spelling a model already knows, and a blockquote keeps the callout
