@@ -1652,11 +1652,19 @@ body { padding-bottom: 30px; }
 
 /* Figures break the measure slightly — the doc's one licensed overflow. */
 .explainer-figure { margin: 28px -4ch; padding: 0; }
-/* `overflow: visible` because a label's rendered width is the
-   stylesheet's, not the author's: a model placing text near the right
-   edge underestimates it and SVG clips at the viewBox by default, which
-   truncates the word rather than letting it sit a few pixels proud. */
+/* `overflow: visible` so a genuine near-miss sits a few pixels proud
+   rather than losing the end of a word to the viewBox clip. */
 .explainer-figure svg { display: block; width: 100%; height: auto; overflow: visible; }
+
+/* Labels centre on their coordinate unless the figure says otherwise.
+   SVG's default is `start`, so a label placed at a box's centre x — the
+   natural thing to compute, and what every figure so far has done —
+   renders its left edge there and runs out of the box to the right.
+   Anchoring is appearance, and appearance is the stylesheet's; the
+   `:not()` leaves an explicit `text-anchor` on the element winning, for
+   a label that really is meant to start at a left edge. */
+.explainer-figure svg text:not([text-anchor]),
+.explainer-figure svg tspan:not([text-anchor]) { text-anchor: middle; }
 .explainer-figure figcaption {
   font-family: var(--ui);
   margin: 8px 4ch 0;
