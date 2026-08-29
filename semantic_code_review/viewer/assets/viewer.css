@@ -1652,7 +1652,11 @@ body { padding-bottom: 30px; }
 
 /* Figures break the measure slightly — the doc's one licensed overflow. */
 .explainer-figure { margin: 28px -4ch; padding: 0; }
-.explainer-figure svg { display: block; width: 100%; height: auto; }
+/* `overflow: visible` because a label's rendered width is the
+   stylesheet's, not the author's: a model placing text near the right
+   edge underestimates it and SVG clips at the viewBox by default, which
+   truncates the word rather than letting it sit a few pixels proud. */
+.explainer-figure svg { display: block; width: 100%; height: auto; overflow: visible; }
 .explainer-figure figcaption {
   font-family: var(--ui);
   margin: 8px 4ch 0;
