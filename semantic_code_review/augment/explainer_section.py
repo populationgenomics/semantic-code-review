@@ -69,18 +69,21 @@ log = logging.getLogger(__name__)
 #: across every call, however far apart in time.
 #:
 #: The unit is the document, not the section, for two reasons. A
-#: per-section cap is a cap on nothing: three sections at twelve is a
-#: document at thirty-six, and nobody chose thirty-six. And the passes
-#: do not want equal shares — one lands on a subsystem nobody has to be
-#: told about and reads nothing, the next needs six files. A shared
-#: total gives each what it needs until the document as a whole has had
-#: enough.
+#: per-section cap is a cap on nothing: three of them are a document
+#: total nobody chose. And the passes do not want equal shares — one
+#: lands on a subsystem nobody has to be told about and reads nothing,
+#: the next needs six files. A shared total gives each what it needs
+#: until the document as a whole has had enough.
+#:
+#: Sized for Background, which earns the most reading: the system it
+#: describes is mostly code the diff does not contain, so its ground
+#: comes off the tool surface rather than out of the seed.
 #:
 #: The spend is tracked on `ExplainerDocument.turns_used`, so it
 #: survives a reload, a second tab and a restart, and is scoped exactly
 #: the way the document is: a new `(base_sha, head_sha)` is a new
 #: document and a fresh budget. A cache hit adds nothing.
-DOCUMENT_TURN_BUDGET = 18
+DOCUMENT_TURN_BUDGET = 36
 
 #: Remaining budget below which a pass runs with no tools at all rather
 #: than with a ceiling it cannot finish under. One request buys a read

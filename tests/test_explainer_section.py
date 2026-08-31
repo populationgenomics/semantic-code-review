@@ -745,8 +745,8 @@ def test_a_merged_call_is_ready_only_when_every_hunk_under_it_is(doc) -> None:
 
 
 def test_the_budget_is_shared_across_the_documents_passes() -> None:
-    """A per-section cap is a cap on nothing: three sections at twelve is
-    a document at thirty-six, which nobody chose."""
+    """A per-section cap is a cap on nothing: three of them are a document
+    total nobody chose, and the passes do not want equal shares."""
     doc = _doc()
     assert explainer_section.DOCUMENT_TURN_BUDGET - doc.turns_used == explainer_section.DOCUMENT_TURN_BUDGET
     doc.turns_used = 7

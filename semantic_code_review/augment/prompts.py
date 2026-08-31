@@ -458,10 +458,11 @@ EXPLAINER_TOOL_GUIDANCE = (
     "line — not your account of what you read, the actual calls. Prose citing "
     "nothing is visibly prose that was made up. So read the code you are about to "
     "describe.\n\n"
-    "Your budget is a small number of turns shared with the document's other "
-    "prose call, not an unbounded investigation. Spend it on the two or three "
-    "files that decide what you have to say, and stop when you can state how the "
-    "pieces fit; the reviewer wants the ground, not an inventory."
+    "Your budget is a bounded number of turns shared with the document's other "
+    "prose call, not an unbounded investigation — and it is there to be spent. "
+    "Background usually earns the most of it, because the system it describes is "
+    "mostly code the diff does not contain. Read until you can state how the "
+    "pieces fit, then stop: the reviewer wants the ground, not an inventory."
 )
 
 

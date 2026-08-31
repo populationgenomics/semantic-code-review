@@ -426,9 +426,10 @@ three prose calls. Rationale and the amended decision table live in the
   seed carries the hunk intents, and prose written over a different set
   of them is different prose; the pair alone would serve one for the
   other. Background keeps `base_sha`.
-- **`DOCUMENT_TURN_BUDGET = 18`, `MIN_TOOL_TURNS = 2`.** Eighteen is
-  more than the twelve one section used to get and well under the
-  thirty-six three per-section caps would have allowed. Below two turns
+- **`DOCUMENT_TURN_BUDGET = 36`, `MIN_TOOL_TURNS = 2`.** It landed at
+  18, and 18 bought a Background that could name the pieces but not
+  build the ground under them — the section that reads the most is the
+  one whose subject is not in the diff at all. Below two turns
   remaining a pass runs seeded and tool-less rather than under a ceiling
   it cannot finish under — and is not told about the tools, since an
   advertised-but-unreachable surface makes the model hedge. That
