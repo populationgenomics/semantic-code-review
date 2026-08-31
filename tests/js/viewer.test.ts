@@ -2985,5 +2985,87 @@ describe("overview mode (ADR 0007)", () => {
       expect(docCell().style.width).toBe("620px");
       expect(localStorage.getItem("scr-explainer-doc-width")).toBe("620");
     });
+
+    // --- the document scrolls in its own column --------------------------
+    // The shared far-right scrollbar was the window's, past the panel and
+    // its own. Each column now scrolls inside itself.
+
+    test("the document cell is a scroller bound to the viewport", async () => {
+      const panel = await bootWithPanel();
+      installStylesheet();
+      const cs = getComputedStyle(docCell());
+      expect(cs.overflowY).toBe("auto");
+      // Vertical only: a figure's box breaks the measure by a few px, and
+      // as `auto` that is a horizontal bar scrolling empty margin.
+      expect(cs.overflowX).toBe("hidden");
+      // The ceiling the panel and the sidebar already take, so the three
+      // columns end together and each scrollbar is its own column's.
+      expect(cs.maxHeight).toBe("calc(100vh - 56px)");
+      expect(getComputedStyle(panel).maxHeight).toBe(cs.maxHeight);
+      expect(getComputedStyle(document.getElementById("group-sidebar")!).maxHeight)
+        .toBe(cs.maxHeight);
+    });
+
+    test("entering the mode hands the keyboard the column", async () => {
+      await bootWithPanel();
+      // Nothing else scrolls the prose: the window is spent, and the cell
+      // is not a tab stop a reader could reach.
+      expect(document.activeElement).toBe(docCell());
+      expect(docCell().tabIndex).toBe(-1);
+
+      // And the keys render.ts owns still arrive — it binds on `document`,
+      // and the cell is neither an input nor a textarea. 1 in the mode is
+      // the exit into the diff at that level.
+      docCell().dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
+      await new Promise<void>((r) => setTimeout(r, 0));
+      expect(window.location.hash).toContain("fold=files");
+      expect(window.location.hash).toContain("mode=diff");
+    });
+
+    test("a repaint leaves focus where the reader put it", async () => {
+      await bootWithPanel();
+      const divider = docDivider();
+      divider.focus();
+      await repaintProse();
+      expect(document.activeElement).toBe(divider);
+    });
+
+    test("the panel opening, swapping and closing leaves the reader's place", async () => {
+      const panel = await bootWithPanel();
+      docCell().scrollTop = 400;
+
+      mapRow(0).click();
+      expect(docCell().scrollTop).toBe(400);
+      mapRow(1).click();
+      expect(docCell().scrollTop).toBe(400);
+      (panel.querySelector(".explainer-detail-close") as HTMLElement).click();
+      expect(docCell().scrollTop).toBe(400);
+    });
+
+    test("a repaint of the prose keeps the reader's place", async () => {
+      // The repaint replaces the cell's whole child; the offset is the
+      // cell's, and carrying it over is what stops a section write the
+      // reader did not ask for throwing them back to the top.
+      await bootWithPanel();
+      const cell = docCell();
+      cell.scrollTop = 400;
+      await repaintProse();
+      expect(document.querySelector("#app .explainer")!.textContent)
+        .toContain("Ground, rewritten.");
+      // The same cell, holding the same offset: the prose under it was
+      // replaced, the scroller was not rebuilt.
+      expect(docCell()).toBe(cell);
+      expect(docCell().scrollTop).toBe(400);
+    });
+
+    /** A section write off the SSE bus: the repaint nobody asked for. */
+    async function repaintProse(): Promise<void> {
+      lastEventSource().dispatch("explainer", {
+        ...PANEL_DOC,
+        sections: PANEL_DOC.sections.map((s) =>
+          s.kind === "background" ? { ...s, body: "Ground, rewritten. [H0_0]" } : s),
+      });
+      await new Promise<void>((r) => setTimeout(r, 0));
+    }
   });
 });

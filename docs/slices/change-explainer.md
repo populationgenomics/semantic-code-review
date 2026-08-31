@@ -561,6 +561,29 @@ of leaving the mode. Rationale is the **ADR 0007 addendum of
   mounted across a section write the reader did not ask for. The panel
   is sticky with its own scroll, the pattern the sidebar opposite it
   already uses.
+- **Both cells of the split are scrollers.** The document column
+  scrolled the window, which put its scrollbar at the viewport's far
+  right — past the panel and the panel's own — and made one bar stand
+  for two columns. The cell now takes the panel's and the sidebar's
+  viewport binding (`max-height: calc(100vh - 56px)`, sticky under the
+  `.pr-bar`) and scrolls inside itself, so each column's bar sits on its
+  own right edge. Consequences:
+  - **The mode focuses the cell** (`tabindex="-1"`, on entry only, in
+    `ExplainerPanel.mount`): with the window spent, PgDn / Space / the
+    arrows reach the prose only through the box that holds it. No focus
+    ring — the cell is not a tab stop, and `:focus-visible` would paint
+    one the moment the reader pressed PgDn. render.ts's key handler binds
+    on `document`, so 1–4, `?` and Esc are unaffected.
+  - **A repaint carries `scrollTop` over.** `replaceChildren` happens to
+    keep it (no layout is flushed between the removal and the insertion),
+    which is too incidental to rest on. A section landing above the
+    reading position still shifts the prose under it; that staleness is
+    the one section-granular restore already accepts.
+  - **The x axis is clipped, not scrolled.** A figure's box breaks the
+    measure by `-4ch` against 32px of padding, so a column packed against
+    an open panel would carry a horizontal bar scrolling ~6px of empty
+    margin. Code blocks scroll their own x.
+  - Diff mode is untouched: the window scrolls the file list as before.
 - **`explainer_panel.ts` owns the panel; `render.ts` owns the render.**
   The per-file renderer and "Open in diff" reach the panel as an
   injected `PanelHost`, so the dependency runs one way (render.ts →

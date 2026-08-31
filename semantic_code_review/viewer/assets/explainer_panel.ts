@@ -15,6 +15,11 @@
 // boundary between the two is the reader's to drag (layout_dividers.ts):
 // the document's cell carries the width, the panel takes the remainder.
 //
+// Both cells are viewport-bound scrollers (viewer.css), so each column's
+// scrollbar sits on its own right edge rather than the window's — and
+// the document's needs the keyboard handed to it, which is what the
+// focus on entry is for.
+//
 // The file is rendered through a callback injected by render.ts, so the
 // dependency runs one way (render.ts → here, the `rendered.ts`
 // precedent) and the render stays off `renderedDiffs`: that cache holds
@@ -61,8 +66,22 @@ let _ref: ExplainerRef | null = null;
  *  repaint of the prose. */
 function mount(app: HTMLElement, documentEl: HTMLElement, host: PanelHost): void {
   _host = host;
-  const dom = (_dom !== null && _dom.split.parentElement === app) ? _dom : _build(app);
+  const live = (_dom !== null && _dom.split.parentElement === app) ? _dom : null;
+  const dom = live ?? _build(app);
+  // The cell is the mode's scroller, and this replaces its whole child. A
+  // layout flushed between the removal and the insertion would clamp the
+  // offset against an empty content box; `replaceChildren` flushes none,
+  // so this is what makes the reader's place the code's guarantee rather
+  // than that call's.
+  const top = dom.docCell.scrollTop;
   dom.docCell.replaceChildren(documentEl);
+  dom.docCell.scrollTop = top;
+  // The mode leaves the window nothing to scroll, so PgDn, Space and the
+  // arrows reach the prose only through the cell that holds it. On entry
+  // only: a repaint must not take focus off a comment editor in the panel
+  // or the console prompt. `preventScroll` because focusing a box
+  // otherwise scrolls every ancestor to reveal it.
+  if (live === null) dom.docCell.focus({ preventScroll: true });
   // The chips were rebuilt with the document, so the mark on the ones
   // addressing what the panel holds has to go back on.
   if (_ref !== null) _markSource(dom, _ref);
@@ -73,6 +92,9 @@ function _build(app: HTMLElement): PanelDom {
   _ref = null;
   const split = _el("div", "explainer-split");
   const docCell = _el("div", "explainer-doc");
+  // Focusable but not a tab stop: the focus is the keyboard's route to
+  // the cell's own scroll, not a control the reader tabs to.
+  docCell.tabIndex = -1;
   const panel = _el("aside", "explainer-detail");
   panel.hidden = true;
   const head = _el("div", "explainer-detail-head");

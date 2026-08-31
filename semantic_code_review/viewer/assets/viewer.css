@@ -1603,12 +1603,36 @@ body { padding-bottom: 30px; }
   color: var(--fg);
 }
 
-/* The mode is a split: the document, and the panel a reference opens
-   beside it. The document scrolls with the window; the panel is sticky
-   with its own scroll, the pattern the sidebar opposite it uses, so the
-   two stay side by side and neither drags the other. */
+/* The mode is a split of two scrollers: the document, and the panel a
+   reference opens beside it. Both are bound to the viewport below the
+   sticky .pr-bar and scroll inside themselves — the pattern the sidebar
+   opposite them uses — so each scrollbar sits on its own column's right
+   edge and neither cell drags the other. Diff mode still scrolls the
+   window; nothing here applies there. */
 .explainer-split { display: flex; align-items: flex-start; }
-.explainer-doc { flex: 1 1 0; min-width: 0; }
+.explainer-doc {
+  flex: 1 1 0; min-width: 0;
+  position: sticky;
+  top: 56px;                      /* just below the sticky .pr-bar */
+  align-self: flex-start;
+  max-height: calc(100vh - 56px);
+  /* Vertical only. A figure's licensed break of the measure
+     (`.explainer-figure`: `-4ch` against 32px of padding) puts its box
+     ~6px proud on each side of a cell packed to the column, which as
+     `auto` is a horizontal bar under the prose that scrolls empty margin
+     — the svg is centred inside that box, and the left half of the
+     overflow is unreachable in a scroller regardless. Code blocks scroll
+     their own x. */
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+/* The cell is focused on entering the mode (explainer_panel.ts) so the
+   keys that scroll a page reach it. No ring: `tabindex="-1"` keeps it out
+   of the tab order, so the focus marks nothing the reader can act on —
+   and `:focus-visible` would paint one the moment they press PgDn, which
+   the spec's own heuristic makes the focused element match. A ring around
+   the whole reading column is not what that keypress asked for. */
+.explainer-doc:focus { outline: none; }
 /* With the panel open the cell shrink-wraps to the document's own
    max-width box, so `margin-inline: auto` has nothing left to centre
    into and the two pack together. Centred, a wide window put a dead
