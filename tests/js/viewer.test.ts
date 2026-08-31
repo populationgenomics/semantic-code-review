@@ -239,6 +239,20 @@ function makeOneSidedFile(
   };
 }
 
+/** Put the shipped stylesheet in the document, for the cases whose
+ *  claim is a layout decision rather than a class. jsdom has no layout
+ *  but does cascade a stylesheet, so `display` and
+ *  `grid-template-columns` read back off the real rules. Call after
+ *  bootViewer, which writes the head itself. */
+function installStylesheet(): void {
+  const style = document.createElement("style");
+  style.textContent = fs.readFileSync(
+    path.resolve(process.cwd(), "semantic_code_review/viewer/assets/viewer.css"),
+    "utf-8",
+  );
+  document.head.appendChild(style);
+}
+
 function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
   return {
     version: "1",
@@ -1877,19 +1891,6 @@ describe("one-sided files", () => {
     });
   }
 
-  /** The collapse is the stylesheet's; the class alone would prove
-   *  nothing. jsdom has no layout but does cascade a stylesheet, so the
-   *  assertions read `display` off the shipped rules. Injected after
-   *  boot, which writes the head itself. */
-  function installStylesheet(): void {
-    const style = document.createElement("style");
-    style.textContent = fs.readFileSync(
-      path.resolve(process.cwd(), "semantic_code_review/viewer/assets/viewer.css"),
-      "utf-8",
-    );
-    document.head.appendChild(style);
-  }
-
   test("an added file drops the old half and spans the new one", async () => {
     window.location.hash = "#fold=off";      // the code, not the summaries
     await bootViewer(oneSidedData("added"));
@@ -2004,6 +2005,7 @@ describe("rendered markdown mode", () => {
 
     const grid = document.querySelector(".rmd-grid");
     expect(grid).not.toBeNull();
+    expect(grid!.className).toBe("rmd-grid");   // both panes hold blocks
     // textContent, not innerHTML: the changed heading carries intra-block
     // sub-diff (.char-chg) spans around the changed word.
     expect(grid!.querySelector(".rmd-col-old .rmd-block h1")!.textContent).toBe("Old");
@@ -2051,6 +2053,51 @@ describe("rendered markdown mode", () => {
     const hits = fetchCalls.filter((c) => c.url.includes("/file-text")).length;
     expect(hits).toBe(1);
     expect(document.querySelector(".rmd-grid")).not.toBeNull();
+  });
+
+  test("an added file's rendered diff drops the base pane", async () => {
+    await bootViewer(makeData({
+      pending: false,
+      files: [makeOneSidedFile(0, "docs/new.md", "added")],
+    }));
+    queueFetchResponse({
+      status: 200,
+      body: { file_idx: 0, path: "docs/new.md", base: null, head: "# New\n\nhello world" },
+    });
+    (document.querySelector(".md-toggle") as HTMLElement).click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    installStylesheet();
+
+    const grid = document.querySelector(".rmd-grid") as HTMLElement;
+    expect(grid.classList.contains("rmd-only-new")).toBe(true);
+    // Every base cell was an alignment pad; the head pane takes the grid.
+    expect(grid.querySelectorAll(".rmd-col-old .rmd-block")).toHaveLength(0);
+    expect(getComputedStyle(grid).gridTemplateColumns).toBe("1fr");
+    expect(getComputedStyle(grid.querySelector(".rmd-col-old") as HTMLElement).display)
+      .toBe("none");
+    expect(grid.querySelectorAll(".rmd-col-new .rmd-block").length).toBeGreaterThan(0);
+  });
+
+  test("a deleted file's rendered diff drops the head pane", async () => {
+    await bootViewer(makeData({
+      pending: false,
+      files: [makeOneSidedFile(0, "docs/gone.md", "deleted")],
+    }));
+    queueFetchResponse({
+      status: 200,
+      body: { file_idx: 0, path: "docs/gone.md", base: "# Gone\n\nfarewell", head: null },
+    });
+    (document.querySelector(".md-toggle") as HTMLElement).click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    installStylesheet();
+
+    const grid = document.querySelector(".rmd-grid") as HTMLElement;
+    expect(grid.classList.contains("rmd-only-old")).toBe(true);
+    const base = grid.querySelector(".rmd-col-old") as HTMLElement;
+    expect(getComputedStyle(grid.querySelector(".rmd-col-new") as HTMLElement).display)
+      .toBe("none");
+    expect(getComputedStyle(base).display).toBe("block");
+    expect(getComputedStyle(grid).gridTemplateColumns).toBe("1fr");
   });
 
   test("a comment on a rendered block anchors on its source line and round-trips", async () => {

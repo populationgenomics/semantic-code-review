@@ -359,6 +359,17 @@ body {
 .rmd-col { position: relative; min-width: 0; }
 .rmd-col-old { border-right: 1px solid var(--border); padding-right: 20px; }
 
+/* A one-sided rendered diff (an added file has no base, a deleted one no
+ * head): every pair on the empty pane is an alignment pad, so collapse
+ * to the pane with the blocks. The fold chips span `1 / -1` either way.
+ * The divider belongs between two panes, so the surviving base pane
+ * drops it. */
+.rmd-grid.rmd-only-old,
+.rmd-grid.rmd-only-new { grid-template-columns: 1fr; }
+.rmd-only-new .rmd-col-old,
+.rmd-only-old .rmd-col-new { display: none; }
+.rmd-only-old .rmd-col-old { border-right: none; padding-right: 0; }
+
 .rmd-block { position: relative; border-radius: 4px; padding: 0 6px; }
 .rmd-block > *:first-child { margin-top: 0; }
 .rmd-block > *:last-child { margin-bottom: 0; }
