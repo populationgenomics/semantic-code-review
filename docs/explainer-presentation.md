@@ -301,8 +301,10 @@ is fixed is what things look like, not where they go.
 Overview mode has its own type scale; it does not inherit the diff's
 dense monospace chrome.
 
-- Body: serif stack, ~18px, line-height ~1.62.
-- Measure: ~72ch for prose. Figures may exceed it slightly.
+- Body: serif stack, 17px, line-height 1.65.
+- Measure: a 72ch column, from the pane's own `max-width` and auto side
+  margins rather than page padding, so it holds inside a container of
+  any width. Figures may exceed it slightly.
 - Headings, captions, labels and table headers: `--ui`, the sans stack
   the rest of the viewer uses, so chrome reads as chrome and prose reads
   as prose.

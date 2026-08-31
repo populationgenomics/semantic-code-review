@@ -1526,55 +1526,58 @@ body { padding-bottom: 30px; }
 
 /* --- Change explainer (ADR 0007) -----------------------------------------
    Overview mode is a reading surface, so it takes its own type scale
-   rather than the diff's dense monospace chrome: serif body at the
+   rather than the diff's dense monospace chrome: serif body at a reading
    measure, UI sans for every piece of chrome around it.
 
-   The document fills the pane rather than sitting at a fixed measure —
-   the reviewer's window is the measure.
+   The measure is the column's own `max-width` plus auto margins, so it
+   holds wherever the pane puts the column — including inside a flex item
+   narrower than the window.
 
    The affordance classes and the `d-`/`t`/`ln`/`head` figure vocabulary
    below are one half of the contract in docs/explainer-presentation.md;
    the prompt in augment/prompts.py is the other. A class the model uses
    and this file does not define renders unstyled. */
 .explainer {
-  padding: 32px 52px 72px;
+  max-width: 72ch;
+  margin-inline: auto;
+  padding: 36px 32px 96px;
   font-family: var(--serif);
-  font-size: 15px;
-  line-height: 1.58;
+  font-size: 17px;
+  line-height: 1.65;
   color: var(--fg);
 }
 .explainer-lede {
-  font-size: 17px; line-height: 1.5; color: var(--fg);
-  margin: 0 0 28px;
+  font-size: 19px; line-height: 1.5; color: var(--fg);
+  margin: 0 0 32px;
 }
 .explainer-status { font-family: var(--ui); color: var(--fg-muted); font-size: 14px; line-height: 1.5; }
 .explainer-error { color: var(--warn); }
 .explainer-section { margin: 0 0 44px; }
 .explainer-section-title {
   font-family: var(--ui);
-  margin: 0 0 14px;
-  font-size: 22px;
+  margin: 0 0 16px;
+  font-size: 24px;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--fg);
 }
 .explainer-subsection-title {
   font-family: var(--ui);
-  margin: 32px 0 10px;
-  font-size: 16px;
+  margin: 36px 0 12px;
+  font-size: 17px;
   font-weight: 600;
   color: var(--fg);
 }
-.explainer-body { margin: 0 0 16px; }
+.explainer-body { margin: 0 0 18px; }
 .explainer-body h3, .explainer-body h4, .explainer-body h5 {
   font-family: var(--ui); font-weight: 600; color: var(--fg);
-  margin: 28px 0 8px;
+  margin: 32px 0 10px;
 }
-.explainer-body h3 { font-size: 17px; }
-.explainer-body h4 { font-size: 15px; }
+.explainer-body h3 { font-size: 18px; }
+.explainer-body h4 { font-size: 16px; }
 .explainer-body h5 { font-size: 14px; color: var(--fg-muted); }
-.explainer-body p, .explainer-body ul, .explainer-body ol { margin: 0 0 16px; }
-.explainer-body li { margin: 4px 0; }
+.explainer-body p, .explainer-body ul, .explainer-body ol { margin: 0 0 18px; }
+.explainer-body li { margin: 6px 0; }
 .explainer-body code { font-family: var(--mono); font-size: 0.82em; }
 .explainer-body pre {
   font-family: var(--mono); font-size: 13px; line-height: 1.5;
@@ -1601,7 +1604,7 @@ body { padding-bottom: 30px; }
   padding: 12px 16px;
   border-left: 3px solid var(--accent);
   background: var(--accent-soft);
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.55;
 }
 .explainer-callout-edge { border-left-color: var(--warn); background: var(--warn-soft); }
@@ -1622,7 +1625,7 @@ body { padding-bottom: 30px; }
   border: 1px dashed var(--border);
   border-radius: 6px;
   color: var(--fg-muted);
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1.5;
 }
 .explainer-skip-link {
