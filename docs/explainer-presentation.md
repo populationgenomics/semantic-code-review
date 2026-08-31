@@ -324,7 +324,8 @@ Overview mode has its own type scale; it does not inherit the diff's
 dense monospace chrome.
 
 - Body: serif stack, 17px, line-height 1.65.
-- Measure: 72ch of text. The pane's `max-width` is that plus its two
+- Measure: 72ch of text, the default the reader adjusts by dragging the
+  document's right edge. The pane's `max-width` is that plus its two
   32px side paddings, which `box-sizing: border-box` would otherwise
   charge to the measure; the column is centred by auto side margins
   rather than page padding, so it holds inside a container of any width.

@@ -599,21 +599,28 @@ of leaving the mode. Rationale is the **ADR 0007 addendum of
   wide window left a dead zone on each side of the prose and pinned the
   panel to the far edge. The shrink-wrap is `flex: 0 1 auto`, so nothing
   couples the layout to the serif's `ch` metrics.
-- **The panel is as wide as what it holds.** `flex: 0 1000 auto` — the
-  basis is the content's max-content width, floored at 380px and shrunk
-  back to the remainder where the content is wider, which a long-line
-  code file always is; the shrink factor against the document cell's 1
-  is what keeps the prose column at its measure until the panel floors.
-  Prose inside the panel is capped at `64ch`, the annotation boxes'
-  measure, because a summary or an intent unwrapped is one long line and
-  would be what the panel followed instead of the code. Anything left
-  over is the split's and reads as page background; taking the whole
-  remainder put that emptiness inside the panel's own chrome, which for
-  a hard-wrapped `.md` file was most of it.
-- **No draggable separator.** The document is capped at its measure, so a
-  splitter could only take the prose below a readable width — and it
-  would need `Annotations.reflowAll` on every drag frame. A considered
-  follow-up if the fixed division turns out to bind.
+- **Where the split divides is the reader's.** A divider between the two
+  cells (`layout_dividers.ts`, `.layout-divider-doc`) sets the document
+  cell's width; the panel takes the remainder (`flex: 1 1 0`, floored at
+  `380px`, the far end of the document's clamp) and so runs to the window
+  edge. The document clamps to `[340px, split − 380 − 8]`, persists as
+  `scr-explainer-doc-width`, and a double-click hands the division back
+  to the stylesheet. Arrow keys nudge it; every move reflows the
+  annotation arrows one frame at a time. The divider is not gated on an
+  open panel: with nothing beside the document, the drag is how the
+  reader sets the measure. The sidebar's edge is a peer boundary one level
+  up, in `.layout` (`scr-sidebar-width`), so pushing the document right by
+  lengthening the ToC works in both modes.
+- **A set width is the measure.** `.explainer`'s `72ch` is the default,
+  not a ceiling: a width on the cell adds `explainer-doc-sized`, and the
+  column's `max-width` becomes `100%` of what the reader gave it, side
+  padding unchanged. With no width set the defaults stand exactly —
+  measure-capped cell, centred while the panel is closed.
+- **Prose in the panel is capped at `64ch`**, the annotation boxes'
+  measure. The panel is as wide as the reader left the boundary, and that
+  width is for the code: a one-sentence file summary or hunk intent set
+  across all of it reads as a banner rather than as a note. Scoped to the
+  panel — the diff pane's own prose has the page's width to answer to.
 
 ## The fold slider drops into the ladder ✅ done
 

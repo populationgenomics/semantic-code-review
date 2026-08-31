@@ -1579,7 +1579,9 @@ body { padding-bottom: 30px; }
 
    The measure is the column's own `max-width` plus auto margins, so it
    holds wherever the pane puts the column — including inside a flex item
-   narrower than the window.
+   narrower than the window. It is the default: a reader who drags the
+   document's edge sets the measure themselves
+   (`.explainer-doc-sized` below).
 
    The affordance classes and the `d-`/`t`/`ln`/`head` figure vocabulary
    below are one half of the contract in docs/explainer-presentation.md;
@@ -1608,19 +1610,24 @@ body { padding-bottom: 30px; }
    into and the two pack together. Centred, a wide window put a dead
    zone on each side of the prose. */
 .explainer-split.panel-open .explainer-doc { flex: 0 1 auto; }
+/* A width the reader set with the divider (layout_dividers.ts) sits
+   inline on the cell, and this class is what tells the prose to follow
+   the column rather than hold 72ch inside it: the measure is the
+   default, not a ceiling. The side padding is charged to the 100% by
+   border-box, so what the drag widens is the text. Shrink stays 1 — a
+   window narrower than the two cells were set to takes it out of the
+   document, once the panel has floored. */
+.explainer-doc.explainer-doc-sized { flex: 0 1 auto; }
+.explainer-doc.explainer-doc-sized .explainer { max-width: 100%; }
 .explainer-detail {
-  /* The panel is as wide as what it holds: `flex-basis: auto` makes the
-     flex base size the content's max-content width — the widest code
-     line, or the prose measure below it where that is wider — so a
-     hard-wrapped .md file ends where its lines end rather than trailing
-     empty row tint to the window edge. A long-line file's base size runs
-     far past the remainder and the shrink takes it back to exactly the
-     remainder. The shrink factor is high against the document cell's 1
-     so the overflow lands here: the document is not asked for width
-     until the panel freezes at its floor, and gives way only below it.
-     Anything left over is the split's, and reads as page background. */
-  flex: 0 1000 auto;
-  /* A floor the diff is still readable at. */
+  /* The panel takes the remainder. Where the split divides is the
+     reader's decision, dragged, so the panel has no width of its own to
+     work out: it runs from the boundary to the window edge, and what
+     was empty row tint at the old content-width basis is now either the
+     document's or the panel's, never nobody's. */
+  flex: 1 1 0;
+  /* A floor the diff is still readable at, and the far end of the
+     document's clamp: what the document may not take. */
   min-width: 380px;
   position: sticky;
   top: 56px;                      /* just below the sticky .pr-bar */
@@ -1658,12 +1665,11 @@ body { padding-bottom: 30px; }
 /* The panel's file is the diff's own chrome; only its outer margin is
    the panel's business. */
 .explainer-detail-body .file { margin: 8px 10px; }
-/* Prose here runs at the measure the annotation boxes already use. Its
-   max-content is its sentence on one line — a summary or an intent is a
-   sentence, a refs row is every chip in a row — and the panel's
-   content-width basis would follow that rather than the code. Scoped to
-   the panel because the panel is the only place a width is read off the
-   content. */
+/* Prose here runs at the measure the annotation boxes already use. The
+   panel is as wide as the reader left the boundary, and that width is
+   for the code: a one-sentence summary or intent set across all of it
+   reads as a banner rather than as a note. Scoped to the panel — the
+   diff pane's own prose has the page's width to answer to. */
 .explainer-detail-body .file-summary,
 .explainer-detail-body .file-overview,
 .explainer-detail-body .hunk-intent,

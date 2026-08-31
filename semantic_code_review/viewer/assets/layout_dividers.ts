@@ -16,7 +16,7 @@
 import { Annotations } from "./annotations";
 
 /** What the owner of a boundary answers about the cell it moves. */
-interface DividerSpec {
+export interface DividerSpec {
   /** Modifier class beside `layout-divider`; how a caller (or a test)
    *  addresses this boundary. */
   className: string;
@@ -222,5 +222,6 @@ function _read(key: string): number | null {
 }
 
 export const LayoutDividers = {
+  create,
   installSidebar,
 };

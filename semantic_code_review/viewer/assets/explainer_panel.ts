@@ -11,7 +11,9 @@
 // The mode's DOM is a split. The document cell belongs to the explainer
 // and is replaced on every section write; this panel is a sibling cell
 // that repaint never touches, which is what keeps it — and its scroll —
-// where the reader left it across a repaint they did not ask for.
+// where the reader left it across a repaint they did not ask for. The
+// boundary between the two is the reader's to drag (layout_dividers.ts):
+// the document's cell carries the width, the panel takes the remainder.
 //
 // The file is rendered through a callback injected by render.ts, so the
 // dependency runs one way (render.ts → here, the `rendered.ts`
@@ -20,6 +22,15 @@
 
 import { Annotations } from "./annotations";
 import { Comments } from "./comments";
+import { LayoutDividers } from "./layout_dividers";
+
+// The split's own geometry, mirroring viewer.css: the panel's floor and
+// the divider's strip are what the document's ceiling is measured
+// against, and below its own floor the prose is a column of two-word
+// lines.
+const PANEL_FLOOR = 380;
+const DIVIDER_WIDTH = 8;
+const DOC_FLOOR = 340;
 
 export interface PanelHost {
   /** Fresh DOM for the reference's file, at the panel's own fold state.
@@ -85,8 +96,38 @@ function _build(app: HTMLElement): PanelDom {
   split.appendChild(docCell);
   split.appendChild(panel);
   app.appendChild(split);
+  // After the split is on the page: the divider measures it to know how
+  // far the document may go, and a detached box reports no width.
+  docCell.insertAdjacentElement("afterend", _divider(split, docCell));
   _dom = { split, docCell, panel, pathEl, body };
   return _dom;
+}
+
+/** The boundary between the document and the panel.
+ *
+ *  The document's cell carries the width; the panel takes what is left,
+ *  down to the floor its diff stays readable at — the far end of the
+ *  same clamp. It is here rather than gated on an open panel because the
+ *  document's right edge is the reader's either way: with nothing beside
+ *  it, the drag is how they set the measure. */
+function _divider(split: HTMLElement, docCell: HTMLElement): HTMLElement {
+  return LayoutDividers.create({
+    className: "layout-divider-doc",
+    label: "Resize the document column",
+    storageKey: "scr-explainer-doc-width",
+    bounds: () => ({
+      min: DOC_FLOOR,
+      max: split.clientWidth - PANEL_FLOOR - DIVIDER_WIDTH,
+    }),
+    measure: () => docCell.getBoundingClientRect().width,
+    apply: (w) => {
+      // The class is what hands the measure over to the column: with a
+      // width set, the prose fills what the reader gave it instead of
+      // holding 72ch inside it.
+      docCell.classList.toggle("explainer-doc-sized", w !== null);
+      docCell.style.width = w === null ? "" : `${Math.round(w)}px`;
+    },
+  });
 }
 
 /** Drop the split. The caller is about to paint the diff over it, and

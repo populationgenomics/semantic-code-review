@@ -2811,48 +2811,38 @@ describe("overview mode (ADR 0007)", () => {
     // cascade: the claim is which sizing the panel and the document cell
     // ask for, not the pixels they land on.
 
-    test("the open panel is as wide as its content, and no wider", async () => {
+    test("the open panel takes the remainder, down to a floor", async () => {
       const panel = await bootWithPanel();
       installStylesheet();
       mapRow(0).click();
 
       const cs = getComputedStyle(panel);
-      // `auto` basis is the content's max-content width; grow 0 keeps the
-      // panel from taking slack it has nothing to put in.
-      expect(cs.flexBasis).toBe("auto");
-      expect(cs.flexGrow).toBe("0");
-      // And a file whose content is wider than the remainder shrinks back
-      // to it, so a long-line file still lands where it always did.
-      expect(Number(cs.flexShrink)).toBeGreaterThan(100);
+      // Where the split divides is the reader's, so the panel has no
+      // width of its own to work out: it runs from the boundary to the
+      // window edge.
+      expect(cs.flex).toBe("1 1 0px");
       expect(cs.minWidth).toBe("380px");
-
-      // What is left over belongs to the split, which paints nothing: it
-      // reads as page background rather than as empty panel.
-      const split = getComputedStyle(
-        document.querySelector("#app .explainer-split") as HTMLElement);
-      expect(split.backgroundColor).toBe("rgba(0, 0, 0, 0)");
     });
 
-    test("the document cell is not asked for width until the panel floors", async () => {
-      // Overflow is distributed by shrink factor × base size, so the
-      // document's 1 against the panel's factor leaves the prose column
-      // at its measure; once the panel freezes at its floor the document
-      // is the only item left to give way.
+    test("the document cell holds its measure until the reader says otherwise", async () => {
       const panel = await bootWithPanel();
       installStylesheet();
       const doc = document.querySelector("#app .explainer-doc") as HTMLElement;
       expect(getComputedStyle(doc).flex).toBe("1 1 0px");   // closed: the whole pane
 
       mapRow(0).click();
+      // Packed against the panel, the cell shrink-wraps its own
+      // max-width box; the prose keeps the 72ch measure inside it.
       expect(getComputedStyle(doc).flex).toBe("0 1 auto");
-      expect(Number(getComputedStyle(doc).flexShrink))
-        .toBeLessThan(Number(getComputedStyle(panel).flexShrink));
+      expect(getComputedStyle(document.querySelector("#app .explainer") as HTMLElement).maxWidth)
+        .toBe("calc(72ch + 64px)");
+      expect(getComputedStyle(panel).minWidth).toBe("380px");
     });
 
-    test("prose in the panel runs at a measure, so the code sets the width", async () => {
-      // A summary or an intent is one sentence, and its max-content is
-      // that sentence unwrapped — wider than a hard-wrapped file's code,
-      // and so what the panel's content basis would follow instead.
+    test("prose in the panel runs at a measure, so the width is the code's", async () => {
+      // The panel is as wide as the reader left the boundary, and a
+      // one-sentence summary or intent set across all of that reads as a
+      // banner rather than as a note.
       await bootWithPanel();
       installStylesheet();
       mapRow(0).click();
@@ -2861,12 +2851,120 @@ describe("overview mode (ADR 0007)", () => {
       expect(capOf(".file-summary")).toBe("64ch");
       expect(capOf(".hunk-intent")).toBe("64ch");
 
-      // Scoped to the panel: the diff reads no width off its content, so
-      // the same prose is uncapped there.
+      // Scoped to the panel: the diff pane's own prose has the page's
+      // width to answer to, so the same prose is uncapped there.
       (document.querySelector(".explainer-detail-open") as HTMLElement).click();
       await new Promise<void>((r) => setTimeout(r, 0));
       expect(getComputedStyle(
         document.querySelector("#app .file .file-summary") as HTMLElement).maxWidth).toBe("");
+    });
+
+    // --- where the reader puts the boundary -----------------------------
+    // The document's ceiling is measured off the split, which jsdom
+    // reports as 0 wide; the cases that assert a number stub that one
+    // reading, the way the annotation cases inject rects.
+
+    function docDivider(): HTMLElement {
+      return document.querySelector("#app .explainer-split .layout-divider-doc") as HTMLElement;
+    }
+
+    function docCell(): HTMLElement {
+      return document.querySelector("#app .explainer-doc") as HTMLElement;
+    }
+
+    /** Give the split a width to divide. */
+    function splitWidth(px: number): void {
+      Object.defineProperty(
+        document.querySelector("#app .explainer-split") as HTMLElement,
+        "clientWidth", { value: px, configurable: true },
+      );
+    }
+
+    test("the boundary is a separator between the document and the panel", async () => {
+      await bootWithPanel();
+      const el = docDivider();
+      expect(el.getAttribute("role")).toBe("separator");
+      expect(el.getAttribute("aria-orientation")).toBe("vertical");
+      expect(el.tabIndex).toBe(0);
+      expect(el.previousElementSibling!.className).toBe("explainer-doc");
+      expect(el.nextElementSibling!.classList.contains("explainer-detail")).toBe(true);
+      // And the sidebar's is still there: the mode replaced the pane, not
+      // the shell around it.
+      expect(document.querySelector(".layout > .layout-divider-sidebar")).not.toBeNull();
+    });
+
+    test("dragging it widens the column, and the prose follows", async () => {
+      await bootWithPanel();
+      installStylesheet();
+      mapRow(0).click();
+      splitWidth(1600);
+
+      dragDivider(docDivider(), 0, 620);
+      expect(docCell().style.width).toBe("620px");
+      expect(localStorage.getItem("scr-explainer-doc-width")).toBe("620");
+      // The measure was the default, not a ceiling: the text takes the
+      // column it was given, its padding unchanged.
+      expect(getComputedStyle(document.querySelector("#app .explainer") as HTMLElement).maxWidth)
+        .toBe("100%");
+      expect(getComputedStyle(document.querySelector("#app .explainer") as HTMLElement).padding)
+        .toBe("36px 32px 96px");
+    });
+
+    test("the drag stops at the column's floor and at the panel's", async () => {
+      await bootWithPanel();
+      mapRow(0).click();
+      splitWidth(1600);
+
+      dragDivider(docDivider(), 0, 100);
+      expect(docCell().style.width).toBe("340px");
+      dragDivider(docDivider(), 0, 5000);
+      expect(docCell().style.width).toBe("1212px");   // 1600 - 380 - 8
+    });
+
+    test("arrow keys nudge the boundary", async () => {
+      await bootWithPanel();
+      mapRow(0).click();
+      splitWidth(1600);
+      const el = docDivider();
+
+      dragDivider(el, 0, 620);
+      nudgeDivider(el, "ArrowLeft");
+      expect(docCell().style.width).toBe("604px");
+      nudgeDivider(el, "ArrowRight", true);
+      expect(docCell().style.width).toBe("668px");
+      expect(localStorage.getItem("scr-explainer-doc-width")).toBe("668");
+    });
+
+    test("double-clicking hands the column back to the measure", async () => {
+      await bootWithPanel();
+      installStylesheet();
+      mapRow(0).click();
+      splitWidth(1600);
+      const el = docDivider();
+      dragDivider(el, 0, 620);
+
+      el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      expect(docCell().style.width).toBe("");
+      expect(docCell().classList.contains("explainer-doc-sized")).toBe(false);
+      expect(getComputedStyle(document.querySelector("#app .explainer") as HTMLElement).maxWidth)
+        .toBe("calc(72ch + 64px)");
+      expect(localStorage.getItem("scr-explainer-doc-width")).toBeNull();
+    });
+
+    test("the stored column is applied when the mode paints, clamped to the room", async () => {
+      localStorage.setItem("scr-explainer-doc-width", "620");
+      await bootWithPanel();
+      // A split that reports no width has none to give: the column
+      // arrives at its floor rather than overflowing.
+      expect(docCell().classList.contains("explainer-doc-sized")).toBe(true);
+      expect(docCell().style.width).toBe("340px");
+
+      // The room comes back — a narrow window was never a decision, so
+      // the stored number was not rewritten to the clamp.
+      splitWidth(1600);
+      window.dispatchEvent(new Event("resize"));
+      expect(docCell().style.width).toBe("620px");
+      expect(localStorage.getItem("scr-explainer-doc-width")).toBe("620");
     });
   });
 });
