@@ -35,8 +35,10 @@ export function makeAnchorRow(opts: AnchorRowOptions = {}): HTMLElement {
   return row;
 }
 
-/** Build a hunk fixture mirroring the viewer: .diff > .half-old + .half-new. */
-export function makeHunkFixture(rows: Array<{ old: string; new: string }>): {
+/** Build a hunk fixture mirroring the viewer: .diff > .half-old + .half-new.
+ *  A null cell text builds the empty cell the renderer emits where a row
+ *  has no line on that side — every row of an added or deleted file. */
+export function makeHunkFixture(rows: Array<{ old: string | null; new: string | null }>): {
   container: HTMLElement;
   old: HTMLElement[];
   new: HTMLElement[];
@@ -63,18 +65,21 @@ export function makeHunkFixture(rows: Array<{ old: string; new: string }>): {
   return { container, old: oldRows, new: newRows };
 }
 
-function buildRow(lineno: number, text: string, side: "old" | "new"): HTMLElement {
+function buildRow(lineno: number, text: string | null, side: "old" | "new"): HTMLElement {
   const row = document.createElement("div");
   row.className = "row row-ctx";
+  const present = text !== null;
   const linenoCell = document.createElement("span");
-  linenoCell.className = `cell cell-lineno cell-lineno-${side}`;
-  linenoCell.textContent = String(lineno);
+  linenoCell.className = `cell cell-lineno cell-lineno-${side}` + (present ? "" : " empty");
+  if (present) linenoCell.textContent = String(lineno);
   row.appendChild(linenoCell);
   const content = document.createElement("span");
-  content.className = `cell cell-content cell-content-${side}`;
-  const code = document.createElement("code");
-  code.textContent = text;
-  content.appendChild(code);
+  content.className = `cell cell-content cell-content-${side}` + (present ? "" : " empty");
+  if (present) {
+    const code = document.createElement("code");
+    code.textContent = text;
+    content.appendChild(code);
+  }
   row.appendChild(content);
   return row;
 }

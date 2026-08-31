@@ -691,6 +691,18 @@ body {
    * vertically in practice. */
 }
 
+/* A one-sided diff — every row of an added file's stream lacks a
+ * pre-image, a deleted file's a post-image — collapses to its live half
+ * rather than paying half the width for blank cells and placeholder
+ * slabs. The renderer sets the class off the row data (`_liveSide`).
+ * `display: none` rather than removal: the comment gutter's delegated
+ * clicks and the annotations' placeholder insertions address nodes, and
+ * a placeholder in a half nothing aligns against is inert. */
+.diff.diff-only-old,
+.diff.diff-only-new { grid-template-columns: minmax(0, 1fr); }
+.diff-only-new .half-old,
+.diff-only-old .half-new { display: none; }
+
 /* Each `.row` is a real grid box spanning both of `.half`'s columns,
  * and uses `subgrid` so its two cells land in `.half`'s column tracks
  * (matching widths across every row). Making the row an actual box

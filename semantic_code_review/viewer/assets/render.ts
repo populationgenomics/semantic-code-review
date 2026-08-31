@@ -763,6 +763,8 @@ function _renderDiffRows(
   f: FileBlock, rows: RowBlock[], marks: (_RowMarks | undefined)[],
 ): { diff: HTMLElement; oldEls: HTMLElement[]; newEls: HTMLElement[] } {
   const diff = _el("div", "diff");
+  const live = _liveSide(rows);
+  if (live) diff.classList.add(`diff-only-${live}`);
   const halfOld = _el("div", "half half-old");
   const halfNew = _el("div", "half half-new");
   diff.appendChild(halfOld);
@@ -779,6 +781,28 @@ function _renderDiffRows(
     newEls.push(pair.new);
   }
   return { diff, oldEls, newEls };
+}
+
+/** The side carrying every row of a stream, when the other side is empty
+ *  for the stream's whole length — an added file's rows have no
+ *  pre-image, a deleted file's no post-image. Null when the stream has
+ *  content on both sides (or on neither), which is when both halves are
+ *  worth their width.
+ *
+ *  Read off the rows rather than the file's role: the role speaks for the
+ *  file, this speaks for the grid being built, and a region expansion is
+ *  a stream of its own. */
+function _liveSide(rows: RowBlock[]): "old" | "new" | null {
+  let anyOld = false;
+  let anyNew = false;
+  for (const r of rows) {
+    if (r.old_line !== null && r.old_line !== undefined) anyOld = true;
+    if (r.new_line !== null && r.new_line !== undefined) anyNew = true;
+    if (anyOld && anyNew) return null;
+  }
+  if (anyNew) return "new";
+  if (anyOld) return "old";
+  return null;
 }
 
 function _refreshFileFolds(f: FileBlock): void {

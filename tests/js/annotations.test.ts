@@ -18,6 +18,14 @@ function baseOpts(anchor: HTMLElement, overrides: Partial<AttachOptions> = {}): 
   return { anchor, content: "hi", ...overrides };
 }
 
+function rect(x: number, y: number, w: number, h: number): DOMRect {
+  return {
+    x, y, width: w, height: h,
+    top: y, left: x, right: x + w, bottom: y + h,
+    toJSON() { return this; },
+  } as DOMRect;
+}
+
 afterEach(() => Annotations._setRectProvider(null));
 
 describe("attach: DOM shape", () => {
@@ -73,6 +81,86 @@ describe("shadow placeholder lifecycle", () => {
     const handle = Annotations.attach(baseOpts(anchor));
     handle.remove();
     expect(() => handle.remove()).not.toThrow();
+  });
+});
+
+describe("a half the layout drops (added / deleted file)", () => {
+  // Every row of an added file is new-side only, so the stylesheet takes
+  // the old half out of the layout (`.diff-only-new`). The annotation
+  // still gets its placeholder there — it just has nothing to align —
+  // and every rect it reads has to come from the half that is showing.
+
+  function oneSided(): ReturnType<typeof makeHunkFixture> {
+    const fx = makeHunkFixture([
+      { old: null, new: "added one" },
+      { old: null, new: "added two" },
+    ]);
+    fx.container.classList.add("diff-only-new");
+    return fx;
+  }
+
+  /** Canned geometry where the dropped half reports zeros, as a
+   *  `display: none` subtree does in a browser. */
+  function installRects(): void {
+    Annotations._setRectProvider((target: Element | Range) => {
+      const el = target instanceof Range
+        ? target.startContainer.parentElement
+        : target;
+      if (el?.closest(".half-old")) return rect(0, 0, 0, 0);
+      if (target instanceof Range) return rect(50, 100, 10, 20);
+      const e = target as Element;
+      if (e.classList.contains("cell-annotation")) return rect(50, 200, 200, 40);
+      if (e.classList.contains("annot-box")) return rect(60, 200, 150, 30);
+      if (e.classList.contains("row-annotation")) return rect(50, 200, 200, 40);
+      if (e.classList.contains("cell")) return rect(0, 100, 200, 20);
+      return rect(0, 0, 0, 0);
+    });
+  }
+
+  test("the placeholder lands in the dropped half and takes the annotation's height", async () => {
+    installRects();
+    const fx = oneSided();
+    const handle = Annotations.attach(baseOpts(fx.new[0], { shadowAnchor: fx.old[0] }));
+    await flushRaf();
+
+    const ph = handle.placeholder!;
+    expect(fx.old[0].nextElementSibling).toBe(ph);
+    expect(ph.closest(".half-old")).toBe(fx.container.querySelector(".half-old"));
+    // Measured off the annotation row, not off the half it sits in.
+    expect(ph.style.height).toBe("40px");
+
+    handle.remove();
+    expect(document.querySelectorAll(".row-annotation")).toHaveLength(0);
+    expect(document.querySelectorAll(".row-placeholder")).toHaveLength(0);
+  });
+
+  test("the arrow measures the live half, not the dropped one", async () => {
+    installRects();
+    const fx = oneSided();
+    const handle = Annotations.attach(baseOpts(fx.new[0], { shadowAnchor: fx.old[0] }));
+    await flushRaf();
+    // Anchor cells bottom at 120, annotation cell top at 200 → 80. The
+    // ARROW_MIN_OVERRUN fallback (6) is what a zero anchor rect gives.
+    const svg = handle.element.querySelector<SVGSVGElement>("svg")!;
+    expect(parseFloat(svg.style.marginTop)).toBeCloseTo(-80, 0);
+  });
+
+  test("a reflow of the anchor still reaches every annotation on it", async () => {
+    installRects();
+    const fx = oneSided();
+    const first = Annotations.attach(baseOpts(fx.new[0], { shadowAnchor: fx.old[0] }));
+    const second = Annotations.attach(baseOpts(fx.new[0], { shadowAnchor: fx.old[0] }));
+    await flushRaf();
+    const arrows = [first, second].map(
+      (h) => h.element.querySelector<SVGSVGElement>("svg")!,
+    );
+    for (const svg of arrows) svg.style.marginTop = "";
+
+    Annotations.reflow(fx.new[0]);
+    Annotations.reflow(fx.new[0]);   // coalesced into the same frame
+    await flushRaf();
+
+    for (const svg of arrows) expect(parseFloat(svg.style.marginTop)).toBeCloseTo(-80, 0);
   });
 });
 
@@ -185,14 +273,6 @@ describe("stack policy + column resolution", () => {
       return rect(0, 0, 0, 0);
     };
     Annotations._setRectProvider(rectFor);
-  }
-
-  function rect(x: number, y: number, w: number, h: number): DOMRect {
-    return {
-      x, y, width: w, height: h,
-      top: y, left: x, right: x + w, bottom: y + h,
-      toJSON() { return this; },
-    } as DOMRect;
   }
 
   test("column absolute picks the Nth character", async () => {

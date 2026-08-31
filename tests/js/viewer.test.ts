@@ -208,6 +208,37 @@ function makeHunkBlock(id: string, intent = "", overrides: Record<string, unknow
   };
 }
 
+/** A file the diff only adds or only deletes: every row carries a line
+ *  on one side, so the other half of its grid is empty for the file's
+ *  whole length. */
+function makeOneSidedFile(
+  idx: number, path: string, status: "added" | "deleted",
+): Record<string, unknown> {
+  const added = status === "added";
+  const rows = added
+    ? [
+      { kind: "ins", old_line: null, new_line: 1, old_text: "", new_text: "first" },
+      { kind: "ins", old_line: null, new_line: 2, old_text: "", new_text: "second" },
+    ]
+    : [
+      { kind: "del", old_line: 1, new_line: null, old_text: "first", new_text: "" },
+      { kind: "del", old_line: 2, new_line: null, old_text: "second", new_text: "" },
+    ];
+  return {
+    id: `F${idx}`, path, status, language: "python",
+    adds: added ? 2 : 0, dels: added ? 0 : 2,
+    summary: "", head_lines: null,
+    symbols: { added: [], modified: [], removed: [] },
+    hunks: [makeHunkBlock(`H${idx}_0`, "the whole file", {
+      header: added ? "@@ -0,0 +1,2 @@" : "@@ -1,2 +0,0 @@",
+      old_start: added ? 0 : 1, old_count: added ? 0 : 2,
+      new_start: added ? 1 : 0, new_count: added ? 2 : 0,
+      adds: added ? 2 : 0, dels: added ? 0 : 2,
+      rows,
+    })],
+  };
+}
+
 function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
   return {
     version: "1",
@@ -1831,6 +1862,106 @@ describe("review console", () => {
   });
 });
 
+// --- One-sided files -------------------------------------------------------
+// An added file's rows have no pre-image and a deleted file's no
+// post-image, so one half of the grid is blank for its whole length. The
+// renderer marks the stream and the stylesheet collapses to the live
+// half; the empty one stays in the DOM for the comment gutter and the
+// annotation placeholders to address.
+
+describe("one-sided files", () => {
+  function oneSidedData(status: "added" | "deleted"): ViewerData {
+    return makeData({
+      pending: false,
+      files: [makeOneSidedFile(0, "new_thing.py", status)],
+    });
+  }
+
+  /** The collapse is the stylesheet's; the class alone would prove
+   *  nothing. jsdom has no layout but does cascade a stylesheet, so the
+   *  assertions read `display` off the shipped rules. Injected after
+   *  boot, which writes the head itself. */
+  function installStylesheet(): void {
+    const style = document.createElement("style");
+    style.textContent = fs.readFileSync(
+      path.resolve(process.cwd(), "semantic_code_review/viewer/assets/viewer.css"),
+      "utf-8",
+    );
+    document.head.appendChild(style);
+  }
+
+  test("an added file drops the old half and spans the new one", async () => {
+    window.location.hash = "#fold=off";      // the code, not the summaries
+    await bootViewer(oneSidedData("added"));
+    installStylesheet();
+
+    const diff = document.querySelector("#app .file .diff") as HTMLElement;
+    expect(diff.classList.contains("diff-only-new")).toBe(true);
+    const half = (side: string): HTMLElement =>
+      diff.querySelector(`.half-${side}`) as HTMLElement;
+    // In the DOM — comments and annotations address its nodes — and out
+    // of the layout.
+    expect(half("old")).not.toBeNull();
+    expect(getComputedStyle(half("old")).display).toBe("none");
+    expect(getComputedStyle(half("new")).display).toBe("grid");
+    expect(getComputedStyle(diff).gridTemplateColumns).toBe("minmax(0, 1fr)");
+    expect(half("new").querySelectorAll(".row")).toHaveLength(2);
+  });
+
+  test("a deleted file drops the new half", async () => {
+    window.location.hash = "#fold=off";
+    await bootViewer(oneSidedData("deleted"));
+    installStylesheet();
+
+    const diff = document.querySelector("#app .file .diff") as HTMLElement;
+    expect(diff.classList.contains("diff-only-old")).toBe(true);
+    expect(getComputedStyle(diff.querySelector(".half-new") as HTMLElement).display).toBe("none");
+    expect(getComputedStyle(diff.querySelector(".half-old") as HTMLElement).display).toBe("grid");
+  });
+
+  test("a modified file keeps both halves", async () => {
+    window.location.hash = "#fold=off";
+    await bootViewer(makeData({ pending: false }));   // a.py, pair rows
+    installStylesheet();
+
+    const diff = document.querySelector("#app .file .diff") as HTMLElement;
+    expect(diff.className).toBe("diff");
+    expect(getComputedStyle(diff.querySelector(".half-old") as HTMLElement).display).toBe("grid");
+    expect(getComputedStyle(diff).gridTemplateColumns).toBe("minmax(0, 1fr) minmax(0, 1fr)");
+  });
+
+  test("a comment on an added file's line anchors on the new side", async () => {
+    window.location.hash = "#fold=off";
+    await bootViewer(oneSidedData("added"));
+
+    const cell = document.querySelector("#app .half-new .row .cell-lineno") as HTMLElement;
+    expect(cell.textContent).toBe("1");
+    cell.click();
+    const ta = document.querySelector<HTMLTextAreaElement>(".comment-editor-input")!;
+    ta.value = "this file needs a header";
+
+    let posted: Record<string, unknown> | null = null;
+    (globalThis.fetch as unknown as { mockImplementationOnce: (fn: typeof fetch) => void })
+      .mockImplementationOnce(((url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, init });
+        posted = JSON.parse(init!.body as string);
+        return Promise.resolve({ status: 200, ok: true, json: () => Promise.resolve(posted) } as Response);
+      }) as typeof fetch);
+    document.querySelector<HTMLButtonElement>(".comment-btn-save")!.click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    expect(posted).not.toBeNull();
+    expect(posted!.file).toBe("new_thing.py");
+    expect(posted!.side).toBe("new");
+    expect(posted!.line).toBe(1);
+    expect(document.querySelector(".comment-thread-entry")!.textContent)
+      .toContain("this file needs a header");
+    // The alignment placeholder went into the dropped half, where it
+    // costs nothing.
+    expect(document.querySelector("#app .half-old .row-placeholder")).not.toBeNull();
+  });
+});
+
 // --- Rendered markdown mode (ADR 0004 slice 2) -----------------------------
 // End-to-end through the bundled viewer: the per-file toggle appears only
 // for .md files; flipping it fetches /file-text and swaps the body from
@@ -2277,19 +2408,22 @@ describe("overview mode (ADR 0007)", () => {
   // --- the detail panel ------------------------------------------------
 
   describe("a reference opens beside the document", () => {
-    const FILES = ["a.py", "b.py"].map((path, i) => ({
-      id: `F${i}`, path, status: "modified", language: "python",
-      adds: 1, dels: 1, summary: "", head_lines: null,
-      symbols: { added: [], modified: [], removed: [] },
-      hunks: [makeHunkBlock(`H${i}_0`, "guards the path")],
-    }));
+    const FILES = [
+      ...["a.py", "b.py"].map((path, i) => ({
+        id: `F${i}`, path, status: "modified", language: "python",
+        adds: 1, dels: 1, summary: "", head_lines: null,
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock(`H${i}_0`, "guards the path")],
+      })),
+      makeOneSidedFile(2, "c.py", "added"),
+    ];
 
-    // Two file references to swap between, and one inline hunk
-    // reference — the case that has to arrive unfolded.
+    // Two file references to swap between, and two inline hunk
+    // references — the case that has to arrive unfolded.
     const PANEL_DOC = {
       ...DOC,
       sections: [
-        { ...DOC.sections[0], body: "Ground. The guard is [H0_0]." },
+        { ...DOC.sections[0], body: "Ground. The guard is [H0_0], and [H2_0] is new." },
         {
           ...DOC.sections[1],
           refs: [{ kind: "file", id: "F0" }, { kind: "file", id: "F1" }],
@@ -2313,8 +2447,10 @@ describe("overview mode (ADR 0007)", () => {
       return document.querySelectorAll<HTMLElement>(".explainer-map-row .explainer-ref")[n];
     }
 
-    function hunkRef(): HTMLElement {
-      return document.querySelector("#app .explainer-arrow") as HTMLElement;
+    /** The Nth inline hunk reference: 0 addresses the modified file's
+     *  hunk, 1 the added file's. */
+    function hunkRef(n = 0): HTMLElement {
+      return document.querySelectorAll<HTMLElement>("#app .explainer-arrow")[n];
     }
 
     test("the file opens in the panel, and the document is not rebuilt", async () => {
@@ -2349,6 +2485,18 @@ describe("overview mode (ADR 0007)", () => {
       await new Promise<void>((r) => setTimeout(r, 0));
       expect(document.querySelector('.hunk[data-id="H0_0"]')!.classList.contains("folded"))
         .toBe(true);
+    });
+
+    test("an added file spends the panel on the half that has content", async () => {
+      // The panel is the surface where the dead half costs most: the
+      // grid is the shared renderer's, so the collapse arrives with it.
+      const panel = await bootWithPanel();
+      hunkRef(1).click();
+
+      const diff = panel.querySelector(".diff") as HTMLElement;
+      expect(diff.classList.contains("diff-only-new")).toBe(true);
+      expect(diff.querySelector(".half-old")).not.toBeNull();
+      expect(diff.querySelectorAll(".half-new .row")).toHaveLength(2);
     });
 
     test("the split packs against the panel only while it is open", async () => {
