@@ -17,9 +17,12 @@
 //   - explainer_panel.ts hosts a second render of one file, beside the
 //     document; it takes the per-file renderer from here as a callback,
 //     so the dependency runs one way
+//   - console.ts owns the transcript drawer, which this module's Esc
+//     chain collapses (render.ts → console.ts, as boot.ts wires it)
 
 import { Annotations } from "./annotations";
 import { Comments } from "./comments";
+import { Console } from "./console";
 import { Explainer } from "./explainer";
 import { ExplainerPanel, type PanelHost } from "./explainer_panel";
 import { FileRows } from "./file_rows";
@@ -1278,14 +1281,21 @@ function _onKeydown(e: KeyboardEvent): void {
   }
 }
 
-/** Esc dismisses the topmost thing this handler owns: the help overlay,
- *  else the detail panel. The comment editor and the console prompt
- *  handle their own Esc on the input, which never reaches here —
- *  `_onKeydown` returns early for text fields. */
+/** Esc dismisses the topmost thing this handler owns, one per press: the
+ *  help overlay, else the console drawer, else the detail panel. The
+ *  comment editor and the console prompt handle their own Esc on the
+ *  input, which never reaches here — `_onKeydown` returns early for text
+ *  fields — so the prompt's Esc keeps its own meaning (cancel the turn,
+ *  else collapse *and* drop the conversation). From anywhere else the
+ *  drawer collapses with its transcript intact. */
 function _onEscape(): void {
   const overlay = document.getElementById("help-overlay");
   if (overlay && !overlay.classList.contains("hidden")) {
     _closeHelp();
+    return;
+  }
+  if (Console.drawerOpen()) {
+    Console.collapse();
     return;
   }
   ExplainerPanel.close();

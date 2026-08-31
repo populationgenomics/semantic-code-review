@@ -607,10 +607,10 @@ of leaving the mode. Rationale is the **ADR 0007 addendum of
   delegated gutter listener reaches it, and it renders the `.file` ›
   `.row` › `.cell-lineno` chain `renderAll` walks. Mounting content
   replays threads and reflows arrows the way a diff render does.
-- **Esc closes the panel**, after the help overlay: the two things
-  render.ts's key handler owns, topmost first. The comment editor and
-  the console prompt keep their own Esc on their input, which the
-  handler never sees.
+- **Esc closes the panel**, after the help overlay and the console
+  drawer: the surfaces render.ts's key handler owns, topmost first, one
+  per press. The comment editor and the console prompt keep their own Esc
+  on their input, which the handler never sees.
 - **The panel is not in the hash.** Reloading a URL restores the mode
   and the collapse level, not what was open beside the document. A
   follow-up if reviewers miss it; the reference is one click away in the

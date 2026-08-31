@@ -9,7 +9,14 @@
 // the answer, `console-tool` frames surface tool activity, and a
 // terminal `console-done` / `console-error` ends the turn. A Stop
 // affordance (and `Esc`) cancels an in-flight turn via /console/cancel;
-// a second `Esc` collapses the drawer and drops the conversation.
+// a second `Esc` *in the prompt* collapses the drawer and drops the
+// conversation.
+//
+// Two dismissals, differing in what survives. The drawer's × — and
+// page-level `Esc`, which render.ts routes here — collapse only: the
+// transcript and the server-side history stay, and returning to the
+// prompt brings the drawer back. `Esc` with the prompt focused is the
+// one that drops the conversation.
 //
 // The conversation `message_history` lives server-side and is
 // ephemeral; this module only holds the visible transcript. Every
@@ -108,6 +115,16 @@ function build(footer: HTMLElement): void {
   // turn. Grows upward (CSS caps its height, then it scrolls).
   _drawer = document.createElement("div");
   _drawer.className = "console-drawer hidden";
+  // Collapse-only ×, on the drawer rather than inside the transcript:
+  // `dismiss` clears the transcript's children.
+  const shut = document.createElement("button");
+  shut.className = "console-close";
+  shut.type = "button";
+  shut.textContent = "×";
+  shut.title = "Hide the transcript (Esc)";
+  shut.setAttribute("aria-label", "Hide the transcript");
+  shut.addEventListener("click", () => collapse());
+  _drawer.appendChild(shut);
   _transcript = document.createElement("div");
   _transcript.className = "console-transcript";
   _drawer.appendChild(_transcript);
@@ -139,11 +156,12 @@ function build(footer: HTMLElement): void {
   _stop.addEventListener("click", () => cancelTurn());
   footer.insertBefore(_stop, _input.nextSibling);
 
-  _input.addEventListener("input", autogrow);
+  _input.addEventListener("input", onInput);
   _input.addEventListener("keydown", onInputKey);
   // Focusing the prompt reveals the chip for a selection made just
-  // before the click; the selectionchange tracker keeps it current.
-  _input.addEventListener("focus", renderChip);
+  // before the click; the selectionchange tracker keeps it current. It
+  // is also the way back to a collapsed transcript.
+  _input.addEventListener("focus", onInputFocus);
   document.addEventListener("selectionchange", onSelectionChange);
 }
 
@@ -212,12 +230,26 @@ function clearSelection(): void {
 function wireGlobalKeys(): void {
   window.addEventListener("keydown", (e: KeyboardEvent) => {
     // Ctrl-P / Cmd-P focuses the prompt, suppressing the print dialog.
+    // Explicit restore: a prompt that already has focus fires no focus
+    // event for `onInputFocus` to act on.
     if ((e.ctrlKey || e.metaKey) && (e.key === "p" || e.key === "P")) {
       e.preventDefault();
-      reveal();
+      restore();
       _input?.focus();
     }
   });
+}
+
+function onInputFocus(): void {
+  renderChip();
+  restore();
+}
+
+function onInput(): void {
+  autogrow();
+  // A browser that leaves focus in the prompt when the × is clicked
+  // makes typing the return trip, with no focus event in between.
+  restore();
 }
 
 function onInputKey(e: KeyboardEvent): void {
@@ -432,12 +464,36 @@ function reveal(): void {
   _drawer?.classList.remove("hidden");
 }
 
+/** Bring a collapsed transcript back — the return trip from the × and
+ *  from page-level `Esc`, both of which keep it. An empty transcript
+ *  stays collapsed: the drawer would be a bare strip above the footer. */
+function restore(): void {
+  if (_transcript?.firstChild) reveal();
+}
+
+/** Hide the drawer, keeping the transcript and the server-side
+ *  conversation. `dismiss` is the one that drops them. */
 function collapse(): void {
   _drawer?.classList.add("hidden");
+}
+
+/** Whether the transcript is on screen. render.ts's page-level `Esc`
+ *  asks before it collapses, so one press dismisses one surface. */
+function drawerOpen(): boolean {
+  return !!_drawer && !_drawer.classList.contains("hidden");
 }
 
 function scrollToEnd(): void {
   if (_drawer) _drawer.scrollTop = _drawer.scrollHeight;
 }
 
-export const Console = { init, markReady, onDelta, onTool, onDone, onError };
+export const Console = {
+  init,
+  markReady,
+  drawerOpen,
+  collapse,
+  onDelta,
+  onTool,
+  onDone,
+  onError,
+};

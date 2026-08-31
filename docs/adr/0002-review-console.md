@@ -101,8 +101,12 @@ multi-turn* — so those are the only two places we build something new.
   shortcut — acceptable on a dedicated localhost tab). Rejected: a
   summoned/hidden overlay — the always-present line is lower friction.
 - Engaged → input auto-grows (1→~6 lines) and a transcript drawer grows
-  upward (~50–60vh, then scrolls). `Esc` cancels an in-flight turn, else
-  collapses + drops history.
+  upward (~50–60vh, then scrolls). Two dismissals, differing in what
+  survives: the drawer's sticky × and page-level `Esc` (render.ts's
+  layered chain — help overlay → drawer → detail panel, one surface per
+  press) collapse only, and returning to the prompt re-opens the drawer
+  with the transcript; `Esc` **in the prompt** cancels an in-flight turn,
+  else collapses and drops the conversation.
 - **Selection-aware, turn-anchored.** On submit, `window.getSelection()`
   is walked up the DOM (reusing `comments.ts`'s
   `.cell-lineno`/`.hunk`/`.file` resolution) and classified code /

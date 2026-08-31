@@ -1308,8 +1308,22 @@ body { padding-bottom: 30px; }
   background: var(--bg-alt); border-top: 1px solid var(--border);
   z-index: 39;
   padding: 12px 16px;
+  /* A column so the × takes its own row above the transcript rather
+     than overlapping the first turn on a narrow window. */
+  display: flex; flex-direction: column;
 }
 .console-drawer.hidden { display: none; }
+/* Collapses the drawer, keeping the transcript. Sticky in the drawer's
+   own scroll, so it stays reachable however long the transcript, and
+   opaque because the turns scroll under it. */
+.console-close {
+  position: sticky; top: 0; align-self: flex-end; flex: 0 0 auto;
+  font-family: var(--ui); font-size: 14px; line-height: 1;
+  color: var(--fg-muted); background: var(--bg-alt);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 3px 7px; cursor: pointer;
+}
+.console-close:hover { background: var(--bg-panel); color: var(--fg); }
 .console-transcript {
   display: flex; flex-direction: column; gap: 16px;
   /* Left-aligned (not centred) so the transcript lines up under the

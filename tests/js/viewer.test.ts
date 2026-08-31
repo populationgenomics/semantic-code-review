@@ -290,9 +290,51 @@ function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
   };
 }
 
+// --- Page-level listeners --------------------------------------------------
+// Every test evals its own copy of the bundle, and each copy binds page-
+// level handlers — render.ts's keydown on `document`, console.ts's on
+// `window`. Wiping innerHTML detaches the DOM a past copy was built over
+// but not its handlers, so one keypress in a later test runs every
+// earlier boot's handler too; the ones that read a surface off the live
+// document by id (the help overlay) then act on it, and a layered
+// dismissal appears to skip a layer. Record what each boot binds and
+// unbind it after the test.
+
+interface BoundListener {
+  target: EventTarget;
+  type: string;
+  fn: EventListenerOrEventListenerObject;
+  opts: boolean | AddEventListenerOptions | undefined;
+}
+const boundListeners: BoundListener[] = [];
+const realAddEventListener: Array<[EventTarget, EventTarget["addEventListener"]]> = [];
+
+function recordPageListeners(): void {
+  for (const target of [document, window] as EventTarget[]) {
+    const real = target.addEventListener.bind(target);
+    realAddEventListener.push([target, real]);
+    target.addEventListener = ((
+      type: string,
+      fn: EventListenerOrEventListenerObject,
+      opts?: boolean | AddEventListenerOptions,
+    ) => {
+      boundListeners.push({ target, type, fn, opts });
+      real(type, fn, opts);
+    }) as EventTarget["addEventListener"];
+  }
+}
+
+function dropPageListeners(): void {
+  for (const [target, real] of realAddEventListener) target.addEventListener = real;
+  realAddEventListener.length = 0;
+  for (const l of boundListeners) l.target.removeEventListener(l.type, l.fn, l.opts);
+  boundListeners.length = 0;
+}
+
 // --- Global hooks ----------------------------------------------------------
 
 beforeEach(() => {
+  recordPageListeners();
   eventSourceInstances.length = 0;
   fetchResponses.length = 0;
   fetchCalls.length = 0;
@@ -321,6 +363,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  dropPageListeners();
   document.head.innerHTML = "";
   document.body.innerHTML = "";
 });
@@ -1888,6 +1931,111 @@ describe("review console", () => {
     expect(document.querySelector(".console-q")).toBeNull();
     expect(fetchCalls.some((c) => c.url.includes("/console/reset"))).toBe(true);
   });
+
+  // --- Collapse-only dismissal ------------------------------------------
+  // The × and page-level Esc hide the drawer and keep everything: the
+  // transcript nodes, and the server-side conversation the prompt's own
+  // Esc drops. Returning to the prompt is the way back in.
+
+  /** A finished turn in the drawer — where every dismissal case starts. */
+  async function askAndAnswer(question = "why pagination?"): Promise<void> {
+    const id = await ask(question);
+    lastEventSource().dispatch("console-done", { console_id: id, answer: "because pages" });
+  }
+
+  const drawer = (): HTMLElement =>
+    document.querySelector(".console-drawer") as HTMLElement;
+  const collapsed = (): boolean => drawer().classList.contains("hidden");
+  const closeBtn = (): HTMLButtonElement =>
+    document.querySelector(".console-close") as HTMLButtonElement;
+  const resetPosted = (): boolean =>
+    fetchCalls.some((c) => c.url.includes("/console/reset"));
+
+  test("the × hides the drawer and keeps the conversation", async () => {
+    await bootViewer(makeData({ pending: false }));
+    installStylesheet();
+    await askAndAnswer();
+    expect(collapsed()).toBe(false);
+    // In the drawer's own scroller, sticky: a long transcript never
+    // scrolls the way out of reach.
+    expect(closeBtn().parentElement).toBe(drawer());
+    expect(getComputedStyle(closeBtn()).position).toBe("sticky");
+    expect(getComputedStyle(drawer()).overflowY).toBe("auto");
+
+    closeBtn().dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    expect(collapsed()).toBe(true);
+    expect(document.querySelector(".console-q")?.textContent).toBe("why pagination?");
+    expect(document.querySelector(".console-a .console-text")?.textContent)
+      .toContain("because pages");
+    expect(resetPosted()).toBe(false);
+  });
+
+  test("returning to the prompt brings the hidden transcript back", async () => {
+    await bootViewer(makeData({ pending: false }));
+    const input = document.querySelector<HTMLTextAreaElement>(".console-input")!;
+    await askAndAnswer();
+    closeBtn().click();
+    expect(collapsed()).toBe(true);
+
+    input.focus();
+    expect(collapsed()).toBe(false);
+    expect(document.querySelector(".console-q")).not.toBeNull();
+
+    // And typing does, for a browser that leaves focus in the prompt
+    // when the × is clicked — no focus event in between.
+    closeBtn().click();
+    input.value = "and the cursor?";
+    input.dispatchEvent(new Event("input"));
+    expect(collapsed()).toBe(false);
+  });
+
+  test("Ctrl-P opens a drawer that has a transcript, not an empty one", async () => {
+    await bootViewer(makeData({ pending: false }));
+    const input = document.querySelector<HTMLTextAreaElement>(".console-input")!;
+    const ctrlP = (): void => window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "p", ctrlKey: true, bubbles: true }),
+    );
+
+    // Nothing asked yet: the prompt takes focus, and no bare strip
+    // opens above the footer.
+    ctrlP();
+    expect(document.activeElement).toBe(input);
+    expect(collapsed()).toBe(true);
+
+    await askAndAnswer();
+    closeBtn().click();
+    ctrlP();
+    expect(collapsed()).toBe(false);
+  });
+
+  test("page-level Esc hides the drawer without dropping the conversation", async () => {
+    await bootViewer(makeData({ pending: false }));
+    await askAndAnswer();
+
+    // Focus anywhere but the prompt: the press render.ts routes.
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+    expect(collapsed()).toBe(true);
+    expect(document.querySelector(".console-q")).not.toBeNull();
+    expect(resetPosted()).toBe(false);
+  });
+
+  test("the help overlay is dismissed before the drawer", async () => {
+    await bootViewer(makeData({ pending: false }));
+    await askAndAnswer();
+    const overlay = document.getElementById("help-overlay")!;
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "?", bubbles: true }));
+    expect(overlay.classList.contains("hidden")).toBe(false);
+
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(overlay.classList.contains("hidden")).toBe(true);
+    expect(collapsed()).toBe(false);
+
+    // The next press is the drawer's.
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(collapsed()).toBe(true);
+  });
 });
 
 // --- One-sided files -------------------------------------------------------
@@ -2714,6 +2862,25 @@ describe("overview mode (ADR 0007)", () => {
       mapRow(0).click();
       expect(panel.hidden).toBe(false);
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      expect(panel.hidden).toBe(true);
+    });
+
+    test("Esc hides the console drawer before it closes the panel", async () => {
+      const panel = await bootWithPanel();
+      mapRow(0).click();
+      const input = document.querySelector<HTMLTextAreaElement>(".console-input")!;
+      input.value = "what am I looking at?";
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await new Promise<void>((r) => setTimeout(r, 0));
+      const drawer = document.querySelector(".console-drawer") as HTMLElement;
+      expect(drawer.classList.contains("hidden")).toBe(false);
+
+      // One surface per press: the drawer goes, the panel stays.
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      expect(drawer.classList.contains("hidden")).toBe(true);
+      expect(panel.hidden).toBe(false);
+
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       expect(panel.hidden).toBe(true);
     });
 
