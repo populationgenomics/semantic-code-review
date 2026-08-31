@@ -1,7 +1,9 @@
 """System prompts for the LLM passes.
 
-Bump `PROMPT_VERSION` when a prompt changes — the cache layer keys on
-it so a bump forces a full re-run.
+`PROMPT_VERSION` is a path segment of the on-disk cache, so bumping it
+namespaces every pass's entries away at once — for a structural or
+schema shift. Edited wording needs no bump: each pass's key folds in its
+system text and its own inputs, so a reworded prompt misses on its own.
 
 The wire format the model emits is constrained by the Pydantic models
 in `schemas.py` (`OverviewSubmission`, `HunkSubmission`) via
@@ -275,11 +277,14 @@ EXPLAINER_SKELETON_GUIDANCE = (
     "the one data object worth tracing end to end through an example. Name them "
     "as they are named in the code.\n\n"
     "# section_refs\n"
-    "The three prose sections — Background, Intuition, Code — are written by later "
-    "calls, one per section. Each of those calls sees only the files you assign it "
-    "here, with their hunks and hunk intents. Assigning a file is what puts the code "
-    "in front of the call that writes about it; omitting one is a decision that the "
-    "section has nothing to say about it.\n"
+    "The three prose sections — Background, Intuition, Code — are written by two "
+    "later calls: Background alone, then Intuition and Code together. Every one of "
+    "those calls is seeded with the whole change, every file and every hunk intent, "
+    "whatever you put here. So assigning a file does not put code in front of a call; "
+    "it says what the section is ABOUT — its subject, the references it starts from, "
+    "and the counts the sidebar shows against it. Omitting a file from a section is a "
+    "decision that the section has nothing to say about it, not a decision to keep it "
+    "out of sight.\n"
     "- `background`: the files whose shape BEFORE this change the reader has to "
     "understand before any of the rest lands. Often the change's neighbours rather "
     "than its members — what the changed code sits on top of, what calls it, the "
@@ -317,9 +322,11 @@ EXPLAINER_SECTION_GUIDANCE = (
     "more than one, that is because they have to agree with each other: write them "
     "as consecutive parts of one document, not as two answers to two questions.\n\n"
     "You receive the change's overview, the document so far including any section "
-    "already written, the full list of the change's files with their viewer ids, "
-    "and — per section you are writing — its brief and every hunk under the files "
-    "it was assigned, with the intent already established for each. Those intents "
+    "already written, the whole change — every file and every hunk, with the intent "
+    "already established for each — and, per section you are writing, its brief and "
+    "the files the skeleton routed to it. The routing says what a section is about, "
+    "not what you may look at: you have the whole listing so that a section can place "
+    "its own part in the change around it. Those intents "
     "are the ground truth about what each hunk does. Your job is the connective "
     "tissue between them: what they add up to, in what order they make sense, and "
     "why the change is shaped this way. Do not re-describe a hunk the intent "
@@ -382,10 +389,12 @@ EXPLAINER_SECTION_GUIDANCE = (
     "files') and cite once, or cite the one that stands for the rest.\n\n"
     "# refs\n"
     "The ordered list of what this section is about, as the sidebar and the "
-    "coverage count read it. Narrow the files you were given to the hunks that "
-    "carry the section's claims where you can; leave it at files where the whole "
-    "file is the subject. An id that is not in the `# Files` or `Anchored code` "
-    "lists addresses nothing and is dropped.\n\n"
+    "coverage count read it. Start from the files routed to this section and narrow "
+    "them to the hunks that carry its claims where you can; leave it at files where "
+    "the whole file is the subject. A part you did explain that was routed to no "
+    "section belongs here too — this list is what the section covers, so it should "
+    "match the prose. An id that is not in the `# The change` listing addresses "
+    "nothing and is dropped.\n\n"
     "# toy_data\n"
     "Set it when your worked examples use identifiers, counts or values you "
     "invented rather than ones taken from the code. The document's footer then "
@@ -432,10 +441,11 @@ EXPLAINER_SECTION_BRIEFS: dict[str, str] = {
         "the change has natural parts (the contract, its consumers, the tests); "
         "each subsection gets its own title and its own references. The "
         "subsections together cover every part the Map sends the reader to. Your "
-        "seed is the hunks of the files this section was assigned, which may be "
-        "fewer parts than the Map names; the Map is in front of you and the "
-        "repository is a tool call away, so a part the seed does not carry is "
-        "read, not dropped. Leaving one to the diff is allowed as one stated "
+        "seed carries every hunk in the change and what each one does, so no part "
+        "the Map names is missing from it — a part routed to another section, or to "
+        "none, is one you have in front of you like the rest. Where an intent line "
+        "is not enough to explain a part, the repository is a tool call away. "
+        "Leaving one to the diff is allowed as one stated "
         "sentence — what it is, and why the walkthrough does not take it — never "
         "in silence. Give the section body the through-line, and let the "
         "subsections carry the detail."

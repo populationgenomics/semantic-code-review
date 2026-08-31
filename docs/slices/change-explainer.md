@@ -133,12 +133,14 @@ not an empty state.
   three prose sections landed with empty `refs`. *Closed in slice 2*:
   the submission grew `section_refs` (file ids per prose section, since
   the skeleton is shown files and not hunks) and `_assemble` populates
-  them. A section's prose pass expands each file into its hunks and may
-  narrow to hunk references of its own. The assignment carries a coverage
-  duty on both sides: the three lists cover the Map between them, with
-  Code the home for what Background and Intuition do not take, and the
-  walkthrough's subsections cover the parts the Map names — reading what
-  the seed does not carry rather than passing over it in silence.
+  them. The assignment routes rather than scopes: every prose pass is
+  seeded with the whole change — every file, and every hunk with its
+  established intent — and a section's list says what it is about and
+  seeds the references it starts from, which its own pass may narrow to
+  hunks. Routing carries a coverage duty on both sides: the three lists
+  cover the Map between them, with Code the home for what Background and
+  Intuition do not take, and the walkthrough's subsections cover the
+  parts the Map names, whichever section they were routed to.
 - **Corrupt vs stale `explainer.json`.** A SHA or version mismatch is
   discarded with a log line; an unparseable file raises
   `ExplainerCorrupt` (500 on `GET /explainer`). Regenerating overwrites

@@ -617,3 +617,43 @@ from its own `max-width` and auto margins, so it holds inside a narrower
 flex item and the panel takes the width the prose was not using. Each
 diff half keeps its content-driven minimum width and scrolls
 horizontally inside the panel — the price of the two side by side.
+
+---
+
+## Addendum — assignment routes, it does not scope (2026-08-31)
+
+Amends the first addendum's seed description. The pass table, the tool
+grant and the budget stand.
+
+Each prose pass was seeded with the hunks of the files the skeleton
+assigned it, so the assignment decided what the pass could see. A
+tool-less call that sees paths, line counts and one-line summaries was
+thereby the bound on what a tool-bearing call could know — the same
+misreading of the evidence the tools addendum corrects, one level down.
+It cost a real document: on a 28-file change the skeleton gave the
+change's central subsystem five Map rows and no prose section, and the
+walkthrough, seeded without it, wrote around it.
+
+Every prose pass is now seeded with the whole change: every file with
+its role and hunk count, and every hunk with its header and the intent
+already established for it. About two lines a hunk, so the listing is
+strictly smaller than the raw diff the overview pass takes in one call;
+it has no size cap for the same reason that one does not.
+
+The assignment stays, as routing rather than as scope. It is what a
+section is *about* — the subject the brief is read against, the
+references the section is born with, and the coverage counts the sidebar
+reads off them — and it is one line in the seed naming the files routed
+there. A section routed nothing is told that in one line instead of
+being handed a smaller seed.
+
+The readiness gate stays on the routed hunks. Those are the ones a
+section's own claims rest on; a hunk elsewhere in the listing that the
+per-hunk pass has not reached yet is shown as `(not annotated)` rather
+than blocking every section on the whole diff.
+
+Caching is unaffected in shape. The walkthrough keys on its assembled
+user text, so a wider seed is a new key. Background keys on `(base_sha,
+guidance)` and its seed now moves with the head in more places than it
+did — the deliberate trade the first addendum's table already makes,
+since the point of that key is prose that survives head movement.
