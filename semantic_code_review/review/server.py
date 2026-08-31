@@ -18,6 +18,8 @@ import logging
 import os
 import queue
 import re
+import socket
+import sys
 import threading
 import time
 import urllib.parse
@@ -1255,6 +1257,40 @@ class _Handler(BaseHTTPRequestHandler):
         self.ctx.done_event.set()
 
 
+def _is_client_hangup(exc: BaseException | None) -> bool:
+    """True when ``exc`` is — or was raised from — a client hanging up."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, ConnectionResetError | BrokenPipeError):
+            return True
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+class _ReviewHTTPServer(ThreadingHTTPServer):
+    """A ThreadingHTTPServer that stays quiet when a client hangs up.
+
+    A browser dropping a connection mid-request — Chrome freezes
+    background tabs and tears their sockets down — reaches
+    ``handle_error`` as a ConnectionResetError / BrokenPipeError, which
+    stdlib prints as a full traceback on stderr. Routine here, and next
+    to the review's own output it reads as a crash. Every other
+    exception keeps the traceback: those are ours.
+    """
+
+    def handle_error(
+        self,
+        request: socket.socket | tuple[bytes, socket.socket],
+        client_address: str | tuple[str, int],
+    ) -> None:
+        exc = sys.exception()
+        if _is_client_hangup(exc):
+            log.debug("client %s disconnected mid-request: %r", client_address, exc)
+            return
+        super().handle_error(request, client_address)
+
+
 class ReviewServer:
     """Thin wrapper over :class:`ThreadingHTTPServer`.
 
@@ -1295,7 +1331,7 @@ class ReviewServer:
         )
         self._host = host
         self._port = port
-        self._httpd: ThreadingHTTPServer | None = None
+        self._httpd: _ReviewHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
@@ -1308,7 +1344,7 @@ class ReviewServer:
         _Bound.ctx = ctx  # type: ignore[assignment]
         handler_cls = _Bound
 
-        self._httpd = ThreadingHTTPServer((self._host, self._port), handler_cls)
+        self._httpd = _ReviewHTTPServer((self._host, self._port), handler_cls)
         self._httpd.daemon_threads = True
         self._port = self._httpd.server_address[1]
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)

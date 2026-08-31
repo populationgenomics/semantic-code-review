@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import socket
+import struct
 import threading
 import time
 import urllib.error
@@ -345,6 +348,35 @@ def test_wait_until_done_times_out_cleanly(server) -> None:
     t.start()
     t.join(timeout=2.0)
     assert result["done"] is False
+
+
+# --- client hangups -----------------------------------------------------
+
+
+def test_a_dropped_connection_is_logged_not_printed(server, capfd, caplog) -> None:
+    """A client that vanishes mid-request costs a debug line, not a
+    traceback on the reviewer's terminal, and the server keeps serving."""
+    caplog.set_level(logging.DEBUG, logger="semantic_code_review.review.server")
+    port = int(server.url().rsplit(":", 1)[1])
+    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    # Headers left unterminated, so the handler is parked in readline when
+    # the reset lands; SO_LINGER with a zero timeout sends RST rather than
+    # FIN, which is what a frozen tab's teardown looks like to the server.
+    s.sendall(b"GET /data.json HTTP/1.1\r\nHost: localhost\r\n")
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    s.close()
+
+    for _ in range(100):
+        if any("disconnected mid-request" in r.getMessage() for r in caplog.records):
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("hangup never reached handle_error")
+
+    code, body = _request(server.url() + "/data.json")
+    assert code == 200
+    assert body["version"] == "1"
+    assert "Traceback" not in capfd.readouterr().err
 
 
 # --- /events SSE channel ------------------------------------------------
