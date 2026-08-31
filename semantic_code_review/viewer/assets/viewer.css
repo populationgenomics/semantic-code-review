@@ -1655,9 +1655,16 @@ body { padding-bottom: 30px; }
 
 /* Figures break the measure slightly — the doc's one licensed overflow. */
 .explainer-figure { margin: 28px -4ch; padding: 0; }
-/* `overflow: visible` so a genuine near-miss sits a few pixels proud
-   rather than losing the end of a word to the viewBox clip. */
-.explainer-figure svg { display: block; width: 100%; height: auto; overflow: visible; }
+/* `width: 100%` shrinks a figure wider than the column; the renderer's
+   inline `max-width` — the viewBox's own width — stops it growing past
+   the size it was drawn at, and the auto margins centre it when it does
+   not fill the column. `overflow: visible` so a genuine near-miss sits a
+   few pixels proud rather than losing the end of a word to the viewBox
+   clip. */
+.explainer-figure svg {
+  display: block; width: 100%; height: auto; overflow: visible;
+  margin-inline: auto;
+}
 
 /* Labels centre on their coordinate unless the figure says otherwise.
    SVG's default is `start`, so a label placed at a box's centre x — the

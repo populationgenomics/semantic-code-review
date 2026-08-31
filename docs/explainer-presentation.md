@@ -198,9 +198,15 @@ browser from a run directory that server never wrote.
   is `marker-start`/`-mid`/`-end`, which must match `url(#id)` exactly.
 - `class` is filtered to the vocabulary below; unknown classes are
   removed, and a `class` left empty goes with them.
-- `viewBox` is required on the root; `width`/`height` there are stripped
-  (the stylesheet sizes figures to the measure). `width`/`height` on a
-  `rect` are geometry and stay.
+- `viewBox` is required on the root; `width`/`height` there are stripped.
+  The renderer sizes the figure instead: `width: 100%` of the column,
+  capped by an inline `max-width` of the viewBox's own width. Label sizes
+  in the class vocabulary are px, which inside an SVG are viewBox user
+  units, so a figure rendered wider than it was drawn magnifies every
+  label; the cap holds one unit to at most one pixel, and a figure
+  narrower than the column is centred. The prompt asks for a canonical
+  640–700 unit width, which puts the cap near the measure.
+  `width`/`height` on a `rect` are geometry and stay.
 - A DTD ends the figure rather than being sanitised around: nothing in
   the vocabulary needs one, and entity expansion is the only way an SVG
   this size is expensive to parse.
