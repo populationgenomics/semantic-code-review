@@ -9,6 +9,7 @@ from semantic_code_review.augment.agents import Client
 from semantic_code_review.augment.explainer import carry_guidance
 from semantic_code_review.augment.prompts import (
     EXPLAINER_ROLE,
+    EXPLAINER_SECTION_BRIEFS,
     EXPLAINER_SECTION_GUIDANCE,
 )
 from semantic_code_review.augment.schemas import (
@@ -206,6 +207,17 @@ def test_the_merged_call_is_seeded_with_the_map_and_the_finished_background(
     text = _prompt(diff, doc, "intuition", "code")
     assert "The RPC layer paged by offset." in text
     assert "the contract every field below follows from" in text
+
+
+def test_only_the_walkthrough_is_told_to_cover_the_parts_the_map_names() -> None:
+    """The seed's Map reaches every prose call, but the duty to cover it
+    binds the subsection set, so it rides the Code brief alone: Background
+    and Intuition are assigned the few files each is for."""
+    duty = "cover every part the Map sends the reader to"
+    assert duty in EXPLAINER_SECTION_BRIEFS["code"]
+    assert duty not in EXPLAINER_SECTION_BRIEFS["background"]
+    assert duty not in EXPLAINER_SECTION_BRIEFS["intuition"]
+    assert duty not in EXPLAINER_SECTION_GUIDANCE
 
 
 def test_a_section_the_skeleton_gave_nothing_is_told_so(diff: AnnotatedDiff, doc) -> None:

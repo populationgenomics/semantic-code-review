@@ -134,7 +134,11 @@ not an empty state.
   the submission grew `section_refs` (file ids per prose section, since
   the skeleton is shown files and not hunks) and `_assemble` populates
   them. A section's prose pass expands each file into its hunks and may
-  narrow to hunk references of its own.
+  narrow to hunk references of its own. The assignment carries a coverage
+  duty on both sides: the three lists cover the Map between them, with
+  Code the home for what Background and Intuition do not take, and the
+  walkthrough's subsections cover the parts the Map names — reading what
+  the seed does not carry rather than passing over it in silence.
 - **Corrupt vs stale `explainer.json`.** A SHA or version mismatch is
   discarded with a log line; an unparseable file raises
   `ExplainerCorrupt` (500 on `GET /explainer`). Regenerating overwrites
