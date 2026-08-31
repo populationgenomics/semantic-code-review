@@ -616,6 +616,34 @@ slider and keys 1–4 leave the mode into the diff at the level they name.
   `_updateSliderButtons`, which it did not before: a viewer that opened
   into the document with `fold=off` in the URL showed no level at all.
 
+## A section says what is happening to it ✅ done
+
+Not in the plan above; added after slice 6. The per-section status lines
+report liveness while a pass runs. Client-only.
+
+**As built**:
+
+- **The elapsed figure is minutes, on a 30-second repaint.** Measured
+  wall clock is 5 minutes for Background and 8 for the walkthrough;
+  "Writing this section…" held still for that long cannot be told from a
+  wedged tab. The interval runs only while a call is in flight — started
+  in `_drainQueue`, stopped when the queue empties and on `init` — and
+  fires the module's repaint hook, repainting the whole pane as every
+  other state change here already does. An open detail panel survives it:
+  `mount` replaces the document cell only.
+- **A wait names what it is waiting for.** "Queued behind Background…"
+  when this tab's own call holds the server's slot; "Waiting for the
+  server — retrying." when a busy 409 deferred the section and nothing
+  here is ahead of it — the slot is another tab's, and this tab is on the
+  fallback timer. The two are different waits, and the second one is the
+  reviewer's cue that the tab holding it is elsewhere. Both halves of the
+  merged walkthrough report the same wait: one call writes them.
+- **The sidebar tree carries the glance.** A section row's existing count
+  badge shows "writing…" / "queued" / "waiting" while there is one,
+  through a `statusOf` on the tree that the explainer fills in — the
+  vocabulary stays with the state that decides it, and the sidebar keeps
+  its no-dependency-on-the-explainer shape.
+
 ## Not in these slices
 
 - Regenerate-a-section-with-a-nudge (`PARKED_IDEAS.md` #3).

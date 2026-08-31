@@ -67,6 +67,12 @@ let _sectionPhase: Record<string, SectionPhase> = Object.create(null);
 // flight is asking for what is already running.
 let _writing: string | null = null;
 const _queue: string[] = [];
+// When the in-flight call started, and the repaint timer that keeps the
+// elapsed figure on its status line moving. A prose pass runs for
+// minutes, and a status line that has said the same four words for eight
+// of them cannot be told from a wedged one.
+let _writingSince = 0;
+let _tick: number | null = null;
 
 interface ExplainerInitOptions {
   onChange?: () => void;
@@ -85,6 +91,8 @@ function init(endpoint: string, data: ViewerData, opts: ExplainerInitOptions = {
   _ready = !data.pending;
   _sectionPhase = Object.create(null);
   _writing = null;
+  _writingSince = 0;
+  _stopTicking();
   _deferred.length = 0;
   _queue.length = 0;
   if (opts.onChange) _onChange = opts.onChange;
@@ -250,11 +258,39 @@ async function _drainQueue(): Promise<void> {
   while (_queue.length > 0) {
     const id = _queue.shift() as string;
     _writing = id;
+    _writingSince = Date.now();
+    _startTicking();
     _onChange?.();
     await _writeSection(id);
     _writing = null;
     _onChange?.();
   }
+  _stopTicking();
+}
+
+//: How often the pane repaints while a call is in flight, so the elapsed
+//: figure on its status line moves. Fine enough to land each minute mark
+//: within half a minute of it, and the repaint is the whole pane — which
+//: is what every other state change here already costs.
+const _TICK_MS = 30000;
+
+function _startTicking(): void {
+  if (_tick !== null) return;
+  _tick = window.setInterval(() => _onChange?.(), _TICK_MS);
+}
+
+function _stopTicking(): void {
+  if (_tick === null) return;
+  window.clearInterval(_tick);
+  _tick = null;
+}
+
+/** How long the in-flight call has been running, as a suffix for its
+ *  status line. Minutes: a passing second is not news, and rounding down
+ *  keeps the figure from claiming time that has not passed. */
+function _elapsedSuffix(): string {
+  const minutes = Math.floor((Date.now() - _writingSince) / 60000);
+  return minutes < 1 ? "" : ` ${minutes} min`;
 }
 
 async function _writeSection(id: string): Promise<void> {
@@ -539,20 +575,66 @@ function _renderSubsection(section: ExplainerSection): HTMLElement {
   return el;
 }
 
+// What this tab is doing about a section's call. `deferred` is the
+// server's slot held elsewhere, which is a different wait from queueing
+// behind a call this tab started.
+type WriteState = "writing" | "queued" | "deferred";
+
+/** Which of those a section is in, or null when its own state is the
+ *  whole answer.
+ *
+ *  By pass, not by id: the reviewer pressed one section of a merged
+ *  call, and the other one is being written too. The `queued` phase
+ *  outranks `_writing` — see the busy-409 branch of `_writeSection`. */
+function _writeState(section: ExplainerSection): WriteState | null {
+  const phase = _sectionPhase[section.id];
+  if (phase && phase.kind === "queued") {
+    return _blockingSection(section.pass_id) === null ? "deferred" : "queued";
+  }
+  if (_writing !== null && _passOf(_writing) === section.pass_id) return "writing";
+  if (_queue.some((queued) => _passOf(queued) === section.pass_id)) return "queued";
+  return null;
+}
+
+/** The section this tab is writing ahead of `passId`'s call. Null when
+ *  it is writing nothing, or writing `passId`'s own call — a deferred
+ *  section being retried is not queued behind itself. */
+function _blockingSection(passId: string): ExplainerSection | null {
+  if (_writing === null || _passOf(_writing) === passId) return null;
+  return _findSection(_writing);
+}
+
+/** The status line for a section whose prose is on its way. */
+function _writeStatusText(section: ExplainerSection, state: WriteState): string {
+  if (state === "writing") return `Writing this section…${_elapsedSuffix()}`;
+  if (state === "deferred") return "Waiting for the server — retrying.";
+  const blocker = _blockingSection(section.pass_id);
+  return blocker ? `Queued behind ${blocker.title}…` : "Queued behind another section…";
+}
+
+//: The same states as the sidebar tree shows them: a glance, next to a
+//: section's title, of what the pane says at length.
+const _SECTION_STATUS: Record<WriteState, string> = {
+  writing: "writing…",
+  queued: "queued",
+  deferred: "waiting",
+};
+
+/** What the sidebar's tree puts beside a section's title, or null when
+ *  this tab is doing nothing about it. */
+function sectionStatus(id: string): string | null {
+  const section = _findSection(id);
+  if (section === null) return null;
+  const state = _writeState(section);
+  return state === null ? null : _SECTION_STATUS[state];
+}
+
 /** The body of one prose section: what it says, or what this tab is
  *  doing about the fact that it does not say anything yet. */
 function _proseNodes(section: ExplainerSection): HTMLElement[] {
-  // By pass, not by id: the reviewer pressed one section of a merged
-  // call, and the other one is being written too.
-  const phase0 = _sectionPhase[section.id];
-  if (phase0 && phase0.kind === "queued") {
-    return [_el("p", "explainer-status", "Queued behind another section…")];
-  }
-  if (_writing !== null && _passOf(_writing) === section.pass_id) {
-    return [_el("p", "explainer-status", "Writing this section…")];
-  }
-  if (_queue.some((queued) => _passOf(queued) === section.pass_id)) {
-    return [_el("p", "explainer-status", "Queued behind another section…")];
+  const writeState = _writeState(section);
+  if (writeState !== null) {
+    return [_el("p", "explainer-status", _writeStatusText(section, writeState))];
   }
   const phase = _sectionPhase[section.id];
   if (phase && phase.kind === "waiting") {
@@ -852,6 +934,7 @@ export const Explainer = {
   generateAllPending,
   onEvent,
   sections,
+  sectionStatus,
   activeSectionId,
   setActiveSection,
   setFilePaths,

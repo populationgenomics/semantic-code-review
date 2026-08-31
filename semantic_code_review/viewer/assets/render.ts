@@ -308,6 +308,7 @@ function _renderOverviewMode(app: HTMLElement): void {
     sections: Explainer.sections(),
     activeId: Explainer.activeSectionId(),
     onPick: (id) => Explainer.setActiveSection(id),
+    statusOf: (id) => Explainer.sectionStatus(id),
   });
   Sidebar.render();
   _syncHash();

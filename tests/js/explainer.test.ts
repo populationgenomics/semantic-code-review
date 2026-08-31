@@ -501,6 +501,88 @@ function threeSectionDoc(): ExplainerDocument {
   });
 }
 
+// --- Liveness while a call runs --------------------------------------------
+
+describe("what a section says while its call runs", () => {
+  /** A POST that never answers, so the pane stays on its status line for
+   *  as long as the case needs. */
+  function hangingFetch(): void {
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      (() => new Promise(() => { /* never settles */ })) as unknown as typeof fetch,
+    );
+  }
+
+  function statusOf(sectionId: string): string {
+    const pane = Explainer.renderPane();
+    return pane.querySelector(`[data-section-id="${sectionId}"] .explainer-status`)!.textContent || "";
+  }
+
+  test("the elapsed time appears at the first minute and keeps up", () => {
+    // A pass runs for minutes; four unchanging words for eight of them
+    // cannot be told from a wedged tab.
+    vi.useFakeTimers();
+    try {
+      boot();
+      Explainer.onEvent(proseDoc() as SseExplainerEvent);
+      hangingFetch();
+      Explainer.generateSection("code");
+      // Under a minute the figure would be noise, so the line stays quiet.
+      expect(statusOf("code")).toBe("Writing this section…");
+      vi.advanceTimersByTime(3 * 60000);
+      expect(statusOf("code")).toBe("Writing this section… 3 min");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("the pane repaints on a timer for as long as the call runs", () => {
+    vi.useFakeTimers();
+    try {
+      let repaints = 0;
+      boot({}, { onChange: () => { repaints++; } });
+      Explainer.onEvent(proseDoc() as SseExplainerEvent);
+      hangingFetch();
+      Explainer.generateSection("code");
+      const started = repaints;
+      vi.advanceTimersByTime(90000);
+      expect(repaints).toBe(started + 3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("the timer stops when the queue drains", async () => {
+    vi.useFakeTimers();
+    try {
+      let repaints = 0;
+      boot({}, { onChange: () => { repaints++; } });
+      Explainer.onEvent(proseDoc() as SseExplainerEvent);
+      mockFetch([{ status: 200, body: proseDoc({ state: "ready", body: "Written." }) }]);
+      Explainer.generateSection("code");
+      await vi.advanceTimersByTimeAsync(1);
+      const settled = repaints;
+      await vi.advanceTimersByTimeAsync(5 * 60000);
+      expect(repaints).toBe(settled);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a section waiting its turn names the section ahead of it", () => {
+    // "Queued behind another section" left the reviewer to guess which,
+    // and so whether the thing they are watching is the slow one.
+    boot();
+    Explainer.onEvent(threeSectionDoc() as SseExplainerEvent);
+    hangingFetch();
+    Explainer.generateSection("background");
+    Explainer.generateSection("code");
+    expect(statusOf("background")).toBe("Writing this section…");
+    // Both halves of the merged walkthrough wait behind the same call.
+    expect(statusOf("intuition")).toBe("Queued behind Background…");
+    expect(statusOf("code")).toBe("Queued behind Background…");
+  });
+});
+
 // --- Markdown and reference chips -----------------------------------------
 
 describe("prose rendering", () => {
@@ -541,18 +623,22 @@ describe("prose rendering", () => {
     expect(box.parentElement!.tagName).toBe("DL");
   });
 
-  test("a section deferred by a busy server stays visibly queued", async () => {
+  test("a section deferred by a busy server says whose wait it is", async () => {
     // The drain loop sets `_writing` before every attempt, so a retry
     // that cleared its phase rendered "Writing…" for the length of the
     // attempt and "Queued…" between them — a 4-second flash, per
-    // section. The phase now outranks the flag.
+    // section. The phase still outranks the flag. What it says is not
+    // the in-tab queue's line: nothing here is ahead of this section,
+    // the server's one slot is held elsewhere, and this tab is waiting
+    // on a timer.
     boot();
     Explainer.onEvent(proseDoc({ state: "pending", body: "" }) as SseExplainerEvent);
     mockFetch([{ status: 409, body: { error: "an explainer pass is already running", retry: true } }]);
     Explainer.generateSection("code");
     await new Promise<void>((r) => setTimeout(r, 0));
     const text = Explainer.renderPane().textContent || "";
-    expect(text).toContain("Queued behind another section");
+    expect(text).toContain("Waiting for the server — retrying.");
+    expect(text).not.toContain("Queued behind");
     expect(text).not.toContain("Writing this section");
   });
 

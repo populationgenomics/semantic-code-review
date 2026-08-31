@@ -2060,6 +2060,27 @@ describe("overview mode (ADR 0007)", () => {
     expect(document.querySelector('#group-sidebar .group-axis[data-axis="explainer"]')).not.toBeNull();
   });
 
+  test("the section tree says which section is being written", async () => {
+    await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
+    const badge = (): Element | null =>
+      document.querySelector('#group-sidebar [data-pill-id="background"] .group-btn-count');
+    // Written, and citing nothing: no badge beside the title at all.
+    expect(badge()).toBeNull();
+
+    lastEventSource().dispatch("explainer", {
+      ...DOC,
+      sections: DOC.sections.map((s) =>
+        s.kind === "background" ? { ...s, state: "pending", body: "" } : s),
+    });
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(badge()!.textContent).toBe("…");
+
+    (globalThis.fetch as unknown as { mockImplementationOnce: (fn: typeof fetch) => void })
+      .mockImplementationOnce((() => new Promise(() => { /* never settles */ })) as unknown as typeof fetch);
+    (document.querySelector('#group-sidebar [data-pill-id="background"]') as HTMLElement).click();
+    expect(badge()!.textContent).toBe("writing…");
+  });
+
   test("the mode leaves the collapse level and the reviewer's folds alone", async () => {
     await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
     const btn = document.getElementById("overview-btn") as HTMLButtonElement;
@@ -2388,6 +2409,41 @@ describe("overview mode (ADR 0007)", () => {
       expect(panel.querySelector(".file")).toBe(fileEl);
       // The chips were rebuilt with the prose; the mark goes back on.
       expect(mapRow(0).classList.contains("explainer-ref-open")).toBe(true);
+    });
+
+    test("a repaint from the writing ticker leaves the panel where it is", async () => {
+      const panel = await bootWithPanel();
+      mapRow(0).click();
+      const fileEl = panel.querySelector(".file");
+
+      // Background back to pending, then asked for: the pane repaints on
+      // a timer for as long as the POST runs, which is minutes.
+      lastEventSource().dispatch("explainer", {
+        ...PANEL_DOC,
+        sections: PANEL_DOC.sections.map((s) =>
+          s.kind === "background" ? { ...s, state: "pending", body: "" } : s),
+      });
+      await new Promise<void>((r) => setTimeout(r, 0));
+
+      const status = (): string =>
+        document.querySelector('#app .explainer [data-section-id="background"] .explainer-status')!
+          .textContent || "";
+      vi.useFakeTimers();
+      try {
+        (globalThis.fetch as unknown as { mockImplementationOnce: (fn: typeof fetch) => void })
+          .mockImplementationOnce((() => new Promise(() => { /* never settles */ })) as unknown as typeof fetch);
+        (document.querySelector('#group-sidebar [data-pill-id="background"]') as HTMLElement).click();
+        expect(status()).toBe("Writing this section…");
+        vi.advanceTimersByTime(2 * 60000);
+        // The figure moved, so the ticker's repaint reached the pane.
+        expect(status()).toBe("Writing this section… 2 min");
+      } finally {
+        vi.useRealTimers();
+      }
+
+      expect(document.querySelector("#app .explainer-detail")).toBe(panel);
+      expect(panel.hidden).toBe(false);
+      expect(panel.querySelector(".file")).toBe(fileEl);
     });
 
     test("a comment written in the panel round-trips", async () => {
