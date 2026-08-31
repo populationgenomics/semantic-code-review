@@ -13,6 +13,7 @@ import { DataStore, type FoldRegionAddress } from "./data_store";
 import { DebugDrawer } from "./debug_drawer";
 import { Explainer } from "./explainer";
 import { Folds } from "./folds";
+import { LayoutDividers } from "./layout_dividers";
 import { PostModal } from "./post_modal";
 import { Progress } from "./progress";
 import { Render } from "./render";
@@ -55,6 +56,9 @@ async function boot(): Promise<void> {
     onChange: () => Sidebar.refreshFileCommentCounts(),
   });
   installDoneButton();
+  // The sidebar's edge is the reader's in both modes, so its divider
+  // belongs to the shell rather than to either pane's renderer.
+  LayoutDividers.installSidebar();
   Sidebar.init(DATA, {
     // Focusing a Symbols-axis pill search-highlights that symbol's name
     // across every diff line; any other pill (or none) clears it.

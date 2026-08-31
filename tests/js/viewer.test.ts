@@ -253,6 +253,20 @@ function installStylesheet(): void {
   document.head.appendChild(style);
 }
 
+/** Drag a layout divider from `fromX` to `toX`. jsdom ships no
+ *  PointerEvent, so the pointer type names ride on MouseEvent — which
+ *  carries the `clientX` the drag reads — and `setPointerCapture` is the
+ *  no-op setup.ts installs. */
+function dragDivider(el: HTMLElement, fromX: number, toX: number): void {
+  el.dispatchEvent(new MouseEvent("pointerdown", { clientX: fromX, button: 0, bubbles: true }));
+  el.dispatchEvent(new MouseEvent("pointermove", { clientX: toX, bubbles: true }));
+  el.dispatchEvent(new MouseEvent("pointerup", { clientX: toX, bubbles: true }));
+}
+
+function nudgeDivider(el: HTMLElement, key: string, shiftKey = false): void {
+  el.dispatchEvent(new KeyboardEvent("keydown", { key, shiftKey, bubbles: true }));
+}
+
 function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
   return {
     version: "1",
@@ -2139,6 +2153,102 @@ describe("rendered markdown mode", () => {
     (document.querySelector(".md-toggle") as HTMLElement).click();
     await new Promise<void>((r) => setTimeout(r, 0));
     expect(document.querySelector(".comment-thread-entry")!.textContent).toContain("reads well");
+  });
+});
+
+// --- Draggable layout boundaries -------------------------------------------
+// The sidebar's edge. jsdom reports every box as 0 wide, so a drag starts
+// from 0 and the pointer's own travel is the width it lands on — which is
+// enough for the claims here: what the drag writes, what it stores, and
+// what the stored number does on the next boot.
+
+describe("the sidebar divider", () => {
+  function divider(): HTMLElement {
+    return document.querySelector(".layout .layout-divider-sidebar") as HTMLElement;
+  }
+
+  function basis(): string {
+    return (document.getElementById("group-sidebar") as HTMLElement).style.flexBasis;
+  }
+
+  test("it is a separator the keyboard can reach, between the sidebar and the pane", async () => {
+    await bootViewer(makeData({ pending: false }));
+    installStylesheet();
+    const el = divider();
+    expect(el.getAttribute("role")).toBe("separator");
+    expect(el.getAttribute("aria-orientation")).toBe("vertical");
+    expect(el.tabIndex).toBe(0);
+    expect(el.previousElementSibling!.id).toBe("group-sidebar");
+    expect(el.nextElementSibling!.id).toBe("app");
+    expect(getComputedStyle(el).cursor).toBe("col-resize");
+  });
+
+  test("a repaint of the pane leaves it alone", async () => {
+    // It is a `.layout` child, not a member of either pane, which is
+    // what makes it the sidebar's edge in whichever mode is showing.
+    await bootViewer(makeData({ pending: false }));
+    const el = divider();
+    (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+    expect(divider()).toBe(el);
+  });
+
+  test("dragging writes the sidebar's basis and stores the width", async () => {
+    await bootViewer(makeData({ pending: false }));
+    dragDivider(divider(), 0, 300);
+    expect(basis()).toBe("300px");
+    expect(localStorage.getItem("scr-sidebar-width")).toBe("300");
+  });
+
+  test("the drag is held inside a floor and a share of the window", async () => {
+    await bootViewer(makeData({ pending: false }));
+    dragDivider(divider(), 0, 20);
+    expect(basis()).toBe("160px");                 // the floor
+    dragDivider(divider(), 0, 5000);
+    expect(basis()).toBe("410px");                 // 40% of jsdom's 1024
+  });
+
+  test("arrow keys nudge it, Shift by more", async () => {
+    await bootViewer(makeData({ pending: false }));
+    const el = divider();
+    dragDivider(el, 0, 300);
+    nudgeDivider(el, "ArrowRight");
+    expect(basis()).toBe("316px");
+    nudgeDivider(el, "ArrowLeft", true);
+    expect(basis()).toBe("252px");
+    // A nudge is a whole gesture, so it stores where a drag stores on
+    // release.
+    expect(localStorage.getItem("scr-sidebar-width")).toBe("252");
+    // And a key the divider has no move for is not one it swallows.
+    nudgeDivider(el, "ArrowUp");
+    expect(basis()).toBe("252px");
+  });
+
+  test("double-clicking hands the width back to the stylesheet", async () => {
+    await bootViewer(makeData({ pending: false }));
+    const el = divider();
+    dragDivider(el, 0, 300);
+    el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    expect(basis()).toBe("");
+    expect(localStorage.getItem("scr-sidebar-width")).toBeNull();
+  });
+
+  test("the stored width is there on the next boot", async () => {
+    await bootViewer(makeData({ pending: false }));
+    dragDivider(divider(), 0, 300);
+
+    // A second boot in the same window: the DOM is rebuilt, localStorage
+    // is not, which is the reload the reader sees.
+    await bootViewer(makeData({ pending: false }));
+    expect(basis()).toBe("300px");
+    expect(divider().getAttribute("aria-valuenow")).toBe("300");
+  });
+
+  test("a stored width wider than the window clamps, and is not rewritten", async () => {
+    localStorage.setItem("scr-sidebar-width", "900");
+    await bootViewer(makeData({ pending: false }));
+    expect(basis()).toBe("410px");
+    // The room may come back — a narrow window is not a decision.
+    expect(localStorage.getItem("scr-sidebar-width")).toBe("900");
   });
 });
 
