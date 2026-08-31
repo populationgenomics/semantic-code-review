@@ -1538,7 +1538,9 @@ body { padding-bottom: 30px; }
    the prompt in augment/prompts.py is the other. A class the model uses
    and this file does not define renders unstyled. */
 .explainer {
-  max-width: 72ch;
+  /* 72ch of text: border-box charges the side padding to max-width, so
+     the measure is the column plus both 32px of it. */
+  max-width: calc(72ch + 64px);
   margin-inline: auto;
   padding: 36px 32px 96px;
   font-family: var(--serif);

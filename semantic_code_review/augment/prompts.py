@@ -513,7 +513,7 @@ EXPLAINER_FIGURE_GUIDANCE = (
     "stored — the shape stays and renders unpainted. Reach for a class instead.\n\n"
     "Structure:\n"
     "- One root `<svg>` with a `viewBox`, and no `width` or `height` on it — the page "
-    "sizes the figure. Draw about 600 units wide, as tall as the drawing needs. The "
+    "sizes the figure. Draw about 650 units wide, as tall as the drawing needs. The "
     "page shrinks a figure that does not fit the reading column but never enlarges one "
     "past its viewBox, so a unit renders as at most a pixel and labels keep the size the "
     "stylesheet gives them; a figure drawn much narrower than that simply renders "

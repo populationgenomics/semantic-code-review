@@ -213,8 +213,8 @@ browser from a run directory that server never wrote.
   units, so a figure rendered wider than it was drawn magnifies every
   label; the cap holds one unit to at most one pixel, and a figure
   narrower than the column is centred. The prompt asks for a canonical
-  600-unit width, which is about what the figure well is: the 72ch
-  column less its padding, plus the figure's own -4ch bleed each side.
+  650-unit width, which is about what the figure well is: the 72ch text
+  measure plus the figure's own -4ch bleed each side.
   `width`/`height` on a `rect` are geometry and stay.
 - A DTD ends the figure rather than being sanitised around: nothing in
   the vocabulary needs one, and entity expansion is the only way an SVG
@@ -317,9 +317,11 @@ Overview mode has its own type scale; it does not inherit the diff's
 dense monospace chrome.
 
 - Body: serif stack, 17px, line-height 1.65.
-- Measure: a 72ch column, from the pane's own `max-width` and auto side
-  margins rather than page padding, so it holds inside a container of
-  any width. Figures may exceed it slightly.
+- Measure: 72ch of text. The pane's `max-width` is that plus its two
+  32px side paddings, which `box-sizing: border-box` would otherwise
+  charge to the measure; the column is centred by auto side margins
+  rather than page padding, so it holds inside a container of any width.
+  Figures may exceed it slightly.
 - Headings, captions, labels and table headers: `--ui`, the sans stack
   the rest of the viewer uses, so chrome reads as chrome and prose reads
   as prose.
