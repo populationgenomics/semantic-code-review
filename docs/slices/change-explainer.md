@@ -593,6 +593,29 @@ of leaving the mode. Rationale is the **ADR 0007 addendum of
   follow-up if reviewers miss it; the reference is one click away in the
   prose either way.
 
+## The fold slider drops into the ladder ✅ done
+
+Not in the plan above; added after slice 6. In overview mode the collapse
+slider and keys 1–4 leave the mode into the diff at the level they name.
+
+**As built**:
+
+- **Picking a level is the request.** The mode has no collapse level of
+  its own, so a slider that only recorded one for later looked live and
+  did nothing — while still clearing the reviewer's overrides and the
+  focus reveal, invisibly. `_setGlobalFold` now routes through `setMode`,
+  the same exit the Overview button runs, so the hash carries both
+  `fold=` and `mode=diff`, the panel unmounts with the split, and the
+  button's pressed state comes off with it.
+- **The level highlight stays; the tooltip carries the rest.** The
+  highlighted level is the one a press lands on, so greying the strip out
+  would make chrome inert to say something the tooltip says better:
+  "Leave the document and read the diff at this level". The markup's own
+  per-level title is stashed on first swap and restored on the way back.
+- **Overview mode repaints the slider too.** `_renderOverviewMode` calls
+  `_updateSliderButtons`, which it did not before: a viewer that opened
+  into the document with `fold=off` in the URL showed no level at all.
+
 ## Not in these slices
 
 - Regenerate-a-section-with-a-nudge (`PARKED_IDEAS.md` #3).

@@ -158,7 +158,10 @@ Per-item exceptions live in `RenderState.overrides` — a reviewer
 expanding/collapsing one file/hunk/segment; an override wins over the
 level default. Picking a level (`_setGlobalFold`) is authoritative: it
 clears every override, folding the whole tree to that depth, including a
-filter's focused hunks.
+filter's focused hunks. Picking one from inside overview mode also leaves
+the mode into the diff at that level — the document is not shown at a
+level, so reaching for the zoom while reading it is a request for the
+ladder.
 
 Focus reveal (`RenderState.focusReveal`) is a separate *ephemeral* bit,
 not an override: set when a sidebar pill is clicked

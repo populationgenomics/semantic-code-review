@@ -2182,6 +2182,77 @@ describe("overview mode (ADR 0007)", () => {
     expect(fetchCalls.some((c) => c.url === "/explainer/skeleton")).toBe(false);
   });
 
+  // --- the fold slider, from inside the document -----------------------
+
+  describe("picking a collapse level leaves the document", () => {
+    /** Boot into the document, with the diff waiting behind it. */
+    async function bootIntoDocument(): Promise<void> {
+      await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
+      expect(document.querySelector("#app .explainer")).not.toBeNull();
+    }
+
+    /** What the pane, the hash and the sidebar say after the exit. */
+    function expectDiffAt(level: string): void {
+      expect(window.location.hash).toContain(`fold=${level}`);
+      expect(window.location.hash).toContain("mode=diff");
+      expect(document.querySelector("#app .explainer")).toBeNull();
+      expect(document.querySelector("#app .file")).not.toBeNull();
+      expect(document.querySelector('#group-sidebar .group-axis[data-axis="explainer"]')).toBeNull();
+    }
+
+    test("a slider click lands in the diff at the level it names", async () => {
+      await bootIntoDocument();
+      (document.querySelector('.fold-slider button[data-fold="segments"]') as HTMLElement).click();
+      await new Promise<void>((r) => setTimeout(r, 0));
+      expectDiffAt("segments");
+      expect(document.querySelector("#app .explainer-detail")).toBeNull();
+      expect(document.querySelector('.fold-slider button[data-fold="segments"]')!.classList)
+        .toContain("active");
+      expect(Array.from((document.getElementById("overview-btn") as HTMLButtonElement).classList))
+        .not.toContain("active");
+    });
+
+    test("keys 1-4 do the same", async () => {
+      // No assertion on the mode button here: the keydown listener is on
+      // `document`, which every earlier boot in this file shares, and one
+      // of them was booted with the feature off — its handler removes the
+      // mode strip.
+      await bootIntoDocument();
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "2" }));
+      await new Promise<void>((r) => setTimeout(r, 0));
+      expectDiffAt("hunks");
+    });
+
+    test("the mode is still there to go back into", async () => {
+      await bootIntoDocument();
+      (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+      await new Promise<void>((r) => setTimeout(r, 0));
+
+      (document.getElementById("overview-btn") as HTMLButtonElement).click();
+      await new Promise<void>((r) => setTimeout(r, 0));
+      expect(document.querySelectorAll("#app .explainer-map-row")).toHaveLength(1);
+      expect(window.location.hash).toContain("mode=overview");
+      // And the level the press picked is what the diff is waiting at.
+      expect(window.location.hash).toContain("fold=off");
+    });
+
+    test("the slider says where a press lands while the pane is the document", async () => {
+      await bootIntoDocument();
+      const off = document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement;
+      expect(off.title).toBe("Leave the document and read the diff at this level");
+      // The level highlight is the level a press lands on, so it stays.
+      expect(document.querySelector('.fold-slider button[data-fold="hunks"]')!.classList)
+        .toContain("active");
+
+      // Leaving restores the markup's own title — empty in this
+      // harness's header, which is what says the sentence came off.
+      (document.getElementById("overview-btn") as HTMLButtonElement).click();
+      await new Promise<void>((r) => setTimeout(r, 0));
+      expect((document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).title)
+        .toBe("");
+    });
+  });
+
   // --- the detail panel ------------------------------------------------
 
   describe("a reference opens beside the document", () => {

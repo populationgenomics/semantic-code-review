@@ -272,12 +272,23 @@ function _toggleFold(scope: PaneScope, id: string, currentDefault: boolean): voi
   scope.repaint();
 }
 
+/** Pick a collapse level, from the slider or keys 1-4.
+ *
+ *  In overview mode this also leaves the mode: the document is not shown
+ *  at a collapse level, so a reviewer reaching for the zoom while reading
+ *  it is asking for the diff at that zoom — ADR 0007's "read the
+ *  document, drop into the ladder" loop. `setMode` is the same exit the
+ *  Overview button runs, and it repaints. */
 function _setGlobalFold(fold: FoldMode): void {
   _state.fold = fold;
   _state.overrides = Object.create(null);
   // The slider is authoritative: fold every hunk (focused or not) to this
   // level, so focus-reveal stops forcing the focused hunks open.
   _state.focusReveal = false;
+  if (_state.mode === "overview") {
+    setMode("diff");
+    return;
+  }
   render();
 }
 
@@ -300,7 +311,7 @@ function _renderOverviewMode(app: HTMLElement): void {
   });
   Sidebar.render();
   _syncHash();
-  _updateModeButton();
+  _updateSliderButtons();
 }
 
 function setMode(mode: ViewMode): void {
@@ -1124,10 +1135,19 @@ function _clearSymbolHits(code: HTMLElement): void {
 
 // --- Slider / status / hash / keyboard ---------------------------------
 
+//: What the slider promises while the pane is the document. The level
+//: highlight stays — it is the level a press lands on — so the tooltip
+//: is what says the press also leaves the document.
+const _OVERVIEW_SLIDER_TITLE = "Leave the document and read the diff at this level";
+
 function _updateSliderButtons(): void {
+  const overview = _state.mode === "overview";
   document.querySelectorAll(".fold-slider button").forEach((b) => {
     const btn = b as HTMLElement;
     btn.classList.toggle("active", btn.dataset.fold === _state.fold);
+    // The markup's own title, kept the first time it is swapped out.
+    if (btn.dataset.levelTitle === undefined) btn.dataset.levelTitle = btn.title;
+    btn.title = overview ? _OVERVIEW_SLIDER_TITLE : btn.dataset.levelTitle;
   });
   _updateModeButton();
 }
