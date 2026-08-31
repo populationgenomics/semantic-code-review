@@ -122,10 +122,12 @@ function _beginDrag(live: Live, e: PointerEvent): void {
   const startW = _current(live);
   live.el.classList.add("dragging");
   // The page stops selecting and takes the drag's cursor for the
-  // duration. Not `preventDefault` on the pointerdown: cancelling it
-  // sets the pointer's prevent-mouse-event flag, and the double-click
-  // that resets the boundary is one of the compatibility mouse events
-  // that flag suppresses.
+  // duration. A mark rather than a cancelled pointerdown: the cancel
+  // carries no cursor past the strip, and it leaves the reset's
+  // double-click to whichever compatibility mouse events an engine
+  // suppresses for a cancelled pointer — Chromium keeps click and
+  // dblclick and drops only mousedown/mouseup; the spec reads as though
+  // the whole stream goes.
   document.documentElement.classList.add("dragging-divider");
   // Capture is what keeps the stream coming once the pointer outruns the
   // 8px strip, which it does on the first fast drag.
