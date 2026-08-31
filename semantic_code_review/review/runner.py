@@ -272,7 +272,7 @@ class ServeResult:
     """
 
     comments: list  # list[Comment] — kept loose to avoid an import cycle
-    clean: bool  # True iff the viewer signalled Done within the timeout
+    clean: bool  # True iff the viewer signalled Done; False on idle timeout
     posted: PostResult | None = None
 
 
@@ -297,6 +297,10 @@ def serve_review(
     """Render the viewer for a populated run dir, host the back-channel
     server, block on the user clicking Done, and return the comments
     they left.
+
+    ``timeout`` is idle seconds, not a session lifetime: the server
+    shuts down once it has gone that long with neither a request nor a
+    connected viewer (see ``ReviewServer.wait_until_done``).
 
     Both `cli.review` (local diff) and `cli.pr` (GitHub PR) call this
     with a run dir whose `meta.json`, `raw.diff`, and worktrees are
@@ -388,6 +392,13 @@ def serve_review(
                 raise augment_error
 
         clean = srv.wait_until_done(timeout=timeout)
+        if not clean:
+            # Both CLI entry points come through here, so the line lands
+            # once, ahead of whatever they print about the comments.
+            sys.stderr.write(
+                f"scr review: idle timeout — {timeout}s with no request and no open viewer; shutting down.\n"
+            )
+            sys.stderr.flush()
     finally:
         srv.stop()
 
