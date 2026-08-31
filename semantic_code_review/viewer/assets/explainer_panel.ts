@@ -24,10 +24,9 @@ import { Annotations } from "./annotations";
 import { Comments } from "./comments";
 import { LayoutDividers } from "./layout_dividers";
 
-// The split's own geometry, mirroring viewer.css: the panel's floor and
-// the divider's strip are what the document's ceiling is measured
-// against, and below its own floor the prose is a column of two-word
-// lines.
+// The panel's floor and the divider's strip mirror viewer.css; together
+// they are what the document's ceiling is measured against. Below the
+// document's own floor the prose is a column of two-word lines.
 const PANEL_FLOOR = 380;
 const DIVIDER_WIDTH = 8;
 const DOC_FLOOR = 340;

@@ -51,8 +51,8 @@ let _reflowQueued = false;
 
 const NUDGE = 16;
 const NUDGE_COARSE = 64;
-// Mirrors `.group-sidebar`'s flex basis in viewer.css only as a floor:
-// below this the pill labels have nowhere to go.
+// The sidebar's floor — below it the pill labels have nowhere to go.
+// Not the stylesheet's 220px basis, which is only where it starts.
 const SIDEBAR_MIN = 160;
 
 /** Build a divider for `spec`, wired and carrying the stored width. The
