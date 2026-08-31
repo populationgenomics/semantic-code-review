@@ -195,7 +195,7 @@ class SubmittedTerm(BaseModel):
 class SubmittedSkipBox(BaseModel):
     """Background's 'you already know this' escape hatch."""
 
-    body: str = Field(description="One sentence naming what the reader would already have to know.")
+    body: str = Field(description="The 'If you already know X,' clause; the viewer completes it with the jump.")
     target_section_id: str = Field(description="The section to jump to: `intuition` or `code`.")
 
 
