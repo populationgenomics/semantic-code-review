@@ -446,11 +446,13 @@ function _renderSection(section: ExplainerSection): HTMLElement {
     return el;
   }
   if (section.skip_box) el.appendChild(_renderSkipBox(section.skip_box));
-  if (section.terms && section.terms.length > 0) el.appendChild(_renderTerms(section.terms));
   for (const node of _proseNodes(section)) el.appendChild(node);
   // Figures sit after the prose rather than inside it: they are a
   // structured slot, not markup the model embedded in its markdown.
   for (const figure of section.figures || []) el.appendChild(ExplainerFigures.renderFigure(figure));
+  // The glossary follows the section's own body, which is what it
+  // consolidates. The skip box above it is navigation, not content.
+  if (section.terms && section.terms.length > 0) el.appendChild(_renderTerms(section.terms));
   for (const sub of section.subsections || []) el.appendChild(_renderSubsection(sub));
   const sources = _renderSources(section);
   if (sources) el.appendChild(sources);
@@ -469,8 +471,6 @@ function _renderSkipBox(box: ExplainerSkipBox): HTMLElement {
   return el;
 }
 
-/** Names the section introduces, as a definition list — cheaper to read
- *  than a paragraph each, and it keeps them out of the prose. */
 /** A term list, each entry a callout.
  *
  *  A definition *is* the `concept` callout — "a definition or

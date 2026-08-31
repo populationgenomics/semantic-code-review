@@ -845,4 +845,32 @@ describe("provenance", () => {
     // Definitions are markdown too, through the same sanitised path.
     expect(dl.querySelector("dd strong")!.textContent).toBe("paged");
   });
+
+  test("the glossary follows the prose it consolidates; the skip box leads", () => {
+    // Terms are a reference to come back to. Ahead of the prose they are
+    // a wall of definitions leaning on concepts nothing has introduced.
+    boot();
+    Explainer.onEvent(backgroundDoc({
+      body: "Ground.",
+      skip_box: { body: "If you know the RPC layer,", target_section_id: "code" },
+      figures: [{
+        svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50">'
+          + '<rect class="d-box" x="0" y="0" width="10" height="10"/></svg>',
+        alt: "the request path",
+        caption: "",
+        stripped: 0,
+      }],
+      terms: [{ term: "cursor", definition: "an opaque position token" }],
+      sources: ["api.py"],
+    }) as SseExplainerEvent);
+    const section = Explainer.renderPane().querySelector('[data-section-id="background"]')!;
+    expect(Array.from(section.children).map((e) => e.className)).toEqual([
+      "explainer-section-title",
+      "explainer-skip",
+      "explainer-body",
+      "explainer-figure",
+      "explainer-terms",
+      "explainer-sources",
+    ]);
+  });
 });

@@ -468,10 +468,14 @@ EXPLAINER_BACKGROUND_GUIDANCE = (
     "section to jump to — `intuition` or `code`. Omit it when the first layer is "
     "short enough that skipping is not worth offering.\n\n"
     "# terms\n"
-    "Names the reader meets here for the first time and will meet again in the "
-    "later sections. A definition list beats a paragraph each, and it beats "
-    "defining a name inline three sentences after you first used it. Use the "
-    "spelling the code uses."
+    "The glossary renders AFTER your prose. It consolidates the names the prose "
+    "has already introduced — a reference the reader comes back to, not the place "
+    "a name is first explained. Each definition may use only what the prose, or an "
+    "earlier entry, has established.\n"
+    "Keep it at this section's altitude. A name the later sections build on earns "
+    "an entry; internal minutiae — an exception taxonomy, a field-by-field listing "
+    "— do not, and belong where the walkthrough needs them. Use the spelling the "
+    "code uses."
 )
 
 

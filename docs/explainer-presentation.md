@@ -120,10 +120,15 @@ remove, and that is not the figure losing nothing.
 { terms: [{ term: string, definition: markdown }] }
 ```
 
-For introducing several names at once without a paragraph each. Each
-entry renders as a **concept callout** — a definition is exactly what
-that kind is for, so the two share one visual instead of inventing a
-second way to say the same thing. Stacked tighter than a standalone
+Renders after the section's prose and figures, above its subsections.
+It consolidates names the prose has already introduced rather than
+introducing them, so a definition can lean on what the reader just
+read; ahead of the prose it was a glossary met before anything that
+made it mean something.
+
+Each entry renders as a **concept callout** — a definition is exactly
+what that kind is for, so the two share one visual instead of inventing
+a second way to say the same thing. Stacked tighter than a standalone
 callout: a run of them is a glossary, not a run of interruptions.
 
 `term` is rendered as inline markdown, not text. These are the model's
