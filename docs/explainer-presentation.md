@@ -53,8 +53,11 @@ are left alone: a `[F3]` in a snippet is the snippet's.
 
 A chip is labelled by what the reviewer can act on — the file's path,
 or `path:N` for the Nth hunk of that file — not by the raw id. Clicking
-a file chip leaves overview mode and scrolls; clicking a hunk chip also
-unfolds it, because a hunk reference is the claim "read these lines".
+one opens that file in a detail panel beside the document, so the code
+and the sentence that sent the reader to it are on screen together; a
+hunk chip opens with its hunk unfolded, because a hunk reference is the
+claim "read these lines". The panel's "Open in diff" is the way on to
+the full ladder.
 
 A chip is not a substitute for the section's `refs` list, which is what
 the sidebar counts and the coverage footer reads.

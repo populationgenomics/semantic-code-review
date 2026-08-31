@@ -72,12 +72,13 @@ async function boot(): Promise<void> {
     Explainer.setFilePaths(DATA);
     Explainer.init(SESSION_ENDPOINT, DATA, {
       onChange: () => Render.render(),
-      // A Map row is "read this next", so it leaves the mode and brings
-      // the file into view at whatever collapse level the diff is on.
-      onOpenFile: (fileId) => Render.revealFile(fileId),
-      // A hunk chip is a claim about specific lines, so it unfolds them
-      // rather than only scrolling to the file.
-      onOpenHunk: (hunkId) => Render.revealHunk(hunkId),
+      // A reference opens the file it addresses beside the document, so
+      // the reader checks it without losing their place in the prose.
+      // The panel's own "Open in diff" is the way on to the full ladder.
+      onOpenFile: (fileId) => Render.openReference({ kind: "file", id: fileId }),
+      // A hunk reference is a claim about specific lines, so the panel
+      // unfolds that hunk rather than only showing the file.
+      onOpenHunk: (hunkId) => Render.openReference({ kind: "hunk", id: hunkId }),
     });
     // Pick up a document another tab (or an earlier session on this run
     // dir) already paid for, so the button opens it rather than

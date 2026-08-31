@@ -578,3 +578,42 @@ into every key, and where `carry_guidance` puts the guidance on stdin
 instead it lands in the user text, which is also in the key. Background
 keys on `(base_sha, guidance)` for the reason the previous addendum's
 fix records, and the note is part of `guidance`.
+
+---
+
+## Addendum — a reference opens beside the document (2026-08-31)
+
+Amends **Surface**. The mode, and its free return trip, stand; where a
+reference lands does not.
+
+A reference — an inline chip, a Map row — left the mode: the pane was
+rebuilt around the diff and the reader's place in the prose went with
+it. So the claim and the code it is about were never on screen together,
+and the loop Surface describes — read, drop into the ladder to check,
+return — cost a mode switch each way for what is usually a ten-second
+look. Section-granular restore put the reader back at a heading, not at
+the sentence.
+
+A reference now opens the file it addresses in a **detail panel beside
+the document**. The document column keeps its DOM and its scroll
+position; the panel is sticky with its own scroll, so checking happens
+in place and the return trip is looking left. The panel renders the
+diff's own DOM, so comments work in it unchanged.
+
+The panel has **its own fold state**. A hunk reference arrives unfolded,
+on the same terms `revealHunk` uses — the reference is the claim "read
+these lines" — but the unfold is the panel's: reading twenty references
+beside the document must not leave twenty files unfolded in the diff.
+That is the same argument the mode's orthogonality to the collapse level
+already makes, one level down.
+
+**"Open in diff"** in the panel header keeps the old jump for the reader
+who wants the file with the whole change around it. Leaving the mode is
+then a decision rather than the price of a glance, and section-granular
+restore covers those exits, which are now the deliberate ones.
+
+The reading measure survives the split: the document's 72ch column comes
+from its own `max-width` and auto margins, so it holds inside a narrower
+flex item and the panel takes the width the prose was not using. Each
+diff half keeps its content-driven minimum width and scrolls
+horizontally inside the panel — the price of the two side by side.

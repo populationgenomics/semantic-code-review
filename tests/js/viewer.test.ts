@@ -2094,14 +2094,6 @@ describe("overview mode (ADR 0007)", () => {
     expect(localStorage.getItem("scr-explainer-section:local")).toBe("explainer:background");
   });
 
-  test("clicking a Map row leaves the mode and shows the diff again", async () => {
-    await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
-    (document.querySelector("#app .explainer-ref") as HTMLElement).click();
-    await new Promise<void>((r) => setTimeout(r, 0));
-    expect(document.querySelector('.file[data-id="F0"]')).not.toBeNull();
-    expect(document.querySelector("#app .explainer")).toBeNull();
-  });
-
   test("an SSE frame from another tab fills the pane without a POST", async () => {
     await bootWithExplainer({ status: 404, body: {} }, { pending: false });
     lastEventSource().dispatch("explainer", DOC);
@@ -2188,5 +2180,181 @@ describe("overview mode (ADR 0007)", () => {
     await new Promise<void>((r) => setTimeout(r, 0));
     expect(fetchCalls.some((c) => c.url === "/explainer/section/background")).toBe(true);
     expect(fetchCalls.some((c) => c.url === "/explainer/skeleton")).toBe(false);
+  });
+
+  // --- the detail panel ------------------------------------------------
+
+  describe("a reference opens beside the document", () => {
+    const FILES = ["a.py", "b.py"].map((path, i) => ({
+      id: `F${i}`, path, status: "modified", language: "python",
+      adds: 1, dels: 1, summary: "", head_lines: null,
+      symbols: { added: [], modified: [], removed: [] },
+      hunks: [makeHunkBlock(`H${i}_0`, "guards the path")],
+    }));
+
+    // Two file references to swap between, and one inline hunk
+    // reference — the case that has to arrive unfolded.
+    const PANEL_DOC = {
+      ...DOC,
+      sections: [
+        { ...DOC.sections[0], body: "Ground. The guard is [H0_0]." },
+        {
+          ...DOC.sections[1],
+          refs: [{ kind: "file", id: "F0" }, { kind: "file", id: "F1" }],
+          map_rows: [
+            { ref: { kind: "file", id: "F0" }, why: "the contract" },
+            { ref: { kind: "file", id: "F1" }, why: "the caller" },
+          ],
+        },
+      ],
+    };
+
+    /** Boot into the document with the panel mounted and closed. */
+    async function bootWithPanel(): Promise<HTMLElement> {
+      await bootWithExplainer({ status: 200, body: PANEL_DOC }, { pending: false, files: FILES });
+      return document.querySelector("#app .explainer-detail") as HTMLElement;
+    }
+
+    /** The Nth Map row's reference button, re-queried: a repaint of the
+     *  document builds a new one. */
+    function mapRow(n: number): HTMLElement {
+      return document.querySelectorAll<HTMLElement>(".explainer-map-row .explainer-ref")[n];
+    }
+
+    function hunkRef(): HTMLElement {
+      return document.querySelector("#app .explainer-arrow") as HTMLElement;
+    }
+
+    test("the file opens in the panel, and the document is not rebuilt", async () => {
+      const panel = await bootWithPanel();
+      const documentEl = document.querySelector("#app .explainer")!;
+      expect(panel.hidden).toBe(true);
+
+      mapRow(0).click();
+
+      expect(panel.hidden).toBe(false);
+      expect(panel.querySelector('.file[data-id="F0"]')).not.toBeNull();
+      expect(panel.querySelector(".explainer-detail-path")!.textContent).toBe("a.py");
+      // The same node, so the reader's scroll position and everything
+      // else about their place in the prose survives.
+      expect(document.querySelector("#app .explainer")).toBe(documentEl);
+      expect(window.location.hash).toContain("mode=overview");
+      expect(mapRow(0).classList.contains("explainer-ref-open")).toBe(true);
+    });
+
+    test("a hunk reference arrives unfolded, and leaves the diff's folds alone", async () => {
+      const panel = await bootWithPanel();
+      hunkRef().click();
+
+      const hunk = panel.querySelector('.hunk[data-id="H0_0"]') as HTMLElement;
+      expect(hunk.classList.contains("folded")).toBe(false);
+      // Code, not the segment summary the `hunks` level would show.
+      expect(hunk.querySelector(".diff")).not.toBeNull();
+
+      // The panel's overrides are its own: the diff is where the
+      // reviewer left it, which is what makes the return trip free.
+      (document.getElementById("overview-btn") as HTMLButtonElement).click();
+      await new Promise<void>((r) => setTimeout(r, 0));
+      expect(document.querySelector('.hunk[data-id="H0_0"]')!.classList.contains("folded"))
+        .toBe(true);
+    });
+
+    test("a second reference swaps the panel in place", async () => {
+      const panel = await bootWithPanel();
+      mapRow(0).click();
+      mapRow(1).click();
+
+      expect(document.querySelector("#app .explainer-detail")).toBe(panel);
+      expect(panel.querySelectorAll(".file")).toHaveLength(1);
+      expect(panel.querySelector('.file[data-id="F1"]')).not.toBeNull();
+      expect(panel.querySelector(".explainer-detail-path")!.textContent).toBe("b.py");
+      expect(mapRow(0).classList.contains("explainer-ref-open")).toBe(false);
+      expect(mapRow(1).classList.contains("explainer-ref-open")).toBe(true);
+    });
+
+    test("the close button and Esc both close it", async () => {
+      const panel = await bootWithPanel();
+      mapRow(0).click();
+      (panel.querySelector(".explainer-detail-close") as HTMLElement).click();
+      expect(panel.hidden).toBe(true);
+      expect(document.querySelector(".explainer-ref-open")).toBeNull();
+      expect(document.querySelector("#app .explainer")).not.toBeNull();
+
+      mapRow(0).click();
+      expect(panel.hidden).toBe(false);
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      expect(panel.hidden).toBe(true);
+    });
+
+    test("Open in diff leaves the mode and lands on the file", async () => {
+      const panel = await bootWithPanel();
+      mapRow(1).click();
+      (panel.querySelector(".explainer-detail-open") as HTMLElement).click();
+      await new Promise<void>((r) => setTimeout(r, 0));
+
+      expect(window.location.hash).toContain("mode=diff");
+      expect(document.querySelector("#app .explainer")).toBeNull();
+      expect(document.querySelector("#app .explainer-detail")).toBeNull();
+      expect(document.querySelector('#app .file[data-id="F1"]')).not.toBeNull();
+    });
+
+    test("a section write repaints the document under a panel that stays", async () => {
+      const panel = await bootWithPanel();
+      mapRow(0).click();
+      const fileEl = panel.querySelector(".file");
+
+      lastEventSource().dispatch("explainer", {
+        ...PANEL_DOC,
+        sections: PANEL_DOC.sections.map((s) =>
+          s.kind === "background" ? { ...s, body: "Ground, rewritten. [H0_0]" } : s),
+      });
+      await new Promise<void>((r) => setTimeout(r, 0));
+
+      expect(document.querySelector("#app .explainer")!.textContent)
+        .toContain("Ground, rewritten.");
+      expect(document.querySelector("#app .explainer-detail")).toBe(panel);
+      expect(panel.hidden).toBe(false);
+      expect(panel.querySelector(".file")).toBe(fileEl);
+      // The chips were rebuilt with the prose; the mark goes back on.
+      expect(mapRow(0).classList.contains("explainer-ref-open")).toBe(true);
+    });
+
+    test("a comment written in the panel round-trips", async () => {
+      const panel = await bootWithPanel();
+      hunkRef().click();
+
+      const cell = panel.querySelector(".half-new .row .cell-lineno") as HTMLElement;
+      expect(cell.textContent).toBe("1");
+      cell.click();
+      const ta = document.querySelector<HTMLTextAreaElement>(".comment-editor-input")!;
+      expect(panel.contains(ta)).toBe(true);
+      ta.value = "this guard is new";
+
+      let posted: Record<string, unknown> | null = null;
+      (globalThis.fetch as unknown as { mockImplementationOnce: (fn: typeof fetch) => void })
+        .mockImplementationOnce(((url: string, init?: RequestInit) => {
+          fetchCalls.push({ url, init });
+          posted = JSON.parse(init!.body as string);
+          return Promise.resolve({
+            status: 200, ok: true, json: () => Promise.resolve(posted),
+          } as Response);
+        }) as typeof fetch);
+      document.querySelector<HTMLButtonElement>(".comment-btn-save")!.click();
+      await new Promise<void>((r) => setTimeout(r, 0));
+
+      expect(posted).not.toBeNull();
+      expect(posted!.file).toBe("a.py");
+      expect(posted!.side).toBe("new");
+      expect(posted!.line).toBe(1);
+      expect(panel.querySelector(".comment-thread-entry")!.textContent)
+        .toContain("this guard is new");
+
+      // And it comes back with the file: mounting panel content replays
+      // the store's threads over it, as a diff render does.
+      (panel.querySelector(".explainer-detail-close") as HTMLElement).click();
+      hunkRef().click();
+      expect(panel.querySelector(".comment-thread-entry")!.textContent)
+        .toContain("this guard is new");
+    });
   });
 });

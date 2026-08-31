@@ -43,12 +43,12 @@ let _ready = false;
 // renderer that hosts its pane.
 let _onChange: (() => void) | null = null;
 // Called with a file's viewer id when a Map row is clicked. boot wires
-// it to "leave overview mode and reveal that file"; the reveal itself
-// is render.ts's business.
+// it to "open that file beside the document"; where a reference lands
+// is render.ts's business, not this module's.
 let _onOpenFile: ((fileId: string) => void) | null = null;
 // Same, for an inline hunk chip. A hunk reference means "read this
-// hunk", so the reveal unfolds it — unlike a file reference, which only
-// scrolls.
+// hunk", so it arrives unfolded — unlike a file reference, which opens
+// the file at the collapse level the reviewer left the diff on.
 let _onOpenHunk: ((hunkId: string) => void) | null = null;
 
 // Per-section generation state, keyed by section id. Distinct from the
@@ -662,7 +662,7 @@ function _renderMapRow(row: ExplainerMapRow): HTMLElement {
   const readCell = _el("td", "explainer-map-read");
   const btn = _el("button", "explainer-ref", _fileLabel(row.ref.id));
   btn.dataset.refId = row.ref.id;
-  btn.title = "Open this file in the diff";
+  btn.title = "Open this file beside the document";
   btn.addEventListener("click", () => _onOpenFile?.(row.ref.id));
   readCell.appendChild(btn);
   tr.appendChild(readCell);
@@ -747,7 +747,7 @@ function _refChip(id: string): HTMLElement {
   const target = isFile ? _fileLabel(id) : _hunkLabel(id);
   const btn = _el("button", "explainer-ref explainer-arrow");
   btn.dataset.refId = id;
-  btn.title = `Open ${target} in the diff`;
+  btn.title = `Open ${target} beside the document`;
   btn.setAttribute("aria-label", btn.title);
   btn.addEventListener("click", () => {
     if (isFile) _onOpenFile?.(id);

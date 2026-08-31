@@ -14,10 +14,14 @@
 //     on each .diff and .gap-expansion container
 //   - comments.ts replays its comment rows after each renderAll
 //   - annotations.ts hosts the row-annotation DOM
+//   - explainer_panel.ts hosts a second render of one file, beside the
+//     document; it takes the per-file renderer from here as a callback,
+//     so the dependency runs one way
 
 import { Annotations } from "./annotations";
 import { Comments } from "./comments";
 import { Explainer } from "./explainer";
+import { ExplainerPanel, type PanelHost } from "./explainer_panel";
 import { FileRows } from "./file_rows";
 import { Folds } from "./folds";
 import { Progress } from "./progress";
@@ -75,6 +79,46 @@ const _state: RenderState = {
   focusReveal: true,
 };
 
+// What a render pass reads its per-item state from, and where a fold
+// click in it repaints. Two exist: the diff pane's, and the
+// overview-mode detail panel's.
+interface PaneScope {
+  /** Per-item fold overrides, over the collapse level's defaults. The
+   *  panel keeps its own: a reference read beside the document must not
+   *  move the folds waiting in the diff (ADR 0007's free return trip). */
+  overrides: Record<string, boolean>;
+  /** Cache of live per-hunk `.diff` nodes, or null for a pass that must
+   *  build fresh — a node cannot be in two trees, so the panel neither
+   *  reads nor writes the diff pane's. */
+  cache: Record<string, HTMLElement> | null;
+  /** Whether the sidebar's hunk filter applies. It does not in the
+   *  panel: a reference addresses a file whether or not the filter the
+   *  reviewer left in the diff covers it. */
+  filtered: boolean;
+  repaint: () => void;
+}
+
+/** The diff pane's scope. Built per pass rather than held, because a
+ *  reset reassigns `_state.overrides`; every handler carrying a scope is
+ *  rebuilt by the render that follows. */
+function _diffScope(): PaneScope {
+  return {
+    overrides: _state.overrides,
+    cache: _state.renderedDiffs,
+    filtered: true,
+    repaint: render,
+  };
+}
+
+// The detail panel's scope. `openReference` seeds the overrides per
+// reference; a fold click inside the panel repaints the panel alone.
+const _panelScope: PaneScope = {
+  overrides: Object.create(null),
+  cache: null,
+  filtered: false,
+  repaint: () => ExplainerPanel.repaint(),
+};
+
 // --- Public API ----------------------------------------------------------
 
 /** Wire input handlers + restore state from URL hash + run initial
@@ -121,15 +165,19 @@ function render(): void {
   if (!_initialised) return;
   const app = document.getElementById("app");
   if (!app) return;
-  app.innerHTML = "";
   if (_state.mode === "overview") {
     _renderOverviewMode(app);
     return;
   }
+  // The panel is a cell of the overview split, so leaving the mode takes
+  // it with the split.
+  ExplainerPanel.unmount();
+  app.innerHTML = "";
   Sidebar.setSectionTree(null);
+  const scope = _diffScope();
   app.appendChild(_renderPRPanel(_data.pr));
   for (const f of _data.files) {
-    const el = _renderFile(f);
+    const el = _renderFile(f, scope);
     if (el) app.appendChild(el);   // focused render drops files with no surviving hunk
   }
   Sidebar.render();
@@ -152,8 +200,15 @@ function render(): void {
 /** Replace one hunk's DOM in place. Drops the renderedDiffs cache
  *  entry first so attachLineNotes / fold detection re-run against
  *  the (possibly different) row set. Called from the SSE patchers
- *  in viewer.js when a `hunk` event arrives. */
+ *  in viewer.js when a `hunk` event arrives.
+ *
+ *  A no-op in overview mode, which has no diff pane: the only `.hunk` on
+ *  the page is the detail panel's, rendered off its own scope and
+ *  outside the node cache, and patching it here would move a cached node
+ *  into it. The panel picks the new annotation up when the reference is
+ *  opened again. */
 function renderHunkReplace(file: FileBlock, hunkIdx: number): void {
+  if (_state.mode === "overview") return;
   const h = file.hunks[hunkIdx];
   if (!h) return;
   delete _state.renderedDiffs[h.id];
@@ -162,7 +217,7 @@ function renderHunkReplace(file: FileBlock, hunkIdx: number): void {
   // surgical swap would inject a full hunk header. Fall back to a full
   // re-render, which rebuilds the focused body correctly.
   if (Sidebar.activeHunkIds() !== null) { render(); return; }
-  const fresh = _renderHunk(h, file);
+  const fresh = _renderHunk(h, file, _diffScope());
   const existing = document.querySelector(
     '.hunk[data-id="' + _cssEscape(h.id) + '"]',
   );
@@ -173,8 +228,10 @@ function renderHunkReplace(file: FileBlock, hunkIdx: number): void {
 
 /** Re-render just the header of one hunk (intent slot + meta).
  *  Used by the hunk-start SSE handler to flip the "queued"
- *  placeholder to "analysing…" without rebuilding the diff body. */
+ *  placeholder to "analysing…" without rebuilding the diff body.
+ *  Skipped in overview mode, for the reason renderHunkReplace is. */
 function repaintHunkHeader(hunkId: string): void {
+  if (_state.mode === "overview") return;
   const node = document.querySelector(
     '.hunk[data-id="' + _cssEscape(hunkId) + '"]',
   );
@@ -186,8 +243,9 @@ function repaintHunkHeader(hunkId: string): void {
   const f = _data.files && _data.files[fi];
   const h = f && f.hunks && f.hunks[hi];
   if (!h) return;
-  const folded = _isFolded(h.id, _defaultHunkFolded());
-  const fresh = _renderHunkHeader(h, folded, f);
+  const scope = _diffScope();
+  const folded = _isFolded(scope, h.id, _defaultHunkFolded());
+  const fresh = _renderHunkHeader(h, folded, f, scope);
   oldHdr.replaceWith(fresh);
 }
 
@@ -203,15 +261,15 @@ function _defaultFileFolded(): boolean    { return _state.fold === "files"; }
 function _defaultHunkFolded(): boolean    { return _state.fold === "files" || _state.fold === "hunks"; }
 function _defaultSegmentFolded(): boolean { return _state.fold !== "off"; }
 
-function _isFolded(id: string, fallback: boolean): boolean {
-  return Object.prototype.hasOwnProperty.call(_state.overrides, id)
-    ? _state.overrides[id] : fallback;
+function _isFolded(scope: PaneScope, id: string, fallback: boolean): boolean {
+  return Object.prototype.hasOwnProperty.call(scope.overrides, id)
+    ? scope.overrides[id] : fallback;
 }
 
-function _toggleFold(id: string, currentDefault: boolean): void {
-  const current = _isFolded(id, currentDefault);
-  _state.overrides[id] = !current;
-  render();
+function _toggleFold(scope: PaneScope, id: string, currentDefault: boolean): void {
+  const current = _isFolded(scope, id, currentDefault);
+  scope.overrides[id] = !current;
+  scope.repaint();
 }
 
 function _setGlobalFold(fold: FoldMode): void {
@@ -226,13 +284,15 @@ function _setGlobalFold(fold: FoldMode): void {
 /** Paint the explainer's document into the main pane and swap the
  *  sidebar to its section tree.
  *
- *  Deliberately short of everything the diff path does: no comment
- *  replay, no annotation reflow, no slider repaint against a pane that
- *  has no folds in it. `_state.fold` and `_state.overrides` are not
- *  touched, so leaving the mode restores the reviewer's zoom and their
- *  hand-set folds exactly. */
+ *  The pane is a split: the document, and the detail panel a reference
+ *  opens beside it. Only the document half is written here — an open
+ *  panel survives every repaint of the prose, and replays its own
+ *  comments and annotations when its content changes.
+ *
+ *  `_state.fold` and `_state.overrides` are not touched, so leaving the
+ *  mode restores the reviewer's zoom and their hand-set folds exactly. */
 function _renderOverviewMode(app: HTMLElement): void {
-  app.appendChild(Explainer.renderPane());
+  ExplainerPanel.mount(app, Explainer.renderPane(), _PANEL_HOST);
   Sidebar.setSectionTree({
     sections: Explainer.sections(),
     activeId: Explainer.activeSectionId(),
@@ -260,7 +320,11 @@ function mode(): ViewMode {
 
 /** Leave overview mode and bring `fileId` into view at whatever
  *  collapse level the reviewer left the diff on. Deliberately not a
- *  fold change: the Map answers "read this next", not "expand this". */
+ *  fold change: the Map answers "read this next", not "expand this".
+ *
+ *  The document's own references no longer land here — they open beside
+ *  it (`openReference`). This is what the panel's "Open in diff" runs,
+ *  for the reader who wants the whole ladder around the file. */
 function revealFile(fileId: string): void {
   setMode("diff");
   const el = document.querySelector('.file[data-id="' + _cssEscape(fileId) + '"]');
@@ -291,6 +355,65 @@ function revealHunk(hunkId: string): void {
   render();
   const el = document.querySelector('.hunk[data-id="' + _cssEscape(hunkId) + '"]');
   if (el) el.scrollIntoView({ block: "start" });
+}
+
+/** The file a reference addresses. References are validated by
+ *  membership server-side, so an id that resolves to nothing here is a
+ *  bug rather than something a reviewer can cause. */
+function _fileOfRef(ref: ExplainerRef): FileBlock {
+  const idx = Number(ref.id.replace(/^[FH]/, "").split("_")[0]);
+  const file = _data.files && _data.files[idx];
+  if (!file) throw new Error(`reference ${ref.id} addresses no file in this diff`);
+  return file;
+}
+
+/** Leave the mode and land on the reference in the diff. */
+function _revealRef(ref: ExplainerRef): void {
+  if (ref.kind === "file") revealFile(ref.id);
+  else revealHunk(ref.id);
+}
+
+// What the detail panel asks of the renderer. Injected rather than
+// imported the other way, so explainer_panel.ts stays free of the
+// renderer that hosts it.
+const _PANEL_HOST: PanelHost = {
+  renderFile: (ref) => {
+    const el = _renderFile(_fileOfRef(ref), _panelScope);
+    // `_renderFile` drops a file only under a sidebar filter, and the
+    // panel's scope has none.
+    if (el === null) throw new Error(`reference ${ref.id} rendered nothing`);
+    return el;
+  },
+  openInDiff: _revealRef,
+};
+
+/** A reference in the document was clicked.
+ *
+ *  In overview mode it opens beside the document rather than in place of
+ *  it: the reader checks the code with the sentence that sent them there
+ *  still on screen, and the document column keeps its DOM and its scroll
+ *  position. Elsewhere — a reference reachable with no document painted
+ *  — it is the jump the panel's "Open in diff" also runs. */
+function openReference(ref: ExplainerRef): void {
+  if (_state.mode !== "overview") {
+    _revealRef(ref);
+    return;
+  }
+  const file = _fileOfRef(ref);
+  const overrides: Record<string, boolean> = Object.create(null);
+  // The file itself always opens: a panel showing a folded header shows
+  // nothing. Under it the collapse level still holds, except for the
+  // hunk a hunk reference names — that reference is the claim "read
+  // these lines", so its segments open too, as `revealHunk` does in the
+  // diff.
+  overrides[file.id] = false;
+  if (ref.kind === "hunk") {
+    overrides[ref.id] = false;
+    const hunk = (file.hunks || []).find((h) => h.id === ref.id);
+    if (hunk) for (const s of _displaySegments(hunk)) overrides[s.id] = false;
+  }
+  _panelScope.overrides = overrides;
+  ExplainerPanel.open(ref);
 }
 
 /** A sidebar filter changed. Reveal the newly focused hunks' code (an
@@ -417,15 +540,15 @@ function _renderPRPanel(pr: PRBlock): HTMLElement {
  *  surviving hunk touches (the caller drops it). A file body is an
  *  alternating sequence of live hunks and collapsible regions; which
  *  hunks are live depends on the active filter (see _renderFileBody). */
-function _renderFile(f: FileBlock): HTMLElement | null {
-  const liveIds = Sidebar.activeHunkIds();   // null → every hunk is live
+function _renderFile(f: FileBlock, scope: PaneScope): HTMLElement | null {
+  const liveIds = scope.filtered ? Sidebar.activeHunkIds() : null;   // null → every hunk is live
   if (liveIds !== null && !f.hunks.some((h) => liveIds.has(h.id))) return null;
   const div = _el("div", "file");
   if (liveIds !== null) div.classList.add("filtered");
   div.dataset.id = f.id;
-  const folded = _isFolded(f.id, _defaultFileFolded());
+  const folded = _isFolded(scope, f.id, _defaultFileFolded());
   div.classList.toggle("folded", folded);
-  div.appendChild(_renderFileHeader(f, folded));
+  div.appendChild(_renderFileHeader(f, folded, scope));
   if (!folded) {
     const body = _el("div", "file-body");
     if (Rendered.isOn(f.id)) {
@@ -436,7 +559,7 @@ function _renderFile(f: FileBlock): HTMLElement | null {
     } else {
       const overview = _renderFileOverview(f);
       if (overview) body.appendChild(overview);
-      _renderFileBody(body, f, liveIds);
+      _renderFileBody(body, f, liveIds, scope);
       div.appendChild(body);
       // Run a file-level fold pass once the body is assembled.
       Folds.attachFileFolds(div, f);
@@ -454,7 +577,7 @@ function _renderFile(f: FileBlock): HTMLElement | null {
  *  demoted region are the same diff-row stream; the only difference is
  *  the chrome around it (an explanatory header vs. a bare collapse). */
 function _renderFileBody(
-  body: HTMLElement, f: FileBlock, liveIds: Set<string> | null,
+  body: HTMLElement, f: FileBlock, liveIds: Set<string> | null, scope: PaneScope,
 ): void {
   const isLive = (h: HunkBlock): boolean => liveIds === null || liveIds.has(h.id);
   const total = f.head_lines ? f.head_lines.length : null;
@@ -476,7 +599,7 @@ function _renderFileBody(
   const reveal = liveIds !== null && _state.focusReveal;
   for (const h of f.hunks.filter(isLive)) {
     flush(h.new_start - 1, emittedLive ? "between" : "top");
-    body.appendChild(_renderHunk(h, f, reveal));
+    body.appendChild(_renderHunk(h, f, scope, reveal));
     emittedLive = true;
     curNew = h.new_start + h.new_count;
     curOld = h.old_start + h.old_count;
@@ -484,7 +607,7 @@ function _renderFileBody(
   flush(total, "bottom");
 }
 
-function _renderFileHeader(f: FileBlock, folded: boolean): HTMLElement {
+function _renderFileHeader(f: FileBlock, folded: boolean, scope: PaneScope): HTMLElement {
   const hdr = _el("div", "file-header");
   hdr.appendChild(_chev(folded));
   hdr.appendChild(_el("span", "file-path", f.path));
@@ -499,15 +622,15 @@ function _renderFileHeader(f: FileBlock, folded: boolean): HTMLElement {
     for (const sm of smells) badge.appendChild(_smellPill({ tag: sm, note: "" }));
     hdr.appendChild(badge);
   }
-  if (Rendered.isMarkdown(f)) hdr.appendChild(_renderMdToggle(f));
-  hdr.addEventListener("click", () => _toggleFold(f.id, folded));
+  if (Rendered.isMarkdown(f)) hdr.appendChild(_renderMdToggle(f, scope));
+  hdr.addEventListener("click", () => _toggleFold(scope, f.id, folded));
   return hdr;
 }
 
 /** Per-file toggle flipping a markdown file between the text diff and
  *  rendered mode. stopPropagation keeps the click off the header's
  *  fold handler; the toggle fetches (if needed) then re-renders. */
-function _renderMdToggle(f: FileBlock): HTMLElement {
+function _renderMdToggle(f: FileBlock, scope: PaneScope): HTMLElement {
   const on = Rendered.isOn(f.id);
   const btn = _el("button", "md-toggle");
   btn.textContent = on ? "Diff" : "Rendered";
@@ -515,7 +638,7 @@ function _renderMdToggle(f: FileBlock): HTMLElement {
   btn.setAttribute("aria-pressed", on ? "true" : "false");
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
-    void Rendered.toggle(f, render);
+    void Rendered.toggle(f, scope.repaint);
   });
   return btn;
 }
@@ -655,26 +778,26 @@ function _refreshFileFolds(f: FileBlock): void {
 
 // --- Hunk + diff body ---------------------------------------------------
 
-function _renderHunk(h: HunkBlock, f: FileBlock, reveal = false): HTMLElement {
+function _renderHunk(h: HunkBlock, f: FileBlock, scope: PaneScope, reveal = false): HTMLElement {
   const div = _el("div", "hunk");
   div.dataset.id = h.id;
   // reveal (focus) forces the hunk fully open — code, not summaries — but
   // an explicit fold override the reviewer set still wins.
-  const folded = _isFolded(h.id, reveal ? false : _defaultHunkFolded());
+  const folded = _isFolded(scope, h.id, reveal ? false : _defaultHunkFolded());
   div.classList.toggle("folded", folded);
-  div.appendChild(_renderHunkHeader(h, folded, f));
+  div.appendChild(_renderHunkHeader(h, folded, f, scope));
   if (!folded) {
     // The collapse ladder shows segment summaries (never raw code) until
     // `off` or a reveal. A hunk with no segments folds as one synthetic
     // segment spanning it, so every hunk behaves uniformly at this level.
     const segs = _displaySegments(h);
-    const anyOpen = segs.some((s) => _isFolded(s.id, _defaultSegmentFolded()) === false);
+    const anyOpen = segs.some((s) => _isFolded(scope, s.id, _defaultSegmentFolded()) === false);
     if (!reveal && _defaultSegmentFolded() && !anyOpen) {
       const list = _el("div", "seg-list");
-      for (const s of segs) list.appendChild(_renderSegmentFolded(s, f));
+      for (const s of segs) list.appendChild(_renderSegmentFolded(s, f, scope));
       div.appendChild(list);
     } else {
-      div.appendChild(_renderHunkDiff(h, f));
+      div.appendChild(_renderHunkDiff(h, f, scope));
     }
     if (h.context) {
       const c = _el("div", "context-note");
@@ -731,7 +854,9 @@ function _displaySegments(h: HunkBlock): SegmentBlock[] {
   }];
 }
 
-function _renderHunkHeader(h: HunkBlock, folded: boolean, f: FileBlock): HTMLElement {
+function _renderHunkHeader(
+  h: HunkBlock, folded: boolean, f: FileBlock, scope: PaneScope,
+): HTMLElement {
   const hdr = _el("div", "hunk-header");
   hdr.appendChild(_chev(folded));
   hdr.appendChild(_el("span", "hunk-pos", h.header));
@@ -769,12 +894,12 @@ function _renderHunkHeader(h: HunkBlock, folded: boolean, f: FileBlock): HTMLEle
     e.stopPropagation();
     // Flip the visible state — `folded` is the actual current state
     // (respecting reveal + overrides), not just the level default.
-    _toggleFold(h.id, folded);
+    _toggleFold(scope, h.id, folded);
   });
   return hdr;
 }
 
-function _renderSegmentFolded(s: SegmentBlock, f: FileBlock): HTMLElement {
+function _renderSegmentFolded(s: SegmentBlock, f: FileBlock, scope: PaneScope): HTMLElement {
   const div = _el("div", "segment");
   div.dataset.id = s.id;
   div.appendChild(_chev(true));
@@ -788,13 +913,13 @@ function _renderSegmentFolded(s: SegmentBlock, f: FileBlock): HTMLElement {
     e.stopPropagation();
     // A rendered summary is always in the folded state; clicking opens it
     // (which, in step b, reveals the whole hunk's code).
-    _toggleFold(s.id, true);
+    _toggleFold(scope, s.id, true);
   });
   return div;
 }
 
-function _renderHunkDiff(h: HunkBlock, file: FileBlock): HTMLElement {
-  const cached = _state.renderedDiffs[h.id];
+function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLElement {
+  const cached = scope.cache?.[h.id];
   if (cached) return cached;
   const rows = h.rows || [];
   const marks = _blockMarks(rows);
@@ -803,7 +928,7 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock): HTMLElement {
   // Record this hunk's rows so folds.ts can build a unified row stream
   // across the hunk and adjacent expanded context.
   FileRows.record(diff, { rows, oldEls, newEls });
-  _state.renderedDiffs[h.id] = diff;
+  if (scope.cache) scope.cache[h.id] = diff;
   return diff;
 }
 
@@ -1104,8 +1229,21 @@ function _onKeydown(e: KeyboardEvent): void {
     case "3": _setGlobalFold("segments"); e.preventDefault(); break;
     case "4": _setGlobalFold("off"); e.preventDefault(); break;
     case "?": _toggleHelp(); e.preventDefault(); break;
-    case "Escape": _closeHelp(); break;
+    case "Escape": _onEscape(); break;
   }
+}
+
+/** Esc dismisses the topmost thing this handler owns: the help overlay,
+ *  else the detail panel. The comment editor and the console prompt
+ *  handle their own Esc on the input, which never reaches here —
+ *  `_onKeydown` returns early for text fields. */
+function _onEscape(): void {
+  const overlay = document.getElementById("help-overlay");
+  if (overlay && !overlay.classList.contains("hidden")) {
+    _closeHelp();
+    return;
+  }
+  ExplainerPanel.close();
 }
 
 function _toggleHelp(): void {
@@ -1168,6 +1306,7 @@ export const Render = {
   render,
   mode,
   setMode,
+  openReference,
   revealFile,
   revealHunk,
   markExplainerReady,

@@ -546,6 +546,53 @@ diff.
   document; it would have opened into the mode with the button that
   leaves it disabled.
 
+## A reference opens beside the document ✅ done
+
+Not in the plan above; added after slice 6. A reference in the document
+opens the file it addresses in a detail panel beside the prose instead
+of leaving the mode. Rationale is the **ADR 0007 addendum of
+2026-08-31**; this records what landed.
+
+**As built**:
+
+- **The mode paints a split**, `#app` › `.explainer-split` › the
+  document cell + `aside.explainer-detail`. Only the document cell is
+  written on a repaint, which is what keeps a panel — and its scroll —
+  mounted across a section write the reader did not ask for. The panel
+  is sticky with its own scroll, the pattern the sidebar opposite it
+  already uses.
+- **`explainer_panel.ts` owns the panel; `render.ts` owns the render.**
+  The per-file renderer and "Open in diff" reach the panel as an
+  injected `PanelHost`, so the dependency runs one way (render.ts →
+  panel), as `rendered.ts` does.
+- **The panel renders fresh, into its own `PaneScope`.** A scope is what
+  a render pass reads its overrides from, whether the sidebar filter
+  applies to it, and where a fold click in it repaints. The panel's
+  `cache` is null on purpose: `renderedDiffs` holds live nodes, and a
+  node cannot be in two trees — reusing one would have moved the diff's
+  DOM into the panel.
+- **The seed is `revealHunk`'s, scoped.** The file always opens (a panel
+  showing a folded header shows nothing); a hunk reference also opens
+  that hunk and its segments. Everything else keeps the collapse level,
+  and folds clicked inside the panel repaint the panel alone.
+- **The hunk SSE patchers no-op in overview mode.** The only `.hunk` on
+  the page is then the panel's, and patching it there would write a
+  panel-owned node into the diff's cache. A panel opened mid-stream
+  shows the annotations that existed when it was opened; re-opening the
+  reference renders the current ones.
+- **Comments work unchanged.** The panel is inside `#app`, so the
+  delegated gutter listener reaches it, and it renders the `.file` ›
+  `.row` › `.cell-lineno` chain `renderAll` walks. Mounting content
+  replays threads and reflows arrows the way a diff render does.
+- **Esc closes the panel**, after the help overlay: the two things
+  render.ts's key handler owns, topmost first. The comment editor and
+  the console prompt keep their own Esc on their input, which the
+  handler never sees.
+- **The panel is not in the hash.** Reloading a URL restores the mode
+  and the collapse level, not what was open beside the document. A
+  follow-up if reviewers miss it; the reference is one click away in the
+  prose either way.
+
 ## Not in these slices
 
 - Regenerate-a-section-with-a-nudge (`PARKED_IDEAS.md` #3).
