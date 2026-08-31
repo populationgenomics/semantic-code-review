@@ -1555,9 +1555,16 @@ body { padding-bottom: 30px; }
    two stay side by side and neither drags the other. */
 .explainer-split { display: flex; align-items: flex-start; }
 .explainer-doc { flex: 1 1 0; min-width: 0; }
+/* With the panel open the cell shrink-wraps to the document's own
+   max-width box, so `margin-inline: auto` has nothing left to centre
+   into and the two pack together; the panel takes the whole remainder.
+   Centred, a wide window put a dead zone on each side of the prose. */
+.explainer-split.panel-open .explainer-doc { flex: 0 1 auto; }
 .explainer-detail {
-  flex: 0 1 clamp(420px, 48%, 860px);
-  min-width: 0;
+  /* The remainder, down to a floor the diff is still readable at: below
+     it the document is what gives way. */
+  flex: 1 1 0;
+  min-width: 380px;
   position: sticky;
   top: 56px;                      /* just below the sticky .pr-bar */
   align-self: flex-start;

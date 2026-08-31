@@ -2351,6 +2351,21 @@ describe("overview mode (ADR 0007)", () => {
         .toBe(true);
     });
 
+    test("the split packs against the panel only while it is open", async () => {
+      // The stylesheet keys the document cell's shrink-wrap off this
+      // class: centred beside an open panel, the prose sat in a dead
+      // zone on a wide window.
+      const panel = await bootWithPanel();
+      const split = document.querySelector("#app .explainer-split") as HTMLElement;
+      expect(split.classList.contains("panel-open")).toBe(false);
+
+      mapRow(0).click();
+      expect(split.classList.contains("panel-open")).toBe(true);
+
+      (panel.querySelector(".explainer-detail-close") as HTMLElement).click();
+      expect(split.classList.contains("panel-open")).toBe(false);
+    });
+
     test("a second reference swaps the panel in place", async () => {
       const panel = await bootWithPanel();
       mapRow(0).click();
@@ -2407,6 +2422,8 @@ describe("overview mode (ADR 0007)", () => {
       expect(document.querySelector("#app .explainer-detail")).toBe(panel);
       expect(panel.hidden).toBe(false);
       expect(panel.querySelector(".file")).toBe(fileEl);
+      expect(document.querySelector("#app .explainer-split")!.classList.contains("panel-open"))
+        .toBe(true);
       // The chips were rebuilt with the prose; the mark goes back on.
       expect(mapRow(0).classList.contains("explainer-ref-open")).toBe(true);
     });

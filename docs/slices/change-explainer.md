@@ -592,6 +592,18 @@ of leaving the mode. Rationale is the **ADR 0007 addendum of
   and the collapse level, not what was open beside the document. A
   follow-up if reviewers miss it; the reference is one click away in the
   prose either way.
+- **An open panel takes the slack.** The document cell centres its column
+  only while it is the whole pane; with the panel open (`panel-open` on
+  the split, set by `explainer_panel.ts`) the cell shrink-wraps to the
+  document's own max-width box and the panel takes the remainder down to
+  a 380px floor, below which the document gives way first. Centred, a
+  wide window left a dead zone on each side of the prose and pinned the
+  panel to the far edge. The shrink-wrap is `flex: 0 1 auto`, so nothing
+  couples the layout to the serif's `ch` metrics.
+- **No draggable separator.** The document is capped at its measure, so a
+  splitter could only take the prose below a readable width — and it
+  would need `Annotations.reflowAll` on every drag frame. A considered
+  follow-up if the fixed division turns out to bind.
 
 ## The fold slider drops into the ladder ✅ done
 

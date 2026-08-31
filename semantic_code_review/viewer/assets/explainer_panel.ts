@@ -104,6 +104,9 @@ function open(ref: ExplainerRef): void {
   const file = _host.renderFile(ref);
   _ref = ref;
   dom.panel.hidden = false;
+  // The split packs the two cells together only while there is a second
+  // one to pack against; the stylesheet reads the state off this class.
+  dom.split.classList.add("panel-open");
   dom.body.replaceChildren(file);
   // The path off the rendered header rather than a second channel for
   // it: `.file-path` is the DOM's own answer to which file this is —
@@ -121,6 +124,7 @@ function close(): void {
   const dom = _dom;
   if (dom === null) return;
   dom.panel.hidden = true;
+  dom.split.classList.remove("panel-open");
   dom.body.replaceChildren();
   _ref = null;
   _clearMarks();
