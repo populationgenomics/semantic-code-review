@@ -210,7 +210,8 @@ browser from a run directory that server never wrote.
   units, so a figure rendered wider than it was drawn magnifies every
   label; the cap holds one unit to at most one pixel, and a figure
   narrower than the column is centred. The prompt asks for a canonical
-  640–700 unit width, which puts the cap near the measure.
+  600-unit width, which is about what the figure well is: the 72ch
+  column less its padding, plus the figure's own -4ch bleed each side.
   `width`/`height` on a `rect` are geometry and stay.
 - A DTD ends the figure rather than being sanitised around: nothing in
   the vocabulary needs one, and entity expansion is the only way an SVG
