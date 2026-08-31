@@ -132,14 +132,14 @@ async function bootViewer(data: ViewerData, opts: BootOptions = {}): Promise<voi
   document.body.innerHTML = `
     <header class="pr-bar">
       <div class="pr-title"><span class="pr-meta"></span></div>
+      <div class="mode-strip">
+        <button id="overview-btn" class="mode-btn" disabled></button>
+      </div>
       <div class="fold-slider">
         <button data-fold="files"></button>
         <button data-fold="hunks"></button>
         <button data-fold="segments"></button>
         <button data-fold="off"></button>
-      </div>
-      <div class="mode-strip">
-        <button id="overview-btn" class="mode-btn" disabled></button>
       </div>
       <button id="reset-btn"></button>
       <button id="help-btn"></button>
