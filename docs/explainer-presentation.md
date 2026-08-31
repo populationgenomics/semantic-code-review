@@ -51,10 +51,20 @@ after sanitisation, building DOM nodes over the sanitised tree rather
 than a second HTML pass. Tokens inside `code` spans and fenced blocks
 are left alone: a `[F3]` in a snippet is the snippet's.
 
-A chip is labelled by what the reviewer can act on — the file's path,
-or `path:N` for the Nth hunk of that file — not by the raw id. Clicking
-a file chip leaves overview mode and scrolls; clicking a hunk chip also
-unfolds it, because a hunk reference is the claim "read these lines".
+A chip is labelled by what the reviewer can act on, never by the raw
+id: the path's basename for a file reference; for a hunk reference the
+basename alone where its file has one hunk, and `basename · hunk N`
+where it has more. Not `path:N` — that is the universal file:line form,
+and on a diff of new files every chip read `sheaf.md:1`. Where the
+prose has just named the path the label would be a repetition, so the
+chip is a bare arrow. The `title` states the target in full either
+way — `hunk 2 of 5 in path`.
+
+Clicking a chip opens that file in a detail panel beside the document,
+so the code and the sentence that sent the reader to it are on screen
+together; a hunk chip opens with its hunk unfolded, because a hunk
+reference is the claim "read these lines". The panel's "Open in diff" is
+the way on to the full ladder.
 
 A chip is not a substitute for the section's `refs` list, which is what
 the sidebar counts and the coverage footer reads.
@@ -120,10 +130,15 @@ remove, and that is not the figure losing nothing.
 { terms: [{ term: string, definition: markdown }] }
 ```
 
-For introducing several names at once without a paragraph each. Each
-entry renders as a **concept callout** — a definition is exactly what
-that kind is for, so the two share one visual instead of inventing a
-second way to say the same thing. Stacked tighter than a standalone
+Renders after the section's prose and figures, above its subsections.
+It consolidates names the prose has already introduced rather than
+introducing them, so a definition can lean on what the reader just
+read; ahead of the prose it was a glossary met before anything that
+made it mean something.
+
+Each entry renders as a **concept callout** — a definition is exactly
+what that kind is for, so the two share one visual instead of inventing
+a second way to say the same thing. Stacked tighter than a standalone
 callout: a run of them is a glossary, not a run of interruptions.
 
 `term` is rendered as inline markdown, not text. These are the model's
@@ -198,9 +213,16 @@ browser from a run directory that server never wrote.
   is `marker-start`/`-mid`/`-end`, which must match `url(#id)` exactly.
 - `class` is filtered to the vocabulary below; unknown classes are
   removed, and a `class` left empty goes with them.
-- `viewBox` is required on the root; `width`/`height` there are stripped
-  (the stylesheet sizes figures to the measure). `width`/`height` on a
-  `rect` are geometry and stay.
+- `viewBox` is required on the root; `width`/`height` there are stripped.
+  The renderer sizes the figure instead: `width: 100%` of the column,
+  capped by an inline `max-width` of the viewBox's own width. Label sizes
+  in the class vocabulary are px, which inside an SVG are viewBox user
+  units, so a figure rendered wider than it was drawn magnifies every
+  label; the cap holds one unit to at most one pixel, and a figure
+  narrower than the column is centred. The prompt asks for a canonical
+  650-unit width, which is about what the figure well is: the 72ch text
+  measure plus the figure's own -4ch bleed each side.
+  `width`/`height` on a `rect` are geometry and stay.
 - A DTD ends the figure rather than being sanitised around: nothing in
   the vocabulary needs one, and entity expansion is the only way an SVG
   this size is expensive to parse.
@@ -301,8 +323,13 @@ is fixed is what things look like, not where they go.
 Overview mode has its own type scale; it does not inherit the diff's
 dense monospace chrome.
 
-- Body: serif stack, ~18px, line-height ~1.62.
-- Measure: ~72ch for prose. Figures may exceed it slightly.
+- Body: serif stack, 17px, line-height 1.65.
+- Measure: 72ch of text, the default the reader adjusts by dragging the
+  document's right edge. The pane's `max-width` is that plus its two
+  32px side paddings, which `box-sizing: border-box` would otherwise
+  charge to the measure; the column is centred by auto side margins
+  rather than page padding, so it holds inside a container of any width.
+  Figures may exceed it slightly.
 - Headings, captions, labels and table headers: `--ui`, the sans stack
   the rest of the viewer uses, so chrome reads as chrome and prose reads
   as prose.

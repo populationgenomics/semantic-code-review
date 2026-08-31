@@ -43,6 +43,7 @@ from .runner import (
     _build_explainer_section_task,
     _build_explainer_task,
     _build_fold_summary_task,
+    ensure_augmented_diff,
     serve_review,
 )
 from .server import PostCallable
@@ -125,12 +126,7 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
 
     tasks = _build_tasks(opts, run_dir)
     if not opts.augment:
-        # Mirror cli/review.py's behaviour: copy raw → augmented so render
-        # has something to parse when augment is skipped.
-        (run_dir / "augmented.diff").write_text(
-            (run_dir / "raw.diff").read_text(encoding="utf-8"),
-            encoding="utf-8",
-        )
+        ensure_augmented_diff(run_dir)
 
     # `--yes` skips the modal entirely — server stays out of posting
     # mode (Done = plain /exit) and the CLI does the post itself after

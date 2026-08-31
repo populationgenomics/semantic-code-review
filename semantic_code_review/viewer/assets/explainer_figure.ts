@@ -59,8 +59,9 @@ const MARKER_REFS = ["marker-start", "marker-mid", "marker-end"];
 const GLOBAL_ATTRS = ["class", "transform"];
 
 // Mirrors _ELEMENT_ATTRS in augment/explainer_figures.py. `width` and
-// `height` are absent from `svg` on purpose: the stylesheet sizes a
-// figure to the measure, so a root dimension would fight it.
+// `height` are absent from `svg` on purpose: the renderer sizes a figure
+// from the column and its viewBox (see `drawnWidth`), so a root
+// dimension would fight it.
 const ELEMENT_ATTRS: Record<string, string[]> = {
   svg: ["viewBox", "preserveAspectRatio"],
   g: [],
@@ -136,6 +137,18 @@ function cleanValue(name: string, value: string, prefix: string): string | null 
   return value;
 }
 
+/** The width the figure was drawn at, in viewBox user units, or null
+ *  when the viewBox is not four usable numbers. Neither sanitiser
+ *  pass reads past the attribute's presence, so a document that reached
+ *  the browser without passing through one can carry anything here. */
+function drawnWidth(root: Element): number | null {
+  const parts = (root.getAttribute("viewBox") || "").trim().split(/[\s,]+/);
+  if (parts.length !== 4) return null;
+  const nums = parts.map(Number);
+  if (!nums.every(Number.isFinite)) return null;
+  return nums[2] > 0 ? nums[2] : null;
+}
+
 /** The whole `<figure>`: the diagram, its caption, and — when the
  *  sanitiser took something out — how much. A figure that lost
  *  everything is still rendered, as its alt text: dropping it silently
@@ -152,6 +165,14 @@ export function renderFigure(figure: ExplainerFigure): HTMLElement {
     if (node) {
       node.setAttribute("role", "img");
       node.setAttribute("aria-label", figure.alt);
+      // Label sizes in the class vocabulary are px, which inside an SVG
+      // are viewBox user units: rendering wider than the viewBox scales
+      // every label with the drawing. Capping at the drawn width holds
+      // one unit to at most one pixel, and the stylesheet's `width: 100%`
+      // still shrinks a figure too wide for the column. Presentation the
+      // renderer reads off the model's geometry, not the model's to pick.
+      const width = drawnWidth(node);
+      if (width !== null) (node as SVGElement).style.maxWidth = `${width}px`;
       fig.appendChild(node);
     }
   } else {

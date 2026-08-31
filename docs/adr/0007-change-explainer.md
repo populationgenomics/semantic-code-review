@@ -578,3 +578,82 @@ into every key, and where `carry_guidance` puts the guidance on stdin
 instead it lands in the user text, which is also in the key. Background
 keys on `(base_sha, guidance)` for the reason the previous addendum's
 fix records, and the note is part of `guidance`.
+
+---
+
+## Addendum — a reference opens beside the document (2026-08-31)
+
+Amends **Surface**. The mode, and its free return trip, stand; where a
+reference lands does not.
+
+A reference — an inline chip, a Map row — left the mode: the pane was
+rebuilt around the diff and the reader's place in the prose went with
+it. So the claim and the code it is about were never on screen together,
+and the loop Surface describes — read, drop into the ladder to check,
+return — cost a mode switch each way for what is usually a ten-second
+look. Section-granular restore put the reader back at a heading, not at
+the sentence.
+
+A reference now opens the file it addresses in a **detail panel beside
+the document**. The document column keeps its DOM and its scroll
+position; the panel is sticky with its own scroll, so checking happens
+in place and the return trip is looking left. The panel renders the
+diff's own DOM, so comments work in it unchanged.
+
+The panel has **its own fold state**. A hunk reference arrives unfolded,
+on the same terms `revealHunk` uses — the reference is the claim "read
+these lines" — but the unfold is the panel's: reading twenty references
+beside the document must not leave twenty files unfolded in the diff.
+That is the same argument the mode's orthogonality to the collapse level
+already makes, one level down.
+
+**"Open in diff"** in the panel header keeps the old jump for the reader
+who wants the file with the whole change around it. Leaving the mode is
+then a decision rather than the price of a glance, and section-granular
+restore covers those exits, which are now the deliberate ones.
+
+The reading measure survives the split: the document's 72ch column comes
+from its own `max-width` and auto margins, so it holds inside a narrower
+flex item and the panel takes the width the prose was not using. Each
+diff half keeps its content-driven minimum width and scrolls
+horizontally inside the panel — the price of the two side by side.
+
+---
+
+## Addendum — assignment routes, it does not scope (2026-08-31)
+
+Amends the first addendum's seed description. The pass table, the tool
+grant and the budget stand.
+
+Each prose pass was seeded with the hunks of the files the skeleton
+assigned it, so the assignment decided what the pass could see. A
+tool-less call that sees paths, line counts and one-line summaries was
+thereby the bound on what a tool-bearing call could know — the same
+misreading of the evidence the tools addendum corrects, one level down.
+It cost a real document: on a 28-file change the skeleton gave the
+change's central subsystem five Map rows and no prose section, and the
+walkthrough, seeded without it, wrote around it.
+
+Every prose pass is now seeded with the whole change: every file with
+its role and hunk count, and every hunk with its header and the intent
+already established for it. About two lines a hunk, so the listing is
+strictly smaller than the raw diff the overview pass takes in one call;
+it has no size cap for the same reason that one does not.
+
+The assignment stays, as routing rather than as scope. It is what a
+section is *about* — the subject the brief is read against, the
+references the section is born with, and the coverage counts the sidebar
+reads off them — and it is one line in the seed naming the files routed
+there. A section routed nothing is told that in one line instead of
+being handed a smaller seed.
+
+The readiness gate stays on the routed hunks. Those are the ones a
+section's own claims rest on; a hunk elsewhere in the listing that the
+per-hunk pass has not reached yet is shown as `(not annotated)` rather
+than blocking every section on the whole diff.
+
+Caching is unaffected in shape. The walkthrough keys on its assembled
+user text, so a wider seed is a new key. Background keys on `(base_sha,
+guidance)` and its seed now moves with the head in more places than it
+did — the deliberate trade the first addendum's table already makes,
+since the point of that key is prose that survives head movement.

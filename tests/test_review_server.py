@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import queue
+import socket
+import struct
 import threading
 import time
 import urllib.error
@@ -345,6 +349,86 @@ def test_wait_until_done_times_out_cleanly(server) -> None:
     t.start()
     t.join(timeout=2.0)
     assert result["done"] is False
+
+
+def _spawn_waiter(server, *, timeout: float, idle_poll: float) -> tuple[threading.Thread, dict]:
+    """Run wait_until_done off-thread; the dict carries its verdict."""
+    result: dict = {"done": None}
+
+    def wait():
+        result["done"] = server.wait_until_done(timeout=timeout, idle_poll=idle_poll)
+
+    t = threading.Thread(target=wait, daemon=True)
+    t.start()
+    return t, result
+
+
+def test_an_open_viewer_is_not_idle(server) -> None:
+    """A registered SSE subscriber holds the server open indefinitely;
+    the countdown only starts once the last one goes away."""
+    q: queue.Queue = queue.Queue()
+    with server.ctx.state_lock:
+        server.ctx.subscribers.append(q)
+
+    t, result = _spawn_waiter(server, timeout=0.2, idle_poll=0.02)
+    t.join(timeout=1.0)
+    assert t.is_alive()
+    assert result["done"] is None
+
+    with server.ctx.state_lock:
+        server.ctx.subscribers.remove(q)
+    t.join(timeout=2.0)
+    assert result["done"] is False
+
+
+def test_a_request_resets_the_idle_countdown(server) -> None:
+    """Every route touches `last_activity`, and the countdown restarts
+    from it — so a reviewer poking the server outlives the window."""
+    t, result = _spawn_waiter(server, timeout=0.3, idle_poll=0.02)
+    for _ in range(6):
+        _request(server.url() + "/data.json")
+        time.sleep(0.1)
+    assert result["done"] is None
+
+    t.join(timeout=3.0)
+    assert result["done"] is False
+
+
+def test_exit_beats_the_idle_countdown(server) -> None:
+    """/exit returns True promptly even with the idle window wide open."""
+    t, result = _spawn_waiter(server, timeout=60.0, idle_poll=0.02)
+    _request(server.url() + "/exit", "POST", {})
+    t.join(timeout=5.0)
+    assert result["done"] is True
+
+
+# --- client hangups -----------------------------------------------------
+
+
+def test_a_dropped_connection_is_logged_not_printed(server, capfd, caplog) -> None:
+    """A client that vanishes mid-request costs a debug line, not a
+    traceback on the reviewer's terminal, and the server keeps serving."""
+    caplog.set_level(logging.DEBUG, logger="semantic_code_review.review.server")
+    port = int(server.url().rsplit(":", 1)[1])
+    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    # Headers left unterminated, so the handler is parked in readline when
+    # the reset lands; SO_LINGER with a zero timeout sends RST rather than
+    # FIN, which is what a frozen tab's teardown looks like to the server.
+    s.sendall(b"GET /data.json HTTP/1.1\r\nHost: localhost\r\n")
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    s.close()
+
+    for _ in range(100):
+        if any("disconnected mid-request" in r.getMessage() for r in caplog.records):
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("hangup never reached handle_error")
+
+    code, body = _request(server.url() + "/data.json")
+    assert code == 200
+    assert body["version"] == "1"
+    assert "Traceback" not in capfd.readouterr().err
 
 
 # --- /events SSE channel ------------------------------------------------
@@ -1140,6 +1224,19 @@ def test_serve_review_serves_pending_then_streams_and_finalises(tmp_path: Path) 
     serve_thread.join(timeout=5)
     assert not serve_thread.is_alive()
     assert "r" in result_box
+
+
+def test_serve_review_reports_the_idle_shutdown(tmp_path: Path, capsys) -> None:
+    """Both CLI entry points come through serve_review, so the idle
+    shutdown names itself here — once, before either prints comments."""
+    from semantic_code_review.review.runner import serve_review
+
+    _populate_minimal_run_dir(tmp_path)
+    (tmp_path / "augmented.diff").write_text(_RAW_DIFF_FOR_RUN, encoding="utf-8")
+
+    result = serve_review(tmp_path, port=0, timeout=1, open_browser=False)
+    assert result.clean is False
+    assert "idle timeout — 1s with no request and no open viewer" in capsys.readouterr().err
 
 
 # --- /file-text (rendered markdown mode) -------------------------------

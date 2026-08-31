@@ -85,8 +85,8 @@ _MARKER_REFS = frozenset({"marker-start", "marker-mid", "marker-end"})
 _GLOBAL_ATTRS = frozenset({"class", "transform"})
 
 #: Per-element geometry attributes. `width`/`height` appear on `rect`
-#: and `marker` but never on the root `svg`: the stylesheet sizes a
-#: figure to the measure, so a root dimension would fight it.
+#: and `marker` but never on the root `svg`: the renderer sizes a figure
+#: from the column and its viewBox, so a root dimension would fight it.
 _ELEMENT_ATTRS: dict[str, frozenset[str]] = {
     "svg": frozenset({"viewBox", "preserveAspectRatio"}),
     "g": frozenset(),

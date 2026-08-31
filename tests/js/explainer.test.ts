@@ -8,14 +8,20 @@
 import { describe, test, expect, vi, beforeEach } from "vitest";
 import { Explainer } from "../../semantic_code_review/viewer/assets/explainer";
 
+/** `n` hunks for file `fileIdx`, ids only: what a hunk chip's label
+ *  reads off a file is the count. */
+function hunks(fileIdx: number, n: number): HunkBlock[] {
+  return Array.from({ length: n }, (_, i) => ({ id: `H${fileIdx}_${i}` }) as HunkBlock);
+}
+
 function data(overrides: Partial<ViewerData> = {}): ViewerData {
   return {
     version: "1",
     pr: { head_sha: "head5678" } as PRBlock,
     smells_catalogue: {},
     files: [
-      { id: "F0", path: "schema/api.proto" } as FileBlock,
-      { id: "F1", path: "gen/api_pb.ts" } as FileBlock,
+      { id: "F0", path: "schema/api.proto", hunks: hunks(0, 1) } as FileBlock,
+      { id: "F1", path: "gen/api_pb.ts", hunks: hunks(1, 3) } as FileBlock,
     ],
     groups: [],
     symbols: [],
@@ -99,7 +105,7 @@ function mockFetch(responses: Array<{ status: number; body: unknown }>): Array<{
 
 function boot(overrides: Partial<ViewerData> = {}, opts = {}): void {
   const d = data(overrides);
-  Explainer.setFilePaths(d);
+  Explainer.setFiles(d);
   Explainer.init("", d, opts);
 }
 
@@ -120,6 +126,18 @@ describe("readiness", () => {
     boot({ pending: true });
     expect(Explainer.isReady()).toBe(false);
     Explainer.markReady();
+    expect(Explainer.isReady()).toBe(true);
+  });
+
+  test("a document in hand is proof its own skeleton ran", async () => {
+    // A run dir is reused for the same head SHA, so a tab that boots
+    // mid-pass can hold an earlier run's document. Waiting for the
+    // `overview` frame there leaves it holding one the button will not
+    // open — and, since the viewer opens into the document, one the
+    // button will not leave either.
+    boot({ pending: true });
+    mockFetch([{ status: 200, body: doc() }]);
+    await Explainer.load();
     expect(Explainer.isReady()).toBe(true);
   });
 });
@@ -489,6 +507,88 @@ function threeSectionDoc(): ExplainerDocument {
   });
 }
 
+// --- Liveness while a call runs --------------------------------------------
+
+describe("what a section says while its call runs", () => {
+  /** A POST that never answers, so the pane stays on its status line for
+   *  as long as the case needs. */
+  function hangingFetch(): void {
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      (() => new Promise(() => { /* never settles */ })) as unknown as typeof fetch,
+    );
+  }
+
+  function statusOf(sectionId: string): string {
+    const pane = Explainer.renderPane();
+    return pane.querySelector(`[data-section-id="${sectionId}"] .explainer-status`)!.textContent || "";
+  }
+
+  test("the elapsed time appears at the first minute and keeps up", () => {
+    // A pass runs for minutes; four unchanging words for eight of them
+    // cannot be told from a wedged tab.
+    vi.useFakeTimers();
+    try {
+      boot();
+      Explainer.onEvent(proseDoc() as SseExplainerEvent);
+      hangingFetch();
+      Explainer.generateSection("code");
+      // Under a minute the figure would be noise, so the line stays quiet.
+      expect(statusOf("code")).toBe("Writing this section…");
+      vi.advanceTimersByTime(3 * 60000);
+      expect(statusOf("code")).toBe("Writing this section… 3 min");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("the pane repaints on a timer for as long as the call runs", () => {
+    vi.useFakeTimers();
+    try {
+      let repaints = 0;
+      boot({}, { onChange: () => { repaints++; } });
+      Explainer.onEvent(proseDoc() as SseExplainerEvent);
+      hangingFetch();
+      Explainer.generateSection("code");
+      const started = repaints;
+      vi.advanceTimersByTime(90000);
+      expect(repaints).toBe(started + 3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("the timer stops when the queue drains", async () => {
+    vi.useFakeTimers();
+    try {
+      let repaints = 0;
+      boot({}, { onChange: () => { repaints++; } });
+      Explainer.onEvent(proseDoc() as SseExplainerEvent);
+      mockFetch([{ status: 200, body: proseDoc({ state: "ready", body: "Written." }) }]);
+      Explainer.generateSection("code");
+      await vi.advanceTimersByTimeAsync(1);
+      const settled = repaints;
+      await vi.advanceTimersByTimeAsync(5 * 60000);
+      expect(repaints).toBe(settled);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a section waiting its turn names the section ahead of it", () => {
+    // "Queued behind another section" left the reviewer to guess which,
+    // and so whether the thing they are watching is the slow one.
+    boot();
+    Explainer.onEvent(threeSectionDoc() as SseExplainerEvent);
+    hangingFetch();
+    Explainer.generateSection("background");
+    Explainer.generateSection("code");
+    expect(statusOf("background")).toBe("Writing this section…");
+    // Both halves of the merged walkthrough wait behind the same call.
+    expect(statusOf("intuition")).toBe("Queued behind Background…");
+    expect(statusOf("code")).toBe("Queued behind Background…");
+  });
+});
+
 // --- Markdown and reference chips -----------------------------------------
 
 describe("prose rendering", () => {
@@ -529,18 +629,22 @@ describe("prose rendering", () => {
     expect(box.parentElement!.tagName).toBe("DL");
   });
 
-  test("a section deferred by a busy server stays visibly queued", async () => {
+  test("a section deferred by a busy server says whose wait it is", async () => {
     // The drain loop sets `_writing` before every attempt, so a retry
     // that cleared its phase rendered "Writing…" for the length of the
     // attempt and "Queued…" between them — a 4-second flash, per
-    // section. The phase now outranks the flag.
+    // section. The phase still outranks the flag. What it says is not
+    // the in-tab queue's line: nothing here is ahead of this section,
+    // the server's one slot is held elsewhere, and this tab is waiting
+    // on a timer.
     boot();
     Explainer.onEvent(proseDoc({ state: "pending", body: "" }) as SseExplainerEvent);
     mockFetch([{ status: 409, body: { error: "an explainer pass is already running", retry: true } }]);
     Explainer.generateSection("code");
     await new Promise<void>((r) => setTimeout(r, 0));
     const text = Explainer.renderPane().textContent || "";
-    expect(text).toContain("Queued behind another section");
+    expect(text).toContain("Waiting for the server — retrying.");
+    expect(text).not.toContain("Queued behind");
     expect(text).not.toContain("Writing this section");
   });
 
@@ -622,11 +726,28 @@ describe("prose rendering", () => {
   });
 
   test("a hunk reference is labelled by its file, not by its raw id", () => {
-    // `_fileLabel` on a hunk id finds nothing and hands back "H1_1",
-    // which is not something a reviewer can act on.
+    // The raw "H1_1" is not something a reviewer can act on.
     withBody("The rename happens in [H1_1].");
     const ref = Explainer.renderPane().querySelector(".explainer-arrow") as HTMLElement;
-    expect(ref.textContent).toBe("api_pb.ts:2 \u2197");
+    expect(ref.textContent).toBe("api_pb.ts \u00b7 hunk 2 \u2197");
+  });
+
+  test("a hunk reference never reads as a line number", () => {
+    // `path:N` collided with the universal file:line form: on a diff of
+    // new files every chip read "sheaf.md:1", which a reader can only
+    // take for line 1.
+    withBody("The rename happens in [H1_1].");
+    const ref = Explainer.renderPane().querySelector(".explainer-arrow") as HTMLElement;
+    expect(ref.textContent).not.toContain(":");
+  });
+
+  test("a hunk reference into a one-hunk file drops the ordinal", () => {
+    // F0 has one hunk, so "hunk 1" distinguishes nothing the basename
+    // does not already say.
+    withBody("The rename happens in [H0_0].");
+    const ref = Explainer.renderPane().querySelector(".explainer-arrow") as HTMLElement;
+    expect(ref.textContent).toBe("api.proto \u2197");
+    expect(ref.title).toBe("Open hunk 1 of 1 in schema/api.proto beside the document");
   });
 
   test("a run of references each keep their label", () => {
@@ -638,13 +759,24 @@ describe("prose rendering", () => {
   });
 
   test("a hunk arrow names the file and the hunk's place in it, in its tooltip", () => {
+    // The label carries a bare ordinal at most; "of 3" is what makes
+    // that ordinal mean something.
     const opened: string[] = [];
     boot({}, { onOpenHunk: (id: string) => opened.push(id) });
     Explainer.onEvent(proseDoc({ state: "ready", body: "See [H1_1] for the rename." }) as SseExplainerEvent);
     const ref = Explainer.renderPane().querySelector(".explainer-arrow") as HTMLElement;
-    expect(ref.title).toContain("gen/api_pb.ts:2");
+    expect(ref.title).toBe("Open hunk 2 of 3 in gen/api_pb.ts beside the document");
     ref.click();
     expect(opened).toEqual(["H1_1"]);
+  });
+
+  test("a bare hunk arrow still says the whole place in its tooltip", () => {
+    // The prose named the path, so the chip is an arrow — the tooltip is
+    // then the only thing that says which hunk.
+    withBody("The file api_pb.ts [H1_2] is regenerated.");
+    const ref = Explainer.renderPane().querySelector(".explainer-arrow") as HTMLElement;
+    expect(ref.textContent).toBe("↗");
+    expect(ref.title).toBe("Open hunk 3 of 3 in gen/api_pb.ts beside the document");
   });
 
   test("a reference inside a code span is the snippet's, not an arrow", () => {
@@ -832,5 +964,33 @@ describe("provenance", () => {
       .toEqual(["ListRequest", "cursor"]);
     // Definitions are markdown too, through the same sanitised path.
     expect(dl.querySelector("dd strong")!.textContent).toBe("paged");
+  });
+
+  test("the glossary follows the prose it consolidates; the skip box leads", () => {
+    // Terms are a reference to come back to. Ahead of the prose they are
+    // a wall of definitions leaning on concepts nothing has introduced.
+    boot();
+    Explainer.onEvent(backgroundDoc({
+      body: "Ground.",
+      skip_box: { body: "If you know the RPC layer,", target_section_id: "code" },
+      figures: [{
+        svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50">'
+          + '<rect class="d-box" x="0" y="0" width="10" height="10"/></svg>',
+        alt: "the request path",
+        caption: "",
+        stripped: 0,
+      }],
+      terms: [{ term: "cursor", definition: "an opaque position token" }],
+      sources: ["api.py"],
+    }) as SseExplainerEvent);
+    const section = Explainer.renderPane().querySelector('[data-section-id="background"]')!;
+    expect(Array.from(section.children).map((e) => e.className)).toEqual([
+      "explainer-section-title",
+      "explainer-skip",
+      "explainer-body",
+      "explainer-figure",
+      "explainer-terms",
+      "explainer-sources",
+    ]);
   });
 });

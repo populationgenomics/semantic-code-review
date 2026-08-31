@@ -168,6 +168,46 @@ describe("resolveSelection", () => {
     });
   });
 
+  test("code in the detail panel is code, not the document around it", () => {
+    // The panel is a sibling of `.explainer` inside the mode's split, so
+    // a selection in it resolves to the hunk it is: the console can
+    // inline that, which is what asking about the code needs.
+    const split = document.createElement("div");
+    split.className = "explainer-split";
+    const doc = document.createElement("div");
+    doc.className = "explainer";
+    const panel = document.createElement("aside");
+    panel.className = "explainer-detail";
+    const file = document.createElement("div");
+    file.className = "file";
+    const path = document.createElement("div");
+    path.className = "file-path";
+    path.textContent = "src/users.py";
+    const hunk = document.createElement("div");
+    hunk.className = "hunk";
+    hunk.setAttribute("data-id", "H0_1");
+    const row = makeRow("new", 10, "def deactivate(user):");
+    hunk.appendChild(row);
+    file.appendChild(path);
+    file.appendChild(hunk);
+    panel.appendChild(file);
+    split.appendChild(doc);
+    split.appendChild(panel);
+    document.body.appendChild(split);
+
+    const out = resolveSelection(
+      fakeSelection(row.querySelector(".cell-code")!.firstChild, "def deactivate(user):"),
+    );
+    expect(out).toEqual({
+      selection_text: "def deactivate(user):",
+      selection_kind: "code",
+      side: "new",
+      file: "src/users.py",
+      hunk_id: "H0_1",
+      line_range: [10, 10],
+    });
+  });
+
   test("ignores selections inside the console UI", () => {
     const drawer = document.createElement("div");
     drawer.className = "console-drawer";

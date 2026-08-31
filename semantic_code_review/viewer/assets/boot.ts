@@ -13,6 +13,7 @@ import { DataStore, type FoldRegionAddress } from "./data_store";
 import { DebugDrawer } from "./debug_drawer";
 import { Explainer } from "./explainer";
 import { Folds } from "./folds";
+import { LayoutDividers } from "./layout_dividers";
 import { PostModal } from "./post_modal";
 import { Progress } from "./progress";
 import { Render } from "./render";
@@ -48,13 +49,16 @@ const SESSION_ENDPOINT: string = (() => {
 
 // --- Boot ----------------------------------------------------------------
 
-function boot(): void {
+async function boot(): Promise<void> {
   Comments.init({
     // Sidebar pills carry per-file unresolved/total counts; repaint
     // them whenever the store changes (initial load, save, delete).
     onChange: () => Sidebar.refreshFileCommentCounts(),
   });
   installDoneButton();
+  // The sidebar's edge is the reader's in both modes, so its divider
+  // belongs to the shell rather than to either pane's renderer.
+  LayoutDividers.installSidebar();
   Sidebar.init(DATA, {
     // Focusing a Symbols-axis pill search-highlights that symbol's name
     // across every diff line; any other pill (or none) clears it.
@@ -69,20 +73,23 @@ function boot(): void {
   // The change explainer only mounts when the server says the feature
   // is on for this review; a --no-augment run has no backend to run it.
   if (DATA.explainer) {
-    Explainer.setFilePaths(DATA);
+    Explainer.setFiles(DATA);
     Explainer.init(SESSION_ENDPOINT, DATA, {
       onChange: () => Render.render(),
-      // A Map row is "read this next", so it leaves the mode and brings
-      // the file into view at whatever collapse level the diff is on.
-      onOpenFile: (fileId) => Render.revealFile(fileId),
-      // A hunk chip is a claim about specific lines, so it unfolds them
-      // rather than only scrolling to the file.
-      onOpenHunk: (hunkId) => Render.revealHunk(hunkId),
+      // A reference opens the file it addresses beside the document, so
+      // the reader checks it without losing their place in the prose.
+      // The panel's own "Open in diff" is the way on to the full ladder.
+      onOpenFile: (fileId) => Render.openReference({ kind: "file", id: fileId }),
+      // A hunk reference is a claim about specific lines, so the panel
+      // unfolds that hunk rather than only showing the file.
+      onOpenHunk: (hunkId) => Render.openReference({ kind: "hunk", id: hunkId }),
     });
     // Pick up a document another tab (or an earlier session on this run
     // dir) already paid for, so the button opens it rather than
-    // offering to generate a second one.
-    void Explainer.load();
+    // offering to generate a second one. Awaited, because whether one
+    // exists is what decides the mode the viewer opens in: resolving it
+    // after the first paint would show the diff and then take it away.
+    await Explainer.load();
   }
   Render.init(DATA);       // wires hash + keyboard + initial paint
   Progress.init(DATA);
@@ -92,11 +99,22 @@ function boot(): void {
 
 function bootAfterFetch(data: ViewerData): void {
   DATA = data;
+  const start = (): void => { boot().catch(showBootError); };
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", boot);
+    document.addEventListener("DOMContentLoaded", start);
   } else {
-    boot();
+    start();
   }
+}
+
+/** Put a boot failure on the page. `boot` is async, so a throw past its
+ *  first `await` is a rejection nothing else would show. */
+function showBootError(e: unknown): void {
+  const app = document.getElementById("app") || document.body;
+  const msg = document.createElement("div");
+  msg.className = "boot-error";
+  msg.textContent = `viewer failed to load: ${e}`;
+  app.appendChild(msg);
 }
 
 fetch("/data.json", { cache: "no-store" })
@@ -105,13 +123,7 @@ fetch("/data.json", { cache: "no-store" })
     return r.json() as Promise<ViewerData>;
   })
   .then(bootAfterFetch)
-  .catch((e) => {
-    const app = document.getElementById("app") || document.body;
-    const msg = document.createElement("div");
-    msg.className = "boot-error";
-    msg.textContent = `viewer failed to load: ${e}`;
-    app.appendChild(msg);
-  });
+  .catch(showBootError);
 
 function installPrHeader(data: ViewerData): void {
   const pr = data.pr || {} as PRBlock;

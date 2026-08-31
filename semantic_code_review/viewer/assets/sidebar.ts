@@ -293,6 +293,10 @@ interface SectionTree {
   sections: ExplainerSection[];
   activeId: string | null;
   onPick: (id: string) => void;
+  /** A word for what the viewer is doing about a section right now
+   *  ("writing…"), or null when its own state is the whole answer. The
+   *  explainer owns the vocabulary; this module places it. */
+  statusOf: (id: string) => string | null;
 }
 
 let _sectionTree: SectionTree | null = null;
@@ -324,7 +328,12 @@ function _sectionNode(s: ExplainerSection, tree: SectionTree): HTMLElement {
   btn.dataset.axis = "explainer";
   btn.dataset.pillId = s.id;
   btn.appendChild(_el("span", "group-btn-label", s.title));
-  if (s.state === "pending") btn.appendChild(_el("span", "group-btn-count", "…"));
+  // The count badge carries the live status while there is one: a
+  // section being written is not usefully described by its reference
+  // count, and "…" says only that it is unwritten.
+  const status = tree.statusOf(s.id);
+  if (status !== null) btn.appendChild(_el("span", "group-btn-count", status));
+  else if (s.state === "pending") btn.appendChild(_el("span", "group-btn-count", "…"));
   else if (s.refs.length > 0) btn.appendChild(_el("span", "group-btn-count", String(s.refs.length)));
   if (s.id === tree.activeId) btn.classList.add("active");
   btn.addEventListener("click", () => tree.onPick(s.id));

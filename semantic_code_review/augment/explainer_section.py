@@ -21,6 +21,13 @@ the seed does not contain. What a pass opened is recorded off the tool
 surface, never from the model's account of itself, and rendered as a
 citation line under the prose that call wrote.
 
+Every pass is seeded with the whole change: every file, and every hunk
+with the intent established for it. The skeleton's assignment routes
+rather than scopes — it says what a section is about and seeds the
+references it starts from, and does not bound what the call can see. A
+tool-less skeleton, which sees paths and one-line summaries, must not be
+able to decide what a tool-bearing prose call may know.
+
 The tool loop is metered against one budget for the whole document
 (`DOCUMENT_TURN_BUDGET`), carried on the document because the passes
 are separated in time. A pass that needs six turns gets six; one that
@@ -29,7 +36,10 @@ cap twice over.
 
 A section whose anchored hunks are not all annotated is refused rather
 than written: prose built on half the intents reads exactly as fluently
-as prose built on all of them. A pass that raises leaves the sections it
+as prose built on all of them. The gate is the routed hunks, not the
+whole listing — those are the ones the section's own claims rest on, and
+a hunk elsewhere in the change that has no intent yet is listed as
+`(not annotated)`. A pass that raises leaves the sections it
 was writing `failed` — retryable, and it must not poison its neighbours
 — with the updated document attached so the route can fan the state out.
 """
@@ -50,7 +60,7 @@ from ..cache.store import CacheStore
 from ..viewer.build_json import ViewerIdIndex, viewer_id_index
 from . import explainer_schema, mcp_http_host, source_cache
 from .agents import Client
-from .explainer import ExplainerNotReady, carry_guidance, prose_figure_guidance
+from .explainer import ExplainerNotReady, carry_guidance, file_seed_lines, prose_figure_guidance
 from .pass_ import PassMeta, run_pass
 from .prompts import (
     EXPLAINER_BACKGROUND_GUIDANCE,
@@ -69,18 +79,21 @@ log = logging.getLogger(__name__)
 #: across every call, however far apart in time.
 #:
 #: The unit is the document, not the section, for two reasons. A
-#: per-section cap is a cap on nothing: three sections at twelve is a
-#: document at thirty-six, and nobody chose thirty-six. And the passes
-#: do not want equal shares — one lands on a subsystem nobody has to be
-#: told about and reads nothing, the next needs six files. A shared
-#: total gives each what it needs until the document as a whole has had
-#: enough.
+#: per-section cap is a cap on nothing: three of them are a document
+#: total nobody chose. And the passes do not want equal shares — one
+#: lands on a subsystem nobody has to be told about and reads nothing,
+#: the next needs six files. A shared total gives each what it needs
+#: until the document as a whole has had enough.
+#:
+#: Sized for Background, which earns the most reading: the system it
+#: describes is mostly code the diff does not contain, so its ground
+#: comes off the tool surface rather than out of the seed.
 #:
 #: The spend is tracked on `ExplainerDocument.turns_used`, so it
 #: survives a reload, a second tab and a restart, and is scoped exactly
 #: the way the document is: a new `(base_sha, head_sha)` is a new
 #: document and a fresh budget. A cache hit adds nothing.
-DOCUMENT_TURN_BUDGET = 18
+DOCUMENT_TURN_BUDGET = 36
 
 #: Remaining budget below which a pass runs with no tools at all rather
 #: than with a ceiling it cannot finish under. One request buys a read
@@ -135,7 +148,7 @@ class SubmittedRef(BaseModel):
     """A reference as the model submits it."""
 
     kind: Literal["file", "hunk"] = Field(description="`file` for an `F<i>` id, `hunk` for an `H<fi>_<hi>` id.")
-    id: str = Field(description="The viewer id, verbatim from the `# Files` / `# Anchored code` lists.")
+    id: str = Field(description="The viewer id, verbatim from the `# The change` listing.")
 
 
 class SubmittedFigure(BaseModel):
@@ -195,7 +208,7 @@ class SubmittedTerm(BaseModel):
 class SubmittedSkipBox(BaseModel):
     """Background's 'you already know this' escape hatch."""
 
-    body: str = Field(description="One sentence naming what the reader would already have to know.")
+    body: str = Field(description="The 'If you already know X,' clause; the viewer completes it with the jump.")
     target_section_id: str = Field(description="The section to jump to: `intuition` or `code`.")
 
 
@@ -216,7 +229,7 @@ class SubmittedSection(BaseModel):
     )
     terms: list[SubmittedTerm] = Field(
         default_factory=list,
-        description="Names the reader needs before the prose uses them. Rendered as a definition list.",
+        description="Names your prose introduced, collected as a glossary under it.",
     )
     skip_box: SubmittedSkipBox | None = Field(
         default=None,
@@ -323,8 +336,9 @@ def format_prose_prompt(
 
     Carries the overview, the skeleton's fixed decisions, the reading
     Map, the prose already written by the document's other calls, the
-    whole file id map, and — per section this call writes — its brief and
-    the established intent of every hunk it is anchored to.
+    whole change — every file and every hunk, with the intent established
+    for each — and, per section this call writes, its brief and the files
+    the skeleton routed to it.
 
     Args:
         diff: The run's annotated diff.
@@ -338,7 +352,7 @@ def format_prose_prompt(
         "",
         _format_document_context(doc, targets),
         "",
-        _format_file_ids(diff),
+        _format_change(diff),
         "",
         _format_assignments(diff, targets),
         "",
@@ -394,7 +408,7 @@ def _format_assignments(
     diff: AnnotatedDiff,
     targets: list[explainer_schema.Section],
 ) -> str:
-    """Each section this call writes: its brief and its anchored hunks."""
+    """Each section this call writes: its brief and what it is about."""
     lines = [
         "# Your sections",
         f"Write {'these' if len(targets) > 1 else 'this'}, one entry in `sections` each, in this order.",
@@ -405,7 +419,7 @@ def _format_assignments(
             f"## `{section.id}` — {section.title}",
             EXPLAINER_SECTION_BRIEFS[section.kind],
             "",
-            _format_anchored_code(diff, section.refs),
+            _format_routing(diff, section.refs),
         ]
     return "\n".join(lines)
 
@@ -416,39 +430,57 @@ def _format_closing(targets: list[explainer_schema.Section]) -> str:
     return f"Write the {titles} {plural}."
 
 
-def _format_file_ids(diff: AnnotatedDiff) -> str:
+def _format_change(diff: AnnotatedDiff) -> str:
+    """The whole change: every file, every hunk, every established intent.
+
+    Uniform across the passes and independent of what the skeleton routed
+    where. Two lines a hunk, so the listing is strictly smaller than the
+    raw diff the overview pass already takes in one call — there is no
+    size cap on it.
+    """
     lines = [
-        "# Files",
-        "Every file in the change. These ids and the hunk ids below are the only valid references.",
+        "# The change",
+        "Every file and every hunk, with the intent already established for each. "
+        "These ids are the only valid references.",
     ]
     for fi, f in enumerate(diff.files):
-        role = f.ann.role.value if f.ann.role else "modified"
-        lines.append(f"  F{fi}  {f.path}  ({len(f.hunks)} hunks, {role})")
+        lines += file_seed_lines(fi, f)
+        for hi, h in enumerate(f.hunks):
+            lines.append(f"    H{fi}_{hi}  {h.parsed.header.strip()}")
+            lines.append(f"          {h.ann.intent.strip() or '(not annotated)'}")
     return "\n".join(lines)
 
 
-def _format_anchored_code(diff: AnnotatedDiff, refs: list[explainer_schema.Reference]) -> str:
-    """The hunks under this section's references, with their intents."""
-    pairs = anchored_hunks(diff, refs)
-    if not pairs:
+def _format_routing(diff: AnnotatedDiff, refs: list[explainer_schema.Reference]) -> str:
+    """What the skeleton routed to this section, as ids and paths."""
+    rows = _routed_rows(diff, refs)
+    if not rows:
         return (
-            "### Anchored code\n"
-            "The skeleton assigned this section no files. Write from the overview, the "
-            "document's decisions and the repository, and reference nothing you cannot support."
+            "### Routed to this section\n"
+            "The skeleton routed nothing here, so what this section is about is yours to "
+            "choose out of the change above."
         )
-    lines = [
-        "### Anchored code",
-        "The hunks this section is about, with the intent already established for each.",
-    ]
-    current = -1
-    for fi, hi in pairs:
-        f = diff.files[fi]
-        if fi != current:
-            current = fi
-            lines.append(f"  F{fi}  {f.path}")
-        lines.append(f"    H{fi}_{hi}  {f.hunks[hi].parsed.header.strip()}")
-        lines.append(f"          {f.hunks[hi].ann.intent.strip() or '(not annotated)'}")
-    return "\n".join(lines)
+    return "\n".join(
+        [
+            "### Routed to this section",
+            "What this section is ABOUT, and where its references start. The whole change "
+            "is above; reach past this list where the section's story needs it.",
+            *rows,
+        ]
+    )
+
+
+def _routed_rows(diff: AnnotatedDiff, refs: list[explainer_schema.Reference]) -> list[str]:
+    """One row per reference that addresses something in this diff."""
+    rows: list[str] = []
+    seen: set[str] = set()
+    for ref in refs:
+        pairs = _ref_hunks(diff, ref)
+        if not pairs or ref.id in seen:
+            continue
+        seen.add(ref.id)
+        rows.append(f"  {ref.id}  {diff.files[pairs[0][0]].path}")
+    return rows
 
 
 def _file_index(file_id: str) -> int | None:
@@ -535,8 +567,8 @@ def _apply_one(
 
     References the model invented are dropped and counted into the
     document's `dropped_refs`. A submission that narrows nothing leaves
-    the skeleton's references standing — that is the section's assigned
-    scope, not a missing value.
+    the skeleton's references standing — that is what the skeleton routed
+    to the section, not a missing value.
     """
     kept, dropped = _validate(submission.refs, ids)
     subsections, sub_dropped = _subsections(doc, section, submission.subsections, ids)

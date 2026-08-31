@@ -106,10 +106,13 @@ not an empty state.
 - **View-state persistence.** This slice landed on `main`, where ADR
   0006 is not merged: there is no `StoredViewState` and no
   `visibility.ts`, and `RenderState.fold` persists in the URL hash. So
-  the mode is `RenderState.mode` and rides the hash as `mode=overview`
-  alongside `fold=`. When ADR 0006 lands, `mode` moves onto
-  `StoredViewState` and `_VERSION` goes to 2 with the discard-with-a-
-  warning path the ADR describes.
+  the mode is `RenderState.mode` and rides the hash as `mode=`
+  alongside `fold=`. Written in both modes, not only in overview: the
+  viewer opens into an existing document, and a hash that omitted
+  `mode=diff` could not tell a reviewer who chose the diff from a fresh
+  open. When ADR 0006 lands, `mode` moves onto `StoredViewState` and
+  `_VERSION` goes to 2 with the discard-with-a-warning path the ADR
+  describes.
 - **Two localStorage keys, not one.** The plan says the section tree
   "takes its own axis id in the `<axis>:<id>` key". With one key that
   clobbers the diff-mode pill, which the same paragraph forbids, so the
@@ -130,8 +133,14 @@ not an empty state.
   three prose sections landed with empty `refs`. *Closed in slice 2*:
   the submission grew `section_refs` (file ids per prose section, since
   the skeleton is shown files and not hunks) and `_assemble` populates
-  them. A section's prose pass expands each file into its hunks and may
-  narrow to hunk references of its own.
+  them. The assignment routes rather than scopes: every prose pass is
+  seeded with the whole change — every file, and every hunk with its
+  established intent — and a section's list says what it is about and
+  seeds the references it starts from, which its own pass may narrow to
+  hunks. Routing carries a coverage duty on both sides: the three lists
+  cover the Map between them, with Code the home for what Background and
+  Intuition do not take, and the walkthrough's subsections cover the
+  parts the Map names, whichever section they were routed to.
 - **Corrupt vs stale `explainer.json`.** A SHA or version mismatch is
   discarded with a log line; an unparseable file raises
   `ExplainerCorrupt` (500 on `GET /explainer`). Regenerating overwrites
@@ -423,9 +432,10 @@ three prose calls. Rationale and the amended decision table live in the
   seed carries the hunk intents, and prose written over a different set
   of them is different prose; the pair alone would serve one for the
   other. Background keeps `base_sha`.
-- **`DOCUMENT_TURN_BUDGET = 18`, `MIN_TOOL_TURNS = 2`.** Eighteen is
-  more than the twelve one section used to get and well under the
-  thirty-six three per-section caps would have allowed. Below two turns
+- **`DOCUMENT_TURN_BUDGET = 36`, `MIN_TOOL_TURNS = 2`.** It landed at
+  18, and 18 bought a Background that could name the pieces but not
+  build the ground under them — the section that reads the most is the
+  one whose subject is not in the diff at all. Below two turns
   remaining a pass runs seeded and tool-less rather than under a ceiling
   it cannot finish under — and is not told about the tools, since an
   advertised-but-unreachable surface makes the model hedge. That
@@ -507,6 +517,190 @@ addendum of 2026-08-28**; this records what landed.
   The flag is an explicit request for a document that will not be
   generated. The inline config value in the same situation stays silent
   — a setting is not a request.
+
+## Opening into the document ✅ done
+
+Not in the plan above; added after slice 6. The viewer opens in overview
+mode when the run already has a document, and on the diff when it does
+not. Precedence is explicit hash state, then the document, then the
+diff.
+
+**As built**:
+
+- **The seam is `GET /explainer`, awaited.** Boot already fires it to
+  pick up a document another tab paid for; awaiting it means the mode
+  is decided from the document the viewer will paint rather than from a
+  second advertisement of its existence that could disagree. `data.json`
+  gains no field. The cost is one localhost round trip, and only on a
+  review the feature is on for.
+- **`mode=` rides the hash in both modes.** See the view-state note
+  under slice 1.
+- **A repaint before `renderInit` is dropped.** The explainer's
+  `onChange` hook is wired before the renderer has `DATA`, so the
+  awaited load's `_adopt` now reaches `render()` first — which would
+  paint the empty default diff and sync the hash from default state,
+  overwriting the fold level and mode the URL carries. `renderInit`
+  paints immediately after, so an early request is coalesced rather
+  than lost.
+- **Being in the mode is what queues a document's pending sections**,
+  however the mode was reached: the default, a press, or `mode=overview`
+  in the URL. The skeleton is never bought that way — with no document
+  there is nothing to queue, and buying one stays on the press.
+- **A document in hand marks the explainer ready.** Readiness gated the
+  button on the `overview` SSE frame alone. A run dir is reused for the
+  same head SHA, so a tab that boots mid-pass can hold an earlier run's
+  document; it would have opened into the mode with the button that
+  leaves it disabled.
+
+## A reference opens beside the document ✅ done
+
+Not in the plan above; added after slice 6. A reference in the document
+opens the file it addresses in a detail panel beside the prose instead
+of leaving the mode. Rationale is the **ADR 0007 addendum of
+2026-08-31**; this records what landed.
+
+**As built**:
+
+- **The mode paints a split**, `#app` › `.explainer-split` › the
+  document cell + `aside.explainer-detail`. Only the document cell is
+  written on a repaint, which is what keeps a panel — and its scroll —
+  mounted across a section write the reader did not ask for. The panel
+  is sticky with its own scroll, the pattern the sidebar opposite it
+  already uses.
+- **Both cells of the split are scrollers.** The document column
+  scrolled the window, which put its scrollbar at the viewport's far
+  right — past the panel and the panel's own — and made one bar stand
+  for two columns. The cell now takes the panel's and the sidebar's
+  viewport binding (`max-height: calc(100vh - 56px)`, sticky under the
+  `.pr-bar`) and scrolls inside itself, so each column's bar sits on its
+  own right edge. Consequences:
+  - **The mode focuses the cell** (`tabindex="-1"`, on entry only, in
+    `ExplainerPanel.mount`): with the window spent, PgDn / Space / the
+    arrows reach the prose only through the box that holds it. No focus
+    ring — the cell is not a tab stop, and `:focus-visible` would paint
+    one the moment the reader pressed PgDn. render.ts's key handler binds
+    on `document`, so 1–4, `?` and Esc are unaffected.
+  - **A repaint carries `scrollTop` over.** `replaceChildren` happens to
+    keep it (no layout is flushed between the removal and the insertion),
+    which is too incidental to rest on. A section landing above the
+    reading position still shifts the prose under it; that staleness is
+    the one section-granular restore already accepts.
+  - **The x axis is clipped, not scrolled.** A figure's box breaks the
+    measure by `-4ch` against 32px of padding, so a column packed against
+    an open panel would carry a horizontal bar scrolling ~6px of empty
+    margin. Code blocks scroll their own x.
+  - Diff mode is untouched: the window scrolls the file list as before.
+- **`explainer_panel.ts` owns the panel; `render.ts` owns the render.**
+  The per-file renderer and "Open in diff" reach the panel as an
+  injected `PanelHost`, so the dependency runs one way (render.ts →
+  panel), as `rendered.ts` does.
+- **The panel renders fresh, into its own `PaneScope`.** A scope is what
+  a render pass reads its overrides from, whether the sidebar filter
+  applies to it, and where a fold click in it repaints. The panel's
+  `cache` is null on purpose: `renderedDiffs` holds live nodes, and a
+  node cannot be in two trees — reusing one would have moved the diff's
+  DOM into the panel.
+- **The seed is `revealHunk`'s, scoped.** The file always opens (a panel
+  showing a folded header shows nothing); a hunk reference also opens
+  that hunk and its segments. Everything else keeps the collapse level,
+  and folds clicked inside the panel repaint the panel alone.
+- **The hunk SSE patchers no-op in overview mode.** The only `.hunk` on
+  the page is then the panel's, and patching it there would write a
+  panel-owned node into the diff's cache. A panel opened mid-stream
+  shows the annotations that existed when it was opened; re-opening the
+  reference renders the current ones.
+- **Comments work unchanged.** The panel is inside `#app`, so the
+  delegated gutter listener reaches it, and it renders the `.file` ›
+  `.row` › `.cell-lineno` chain `renderAll` walks. Mounting content
+  replays threads and reflows arrows the way a diff render does.
+- **Esc closes the panel**, after the help overlay and the console
+  drawer: the surfaces render.ts's key handler owns, topmost first, one
+  per press. The comment editor and the console prompt keep their own Esc
+  on their input, which the handler never sees.
+- **The panel is not in the hash.** Reloading a URL restores the mode
+  and the collapse level, not what was open beside the document. A
+  follow-up if reviewers miss it; the reference is one click away in the
+  prose either way.
+- **An open panel takes the slack.** The document cell centres its column
+  only while it is the whole pane; with the panel open (`panel-open` on
+  the split, set by `explainer_panel.ts`) the cell shrink-wraps to the
+  document's own max-width box and the two pack together. Centred, a
+  wide window left a dead zone on each side of the prose and pinned the
+  panel to the far edge. The shrink-wrap is `flex: 0 1 auto`, so nothing
+  couples the layout to the serif's `ch` metrics.
+- **Where the split divides is the reader's.** A divider between the two
+  cells (`layout_dividers.ts`, `.layout-divider-doc`) sets the document
+  cell's width; the panel takes the remainder (`flex: 1 1 0`, floored at
+  `380px`, the far end of the document's clamp) and so runs to the window
+  edge. The document clamps to `[340px, split − 380 − 8]`, persists as
+  `scr-explainer-doc-width`, and a double-click hands the division back
+  to the stylesheet. Arrow keys nudge it; every move reflows the
+  annotation arrows one frame at a time. The divider is not gated on an
+  open panel: with nothing beside the document, the drag is how the
+  reader sets the measure. The sidebar's edge is a peer boundary one level
+  up, in `.layout` (`scr-sidebar-width`), so pushing the document right by
+  lengthening the ToC works in both modes.
+- **A set width is the measure.** `.explainer`'s `72ch` is the default,
+  not a ceiling: a width on the cell adds `explainer-doc-sized`, and the
+  column's `max-width` becomes `100%` of what the reader gave it, side
+  padding unchanged. With no width set the defaults stand exactly —
+  measure-capped cell, centred while the panel is closed.
+- **Prose in the panel is capped at `64ch`**, the annotation boxes'
+  measure. The panel is as wide as the reader left the boundary, and that
+  width is for the code: a one-sentence file summary or hunk intent set
+  across all of it reads as a banner rather than as a note. Scoped to the
+  panel — the diff pane's own prose has the page's width to answer to.
+
+## The fold slider drops into the ladder ✅ done
+
+Not in the plan above; added after slice 6. In overview mode the collapse
+slider and keys 1–4 leave the mode into the diff at the level they name.
+
+**As built**:
+
+- **Picking a level is the request.** The mode has no collapse level of
+  its own, so a slider that only recorded one for later looked live and
+  did nothing — while still clearing the reviewer's overrides and the
+  focus reveal, invisibly. `_setGlobalFold` now routes through `setMode`,
+  the same exit the Overview button runs, so the hash carries both
+  `fold=` and `mode=diff`, the panel unmounts with the split, and the
+  button's pressed state comes off with it.
+- **The level highlight stays; the tooltip carries the rest.** The
+  highlighted level is the one a press lands on, so greying the strip out
+  would make chrome inert to say something the tooltip says better:
+  "Leave the document and read the diff at this level". The markup's own
+  per-level title is stashed on first swap and restored on the way back.
+- **Overview mode repaints the slider too.** `_renderOverviewMode` calls
+  `_updateSliderButtons`, which it did not before: a viewer that opened
+  into the document with `fold=off` in the URL showed no level at all.
+
+## A section says what is happening to it ✅ done
+
+Not in the plan above; added after slice 6. The per-section status lines
+report liveness while a pass runs. Client-only.
+
+**As built**:
+
+- **The elapsed figure is minutes, on a 30-second repaint.** Measured
+  wall clock is 5 minutes for Background and 8 for the walkthrough;
+  "Writing this section…" held still for that long cannot be told from a
+  wedged tab. The interval runs only while a call is in flight — started
+  in `_drainQueue`, stopped when the queue empties and on `init` — and
+  fires the module's repaint hook, repainting the whole pane as every
+  other state change here already does. An open detail panel survives it:
+  `mount` replaces the document cell only.
+- **A wait names what it is waiting for.** "Queued behind Background…"
+  when this tab's own call holds the server's slot; "Waiting for the
+  server — retrying." when a busy 409 deferred the section and nothing
+  here is ahead of it — the slot is another tab's, and this tab is on the
+  fallback timer. The two are different waits, and the second one is the
+  reviewer's cue that the tab holding it is elsewhere. Both halves of the
+  merged walkthrough report the same wait: one call writes them.
+- **The sidebar tree carries the glance.** A section row's existing count
+  badge shows "writing…" / "queued" / "waiting" while there is one,
+  through a `statusOf` on the tree that the explainer fills in — the
+  vocabulary stays with the state that decides it, and the sidebar keeps
+  its no-dependency-on-the-explainer shape.
 
 ## Not in these slices
 

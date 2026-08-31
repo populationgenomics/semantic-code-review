@@ -227,12 +227,7 @@ def run_review(opts: ReviewOptions) -> int:
         if opts.debug:
             bind_debug_sink = lambda sink, c=console_client: c.set_debug_sink(sink)  # noqa: E731
     else:
-        # When augment is skipped, copy raw.diff to augmented.diff so render
-        # has something to parse. It'll have no annotations.
-        (run_dir / "augmented.diff").write_text(
-            (run_dir / "raw.diff").read_text(encoding="utf-8"),
-            encoding="utf-8",
-        )
+        ensure_augmented_diff(run_dir)
 
     result = serve_review(
         run_dir,
@@ -272,8 +267,26 @@ class ServeResult:
     """
 
     comments: list  # list[Comment] — kept loose to avoid an import cycle
-    clean: bool  # True iff the viewer signalled Done within the timeout
+    clean: bool  # True iff the viewer signalled Done; False on idle timeout
     posted: PostResult | None = None
+
+
+def ensure_augmented_diff(run_dir: Path) -> None:
+    """Give the renderer an ``augmented.diff`` to parse without spending
+    an augmentation pass.
+
+    The ``--no-augment`` path calls this: an absent one is filled with
+    ``raw.diff``, annotation-free. An existing one is left alone. Run
+    dirs are keyed by head SHA, so re-running ``--no-augment`` — which
+    is what a failed post tells the reviewer to do to retry — lands in
+    the run dir a paid-for pass already augmented; overwriting it would
+    drop those annotations and desync the text form from
+    ``augmented.scr.json``.
+    """
+    augmented = run_dir / "augmented.diff"
+    if augmented.exists():
+        return
+    augmented.write_text((run_dir / "raw.diff").read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def serve_review(
@@ -297,6 +310,10 @@ def serve_review(
     """Render the viewer for a populated run dir, host the back-channel
     server, block on the user clicking Done, and return the comments
     they left.
+
+    ``timeout`` is idle seconds, not a session lifetime: the server
+    shuts down once it has gone that long with neither a request nor a
+    connected viewer (see ``ReviewServer.wait_until_done``).
 
     Both `cli.review` (local diff) and `cli.pr` (GitHub PR) call this
     with a run dir whose `meta.json`, `raw.diff`, and worktrees are
@@ -388,6 +405,13 @@ def serve_review(
                 raise augment_error
 
         clean = srv.wait_until_done(timeout=timeout)
+        if not clean:
+            # Both CLI entry points come through here, so the line lands
+            # once, ahead of whatever they print about the comments.
+            sys.stderr.write(
+                f"scr review: idle timeout — {timeout}s with no request and no open viewer; shutting down.\n"
+            )
+            sys.stderr.flush()
     finally:
         srv.stop()
 

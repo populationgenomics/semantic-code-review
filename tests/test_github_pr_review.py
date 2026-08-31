@@ -368,3 +368,45 @@ def test_build_tasks_returns_an_empty_bundle_without_augment(tmp_path) -> None:
     from semantic_code_review.review.pr_flow import _build_tasks, _ServerTasks
 
     assert _build_tasks(_pr_opts(tmp_path, augment=False), tmp_path) == _ServerTasks()
+
+
+# ---------------------------------------------------------------------------
+# --no-augment run-dir preparation
+# ---------------------------------------------------------------------------
+
+
+def test_no_augment_gives_a_fresh_run_dir_the_raw_diff(tmp_path) -> None:
+    from semantic_code_review.review.runner import ensure_augmented_diff
+
+    (tmp_path / "raw.diff").write_text("diff --git a/a.py b/a.py\n", encoding="utf-8")
+    ensure_augmented_diff(tmp_path)
+    assert (tmp_path / "augmented.diff").read_text(encoding="utf-8") == "diff --git a/a.py b/a.py\n"
+
+
+def test_no_augment_keeps_an_augmented_diff_it_finds(tmp_path) -> None:
+    """Run dirs are keyed by head SHA, so re-running --no-augment (what a
+    failed post tells the reviewer to do) reopens a dir a paid-for pass
+    may already have annotated. Overwriting it would drop the annotations
+    and desync the text form from augmented.scr.json."""
+    from semantic_code_review.review.runner import ensure_augmented_diff
+
+    (tmp_path / "raw.diff").write_text("diff --git a/a.py b/a.py\n", encoding="utf-8")
+    annotated = "#scr:overview\ndiff --git a/a.py b/a.py\n# intent: paid for once\n"
+    (tmp_path / "augmented.diff").write_text(annotated, encoding="utf-8")
+
+    ensure_augmented_diff(tmp_path)
+    assert (tmp_path / "augmented.diff").read_text(encoding="utf-8") == annotated
+
+
+def test_both_entry_paths_prepare_the_run_dir_the_same_way(tmp_path) -> None:
+    """The two --no-augment branches were copy-paste mirrors of each
+    other, which is how they came to differ. Both must route through the
+    one helper."""
+    import inspect
+
+    from semantic_code_review.review import pr_flow, runner
+
+    for flow in (runner.run_review, pr_flow.run_pr_flow):
+        src = inspect.getsource(flow)
+        assert "ensure_augmented_diff(run_dir)" in src, flow.__name__
+        assert 'augmented.diff").write_text' not in src, flow.__name__

@@ -178,9 +178,43 @@ describe("the figure element", () => {
     expect(fig.querySelector(".explainer-figure-empty")!.textContent).toBe("the request path");
   });
 
+  test("a root without a viewBox is alt text, not an uncapped figure", () => {
+    const fig = renderFigure(
+      figure({ svg: svg('<rect class="d-box" x="0" y="0" width="4" height="4"/>', 'width="800"') }),
+    );
+    expect(fig.querySelector("svg")).toBeNull();
+    expect(fig.querySelector(".explainer-figure-empty")!.textContent).toBe("the request path");
+  });
+
   test("the strip count is rendered, not swallowed", () => {
     const fig = renderFigure(figure({ stripped: 4 }));
     expect(fig.querySelector(".explainer-figure-stripped")!.textContent).toContain("4");
     expect(renderFigure(figure({ stripped: 0 })).querySelector(".explainer-figure-stripped")).toBeNull();
+  });
+});
+
+// A label's px size is a viewBox user unit, so a figure rendered wider
+// than it was drawn magnifies every label with it.
+describe("a figure is never larger than its drawn size", () => {
+  function rendered(viewBox: string): SVGElement {
+    const fig = renderFigure(figure({ svg: svg('<text class="t" x="10" y="10">label</text>', viewBox) }));
+    return fig.querySelector("svg")!;
+  }
+
+  test("the viewBox width becomes the svg's max-width", () => {
+    expect(rendered('viewBox="0 0 660 320"').style.maxWidth).toBe("660px");
+  });
+
+  test("a viewBox origin other than 0 0 does not shift the cap", () => {
+    expect(rendered('viewBox="-20 -10 480 240"').style.maxWidth).toBe("480px");
+  });
+
+  test.each([
+    'viewBox="0 0 660"',
+    'viewBox="0 0 wide 320"',
+    'viewBox="0 0 0 320"',
+    'viewBox="0 0 -660 320"',
+  ])("%s is not a width, so nothing is capped", (viewBox) => {
+    expect(rendered(viewBox).style.maxWidth).toBe("");
   });
 });

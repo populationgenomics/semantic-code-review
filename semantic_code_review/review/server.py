@@ -18,6 +18,8 @@ import logging
 import os
 import queue
 import re
+import socket
+import sys
 import threading
 import time
 import urllib.parse
@@ -1255,6 +1257,40 @@ class _Handler(BaseHTTPRequestHandler):
         self.ctx.done_event.set()
 
 
+def _is_client_hangup(exc: BaseException | None) -> bool:
+    """True when ``exc`` is — or was raised from — a client hanging up."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, ConnectionResetError | BrokenPipeError):
+            return True
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+class _ReviewHTTPServer(ThreadingHTTPServer):
+    """A ThreadingHTTPServer that stays quiet when a client hangs up.
+
+    A browser dropping a connection mid-request — Chrome freezes
+    background tabs and tears their sockets down — reaches
+    ``handle_error`` as a ConnectionResetError / BrokenPipeError, which
+    stdlib prints as a full traceback on stderr. Routine here, and next
+    to the review's own output it reads as a crash. Every other
+    exception keeps the traceback: those are ours.
+    """
+
+    def handle_error(
+        self,
+        request: socket.socket | tuple[bytes, socket.socket],
+        client_address: str | tuple[str, int],
+    ) -> None:
+        exc = sys.exception()
+        if _is_client_hangup(exc):
+            log.debug("client %s disconnected mid-request: %r", client_address, exc)
+            return
+        super().handle_error(request, client_address)
+
+
 class ReviewServer:
     """Thin wrapper over :class:`ThreadingHTTPServer`.
 
@@ -1295,7 +1331,7 @@ class ReviewServer:
         )
         self._host = host
         self._port = port
-        self._httpd: ThreadingHTTPServer | None = None
+        self._httpd: _ReviewHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
@@ -1308,7 +1344,7 @@ class ReviewServer:
         _Bound.ctx = ctx  # type: ignore[assignment]
         handler_cls = _Bound
 
-        self._httpd = ThreadingHTTPServer((self._host, self._port), handler_cls)
+        self._httpd = _ReviewHTTPServer((self._host, self._port), handler_cls)
         self._httpd.daemon_threads = True
         self._port = self._httpd.server_address[1]
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
@@ -1380,17 +1416,40 @@ class ReviewServer:
         idle_poll: float = 5.0,
         on_poll: Callable[[], None] | None = None,
     ) -> bool:
-        """Block until /exit fires or ``timeout`` elapses. Returns True on clean exit."""
-        deadline = time.time() + timeout
+        """Block until /exit fires or the server sits idle for ``timeout``
+        seconds. Returns True on clean exit, False on the idle timeout.
+
+        Idle means two things at once: no request has been handled
+        (``ctx.last_activity``, set by every route) and no viewer is
+        holding an SSE stream open. An open tab is attention, so a
+        reviewer reading for an hour without clicking anything is never
+        cut off; a closed tab — or one Chrome froze until its socket
+        dropped — starts the countdown.
+        """
+        # The later of the last handled request and the last poll that
+        # saw a viewer. Carrying the observation forward is what starts
+        # the countdown when a tab drops, rather than at whenever that
+        # tab last made a request.
+        last_seen = self.ctx.last_activity
         while not self.done_event.is_set():
-            remaining = max(0.0, deadline - time.time())
-            if remaining <= 0:
+            if self._connected_viewers():
+                last_seen = time.time()
+            last_seen = max(last_seen, self.ctx.last_activity)
+            idle = time.time() - last_seen
+            if idle >= timeout:
                 return False
-            if self.done_event.wait(timeout=min(idle_poll, remaining)):
+            if self.done_event.wait(timeout=min(idle_poll, timeout - idle)):
                 return True
             if on_poll is not None:
                 on_poll()
         return True
+
+    def _connected_viewers(self) -> int:
+        """How many viewers hold an open SSE stream. Read under
+        ``state_lock``, which the handler threads take to (un)register.
+        """
+        with self.ctx.state_lock:
+            return len(self.ctx.subscribers)
 
     def stop(self) -> None:
         # Wake any SSE handler threads parked on their queue so they

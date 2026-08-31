@@ -43,12 +43,12 @@ let _ready = false;
 // renderer that hosts its pane.
 let _onChange: (() => void) | null = null;
 // Called with a file's viewer id when a Map row is clicked. boot wires
-// it to "leave overview mode and reveal that file"; the reveal itself
-// is render.ts's business.
+// it to "open that file beside the document"; where a reference lands
+// is render.ts's business, not this module's.
 let _onOpenFile: ((fileId: string) => void) | null = null;
 // Same, for an inline hunk chip. A hunk reference means "read this
-// hunk", so the reveal unfolds it — unlike a file reference, which only
-// scrolls.
+// hunk", so it arrives unfolded — unlike a file reference, which opens
+// the file at the collapse level the reviewer left the diff on.
 let _onOpenHunk: ((hunkId: string) => void) | null = null;
 
 // Per-section generation state, keyed by section id. Distinct from the
@@ -67,6 +67,12 @@ let _sectionPhase: Record<string, SectionPhase> = Object.create(null);
 // flight is asking for what is already running.
 let _writing: string | null = null;
 const _queue: string[] = [];
+// When the in-flight call started, and the repaint timer that keeps the
+// elapsed figure on its status line moving. A prose pass runs for
+// minutes, and a status line that has said the same four words for eight
+// of them cannot be told from a wedged one.
+let _writingSince = 0;
+let _tick: number | null = null;
 
 interface ExplainerInitOptions {
   onChange?: () => void;
@@ -85,6 +91,8 @@ function init(endpoint: string, data: ViewerData, opts: ExplainerInitOptions = {
   _ready = !data.pending;
   _sectionPhase = Object.create(null);
   _writing = null;
+  _writingSince = 0;
+  _stopTicking();
   _deferred.length = 0;
   _queue.length = 0;
   if (opts.onChange) _onChange = opts.onChange;
@@ -250,11 +258,39 @@ async function _drainQueue(): Promise<void> {
   while (_queue.length > 0) {
     const id = _queue.shift() as string;
     _writing = id;
+    _writingSince = Date.now();
+    _startTicking();
     _onChange?.();
     await _writeSection(id);
     _writing = null;
     _onChange?.();
   }
+  _stopTicking();
+}
+
+//: How often the pane repaints while a call is in flight, so the elapsed
+//: figure on its status line moves. Fine enough to land each minute mark
+//: within half a minute of it, and the repaint is the whole pane — which
+//: is what every other state change here already costs.
+const _TICK_MS = 30000;
+
+function _startTicking(): void {
+  if (_tick !== null) return;
+  _tick = window.setInterval(() => _onChange?.(), _TICK_MS);
+}
+
+function _stopTicking(): void {
+  if (_tick === null) return;
+  window.clearInterval(_tick);
+  _tick = null;
+}
+
+/** How long the in-flight call has been running, as a suffix for its
+ *  status line. Minutes: a passing second is not news, and rounding down
+ *  keeps the figure from claiming time that has not passed. */
+function _elapsedSuffix(): string {
+  const minutes = Math.floor((Date.now() - _writingSince) / 60000);
+  return minutes < 1 ? "" : ` ${minutes} min`;
 }
 
 async function _writeSection(id: string): Promise<void> {
@@ -330,6 +366,12 @@ function _adopt(doc: ExplainerDocument, opts: { keepPhases?: boolean } = {}): vo
   _doc = doc;
   _phase = "ready";
   _error = "";
+  // A document is proof its own skeleton ran, so its inputs are on
+  // disk whether or not this tab saw the `overview` frame. Without
+  // this a tab that boots mid-pass onto an earlier run's document
+  // holds one it cannot open — and, since the viewer now opens into
+  // the document, one it cannot leave by the button either.
+  _ready = true;
   // A whole new document (a regenerate, or a first load) invalidates
   // every per-section note; a section write leaves its neighbours'
   // alone.
@@ -440,11 +482,13 @@ function _renderSection(section: ExplainerSection): HTMLElement {
     return el;
   }
   if (section.skip_box) el.appendChild(_renderSkipBox(section.skip_box));
-  if (section.terms && section.terms.length > 0) el.appendChild(_renderTerms(section.terms));
   for (const node of _proseNodes(section)) el.appendChild(node);
   // Figures sit after the prose rather than inside it: they are a
   // structured slot, not markup the model embedded in its markdown.
   for (const figure of section.figures || []) el.appendChild(ExplainerFigures.renderFigure(figure));
+  // The glossary follows the section's own body, which is what it
+  // consolidates. The skip box above it is navigation, not content.
+  if (section.terms && section.terms.length > 0) el.appendChild(_renderTerms(section.terms));
   for (const sub of section.subsections || []) el.appendChild(_renderSubsection(sub));
   const sources = _renderSources(section);
   if (sources) el.appendChild(sources);
@@ -463,8 +507,6 @@ function _renderSkipBox(box: ExplainerSkipBox): HTMLElement {
   return el;
 }
 
-/** Names the section introduces, as a definition list — cheaper to read
- *  than a paragraph each, and it keeps them out of the prose. */
 /** A term list, each entry a callout.
  *
  *  A definition *is* the `concept` callout — "a definition or
@@ -533,20 +575,66 @@ function _renderSubsection(section: ExplainerSection): HTMLElement {
   return el;
 }
 
+// What this tab is doing about a section's call. `deferred` is the
+// server's slot held elsewhere, which is a different wait from queueing
+// behind a call this tab started.
+type WriteState = "writing" | "queued" | "deferred";
+
+/** Which of those a section is in, or null when its own state is the
+ *  whole answer.
+ *
+ *  By pass, not by id: the reviewer pressed one section of a merged
+ *  call, and the other one is being written too. The `queued` phase
+ *  outranks `_writing` — see the busy-409 branch of `_writeSection`. */
+function _writeState(section: ExplainerSection): WriteState | null {
+  const phase = _sectionPhase[section.id];
+  if (phase && phase.kind === "queued") {
+    return _blockingSection(section.pass_id) === null ? "deferred" : "queued";
+  }
+  if (_writing !== null && _passOf(_writing) === section.pass_id) return "writing";
+  if (_queue.some((queued) => _passOf(queued) === section.pass_id)) return "queued";
+  return null;
+}
+
+/** The section this tab is writing ahead of `passId`'s call. Null when
+ *  it is writing nothing, or writing `passId`'s own call — a deferred
+ *  section being retried is not queued behind itself. */
+function _blockingSection(passId: string): ExplainerSection | null {
+  if (_writing === null || _passOf(_writing) === passId) return null;
+  return _findSection(_writing);
+}
+
+/** The status line for a section whose prose is on its way. */
+function _writeStatusText(section: ExplainerSection, state: WriteState): string {
+  if (state === "writing") return `Writing this section…${_elapsedSuffix()}`;
+  if (state === "deferred") return "Waiting for the server — retrying.";
+  const blocker = _blockingSection(section.pass_id);
+  return blocker ? `Queued behind ${blocker.title}…` : "Queued behind another section…";
+}
+
+//: The same states as the sidebar tree shows them: a glance, next to a
+//: section's title, of what the pane says at length.
+const _SECTION_STATUS: Record<WriteState, string> = {
+  writing: "writing…",
+  queued: "queued",
+  deferred: "waiting",
+};
+
+/** What the sidebar's tree puts beside a section's title, or null when
+ *  this tab is doing nothing about it. */
+function sectionStatus(id: string): string | null {
+  const section = _findSection(id);
+  if (section === null) return null;
+  const state = _writeState(section);
+  return state === null ? null : _SECTION_STATUS[state];
+}
+
 /** The body of one prose section: what it says, or what this tab is
  *  doing about the fact that it does not say anything yet. */
 function _proseNodes(section: ExplainerSection): HTMLElement[] {
-  // By pass, not by id: the reviewer pressed one section of a merged
-  // call, and the other one is being written too.
-  const phase0 = _sectionPhase[section.id];
-  if (phase0 && phase0.kind === "queued") {
-    return [_el("p", "explainer-status", "Queued behind another section…")];
-  }
-  if (_writing !== null && _passOf(_writing) === section.pass_id) {
-    return [_el("p", "explainer-status", "Writing this section…")];
-  }
-  if (_queue.some((queued) => _passOf(queued) === section.pass_id)) {
-    return [_el("p", "explainer-status", "Queued behind another section…")];
+  const writeState = _writeState(section);
+  if (writeState !== null) {
+    return [_el("p", "explainer-status", _writeStatusText(section, writeState))];
   }
   const phase = _sectionPhase[section.id];
   if (phase && phase.kind === "waiting") {
@@ -656,7 +744,7 @@ function _renderMapRow(row: ExplainerMapRow): HTMLElement {
   const readCell = _el("td", "explainer-map-read");
   const btn = _el("button", "explainer-ref", _fileLabel(row.ref.id));
   btn.dataset.refId = row.ref.id;
-  btn.title = "Open this file in the diff";
+  btn.title = "Open this file beside the document";
   btn.addEventListener("click", () => _onOpenFile?.(row.ref.id));
   readCell.appendChild(btn);
   tr.appendChild(readCell);
@@ -738,10 +826,9 @@ function _precedingText(node: Text, offset: number): string {
  *  path, which is what made the chip a slab. */
 function _refChip(id: string): HTMLElement {
   const isFile = id.charAt(0) === "F";
-  const target = isFile ? _fileLabel(id) : _hunkLabel(id);
   const btn = _el("button", "explainer-ref explainer-arrow");
   btn.dataset.refId = id;
-  btn.title = `Open ${target} in the diff`;
+  btn.title = `Open ${_refDescription(id, _refTarget(id))} beside the document`;
   btn.setAttribute("aria-label", btn.title);
   btn.addEventListener("click", () => {
     if (isFile) _onOpenFile?.(id);
@@ -751,19 +838,26 @@ function _refChip(id: string): HTMLElement {
 }
 
 /** Give a reference its label, or leave it bare. Split from `_refChip`
- *  because only the caller walking the prose knows what came before. */
+ *  because only the caller walking the prose knows what came before.
+ *
+ *  A hunk names its ordinal only where the ordinal distinguishes
+ *  something: in a one-hunk file it carries nothing, and the basename
+ *  alone is the whole answer. Never as `path:N` — that is the universal
+ *  file:line form, and on a diff of new files every chip read
+ *  `sheaf.md:1`, which a reader can only take for line 1. The tooltip
+ *  states the place in full either way. */
 function _labelRef(btn: HTMLElement, id: string, preceding: string): void {
-  const m = /^H(\d+)_(\d+)$/.exec(id);
-  // A hunk's path is its file's — `_fileLabel` on a hunk id finds nothing
-  // and hands back the raw id, which is what a reviewer cannot act on.
-  const path = m ? _fileLabel(`F${m[1]}`) : _fileLabel(id);
+  const target = _refTarget(id);
+  const path = target ? target.path : id;
   const base = path.slice(path.lastIndexOf("/") + 1);
   if (base.length > 0 && preceding.indexOf(base) !== -1) {
     btn.textContent = "\u2197";
     return;
   }
   btn.classList.add("explainer-arrow-labelled");
-  btn.textContent = m ? `${base}:${Number(m[2]) + 1} \u2197` : `${base} \u2197`;
+  const hunk = target ? target.hunk : null;
+  const ordinal = hunk !== null && hunk.of > 1 ? ` \u00b7 hunk ${hunk.ordinal}` : "";
+  btn.textContent = `${base}${ordinal} \u2197`;
 }
 
 /** Coverage, the dropped-reference count, and the toy-data notice —
@@ -801,27 +895,46 @@ function _generateButton(label: string): HTMLElement {
   return btn;
 }
 
-/** The path behind `F<i>`, from the loaded diff. The document carries
- *  ids, not paths, because ids are what the viewer addresses nodes by. */
-let _filePaths: Record<string, string> = Object.create(null);
+/** What `F<i>` addresses in the loaded diff. The document carries ids,
+ *  not paths, because ids are what the viewer addresses nodes by; the
+ *  hunk count is what tells a hunk reference whether its ordinal says
+ *  anything. */
+let _files: Record<string, { path: string; hunks: number }> = Object.create(null);
 
-function setFilePaths(data: ViewerData): void {
-  _filePaths = Object.create(null);
-  for (const f of data.files || []) _filePaths[f.id] = f.path;
+function setFiles(data: ViewerData): void {
+  _files = Object.create(null);
+  for (const f of data.files || []) _files[f.id] = { path: f.path, hunks: f.hunks.length };
 }
 
 function _fileLabel(fileId: string): string {
-  return _filePaths[fileId] || fileId;
+  const f = _files[fileId];
+  return f ? f.path : fileId;
 }
 
-/** `H3_1` as `path:2` — the hunk's position within its file, 1-based,
- *  because "the second hunk of api.proto" is what a reader can act on
- *  and `H3_1` is not. */
-function _hunkLabel(hunkId: string): string {
-  const m = /^H(\d+)_(\d+)$/.exec(hunkId);
-  if (!m) return hunkId;
-  const path = _filePaths[`F${m[1]}`];
-  return path ? `${path}:${Number(m[2]) + 1}` : hunkId;
+/** What a reference addresses, in terms a reader can act on, or null for
+ *  an id no file in this diff answers to — a prose token the model
+ *  invented, since only the `refs` lists are validated by membership. */
+interface RefTarget {
+  path: string;
+  /** A hunk's 1-based place among its file's hunks; null for a file. */
+  hunk: { ordinal: number; of: number } | null;
+}
+
+function _refTarget(id: string): RefTarget | null {
+  // A hunk's path is its file's, so both ids resolve through the same map.
+  const m = /^H(\d+)_(\d+)$/.exec(id);
+  const f = _files[m ? `F${m[1]}` : id];
+  if (!f) return null;
+  return { path: f.path, hunk: m ? { ordinal: Number(m[2]) + 1, of: f.hunks } : null };
+}
+
+/** How a tooltip names a reference's target. A hunk says its place in
+ *  full: the chip's label carries at most a bare ordinal, and "of 5" is
+ *  what makes that ordinal mean something. */
+function _refDescription(id: string, target: RefTarget | null): string {
+  if (target === null) return id;
+  if (target.hunk === null) return target.path;
+  return `hunk ${target.hunk.ordinal} of ${target.hunk.of} in ${target.path}`;
 }
 
 function _headingId(sectionId: string): string {
@@ -846,8 +959,9 @@ export const Explainer = {
   generateAllPending,
   onEvent,
   sections,
+  sectionStatus,
   activeSectionId,
   setActiveSection,
-  setFilePaths,
+  setFiles,
   renderPane,
 };

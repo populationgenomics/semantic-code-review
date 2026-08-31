@@ -34,7 +34,7 @@ from . import explainer_schema, prompts
 from .agents import Client
 from .pass_ import PassMeta, run_pass
 from .prompts import EXPLAINER_ROLE, EXPLAINER_SKELETON_GUIDANCE
-from .schemas import AnnotatedDiff
+from .schemas import AnnotatedDiff, AnnotatedFile
 
 log = logging.getLogger(__name__)
 
@@ -186,19 +186,31 @@ def format_skeleton_prompt(
     return "\n".join(parts) + "\n"
 
 
+def file_seed_lines(index: int, file: AnnotatedFile) -> list[str]:
+    """One file's rows in a seed listing: its id row, then its summary.
+
+    Shared with the prose passes' seed in `explainer_section.py`, which
+    interleaves each file's hunks under these rows. One formatter, so the
+    skeleton and the prose calls cannot come to describe the same file
+    differently.
+    """
+    adds = sum(sum(1 for ln in h.parsed.body.splitlines() if ln.startswith("+")) for h in file.hunks)
+    dels = sum(sum(1 for ln in h.parsed.body.splitlines() if ln.startswith("-")) for h in file.hunks)
+    role = file.ann.role.value if file.ann.role else "modified"
+    lines = [f"  F{index}  {file.path}  +{adds} -{dels}  ({len(file.hunks)} hunks, {role})"]
+    summary = (file.ann.summary or "").strip()
+    if summary:
+        lines.append(f"        {summary}")
+    return lines
+
+
 def _format_file_list(diff: AnnotatedDiff) -> str:
     lines = [
         "# Files",
         "Cite these ids verbatim in `map_rows[].file_id`. Nothing else is a valid id.",
     ]
     for fi, f in enumerate(diff.files):
-        adds = sum(sum(1 for ln in h.parsed.body.splitlines() if ln.startswith("+")) for h in f.hunks)
-        dels = sum(sum(1 for ln in h.parsed.body.splitlines() if ln.startswith("-")) for h in f.hunks)
-        role = f.ann.role.value if f.ann.role else "modified"
-        lines.append(f"  F{fi}  {f.path}  +{adds} -{dels}  ({len(f.hunks)} hunks, {role})")
-        summary = (f.ann.summary or "").strip()
-        if summary:
-            lines.append(f"        {summary}")
+        lines += file_seed_lines(fi, f)
     return "\n".join(lines)
 
 

@@ -9,6 +9,7 @@ from semantic_code_review.augment.agents import Client
 from semantic_code_review.augment.explainer import carry_guidance
 from semantic_code_review.augment.prompts import (
     EXPLAINER_ROLE,
+    EXPLAINER_SECTION_BRIEFS,
     EXPLAINER_SECTION_GUIDANCE,
 )
 from semantic_code_review.augment.schemas import (
@@ -162,7 +163,7 @@ def _prompt(diff, doc, *section_ids, overview_json: str = "{}") -> str:
     return explainer_section.format_prose_prompt(diff, doc, targets, overview_json=overview_json)
 
 
-def test_the_seed_carries_the_intents_of_the_anchored_hunks(diff: AnnotatedDiff, doc) -> None:
+def test_the_seed_carries_the_whole_change_with_its_intents(diff: AnnotatedDiff, doc) -> None:
     text = _prompt(diff, doc, "code", overview_json='{"summary": "pagination"}')
     assert "H0_0" in text
     assert "adds cursor" in text
@@ -177,13 +178,34 @@ def test_the_seed_carries_the_intents_of_the_anchored_hunks(diff: AnnotatedDiff,
     assert "Write the Code section." in text
 
 
-def test_a_merged_call_gets_a_brief_and_a_hunk_list_per_section(diff: AnnotatedDiff, doc) -> None:
+def test_every_file_and_hunk_intent_reaches_both_passes(diff: AnnotatedDiff, doc) -> None:
+    """Assignment routes; it does not scope. A tool-less skeleton seeing
+    paths and one-line summaries must not bound what either prose call
+    can know, so both are seeded with the whole change."""
+    background = _prompt(diff, doc, "background")
+    walkthrough = _prompt(diff, doc, "intuition", "code")
+    for text in (background, walkthrough):
+        assert "F0  schema/api.proto" in text
+        assert "F1  gen/api_pb.ts" in text
+        for hunk_id in ("H0_0", "H1_0", "H1_1"):
+            assert hunk_id in text
+        for intent in ("adds cursor", "declares cursor", "renames the field"):
+            assert intent in text
+    # Background is routed one file of the two; the walkthrough's Code is
+    # routed both, and its Intuition none.
+    assert background.count("  F0  schema/api.proto") == 2  # the listing, and the routing
+    assert background.count("  F1  gen/api_pb.ts") == 1
+    assert "The skeleton routed nothing here" in walkthrough
+
+
+def test_a_merged_call_gets_a_brief_and_its_routing_per_section(diff: AnnotatedDiff, doc) -> None:
     """One call, two sections: each has to arrive with its own brief and
-    its own anchored code, or the model cannot tell them apart."""
+    its own routing, or the model cannot tell them apart."""
     text = _prompt(diff, doc, "intuition", "code")
     assert text.index("`intuition` — Intuition") < text.index("`code` — Code")
     assert "Intuition: the idea of the change" in text
     assert "Code: the walkthrough" in text
+    assert text.count("### Routed to this section") == 2
     assert "Write the Intuition and Code sections." in text
 
 
@@ -208,14 +230,32 @@ def test_the_merged_call_is_seeded_with_the_map_and_the_finished_background(
     assert "the contract every field below follows from" in text
 
 
-def test_a_section_the_skeleton_gave_nothing_is_told_so(diff: AnnotatedDiff, doc) -> None:
-    assert "assigned this section no files" in _prompt(diff, doc, "intuition")
+def test_only_the_walkthrough_is_told_to_cover_the_parts_the_map_names() -> None:
+    """The seed's Map reaches every prose call, but the duty to cover it
+    binds the subsection set, so it rides the Code brief alone: Background
+    and Intuition are assigned the few files each is for."""
+    duty = "cover every part the Map sends the reader to"
+    assert duty in EXPLAINER_SECTION_BRIEFS["code"]
+    assert duty not in EXPLAINER_SECTION_BRIEFS["background"]
+    assert duty not in EXPLAINER_SECTION_BRIEFS["intuition"]
+    assert duty not in EXPLAINER_SECTION_GUIDANCE
 
 
-def test_only_the_anchored_hunks_carry_intents(diff: AnnotatedDiff, doc) -> None:
-    text = _prompt(diff, doc, "background")
-    assert "H0_0" in text
-    assert "H1_0" not in text
+def test_a_section_the_skeleton_routed_nothing_to_is_told_so(diff: AnnotatedDiff, doc) -> None:
+    """One line, not a smaller seed: the section still has the whole
+    change and has to choose its own subject out of it."""
+    text = _prompt(diff, doc, "intuition")
+    assert "The skeleton routed nothing here" in text
+    assert "H1_1" in text
+
+
+def test_a_hunk_reference_is_routed_as_the_hunk_it_names(diff: AnnotatedDiff, doc) -> None:
+    """A section narrowed to hunks keeps that narrowing in its routing —
+    the marker is the section's subject, at the granularity it was set."""
+    intuition = explainer_section.find_section(doc, "intuition")
+    intuition.refs = [explainer_schema.Reference(kind="hunk", id="H1_1")]
+    text = _prompt(diff, doc, "intuition")
+    assert "  H1_1  gen/api_pb.ts" in text
 
 
 # --- Lookup --------------------------------------------------------------
@@ -745,8 +785,8 @@ def test_a_merged_call_is_ready_only_when_every_hunk_under_it_is(doc) -> None:
 
 
 def test_the_budget_is_shared_across_the_documents_passes() -> None:
-    """A per-section cap is a cap on nothing: three sections at twelve is
-    a document at thirty-six, which nobody chose."""
+    """A per-section cap is a cap on nothing: three of them are a document
+    total nobody chose, and the passes do not want equal shares."""
     doc = _doc()
     assert explainer_section.DOCUMENT_TURN_BUDGET - doc.turns_used == explainer_section.DOCUMENT_TURN_BUDGET
     doc.turns_used = 7

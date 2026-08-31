@@ -132,14 +132,14 @@ async function bootViewer(data: ViewerData, opts: BootOptions = {}): Promise<voi
   document.body.innerHTML = `
     <header class="pr-bar">
       <div class="pr-title"><span class="pr-meta"></span></div>
+      <div class="mode-strip">
+        <button id="overview-btn" class="mode-btn" disabled></button>
+      </div>
       <div class="fold-slider">
         <button data-fold="files"></button>
         <button data-fold="hunks"></button>
         <button data-fold="segments"></button>
         <button data-fold="off"></button>
-      </div>
-      <div class="mode-strip">
-        <button id="overview-btn" class="mode-btn" disabled></button>
       </div>
       <button id="reset-btn"></button>
       <button id="help-btn"></button>
@@ -208,6 +208,65 @@ function makeHunkBlock(id: string, intent = "", overrides: Record<string, unknow
   };
 }
 
+/** A file the diff only adds or only deletes: every row carries a line
+ *  on one side, so the other half of its grid is empty for the file's
+ *  whole length. */
+function makeOneSidedFile(
+  idx: number, path: string, status: "added" | "deleted",
+): Record<string, unknown> {
+  const added = status === "added";
+  const rows = added
+    ? [
+      { kind: "ins", old_line: null, new_line: 1, old_text: "", new_text: "first" },
+      { kind: "ins", old_line: null, new_line: 2, old_text: "", new_text: "second" },
+    ]
+    : [
+      { kind: "del", old_line: 1, new_line: null, old_text: "first", new_text: "" },
+      { kind: "del", old_line: 2, new_line: null, old_text: "second", new_text: "" },
+    ];
+  return {
+    id: `F${idx}`, path, status, language: "python",
+    adds: added ? 2 : 0, dels: added ? 0 : 2,
+    summary: "", head_lines: null,
+    symbols: { added: [], modified: [], removed: [] },
+    hunks: [makeHunkBlock(`H${idx}_0`, "the whole file", {
+      header: added ? "@@ -0,0 +1,2 @@" : "@@ -1,2 +0,0 @@",
+      old_start: added ? 0 : 1, old_count: added ? 0 : 2,
+      new_start: added ? 1 : 0, new_count: added ? 2 : 0,
+      adds: added ? 2 : 0, dels: added ? 0 : 2,
+      rows,
+    })],
+  };
+}
+
+/** Put the shipped stylesheet in the document, for the cases whose
+ *  claim is a layout decision rather than a class. jsdom has no layout
+ *  but does cascade a stylesheet, so `display` and
+ *  `grid-template-columns` read back off the real rules. Call after
+ *  bootViewer, which writes the head itself. */
+function installStylesheet(): void {
+  const style = document.createElement("style");
+  style.textContent = fs.readFileSync(
+    path.resolve(process.cwd(), "semantic_code_review/viewer/assets/viewer.css"),
+    "utf-8",
+  );
+  document.head.appendChild(style);
+}
+
+/** Drag a layout divider from `fromX` to `toX`. jsdom ships no
+ *  PointerEvent, so the pointer type names ride on MouseEvent — which
+ *  carries the `clientX` the drag reads — and `setPointerCapture` is the
+ *  no-op setup.ts installs. */
+function dragDivider(el: HTMLElement, fromX: number, toX: number): void {
+  el.dispatchEvent(new MouseEvent("pointerdown", { clientX: fromX, button: 0, bubbles: true }));
+  el.dispatchEvent(new MouseEvent("pointermove", { clientX: toX, bubbles: true }));
+  el.dispatchEvent(new MouseEvent("pointerup", { clientX: toX, bubbles: true }));
+}
+
+function nudgeDivider(el: HTMLElement, key: string, shiftKey = false): void {
+  el.dispatchEvent(new KeyboardEvent("keydown", { key, shiftKey, bubbles: true }));
+}
+
 function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
   return {
     version: "1",
@@ -231,9 +290,51 @@ function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
   };
 }
 
+// --- Page-level listeners --------------------------------------------------
+// Every test evals its own copy of the bundle, and each copy binds page-
+// level handlers — render.ts's keydown on `document`, console.ts's on
+// `window`. Wiping innerHTML detaches the DOM a past copy was built over
+// but not its handlers, so one keypress in a later test runs every
+// earlier boot's handler too; the ones that read a surface off the live
+// document by id (the help overlay) then act on it, and a layered
+// dismissal appears to skip a layer. Record what each boot binds and
+// unbind it after the test.
+
+interface BoundListener {
+  target: EventTarget;
+  type: string;
+  fn: EventListenerOrEventListenerObject;
+  opts: boolean | AddEventListenerOptions | undefined;
+}
+const boundListeners: BoundListener[] = [];
+const realAddEventListener: Array<[EventTarget, EventTarget["addEventListener"]]> = [];
+
+function recordPageListeners(): void {
+  for (const target of [document, window] as EventTarget[]) {
+    const real = target.addEventListener.bind(target);
+    realAddEventListener.push([target, real]);
+    target.addEventListener = ((
+      type: string,
+      fn: EventListenerOrEventListenerObject,
+      opts?: boolean | AddEventListenerOptions,
+    ) => {
+      boundListeners.push({ target, type, fn, opts });
+      real(type, fn, opts);
+    }) as EventTarget["addEventListener"];
+  }
+}
+
+function dropPageListeners(): void {
+  for (const [target, real] of realAddEventListener) target.addEventListener = real;
+  realAddEventListener.length = 0;
+  for (const l of boundListeners) l.target.removeEventListener(l.type, l.fn, l.opts);
+  boundListeners.length = 0;
+}
+
 // --- Global hooks ----------------------------------------------------------
 
 beforeEach(() => {
+  recordPageListeners();
   eventSourceInstances.length = 0;
   fetchResponses.length = 0;
   fetchCalls.length = 0;
@@ -262,6 +363,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  dropPageListeners();
   document.head.innerHTML = "";
   document.body.innerHTML = "";
 });
@@ -1829,6 +1931,198 @@ describe("review console", () => {
     expect(document.querySelector(".console-q")).toBeNull();
     expect(fetchCalls.some((c) => c.url.includes("/console/reset"))).toBe(true);
   });
+
+  // --- Collapse-only dismissal ------------------------------------------
+  // The × and page-level Esc hide the drawer and keep everything: the
+  // transcript nodes, and the server-side conversation the prompt's own
+  // Esc drops. Returning to the prompt is the way back in.
+
+  /** A finished turn in the drawer — where every dismissal case starts. */
+  async function askAndAnswer(question = "why pagination?"): Promise<void> {
+    const id = await ask(question);
+    lastEventSource().dispatch("console-done", { console_id: id, answer: "because pages" });
+  }
+
+  const drawer = (): HTMLElement =>
+    document.querySelector(".console-drawer") as HTMLElement;
+  const collapsed = (): boolean => drawer().classList.contains("hidden");
+  const closeBtn = (): HTMLButtonElement =>
+    document.querySelector(".console-close") as HTMLButtonElement;
+  const resetPosted = (): boolean =>
+    fetchCalls.some((c) => c.url.includes("/console/reset"));
+
+  test("the × hides the drawer and keeps the conversation", async () => {
+    await bootViewer(makeData({ pending: false }));
+    installStylesheet();
+    await askAndAnswer();
+    expect(collapsed()).toBe(false);
+    // In the drawer's own scroller, sticky: a long transcript never
+    // scrolls the way out of reach.
+    expect(closeBtn().parentElement).toBe(drawer());
+    expect(getComputedStyle(closeBtn()).position).toBe("sticky");
+    expect(getComputedStyle(drawer()).overflowY).toBe("auto");
+
+    closeBtn().dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    expect(collapsed()).toBe(true);
+    expect(document.querySelector(".console-q")?.textContent).toBe("why pagination?");
+    expect(document.querySelector(".console-a .console-text")?.textContent)
+      .toContain("because pages");
+    expect(resetPosted()).toBe(false);
+  });
+
+  test("returning to the prompt brings the hidden transcript back", async () => {
+    await bootViewer(makeData({ pending: false }));
+    const input = document.querySelector<HTMLTextAreaElement>(".console-input")!;
+    await askAndAnswer();
+    closeBtn().click();
+    expect(collapsed()).toBe(true);
+
+    input.focus();
+    expect(collapsed()).toBe(false);
+    expect(document.querySelector(".console-q")).not.toBeNull();
+
+    // And typing does, for a browser that leaves focus in the prompt
+    // when the × is clicked — no focus event in between.
+    closeBtn().click();
+    input.value = "and the cursor?";
+    input.dispatchEvent(new Event("input"));
+    expect(collapsed()).toBe(false);
+  });
+
+  test("Ctrl-P opens a drawer that has a transcript, not an empty one", async () => {
+    await bootViewer(makeData({ pending: false }));
+    const input = document.querySelector<HTMLTextAreaElement>(".console-input")!;
+    const ctrlP = (): void => window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "p", ctrlKey: true, bubbles: true }),
+    );
+
+    // Nothing asked yet: the prompt takes focus, and no bare strip
+    // opens above the footer.
+    ctrlP();
+    expect(document.activeElement).toBe(input);
+    expect(collapsed()).toBe(true);
+
+    await askAndAnswer();
+    closeBtn().click();
+    ctrlP();
+    expect(collapsed()).toBe(false);
+  });
+
+  test("page-level Esc hides the drawer without dropping the conversation", async () => {
+    await bootViewer(makeData({ pending: false }));
+    await askAndAnswer();
+
+    // Focus anywhere but the prompt: the press render.ts routes.
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+    expect(collapsed()).toBe(true);
+    expect(document.querySelector(".console-q")).not.toBeNull();
+    expect(resetPosted()).toBe(false);
+  });
+
+  test("the help overlay is dismissed before the drawer", async () => {
+    await bootViewer(makeData({ pending: false }));
+    await askAndAnswer();
+    const overlay = document.getElementById("help-overlay")!;
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "?", bubbles: true }));
+    expect(overlay.classList.contains("hidden")).toBe(false);
+
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(overlay.classList.contains("hidden")).toBe(true);
+    expect(collapsed()).toBe(false);
+
+    // The next press is the drawer's.
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(collapsed()).toBe(true);
+  });
+});
+
+// --- One-sided files -------------------------------------------------------
+// An added file's rows have no pre-image and a deleted file's no
+// post-image, so one half of the grid is blank for its whole length. The
+// renderer marks the stream and the stylesheet collapses to the live
+// half; the empty one stays in the DOM for the comment gutter and the
+// annotation placeholders to address.
+
+describe("one-sided files", () => {
+  function oneSidedData(status: "added" | "deleted"): ViewerData {
+    return makeData({
+      pending: false,
+      files: [makeOneSidedFile(0, "new_thing.py", status)],
+    });
+  }
+
+  test("an added file drops the old half and spans the new one", async () => {
+    window.location.hash = "#fold=off";      // the code, not the summaries
+    await bootViewer(oneSidedData("added"));
+    installStylesheet();
+
+    const diff = document.querySelector("#app .file .diff") as HTMLElement;
+    expect(diff.classList.contains("diff-only-new")).toBe(true);
+    const half = (side: string): HTMLElement =>
+      diff.querySelector(`.half-${side}`) as HTMLElement;
+    // In the DOM — comments and annotations address its nodes — and out
+    // of the layout.
+    expect(half("old")).not.toBeNull();
+    expect(getComputedStyle(half("old")).display).toBe("none");
+    expect(getComputedStyle(half("new")).display).toBe("grid");
+    expect(getComputedStyle(diff).gridTemplateColumns).toBe("minmax(0, 1fr)");
+    expect(half("new").querySelectorAll(".row")).toHaveLength(2);
+  });
+
+  test("a deleted file drops the new half", async () => {
+    window.location.hash = "#fold=off";
+    await bootViewer(oneSidedData("deleted"));
+    installStylesheet();
+
+    const diff = document.querySelector("#app .file .diff") as HTMLElement;
+    expect(diff.classList.contains("diff-only-old")).toBe(true);
+    expect(getComputedStyle(diff.querySelector(".half-new") as HTMLElement).display).toBe("none");
+    expect(getComputedStyle(diff.querySelector(".half-old") as HTMLElement).display).toBe("grid");
+  });
+
+  test("a modified file keeps both halves", async () => {
+    window.location.hash = "#fold=off";
+    await bootViewer(makeData({ pending: false }));   // a.py, pair rows
+    installStylesheet();
+
+    const diff = document.querySelector("#app .file .diff") as HTMLElement;
+    expect(diff.className).toBe("diff");
+    expect(getComputedStyle(diff.querySelector(".half-old") as HTMLElement).display).toBe("grid");
+    expect(getComputedStyle(diff).gridTemplateColumns).toBe("minmax(0, 1fr) minmax(0, 1fr)");
+  });
+
+  test("a comment on an added file's line anchors on the new side", async () => {
+    window.location.hash = "#fold=off";
+    await bootViewer(oneSidedData("added"));
+
+    const cell = document.querySelector("#app .half-new .row .cell-lineno") as HTMLElement;
+    expect(cell.textContent).toBe("1");
+    cell.click();
+    const ta = document.querySelector<HTMLTextAreaElement>(".comment-editor-input")!;
+    ta.value = "this file needs a header";
+
+    let posted: Record<string, unknown> | null = null;
+    (globalThis.fetch as unknown as { mockImplementationOnce: (fn: typeof fetch) => void })
+      .mockImplementationOnce(((url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, init });
+        posted = JSON.parse(init!.body as string);
+        return Promise.resolve({ status: 200, ok: true, json: () => Promise.resolve(posted) } as Response);
+      }) as typeof fetch);
+    document.querySelector<HTMLButtonElement>(".comment-btn-save")!.click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    expect(posted).not.toBeNull();
+    expect(posted!.file).toBe("new_thing.py");
+    expect(posted!.side).toBe("new");
+    expect(posted!.line).toBe(1);
+    expect(document.querySelector(".comment-thread-entry")!.textContent)
+      .toContain("this file needs a header");
+    // The alignment placeholder went into the dropped half, where it
+    // costs nothing.
+    expect(document.querySelector("#app .half-old .row-placeholder")).not.toBeNull();
+  });
 });
 
 // --- Rendered markdown mode (ADR 0004 slice 2) -----------------------------
@@ -1873,6 +2167,7 @@ describe("rendered markdown mode", () => {
 
     const grid = document.querySelector(".rmd-grid");
     expect(grid).not.toBeNull();
+    expect(grid!.className).toBe("rmd-grid");   // both panes hold blocks
     // textContent, not innerHTML: the changed heading carries intra-block
     // sub-diff (.char-chg) spans around the changed word.
     expect(grid!.querySelector(".rmd-col-old .rmd-block h1")!.textContent).toBe("Old");
@@ -1922,6 +2217,51 @@ describe("rendered markdown mode", () => {
     expect(document.querySelector(".rmd-grid")).not.toBeNull();
   });
 
+  test("an added file's rendered diff drops the base pane", async () => {
+    await bootViewer(makeData({
+      pending: false,
+      files: [makeOneSidedFile(0, "docs/new.md", "added")],
+    }));
+    queueFetchResponse({
+      status: 200,
+      body: { file_idx: 0, path: "docs/new.md", base: null, head: "# New\n\nhello world" },
+    });
+    (document.querySelector(".md-toggle") as HTMLElement).click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    installStylesheet();
+
+    const grid = document.querySelector(".rmd-grid") as HTMLElement;
+    expect(grid.classList.contains("rmd-only-new")).toBe(true);
+    // Every base cell was an alignment pad; the head pane takes the grid.
+    expect(grid.querySelectorAll(".rmd-col-old .rmd-block")).toHaveLength(0);
+    expect(getComputedStyle(grid).gridTemplateColumns).toBe("1fr");
+    expect(getComputedStyle(grid.querySelector(".rmd-col-old") as HTMLElement).display)
+      .toBe("none");
+    expect(grid.querySelectorAll(".rmd-col-new .rmd-block").length).toBeGreaterThan(0);
+  });
+
+  test("a deleted file's rendered diff drops the head pane", async () => {
+    await bootViewer(makeData({
+      pending: false,
+      files: [makeOneSidedFile(0, "docs/gone.md", "deleted")],
+    }));
+    queueFetchResponse({
+      status: 200,
+      body: { file_idx: 0, path: "docs/gone.md", base: "# Gone\n\nfarewell", head: null },
+    });
+    (document.querySelector(".md-toggle") as HTMLElement).click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    installStylesheet();
+
+    const grid = document.querySelector(".rmd-grid") as HTMLElement;
+    expect(grid.classList.contains("rmd-only-old")).toBe(true);
+    const base = grid.querySelector(".rmd-col-old") as HTMLElement;
+    expect(getComputedStyle(grid.querySelector(".rmd-col-new") as HTMLElement).display)
+      .toBe("none");
+    expect(getComputedStyle(base).display).toBe("block");
+    expect(getComputedStyle(grid).gridTemplateColumns).toBe("1fr");
+  });
+
   test("a comment on a rendered block anchors on its source line and round-trips", async () => {
     window.location.hash = "#fold=off";  // expand the diff body so the round-trip row renders
     await bootViewer(mdData());
@@ -1964,6 +2304,121 @@ describe("rendered markdown mode", () => {
   });
 });
 
+// --- Draggable layout boundaries -------------------------------------------
+// The sidebar's edge. jsdom reports every box as 0 wide, so a drag starts
+// from 0 and the pointer's own travel is the width it lands on — which is
+// enough for the claims here: what the drag writes, what it stores, and
+// what the stored number does on the next boot.
+
+describe("the sidebar divider", () => {
+  function divider(): HTMLElement {
+    return document.querySelector(".layout .layout-divider-sidebar") as HTMLElement;
+  }
+
+  function basis(): string {
+    return (document.getElementById("group-sidebar") as HTMLElement).style.flexBasis;
+  }
+
+  test("it is a separator the keyboard can reach, between the sidebar and the pane", async () => {
+    await bootViewer(makeData({ pending: false }));
+    installStylesheet();
+    const el = divider();
+    expect(el.getAttribute("role")).toBe("separator");
+    expect(el.getAttribute("aria-orientation")).toBe("vertical");
+    expect(el.tabIndex).toBe(0);
+    expect(el.previousElementSibling!.id).toBe("group-sidebar");
+    expect(el.nextElementSibling!.id).toBe("app");
+    expect(getComputedStyle(el).cursor).toBe("col-resize");
+  });
+
+  test("a repaint of the pane leaves it alone", async () => {
+    // It is a `.layout` child, not a member of either pane, which is
+    // what makes it the sidebar's edge in whichever mode is showing.
+    await bootViewer(makeData({ pending: false }));
+    const el = divider();
+    (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+    expect(divider()).toBe(el);
+  });
+
+  test("dragging writes the sidebar's basis and stores the width", async () => {
+    await bootViewer(makeData({ pending: false }));
+    dragDivider(divider(), 0, 300);
+    expect(basis()).toBe("300px");
+    expect(localStorage.getItem("scr-sidebar-width")).toBe("300");
+  });
+
+  test("the page stops selecting while the boundary is moving", async () => {
+    // A captured pointer spends the drag over prose it is not aiming at.
+    // The mark is on the page rather than a cancelled pointerdown: that
+    // cancel would take the double-click reset with it.
+    await bootViewer(makeData({ pending: false }));
+    installStylesheet();
+    const el = divider();
+    const page = document.documentElement;
+    el.dispatchEvent(new MouseEvent("pointerdown", { clientX: 0, button: 0, bubbles: true }));
+    expect(el.classList.contains("dragging")).toBe(true);
+    expect(getComputedStyle(page).userSelect).toBe("none");
+
+    el.dispatchEvent(new MouseEvent("pointermove", { clientX: 300, bubbles: true }));
+    el.dispatchEvent(new MouseEvent("pointerup", { clientX: 300, bubbles: true }));
+    expect(el.classList.contains("dragging")).toBe(false);
+    expect(page.classList.contains("dragging-divider")).toBe(false);
+    expect(basis()).toBe("300px");
+  });
+
+  test("the drag is held inside a floor and a share of the window", async () => {
+    await bootViewer(makeData({ pending: false }));
+    dragDivider(divider(), 0, 20);
+    expect(basis()).toBe("160px");                 // the floor
+    dragDivider(divider(), 0, 5000);
+    expect(basis()).toBe("410px");                 // 40% of jsdom's 1024
+  });
+
+  test("arrow keys nudge it, Shift by more", async () => {
+    await bootViewer(makeData({ pending: false }));
+    const el = divider();
+    dragDivider(el, 0, 300);
+    nudgeDivider(el, "ArrowRight");
+    expect(basis()).toBe("316px");
+    nudgeDivider(el, "ArrowLeft", true);
+    expect(basis()).toBe("252px");
+    // A nudge is a whole gesture, so it stores where a drag stores on
+    // release.
+    expect(localStorage.getItem("scr-sidebar-width")).toBe("252");
+    // And a key the divider has no move for is not one it swallows.
+    nudgeDivider(el, "ArrowUp");
+    expect(basis()).toBe("252px");
+  });
+
+  test("double-clicking hands the width back to the stylesheet", async () => {
+    await bootViewer(makeData({ pending: false }));
+    const el = divider();
+    dragDivider(el, 0, 300);
+    el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    expect(basis()).toBe("");
+    expect(localStorage.getItem("scr-sidebar-width")).toBeNull();
+  });
+
+  test("the stored width is there on the next boot", async () => {
+    await bootViewer(makeData({ pending: false }));
+    dragDivider(divider(), 0, 300);
+
+    // A second boot in the same window: the DOM is rebuilt, localStorage
+    // is not, which is the reload the reader sees.
+    await bootViewer(makeData({ pending: false }));
+    expect(basis()).toBe("300px");
+    expect(divider().getAttribute("aria-valuenow")).toBe("300");
+  });
+
+  test("a stored width wider than the window clamps, and is not rewritten", async () => {
+    localStorage.setItem("scr-sidebar-width", "900");
+    await bootViewer(makeData({ pending: false }));
+    expect(basis()).toBe("410px");
+    // The room may come back — a narrow window is not a decision.
+    expect(localStorage.getItem("scr-sidebar-width")).toBe("900");
+  });
+});
+
 describe("overview mode (ADR 0007)", () => {
   const DOC = {
     version: 1,
@@ -1999,6 +2454,10 @@ describe("overview mode (ADR 0007)", () => {
   test("the button is absent entirely when the feature is off", async () => {
     await bootViewer(makeData({ explainer: false }));
     expect(document.querySelector(".mode-strip")).toBeNull();
+    // And the default-mode logic is inert with it: no document can
+    // exist, so the diff is what opens.
+    expect(document.querySelector("#app .file")).not.toBeNull();
+    expect(window.location.hash).toContain("mode=diff");
   });
 
   test("the button is disabled until the overview lands, then enabled", async () => {
@@ -2041,30 +2500,56 @@ describe("overview mode (ADR 0007)", () => {
 
   test("the sidebar swaps to the section tree and back", async () => {
     await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
-    const btn = document.getElementById("overview-btn") as HTMLButtonElement;
-    btn.click();
-    await new Promise<void>((r) => setTimeout(r, 0));
     const axis = document.querySelector("#group-sidebar .group-axis") as HTMLElement;
     expect(axis.dataset.axis).toBe("explainer");
     expect(Array.from(axis.querySelectorAll(".group-btn-label")).map((e) => e.textContent))
       .toEqual(["Background", "Map"]);
 
+    const btn = document.getElementById("overview-btn") as HTMLButtonElement;
     btn.click();
     await new Promise<void>((r) => setTimeout(r, 0));
     expect(document.querySelector('#group-sidebar .group-axis[data-axis="explainer"]')).toBeNull();
+
+    btn.click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(document.querySelector('#group-sidebar .group-axis[data-axis="explainer"]')).not.toBeNull();
+  });
+
+  test("the section tree says which section is being written", async () => {
+    await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
+    const badge = (): Element | null =>
+      document.querySelector('#group-sidebar [data-pill-id="background"] .group-btn-count');
+    // Written, and citing nothing: no badge beside the title at all.
+    expect(badge()).toBeNull();
+
+    lastEventSource().dispatch("explainer", {
+      ...DOC,
+      sections: DOC.sections.map((s) =>
+        s.kind === "background" ? { ...s, state: "pending", body: "" } : s),
+    });
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(badge()!.textContent).toBe("…");
+
+    (globalThis.fetch as unknown as { mockImplementationOnce: (fn: typeof fetch) => void })
+      .mockImplementationOnce((() => new Promise(() => { /* never settles */ })) as unknown as typeof fetch);
+    (document.querySelector('#group-sidebar [data-pill-id="background"]') as HTMLElement).click();
+    expect(badge()!.textContent).toBe("writing…");
   });
 
   test("the mode leaves the collapse level and the reviewer's folds alone", async () => {
     await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
-    // Zoom in, then hand-collapse one hunk, then round-trip the mode.
+    const btn = document.getElementById("overview-btn") as HTMLButtonElement;
+    // Down to the diff first: the zoom this is about is one the
+    // reviewer sets there.
+    btn.click();
+    await new Promise<void>((r) => setTimeout(r, 0));
     (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
     const before = window.location.hash;
     expect(before).toContain("fold=off");
 
-    const btn = document.getElementById("overview-btn") as HTMLButtonElement;
     btn.click();
     await new Promise<void>((r) => setTimeout(r, 0));
-    // The level is untouched while in the mode; only `mode=` is added.
+    // The level is untouched while in the mode; only `mode=` flips.
     expect(window.location.hash).toContain("fold=off");
     expect(window.location.hash).toContain("mode=overview");
 
@@ -2075,11 +2560,9 @@ describe("overview mode (ADR 0007)", () => {
       .toBe(true);
   });
 
-  test("entering the mode does not touch the diff-mode sidebar pill", async () => {
+  test("the section tree does not touch the diff-mode sidebar pill", async () => {
     localStorage.setItem("scr-active-group:local", "files:BF0");
     await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
-    (document.getElementById("overview-btn") as HTMLButtonElement).click();
-    await new Promise<void>((r) => setTimeout(r, 0));
     const tree = document.querySelector('#group-sidebar [data-pill-id="background"]') as HTMLElement;
     tree.click();
     await new Promise<void>((r) => setTimeout(r, 0));
@@ -2087,23 +2570,669 @@ describe("overview mode (ADR 0007)", () => {
     expect(localStorage.getItem("scr-explainer-section:local")).toBe("explainer:background");
   });
 
-  test("clicking a Map row leaves the mode and shows the diff again", async () => {
-    await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
-    (document.getElementById("overview-btn") as HTMLButtonElement).click();
-    await new Promise<void>((r) => setTimeout(r, 0));
-    (document.querySelector("#app .explainer-ref") as HTMLElement).click();
-    await new Promise<void>((r) => setTimeout(r, 0));
-    expect(document.querySelector('.file[data-id="F0"]')).not.toBeNull();
-    expect(document.querySelector("#app .explainer")).toBeNull();
-  });
-
   test("an SSE frame from another tab fills the pane without a POST", async () => {
     await bootWithExplainer({ status: 404, body: {} }, { pending: false });
     lastEventSource().dispatch("explainer", DOC);
     await new Promise<void>((r) => setTimeout(r, 0));
+    // The frame does not move the reviewer: they are reading the diff,
+    // and the default applies to what the viewer opens with.
+    expect(document.querySelector("#app .file")).not.toBeNull();
     (document.getElementById("overview-btn") as HTMLButtonElement).click();
     await new Promise<void>((r) => setTimeout(r, 0));
     expect(document.querySelectorAll("#app .explainer-map-row")).toHaveLength(1);
     expect(fetchCalls.some((c) => c.url === "/explainer/skeleton")).toBe(false);
+  });
+
+  // --- which mode the viewer opens in --------------------------------
+
+  test("a document already on disk is what the viewer opens on", async () => {
+    await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
+    expect(document.querySelectorAll("#app .explainer-map-row")).toHaveLength(1);
+    expect(document.querySelector("#app .file")).toBeNull();
+    expect(
+      (document.querySelector("#group-sidebar .group-axis") as HTMLElement).dataset.axis,
+    ).toBe("explainer");
+    expect(window.location.hash).toContain("mode=overview");
+    expect((document.getElementById("overview-btn") as HTMLButtonElement).classList)
+      .toContain("active");
+    // Opening what is already written buys nothing.
+    expect(fetchCalls.some((c) => c.url.startsWith("/explainer/"))).toBe(false);
+  });
+
+  test("with no document the diff is still what opens", async () => {
+    await bootWithExplainer({ status: 404, body: {} }, { pending: false });
+    expect(document.querySelector("#app .file")).not.toBeNull();
+    expect(window.location.hash).toContain("mode=diff");
+    expect(fetchCalls.some((c) => c.url === "/explainer/skeleton")).toBe(false);
+  });
+
+  test("a document whose verdict is not_warranted still counts as one", async () => {
+    // The skeleton's answer was "read the hunks directly" — which is the
+    // document, so it is what a reviewer re-opening the run should meet.
+    await bootWithExplainer(
+      { status: 200, body: { ...DOC, verdict: "not_warranted", sections: [] } },
+      { pending: false },
+    );
+    expect(window.location.hash).toContain("mode=overview");
+    expect(document.querySelector("#app .explainer")).not.toBeNull();
+  });
+
+  test("mode=diff in the URL outranks the document", async () => {
+    // A reload of a URL the reviewer was reading the diff on: the hash
+    // says which mode they chose, so the default does not apply.
+    // replaceState, not an assignment to `location.hash`: the latter
+    // fires `hashchange` at the listeners every earlier boot in this
+    // file left on the shared window, and they repaint #app.
+    window.history.replaceState(null, "", "#fold=off&mode=diff");
+    await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
+    expect(document.querySelector("#app .file")).not.toBeNull();
+    expect(document.querySelector("#app .explainer")).toBeNull();
+    expect(window.location.hash).toContain("fold=off");
+    expect(window.location.hash).toContain("mode=diff");
+  });
+
+  test("mode=overview in the URL restores the mode and the level under it", async () => {
+    window.history.replaceState(null, "", "#fold=off&mode=overview");
+    await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
+    expect(document.querySelectorAll("#app .explainer-map-row")).toHaveLength(1);
+    expect(window.location.hash).toContain("fold=off");
+    (document.getElementById("overview-btn") as HTMLButtonElement).click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(document.querySelector('.fold-slider button[data-fold="off"]')!.classList)
+      .toContain("active");
+  });
+
+  test("opening into a half-written document queues what it left pending", async () => {
+    // The spend was authorised when the document was generated; landing
+    // in it is not a second decision, and leaving prose unwritten behind
+    // per-section buttons is not what the reviewer asked for.
+    const half = {
+      ...DOC,
+      sections: DOC.sections.map((s) =>
+        s.kind === "map" ? s : { ...s, state: "pending", body: "" }),
+    };
+    await bootWithExplainer({ status: 200, body: half }, { pending: false });
+    queueFetchResponse({ status: 200, body: half });
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(fetchCalls.some((c) => c.url === "/explainer/section/background")).toBe(true);
+    expect(fetchCalls.some((c) => c.url === "/explainer/skeleton")).toBe(false);
+  });
+
+  // --- the fold slider, from inside the document -----------------------
+
+  describe("picking a collapse level leaves the document", () => {
+    /** Boot into the document, with the diff waiting behind it. */
+    async function bootIntoDocument(): Promise<void> {
+      await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
+      expect(document.querySelector("#app .explainer")).not.toBeNull();
+    }
+
+    /** What the pane, the hash and the sidebar say after the exit. */
+    function expectDiffAt(level: string): void {
+      expect(window.location.hash).toContain(`fold=${level}`);
+      expect(window.location.hash).toContain("mode=diff");
+      expect(document.querySelector("#app .explainer")).toBeNull();
+      expect(document.querySelector("#app .file")).not.toBeNull();
+      expect(document.querySelector('#group-sidebar .group-axis[data-axis="explainer"]')).toBeNull();
+    }
+
+    test("a slider click lands in the diff at the level it names", async () => {
+      await bootIntoDocument();
+      (document.querySelector('.fold-slider button[data-fold="segments"]') as HTMLElement).click();
+      await new Promise<void>((r) => setTimeout(r, 0));
+      expectDiffAt("segments");
+      expect(document.querySelector("#app .explainer-detail")).toBeNull();
+      expect(document.querySelector('.fold-slider button[data-fold="segments"]')!.classList)
+        .toContain("active");
+      expect(Array.from((document.getElementById("overview-btn") as HTMLButtonElement).classList))
+        .not.toContain("active");
+    });
+
+    test("keys 1-4 do the same", async () => {
+      // No assertion on the mode button here: the keydown listener is on
+      // `document`, which every earlier boot in this file shares, and one
+      // of them was booted with the feature off — its handler removes the
+      // mode strip.
+      await bootIntoDocument();
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "2" }));
+      await new Promise<void>((r) => setTimeout(r, 0));
+      expectDiffAt("hunks");
+    });
+
+    test("the mode is still there to go back into", async () => {
+      await bootIntoDocument();
+      (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+      await new Promise<void>((r) => setTimeout(r, 0));
+
+      (document.getElementById("overview-btn") as HTMLButtonElement).click();
+      await new Promise<void>((r) => setTimeout(r, 0));
+      expect(document.querySelectorAll("#app .explainer-map-row")).toHaveLength(1);
+      expect(window.location.hash).toContain("mode=overview");
+      // And the level the press picked is what the diff is waiting at.
+      expect(window.location.hash).toContain("fold=off");
+    });
+
+    test("the slider says where a press lands while the pane is the document", async () => {
+      await bootIntoDocument();
+      const off = document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement;
+      expect(off.title).toBe("Leave the document and read the diff at this level");
+      // The level highlight is the level a press lands on, so it stays.
+      expect(document.querySelector('.fold-slider button[data-fold="hunks"]')!.classList)
+        .toContain("active");
+
+      // Leaving restores the markup's own title — empty in this
+      // harness's header, which is what says the sentence came off.
+      (document.getElementById("overview-btn") as HTMLButtonElement).click();
+      await new Promise<void>((r) => setTimeout(r, 0));
+      expect((document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).title)
+        .toBe("");
+    });
+  });
+
+  // --- the detail panel ------------------------------------------------
+
+  describe("a reference opens beside the document", () => {
+    const FILES = [
+      ...["a.py", "b.py"].map((path, i) => ({
+        id: `F${i}`, path, status: "modified", language: "python",
+        adds: 1, dels: 1, summary: "", head_lines: null,
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock(`H${i}_0`, "guards the path")],
+      })),
+      makeOneSidedFile(2, "c.py", "added"),
+    ];
+
+    // Two file references to swap between, and two inline hunk
+    // references — the case that has to arrive unfolded.
+    const PANEL_DOC = {
+      ...DOC,
+      sections: [
+        { ...DOC.sections[0], body: "Ground. The guard is [H0_0], and [H2_0] is new." },
+        {
+          ...DOC.sections[1],
+          refs: [{ kind: "file", id: "F0" }, { kind: "file", id: "F1" }],
+          map_rows: [
+            { ref: { kind: "file", id: "F0" }, why: "the contract" },
+            { ref: { kind: "file", id: "F1" }, why: "the caller" },
+          ],
+        },
+      ],
+    };
+
+    /** Boot into the document with the panel mounted and closed. */
+    async function bootWithPanel(): Promise<HTMLElement> {
+      await bootWithExplainer({ status: 200, body: PANEL_DOC }, { pending: false, files: FILES });
+      return document.querySelector("#app .explainer-detail") as HTMLElement;
+    }
+
+    /** The Nth Map row's reference button, re-queried: a repaint of the
+     *  document builds a new one. */
+    function mapRow(n: number): HTMLElement {
+      return document.querySelectorAll<HTMLElement>(".explainer-map-row .explainer-ref")[n];
+    }
+
+    /** The Nth inline hunk reference: 0 addresses the modified file's
+     *  hunk, 1 the added file's. */
+    function hunkRef(n = 0): HTMLElement {
+      return document.querySelectorAll<HTMLElement>("#app .explainer-arrow")[n];
+    }
+
+    test("the file opens in the panel, and the document is not rebuilt", async () => {
+      const panel = await bootWithPanel();
+      const documentEl = document.querySelector("#app .explainer")!;
+      expect(panel.hidden).toBe(true);
+
+      mapRow(0).click();
+
+      expect(panel.hidden).toBe(false);
+      expect(panel.querySelector('.file[data-id="F0"]')).not.toBeNull();
+      expect(panel.querySelector(".explainer-detail-path")!.textContent).toBe("a.py");
+      // The same node, so the reader's scroll position and everything
+      // else about their place in the prose survives.
+      expect(document.querySelector("#app .explainer")).toBe(documentEl);
+      expect(window.location.hash).toContain("mode=overview");
+      expect(mapRow(0).classList.contains("explainer-ref-open")).toBe(true);
+    });
+
+    test("a hunk reference arrives unfolded, and leaves the diff's folds alone", async () => {
+      const panel = await bootWithPanel();
+      hunkRef().click();
+
+      const hunk = panel.querySelector('.hunk[data-id="H0_0"]') as HTMLElement;
+      expect(hunk.classList.contains("folded")).toBe(false);
+      // Code, not the segment summary the `hunks` level would show.
+      expect(hunk.querySelector(".diff")).not.toBeNull();
+
+      // The panel's overrides are its own: the diff is where the
+      // reviewer left it, which is what makes the return trip free.
+      (document.getElementById("overview-btn") as HTMLButtonElement).click();
+      await new Promise<void>((r) => setTimeout(r, 0));
+      expect(document.querySelector('.hunk[data-id="H0_0"]')!.classList.contains("folded"))
+        .toBe(true);
+    });
+
+    test("an added file spends the panel on the half that has content", async () => {
+      // The panel is the surface where the dead half costs most: the
+      // grid is the shared renderer's, so the collapse arrives with it.
+      const panel = await bootWithPanel();
+      hunkRef(1).click();
+
+      const diff = panel.querySelector(".diff") as HTMLElement;
+      expect(diff.classList.contains("diff-only-new")).toBe(true);
+      expect(diff.querySelector(".half-old")).not.toBeNull();
+      expect(diff.querySelectorAll(".half-new .row")).toHaveLength(2);
+    });
+
+    test("the split packs against the panel only while it is open", async () => {
+      // The stylesheet keys the document cell's shrink-wrap off this
+      // class: centred beside an open panel, the prose sat in a dead
+      // zone on a wide window.
+      const panel = await bootWithPanel();
+      const split = document.querySelector("#app .explainer-split") as HTMLElement;
+      expect(split.classList.contains("panel-open")).toBe(false);
+
+      mapRow(0).click();
+      expect(split.classList.contains("panel-open")).toBe(true);
+
+      (panel.querySelector(".explainer-detail-close") as HTMLElement).click();
+      expect(split.classList.contains("panel-open")).toBe(false);
+    });
+
+    test("a second reference swaps the panel in place", async () => {
+      const panel = await bootWithPanel();
+      mapRow(0).click();
+      mapRow(1).click();
+
+      expect(document.querySelector("#app .explainer-detail")).toBe(panel);
+      expect(panel.querySelectorAll(".file")).toHaveLength(1);
+      expect(panel.querySelector('.file[data-id="F1"]')).not.toBeNull();
+      expect(panel.querySelector(".explainer-detail-path")!.textContent).toBe("b.py");
+      expect(mapRow(0).classList.contains("explainer-ref-open")).toBe(false);
+      expect(mapRow(1).classList.contains("explainer-ref-open")).toBe(true);
+    });
+
+    test("the close button and Esc both close it", async () => {
+      const panel = await bootWithPanel();
+      mapRow(0).click();
+      (panel.querySelector(".explainer-detail-close") as HTMLElement).click();
+      expect(panel.hidden).toBe(true);
+      expect(document.querySelector(".explainer-ref-open")).toBeNull();
+      expect(document.querySelector("#app .explainer")).not.toBeNull();
+
+      mapRow(0).click();
+      expect(panel.hidden).toBe(false);
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      expect(panel.hidden).toBe(true);
+    });
+
+    test("Esc hides the console drawer before it closes the panel", async () => {
+      const panel = await bootWithPanel();
+      mapRow(0).click();
+      const input = document.querySelector<HTMLTextAreaElement>(".console-input")!;
+      input.value = "what am I looking at?";
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await new Promise<void>((r) => setTimeout(r, 0));
+      const drawer = document.querySelector(".console-drawer") as HTMLElement;
+      expect(drawer.classList.contains("hidden")).toBe(false);
+
+      // One surface per press: the drawer goes, the panel stays.
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      expect(drawer.classList.contains("hidden")).toBe(true);
+      expect(panel.hidden).toBe(false);
+
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      expect(panel.hidden).toBe(true);
+    });
+
+    test("Open in diff leaves the mode and lands on the file", async () => {
+      const panel = await bootWithPanel();
+      mapRow(1).click();
+      (panel.querySelector(".explainer-detail-open") as HTMLElement).click();
+      await new Promise<void>((r) => setTimeout(r, 0));
+
+      expect(window.location.hash).toContain("mode=diff");
+      expect(document.querySelector("#app .explainer")).toBeNull();
+      expect(document.querySelector("#app .explainer-detail")).toBeNull();
+      expect(document.querySelector('#app .file[data-id="F1"]')).not.toBeNull();
+    });
+
+    test("a section write repaints the document under a panel that stays", async () => {
+      const panel = await bootWithPanel();
+      mapRow(0).click();
+      const fileEl = panel.querySelector(".file");
+
+      lastEventSource().dispatch("explainer", {
+        ...PANEL_DOC,
+        sections: PANEL_DOC.sections.map((s) =>
+          s.kind === "background" ? { ...s, body: "Ground, rewritten. [H0_0]" } : s),
+      });
+      await new Promise<void>((r) => setTimeout(r, 0));
+
+      expect(document.querySelector("#app .explainer")!.textContent)
+        .toContain("Ground, rewritten.");
+      expect(document.querySelector("#app .explainer-detail")).toBe(panel);
+      expect(panel.hidden).toBe(false);
+      expect(panel.querySelector(".file")).toBe(fileEl);
+      expect(document.querySelector("#app .explainer-split")!.classList.contains("panel-open"))
+        .toBe(true);
+      // The chips were rebuilt with the prose; the mark goes back on.
+      expect(mapRow(0).classList.contains("explainer-ref-open")).toBe(true);
+    });
+
+    test("a repaint from the writing ticker leaves the panel where it is", async () => {
+      const panel = await bootWithPanel();
+      mapRow(0).click();
+      const fileEl = panel.querySelector(".file");
+
+      // Background back to pending, then asked for: the pane repaints on
+      // a timer for as long as the POST runs, which is minutes.
+      lastEventSource().dispatch("explainer", {
+        ...PANEL_DOC,
+        sections: PANEL_DOC.sections.map((s) =>
+          s.kind === "background" ? { ...s, state: "pending", body: "" } : s),
+      });
+      await new Promise<void>((r) => setTimeout(r, 0));
+
+      const status = (): string =>
+        document.querySelector('#app .explainer [data-section-id="background"] .explainer-status')!
+          .textContent || "";
+      vi.useFakeTimers();
+      try {
+        (globalThis.fetch as unknown as { mockImplementationOnce: (fn: typeof fetch) => void })
+          .mockImplementationOnce((() => new Promise(() => { /* never settles */ })) as unknown as typeof fetch);
+        (document.querySelector('#group-sidebar [data-pill-id="background"]') as HTMLElement).click();
+        expect(status()).toBe("Writing this section…");
+        vi.advanceTimersByTime(2 * 60000);
+        // The figure moved, so the ticker's repaint reached the pane.
+        expect(status()).toBe("Writing this section… 2 min");
+      } finally {
+        vi.useRealTimers();
+      }
+
+      expect(document.querySelector("#app .explainer-detail")).toBe(panel);
+      expect(panel.hidden).toBe(false);
+      expect(panel.querySelector(".file")).toBe(fileEl);
+    });
+
+    test("a comment written in the panel round-trips", async () => {
+      const panel = await bootWithPanel();
+      hunkRef().click();
+
+      const cell = panel.querySelector(".half-new .row .cell-lineno") as HTMLElement;
+      expect(cell.textContent).toBe("1");
+      cell.click();
+      const ta = document.querySelector<HTMLTextAreaElement>(".comment-editor-input")!;
+      expect(panel.contains(ta)).toBe(true);
+      ta.value = "this guard is new";
+
+      let posted: Record<string, unknown> | null = null;
+      (globalThis.fetch as unknown as { mockImplementationOnce: (fn: typeof fetch) => void })
+        .mockImplementationOnce(((url: string, init?: RequestInit) => {
+          fetchCalls.push({ url, init });
+          posted = JSON.parse(init!.body as string);
+          return Promise.resolve({
+            status: 200, ok: true, json: () => Promise.resolve(posted),
+          } as Response);
+        }) as typeof fetch);
+      document.querySelector<HTMLButtonElement>(".comment-btn-save")!.click();
+      await new Promise<void>((r) => setTimeout(r, 0));
+
+      expect(posted).not.toBeNull();
+      expect(posted!.file).toBe("a.py");
+      expect(posted!.side).toBe("new");
+      expect(posted!.line).toBe(1);
+      expect(panel.querySelector(".comment-thread-entry")!.textContent)
+        .toContain("this guard is new");
+
+      // And it comes back with the file: mounting panel content replays
+      // the store's threads over it, as a diff render does.
+      (panel.querySelector(".explainer-detail-close") as HTMLElement).click();
+      hunkRef().click();
+      expect(panel.querySelector(".comment-thread-entry")!.textContent)
+        .toContain("this guard is new");
+    });
+
+    // --- how wide the panel is ------------------------------------------
+    // jsdom has no layout, so these read the shipped rules off the
+    // cascade: the claim is which sizing the panel and the document cell
+    // ask for, not the pixels they land on.
+
+    test("the open panel takes the remainder, down to a floor", async () => {
+      const panel = await bootWithPanel();
+      installStylesheet();
+      mapRow(0).click();
+
+      const cs = getComputedStyle(panel);
+      // Where the split divides is the reader's, so the panel has no
+      // width of its own to work out: it runs from the boundary to the
+      // window edge.
+      expect(cs.flex).toBe("1 1 0px");
+      expect(cs.minWidth).toBe("380px");
+    });
+
+    test("the document cell holds its measure until the reader says otherwise", async () => {
+      const panel = await bootWithPanel();
+      installStylesheet();
+      const doc = document.querySelector("#app .explainer-doc") as HTMLElement;
+      expect(getComputedStyle(doc).flex).toBe("1 1 0px");   // closed: the whole pane
+
+      mapRow(0).click();
+      // Packed against the panel, the cell shrink-wraps its own
+      // max-width box; the prose keeps the 72ch measure inside it.
+      expect(getComputedStyle(doc).flex).toBe("0 1 auto");
+      expect(getComputedStyle(document.querySelector("#app .explainer") as HTMLElement).maxWidth)
+        .toBe("calc(72ch + 64px)");
+      expect(getComputedStyle(panel).minWidth).toBe("380px");
+    });
+
+    test("prose in the panel runs at a measure, so the width is the code's", async () => {
+      // The panel is as wide as the reader left the boundary, and a
+      // one-sentence summary or intent set across all of that reads as a
+      // banner rather than as a note.
+      await bootWithPanel();
+      installStylesheet();
+      mapRow(0).click();
+      const capOf = (sel: string): string => getComputedStyle(
+        document.querySelector(`#app .explainer-detail-body ${sel}`) as HTMLElement).maxWidth;
+      expect(capOf(".file-summary")).toBe("64ch");
+      expect(capOf(".hunk-intent")).toBe("64ch");
+
+      // Scoped to the panel: the diff pane's own prose has the page's
+      // width to answer to, so the same prose is uncapped there.
+      (document.querySelector(".explainer-detail-open") as HTMLElement).click();
+      await new Promise<void>((r) => setTimeout(r, 0));
+      expect(getComputedStyle(
+        document.querySelector("#app .file .file-summary") as HTMLElement).maxWidth).toBe("");
+    });
+
+    // --- where the reader puts the boundary -----------------------------
+    // The document's ceiling is measured off the split, which jsdom
+    // reports as 0 wide; the cases that assert a number stub that one
+    // reading, the way the annotation cases inject rects.
+
+    function docDivider(): HTMLElement {
+      return document.querySelector("#app .explainer-split .layout-divider-doc") as HTMLElement;
+    }
+
+    function docCell(): HTMLElement {
+      return document.querySelector("#app .explainer-doc") as HTMLElement;
+    }
+
+    /** Give the split a width to divide. */
+    function splitWidth(px: number): void {
+      Object.defineProperty(
+        document.querySelector("#app .explainer-split") as HTMLElement,
+        "clientWidth", { value: px, configurable: true },
+      );
+    }
+
+    test("the boundary is a separator between the document and the panel", async () => {
+      await bootWithPanel();
+      const el = docDivider();
+      expect(el.getAttribute("role")).toBe("separator");
+      expect(el.getAttribute("aria-orientation")).toBe("vertical");
+      expect(el.tabIndex).toBe(0);
+      expect(el.previousElementSibling!.className).toBe("explainer-doc");
+      expect(el.nextElementSibling!.classList.contains("explainer-detail")).toBe(true);
+      // And the sidebar's is still there: the mode replaced the pane, not
+      // the shell around it.
+      expect(document.querySelector(".layout > .layout-divider-sidebar")).not.toBeNull();
+    });
+
+    test("dragging it widens the column, and the prose follows", async () => {
+      await bootWithPanel();
+      installStylesheet();
+      mapRow(0).click();
+      splitWidth(1600);
+
+      dragDivider(docDivider(), 0, 620);
+      expect(docCell().style.width).toBe("620px");
+      expect(localStorage.getItem("scr-explainer-doc-width")).toBe("620");
+      // The measure was the default, not a ceiling: the text takes the
+      // column it was given, its padding unchanged.
+      expect(getComputedStyle(document.querySelector("#app .explainer") as HTMLElement).maxWidth)
+        .toBe("100%");
+      expect(getComputedStyle(document.querySelector("#app .explainer") as HTMLElement).padding)
+        .toBe("36px 32px 96px");
+    });
+
+    test("the drag stops at the column's floor and at the panel's", async () => {
+      await bootWithPanel();
+      mapRow(0).click();
+      splitWidth(1600);
+
+      dragDivider(docDivider(), 0, 100);
+      expect(docCell().style.width).toBe("340px");
+      dragDivider(docDivider(), 0, 5000);
+      expect(docCell().style.width).toBe("1212px");   // 1600 - 380 - 8
+    });
+
+    test("arrow keys nudge the boundary", async () => {
+      await bootWithPanel();
+      mapRow(0).click();
+      splitWidth(1600);
+      const el = docDivider();
+
+      dragDivider(el, 0, 620);
+      nudgeDivider(el, "ArrowLeft");
+      expect(docCell().style.width).toBe("604px");
+      nudgeDivider(el, "ArrowRight", true);
+      expect(docCell().style.width).toBe("668px");
+      expect(localStorage.getItem("scr-explainer-doc-width")).toBe("668");
+    });
+
+    test("double-clicking hands the column back to the measure", async () => {
+      await bootWithPanel();
+      installStylesheet();
+      mapRow(0).click();
+      splitWidth(1600);
+      const el = docDivider();
+      dragDivider(el, 0, 620);
+
+      el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      expect(docCell().style.width).toBe("");
+      expect(docCell().classList.contains("explainer-doc-sized")).toBe(false);
+      expect(getComputedStyle(document.querySelector("#app .explainer") as HTMLElement).maxWidth)
+        .toBe("calc(72ch + 64px)");
+      expect(localStorage.getItem("scr-explainer-doc-width")).toBeNull();
+    });
+
+    test("the stored column is applied when the mode paints, clamped to the room", async () => {
+      localStorage.setItem("scr-explainer-doc-width", "620");
+      await bootWithPanel();
+      // A split that reports no width has none to give: the column
+      // arrives at its floor rather than overflowing.
+      expect(docCell().classList.contains("explainer-doc-sized")).toBe(true);
+      expect(docCell().style.width).toBe("340px");
+
+      // The room comes back — a narrow window was never a decision, so
+      // the stored number was not rewritten to the clamp.
+      splitWidth(1600);
+      window.dispatchEvent(new Event("resize"));
+      expect(docCell().style.width).toBe("620px");
+      expect(localStorage.getItem("scr-explainer-doc-width")).toBe("620");
+    });
+
+    // --- the document scrolls in its own column --------------------------
+    // The shared far-right scrollbar was the window's, past the panel and
+    // its own. Each column now scrolls inside itself.
+
+    test("the document cell is a scroller bound to the viewport", async () => {
+      const panel = await bootWithPanel();
+      installStylesheet();
+      const cs = getComputedStyle(docCell());
+      expect(cs.overflowY).toBe("auto");
+      // Vertical only: a figure's box breaks the measure by a few px, and
+      // as `auto` that is a horizontal bar scrolling empty margin.
+      expect(cs.overflowX).toBe("hidden");
+      // The ceiling the panel and the sidebar already take, so the three
+      // columns end together and each scrollbar is its own column's.
+      expect(cs.maxHeight).toBe("calc(100vh - 56px)");
+      expect(getComputedStyle(panel).maxHeight).toBe(cs.maxHeight);
+      expect(getComputedStyle(document.getElementById("group-sidebar")!).maxHeight)
+        .toBe(cs.maxHeight);
+    });
+
+    test("entering the mode hands the keyboard the column", async () => {
+      await bootWithPanel();
+      // Nothing else scrolls the prose: the window is spent, and the cell
+      // is not a tab stop a reader could reach.
+      expect(document.activeElement).toBe(docCell());
+      expect(docCell().tabIndex).toBe(-1);
+
+      // And the keys render.ts owns still arrive — it binds on `document`,
+      // and the cell is neither an input nor a textarea. 1 in the mode is
+      // the exit into the diff at that level.
+      docCell().dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
+      await new Promise<void>((r) => setTimeout(r, 0));
+      expect(window.location.hash).toContain("fold=files");
+      expect(window.location.hash).toContain("mode=diff");
+    });
+
+    test("a repaint leaves focus where the reader put it", async () => {
+      await bootWithPanel();
+      const divider = docDivider();
+      divider.focus();
+      await repaintProse();
+      expect(document.activeElement).toBe(divider);
+    });
+
+    test("the panel opening, swapping and closing leaves the reader's place", async () => {
+      const panel = await bootWithPanel();
+      docCell().scrollTop = 400;
+
+      mapRow(0).click();
+      expect(docCell().scrollTop).toBe(400);
+      mapRow(1).click();
+      expect(docCell().scrollTop).toBe(400);
+      (panel.querySelector(".explainer-detail-close") as HTMLElement).click();
+      expect(docCell().scrollTop).toBe(400);
+    });
+
+    test("a repaint of the prose keeps the reader's place", async () => {
+      // The repaint replaces the cell's whole child; the offset is the
+      // cell's, and carrying it over is what stops a section write the
+      // reader did not ask for throwing them back to the top.
+      await bootWithPanel();
+      const cell = docCell();
+      cell.scrollTop = 400;
+      await repaintProse();
+      expect(document.querySelector("#app .explainer")!.textContent)
+        .toContain("Ground, rewritten.");
+      // The same cell, holding the same offset: the prose under it was
+      // replaced, the scroller was not rebuilt.
+      expect(docCell()).toBe(cell);
+      expect(docCell().scrollTop).toBe(400);
+    });
+
+    /** A section write off the SSE bus: the repaint nobody asked for. */
+    async function repaintProse(): Promise<void> {
+      lastEventSource().dispatch("explainer", {
+        ...PANEL_DOC,
+        sections: PANEL_DOC.sections.map((s) =>
+          s.kind === "background" ? { ...s, body: "Ground, rewritten. [H0_0]" } : s),
+      });
+      await new Promise<void>((r) => setTimeout(r, 0));
+    }
   });
 });

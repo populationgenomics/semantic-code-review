@@ -117,6 +117,17 @@ def test_prompt_seeds_the_symbol_delta_when_there_is_one(diff: AnnotatedDiff) ->
     assert "removed:" not in text  # empty buckets are not listed
 
 
+def test_the_coverage_duty_sits_with_section_refs_not_with_the_map() -> None:
+    """The skeleton is the only pass that writes `section_refs`, and a file
+    it assigns to no section is a part of the change no prose is on the hook
+    for. That duty binds the union of the three lists, which is a different
+    claim from the Map's own rule about omitting a row."""
+    assert "the three lists cover the Map" in EXPLAINER_SKELETON_GUIDANCE
+    assert EXPLAINER_SKELETON_GUIDANCE.index("# section_refs") < EXPLAINER_SKELETON_GUIDANCE.index(
+        "the three lists cover the Map"
+    )
+
+
 # --- Apply step ----------------------------------------------------------
 
 
