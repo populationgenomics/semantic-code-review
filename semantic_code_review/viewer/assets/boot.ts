@@ -69,7 +69,7 @@ async function boot(): Promise<void> {
   // The change explainer only mounts when the server says the feature
   // is on for this review; a --no-augment run has no backend to run it.
   if (DATA.explainer) {
-    Explainer.setFilePaths(DATA);
+    Explainer.setFiles(DATA);
     Explainer.init(SESSION_ENDPOINT, DATA, {
       onChange: () => Render.render(),
       // A reference opens the file it addresses beside the document, so

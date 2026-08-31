@@ -51,13 +51,20 @@ after sanitisation, building DOM nodes over the sanitised tree rather
 than a second HTML pass. Tokens inside `code` spans and fenced blocks
 are left alone: a `[F3]` in a snippet is the snippet's.
 
-A chip is labelled by what the reviewer can act on — the file's path,
-or `path:N` for the Nth hunk of that file — not by the raw id. Clicking
-one opens that file in a detail panel beside the document, so the code
-and the sentence that sent the reader to it are on screen together; a
-hunk chip opens with its hunk unfolded, because a hunk reference is the
-claim "read these lines". The panel's "Open in diff" is the way on to
-the full ladder.
+A chip is labelled by what the reviewer can act on, never by the raw
+id: the path's basename for a file reference; for a hunk reference the
+basename alone where its file has one hunk, and `basename · hunk N`
+where it has more. Not `path:N` — that is the universal file:line form,
+and on a diff of new files every chip read `sheaf.md:1`. Where the
+prose has just named the path the label would be a repetition, so the
+chip is a bare arrow. The `title` states the target in full either
+way — `hunk 2 of 5 in path`.
+
+Clicking a chip opens that file in a detail panel beside the document,
+so the code and the sentence that sent the reader to it are on screen
+together; a hunk chip opens with its hunk unfolded, because a hunk
+reference is the claim "read these lines". The panel's "Open in diff" is
+the way on to the full ladder.
 
 A chip is not a substitute for the section's `refs` list, which is what
 the sidebar counts and the coverage footer reads.

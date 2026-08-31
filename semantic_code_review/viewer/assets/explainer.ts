@@ -826,10 +826,9 @@ function _precedingText(node: Text, offset: number): string {
  *  path, which is what made the chip a slab. */
 function _refChip(id: string): HTMLElement {
   const isFile = id.charAt(0) === "F";
-  const target = isFile ? _fileLabel(id) : _hunkLabel(id);
   const btn = _el("button", "explainer-ref explainer-arrow");
   btn.dataset.refId = id;
-  btn.title = `Open ${target} beside the document`;
+  btn.title = `Open ${_refDescription(id, _refTarget(id))} beside the document`;
   btn.setAttribute("aria-label", btn.title);
   btn.addEventListener("click", () => {
     if (isFile) _onOpenFile?.(id);
@@ -839,19 +838,26 @@ function _refChip(id: string): HTMLElement {
 }
 
 /** Give a reference its label, or leave it bare. Split from `_refChip`
- *  because only the caller walking the prose knows what came before. */
+ *  because only the caller walking the prose knows what came before.
+ *
+ *  A hunk names its ordinal only where the ordinal distinguishes
+ *  something: in a one-hunk file it carries nothing, and the basename
+ *  alone is the whole answer. Never as `path:N` — that is the universal
+ *  file:line form, and on a diff of new files every chip read
+ *  `sheaf.md:1`, which a reader can only take for line 1. The tooltip
+ *  states the place in full either way. */
 function _labelRef(btn: HTMLElement, id: string, preceding: string): void {
-  const m = /^H(\d+)_(\d+)$/.exec(id);
-  // A hunk's path is its file's — `_fileLabel` on a hunk id finds nothing
-  // and hands back the raw id, which is what a reviewer cannot act on.
-  const path = m ? _fileLabel(`F${m[1]}`) : _fileLabel(id);
+  const target = _refTarget(id);
+  const path = target ? target.path : id;
   const base = path.slice(path.lastIndexOf("/") + 1);
   if (base.length > 0 && preceding.indexOf(base) !== -1) {
     btn.textContent = "\u2197";
     return;
   }
   btn.classList.add("explainer-arrow-labelled");
-  btn.textContent = m ? `${base}:${Number(m[2]) + 1} \u2197` : `${base} \u2197`;
+  const hunk = target ? target.hunk : null;
+  const ordinal = hunk !== null && hunk.of > 1 ? ` \u00b7 hunk ${hunk.ordinal}` : "";
+  btn.textContent = `${base}${ordinal} \u2197`;
 }
 
 /** Coverage, the dropped-reference count, and the toy-data notice —
@@ -889,27 +895,46 @@ function _generateButton(label: string): HTMLElement {
   return btn;
 }
 
-/** The path behind `F<i>`, from the loaded diff. The document carries
- *  ids, not paths, because ids are what the viewer addresses nodes by. */
-let _filePaths: Record<string, string> = Object.create(null);
+/** What `F<i>` addresses in the loaded diff. The document carries ids,
+ *  not paths, because ids are what the viewer addresses nodes by; the
+ *  hunk count is what tells a hunk reference whether its ordinal says
+ *  anything. */
+let _files: Record<string, { path: string; hunks: number }> = Object.create(null);
 
-function setFilePaths(data: ViewerData): void {
-  _filePaths = Object.create(null);
-  for (const f of data.files || []) _filePaths[f.id] = f.path;
+function setFiles(data: ViewerData): void {
+  _files = Object.create(null);
+  for (const f of data.files || []) _files[f.id] = { path: f.path, hunks: f.hunks.length };
 }
 
 function _fileLabel(fileId: string): string {
-  return _filePaths[fileId] || fileId;
+  const f = _files[fileId];
+  return f ? f.path : fileId;
 }
 
-/** `H3_1` as `path:2` — the hunk's position within its file, 1-based,
- *  because "the second hunk of api.proto" is what a reader can act on
- *  and `H3_1` is not. */
-function _hunkLabel(hunkId: string): string {
-  const m = /^H(\d+)_(\d+)$/.exec(hunkId);
-  if (!m) return hunkId;
-  const path = _filePaths[`F${m[1]}`];
-  return path ? `${path}:${Number(m[2]) + 1}` : hunkId;
+/** What a reference addresses, in terms a reader can act on, or null for
+ *  an id no file in this diff answers to — a prose token the model
+ *  invented, since only the `refs` lists are validated by membership. */
+interface RefTarget {
+  path: string;
+  /** A hunk's 1-based place among its file's hunks; null for a file. */
+  hunk: { ordinal: number; of: number } | null;
+}
+
+function _refTarget(id: string): RefTarget | null {
+  // A hunk's path is its file's, so both ids resolve through the same map.
+  const m = /^H(\d+)_(\d+)$/.exec(id);
+  const f = _files[m ? `F${m[1]}` : id];
+  if (!f) return null;
+  return { path: f.path, hunk: m ? { ordinal: Number(m[2]) + 1, of: f.hunks } : null };
+}
+
+/** How a tooltip names a reference's target. A hunk says its place in
+ *  full: the chip's label carries at most a bare ordinal, and "of 5" is
+ *  what makes that ordinal mean something. */
+function _refDescription(id: string, target: RefTarget | null): string {
+  if (target === null) return id;
+  if (target.hunk === null) return target.path;
+  return `hunk ${target.hunk.ordinal} of ${target.hunk.of} in ${target.path}`;
 }
 
 function _headingId(sectionId: string): string {
@@ -937,6 +962,6 @@ export const Explainer = {
   sectionStatus,
   activeSectionId,
   setActiveSection,
-  setFilePaths,
+  setFiles,
   renderPane,
 };

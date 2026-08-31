@@ -8,14 +8,20 @@
 import { describe, test, expect, vi, beforeEach } from "vitest";
 import { Explainer } from "../../semantic_code_review/viewer/assets/explainer";
 
+/** `n` hunks for file `fileIdx`, ids only: what a hunk chip's label
+ *  reads off a file is the count. */
+function hunks(fileIdx: number, n: number): HunkBlock[] {
+  return Array.from({ length: n }, (_, i) => ({ id: `H${fileIdx}_${i}` }) as HunkBlock);
+}
+
 function data(overrides: Partial<ViewerData> = {}): ViewerData {
   return {
     version: "1",
     pr: { head_sha: "head5678" } as PRBlock,
     smells_catalogue: {},
     files: [
-      { id: "F0", path: "schema/api.proto" } as FileBlock,
-      { id: "F1", path: "gen/api_pb.ts" } as FileBlock,
+      { id: "F0", path: "schema/api.proto", hunks: hunks(0, 1) } as FileBlock,
+      { id: "F1", path: "gen/api_pb.ts", hunks: hunks(1, 3) } as FileBlock,
     ],
     groups: [],
     symbols: [],
@@ -99,7 +105,7 @@ function mockFetch(responses: Array<{ status: number; body: unknown }>): Array<{
 
 function boot(overrides: Partial<ViewerData> = {}, opts = {}): void {
   const d = data(overrides);
-  Explainer.setFilePaths(d);
+  Explainer.setFiles(d);
   Explainer.init("", d, opts);
 }
 
@@ -720,11 +726,28 @@ describe("prose rendering", () => {
   });
 
   test("a hunk reference is labelled by its file, not by its raw id", () => {
-    // `_fileLabel` on a hunk id finds nothing and hands back "H1_1",
-    // which is not something a reviewer can act on.
+    // The raw "H1_1" is not something a reviewer can act on.
     withBody("The rename happens in [H1_1].");
     const ref = Explainer.renderPane().querySelector(".explainer-arrow") as HTMLElement;
-    expect(ref.textContent).toBe("api_pb.ts:2 \u2197");
+    expect(ref.textContent).toBe("api_pb.ts \u00b7 hunk 2 \u2197");
+  });
+
+  test("a hunk reference never reads as a line number", () => {
+    // `path:N` collided with the universal file:line form: on a diff of
+    // new files every chip read "sheaf.md:1", which a reader can only
+    // take for line 1.
+    withBody("The rename happens in [H1_1].");
+    const ref = Explainer.renderPane().querySelector(".explainer-arrow") as HTMLElement;
+    expect(ref.textContent).not.toContain(":");
+  });
+
+  test("a hunk reference into a one-hunk file drops the ordinal", () => {
+    // F0 has one hunk, so "hunk 1" distinguishes nothing the basename
+    // does not already say.
+    withBody("The rename happens in [H0_0].");
+    const ref = Explainer.renderPane().querySelector(".explainer-arrow") as HTMLElement;
+    expect(ref.textContent).toBe("api.proto \u2197");
+    expect(ref.title).toBe("Open hunk 1 of 1 in schema/api.proto beside the document");
   });
 
   test("a run of references each keep their label", () => {
@@ -736,13 +759,24 @@ describe("prose rendering", () => {
   });
 
   test("a hunk arrow names the file and the hunk's place in it, in its tooltip", () => {
+    // The label carries a bare ordinal at most; "of 3" is what makes
+    // that ordinal mean something.
     const opened: string[] = [];
     boot({}, { onOpenHunk: (id: string) => opened.push(id) });
     Explainer.onEvent(proseDoc({ state: "ready", body: "See [H1_1] for the rename." }) as SseExplainerEvent);
     const ref = Explainer.renderPane().querySelector(".explainer-arrow") as HTMLElement;
-    expect(ref.title).toContain("gen/api_pb.ts:2");
+    expect(ref.title).toBe("Open hunk 2 of 3 in gen/api_pb.ts beside the document");
     ref.click();
     expect(opened).toEqual(["H1_1"]);
+  });
+
+  test("a bare hunk arrow still says the whole place in its tooltip", () => {
+    // The prose named the path, so the chip is an arrow — the tooltip is
+    // then the only thing that says which hunk.
+    withBody("The file api_pb.ts [H1_2] is regenerated.");
+    const ref = Explainer.renderPane().querySelector(".explainer-arrow") as HTMLElement;
+    expect(ref.textContent).toBe("↗");
+    expect(ref.title).toBe("Open hunk 3 of 3 in gen/api_pb.ts beside the document");
   });
 
   test("a reference inside a code span is the snippet's, not an arrow", () => {
