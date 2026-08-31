@@ -227,12 +227,7 @@ def run_review(opts: ReviewOptions) -> int:
         if opts.debug:
             bind_debug_sink = lambda sink, c=console_client: c.set_debug_sink(sink)  # noqa: E731
     else:
-        # When augment is skipped, copy raw.diff to augmented.diff so render
-        # has something to parse. It'll have no annotations.
-        (run_dir / "augmented.diff").write_text(
-            (run_dir / "raw.diff").read_text(encoding="utf-8"),
-            encoding="utf-8",
-        )
+        ensure_augmented_diff(run_dir)
 
     result = serve_review(
         run_dir,
@@ -274,6 +269,24 @@ class ServeResult:
     comments: list  # list[Comment] — kept loose to avoid an import cycle
     clean: bool  # True iff the viewer signalled Done; False on idle timeout
     posted: PostResult | None = None
+
+
+def ensure_augmented_diff(run_dir: Path) -> None:
+    """Give the renderer an ``augmented.diff`` to parse without spending
+    an augmentation pass.
+
+    The ``--no-augment`` path calls this: an absent one is filled with
+    ``raw.diff``, annotation-free. An existing one is left alone. Run
+    dirs are keyed by head SHA, so re-running ``--no-augment`` — which
+    is what a failed post tells the reviewer to do to retry — lands in
+    the run dir a paid-for pass already augmented; overwriting it would
+    drop those annotations and desync the text form from
+    ``augmented.scr.json``.
+    """
+    augmented = run_dir / "augmented.diff"
+    if augmented.exists():
+        return
+    augmented.write_text((run_dir / "raw.diff").read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def serve_review(
