@@ -138,7 +138,11 @@ body {
   background: transparent;
   cursor: col-resize;
   touch-action: none;             /* the pointer stream is the drag's, not a scroll's */
+  user-select: none;              /* a drag starting here anchors no selection */
 }
+/* A captured pointer spends the drag over prose it is not aiming at, so
+   the page holds the drag's cursor and selects nothing until it lands. */
+html.dragging-divider { cursor: col-resize; user-select: none; }
 .layout-divider:hover, .layout-divider.dragging { background: var(--accent-soft); }
 .layout-divider:focus-visible {
   outline: 1px dotted var(--accent);

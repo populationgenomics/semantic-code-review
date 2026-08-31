@@ -121,6 +121,12 @@ function _beginDrag(live: Live, e: PointerEvent): void {
   const startX = e.clientX;
   const startW = _current(live);
   live.el.classList.add("dragging");
+  // The page stops selecting and takes the drag's cursor for the
+  // duration. Not `preventDefault` on the pointerdown: cancelling it
+  // sets the pointer's prevent-mouse-event flag, and the double-click
+  // that resets the boundary is one of the compatibility mouse events
+  // that flag suppresses.
+  document.documentElement.classList.add("dragging-divider");
   // Capture is what keeps the stream coming once the pointer outruns the
   // 8px strip, which it does on the first fast drag.
   live.el.setPointerCapture(e.pointerId);
@@ -129,6 +135,7 @@ function _beginDrag(live: Live, e: PointerEvent): void {
   };
   const drop = (): void => {
     live.el.classList.remove("dragging");
+    document.documentElement.classList.remove("dragging-divider");
     live.el.removeEventListener("pointermove", move);
     live.el.removeEventListener("pointerup", drop);
     live.el.removeEventListener("pointercancel", drop);
@@ -137,8 +144,6 @@ function _beginDrag(live: Live, e: PointerEvent): void {
   live.el.addEventListener("pointermove", move);
   live.el.addEventListener("pointerup", drop);
   live.el.addEventListener("pointercancel", drop);
-  // The gesture is a drag, not a selection of the prose it runs past.
-  e.preventDefault();
 }
 
 /** Arrow keys move the boundary a line's worth, Shift a paragraph's. A

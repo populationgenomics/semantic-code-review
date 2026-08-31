@@ -2199,6 +2199,25 @@ describe("the sidebar divider", () => {
     expect(localStorage.getItem("scr-sidebar-width")).toBe("300");
   });
 
+  test("the page stops selecting while the boundary is moving", async () => {
+    // A captured pointer spends the drag over prose it is not aiming at.
+    // The mark is on the page rather than a cancelled pointerdown: that
+    // cancel would take the double-click reset with it.
+    await bootViewer(makeData({ pending: false }));
+    installStylesheet();
+    const el = divider();
+    const page = document.documentElement;
+    el.dispatchEvent(new MouseEvent("pointerdown", { clientX: 0, button: 0, bubbles: true }));
+    expect(el.classList.contains("dragging")).toBe(true);
+    expect(getComputedStyle(page).userSelect).toBe("none");
+
+    el.dispatchEvent(new MouseEvent("pointermove", { clientX: 300, bubbles: true }));
+    el.dispatchEvent(new MouseEvent("pointerup", { clientX: 300, bubbles: true }));
+    expect(el.classList.contains("dragging")).toBe(false);
+    expect(page.classList.contains("dragging-divider")).toBe(false);
+    expect(basis()).toBe("300px");
+  });
+
   test("the drag is held inside a floor and a share of the window", async () => {
     await bootViewer(makeData({ pending: false }));
     dragDivider(divider(), 0, 20);
