@@ -1999,6 +1999,10 @@ describe("overview mode (ADR 0007)", () => {
   test("the button is absent entirely when the feature is off", async () => {
     await bootViewer(makeData({ explainer: false }));
     expect(document.querySelector(".mode-strip")).toBeNull();
+    // And the default-mode logic is inert with it: no document can
+    // exist, so the diff is what opens.
+    expect(document.querySelector("#app .file")).not.toBeNull();
+    expect(window.location.hash).toContain("mode=diff");
   });
 
   test("the button is disabled until the overview lands, then enabled", async () => {
@@ -2041,30 +2045,35 @@ describe("overview mode (ADR 0007)", () => {
 
   test("the sidebar swaps to the section tree and back", async () => {
     await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
-    const btn = document.getElementById("overview-btn") as HTMLButtonElement;
-    btn.click();
-    await new Promise<void>((r) => setTimeout(r, 0));
     const axis = document.querySelector("#group-sidebar .group-axis") as HTMLElement;
     expect(axis.dataset.axis).toBe("explainer");
     expect(Array.from(axis.querySelectorAll(".group-btn-label")).map((e) => e.textContent))
       .toEqual(["Background", "Map"]);
 
+    const btn = document.getElementById("overview-btn") as HTMLButtonElement;
     btn.click();
     await new Promise<void>((r) => setTimeout(r, 0));
     expect(document.querySelector('#group-sidebar .group-axis[data-axis="explainer"]')).toBeNull();
+
+    btn.click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(document.querySelector('#group-sidebar .group-axis[data-axis="explainer"]')).not.toBeNull();
   });
 
   test("the mode leaves the collapse level and the reviewer's folds alone", async () => {
     await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
-    // Zoom in, then hand-collapse one hunk, then round-trip the mode.
+    const btn = document.getElementById("overview-btn") as HTMLButtonElement;
+    // Down to the diff first: the zoom this is about is one the
+    // reviewer sets there.
+    btn.click();
+    await new Promise<void>((r) => setTimeout(r, 0));
     (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
     const before = window.location.hash;
     expect(before).toContain("fold=off");
 
-    const btn = document.getElementById("overview-btn") as HTMLButtonElement;
     btn.click();
     await new Promise<void>((r) => setTimeout(r, 0));
-    // The level is untouched while in the mode; only `mode=` is added.
+    // The level is untouched while in the mode; only `mode=` flips.
     expect(window.location.hash).toContain("fold=off");
     expect(window.location.hash).toContain("mode=overview");
 
@@ -2075,11 +2084,9 @@ describe("overview mode (ADR 0007)", () => {
       .toBe(true);
   });
 
-  test("entering the mode does not touch the diff-mode sidebar pill", async () => {
+  test("the section tree does not touch the diff-mode sidebar pill", async () => {
     localStorage.setItem("scr-active-group:local", "files:BF0");
     await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
-    (document.getElementById("overview-btn") as HTMLButtonElement).click();
-    await new Promise<void>((r) => setTimeout(r, 0));
     const tree = document.querySelector('#group-sidebar [data-pill-id="background"]') as HTMLElement;
     tree.click();
     await new Promise<void>((r) => setTimeout(r, 0));
@@ -2089,8 +2096,6 @@ describe("overview mode (ADR 0007)", () => {
 
   test("clicking a Map row leaves the mode and shows the diff again", async () => {
     await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
-    (document.getElementById("overview-btn") as HTMLButtonElement).click();
-    await new Promise<void>((r) => setTimeout(r, 0));
     (document.querySelector("#app .explainer-ref") as HTMLElement).click();
     await new Promise<void>((r) => setTimeout(r, 0));
     expect(document.querySelector('.file[data-id="F0"]')).not.toBeNull();
@@ -2101,9 +2106,87 @@ describe("overview mode (ADR 0007)", () => {
     await bootWithExplainer({ status: 404, body: {} }, { pending: false });
     lastEventSource().dispatch("explainer", DOC);
     await new Promise<void>((r) => setTimeout(r, 0));
+    // The frame does not move the reviewer: they are reading the diff,
+    // and the default applies to what the viewer opens with.
+    expect(document.querySelector("#app .file")).not.toBeNull();
     (document.getElementById("overview-btn") as HTMLButtonElement).click();
     await new Promise<void>((r) => setTimeout(r, 0));
     expect(document.querySelectorAll("#app .explainer-map-row")).toHaveLength(1);
+    expect(fetchCalls.some((c) => c.url === "/explainer/skeleton")).toBe(false);
+  });
+
+  // --- which mode the viewer opens in --------------------------------
+
+  test("a document already on disk is what the viewer opens on", async () => {
+    await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
+    expect(document.querySelectorAll("#app .explainer-map-row")).toHaveLength(1);
+    expect(document.querySelector("#app .file")).toBeNull();
+    expect(
+      (document.querySelector("#group-sidebar .group-axis") as HTMLElement).dataset.axis,
+    ).toBe("explainer");
+    expect(window.location.hash).toContain("mode=overview");
+    expect((document.getElementById("overview-btn") as HTMLButtonElement).classList)
+      .toContain("active");
+    // Opening what is already written buys nothing.
+    expect(fetchCalls.some((c) => c.url.startsWith("/explainer/"))).toBe(false);
+  });
+
+  test("with no document the diff is still what opens", async () => {
+    await bootWithExplainer({ status: 404, body: {} }, { pending: false });
+    expect(document.querySelector("#app .file")).not.toBeNull();
+    expect(window.location.hash).toContain("mode=diff");
+    expect(fetchCalls.some((c) => c.url === "/explainer/skeleton")).toBe(false);
+  });
+
+  test("a document whose verdict is not_warranted still counts as one", async () => {
+    // The skeleton's answer was "read the hunks directly" — which is the
+    // document, so it is what a reviewer re-opening the run should meet.
+    await bootWithExplainer(
+      { status: 200, body: { ...DOC, verdict: "not_warranted", sections: [] } },
+      { pending: false },
+    );
+    expect(window.location.hash).toContain("mode=overview");
+    expect(document.querySelector("#app .explainer")).not.toBeNull();
+  });
+
+  test("mode=diff in the URL outranks the document", async () => {
+    // A reload of a URL the reviewer was reading the diff on: the hash
+    // says which mode they chose, so the default does not apply.
+    // replaceState, not an assignment to `location.hash`: the latter
+    // fires `hashchange` at the listeners every earlier boot in this
+    // file left on the shared window, and they repaint #app.
+    window.history.replaceState(null, "", "#fold=off&mode=diff");
+    await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
+    expect(document.querySelector("#app .file")).not.toBeNull();
+    expect(document.querySelector("#app .explainer")).toBeNull();
+    expect(window.location.hash).toContain("fold=off");
+    expect(window.location.hash).toContain("mode=diff");
+  });
+
+  test("mode=overview in the URL restores the mode and the level under it", async () => {
+    window.history.replaceState(null, "", "#fold=off&mode=overview");
+    await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
+    expect(document.querySelectorAll("#app .explainer-map-row")).toHaveLength(1);
+    expect(window.location.hash).toContain("fold=off");
+    (document.getElementById("overview-btn") as HTMLButtonElement).click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(document.querySelector('.fold-slider button[data-fold="off"]')!.classList)
+      .toContain("active");
+  });
+
+  test("opening into a half-written document queues what it left pending", async () => {
+    // The spend was authorised when the document was generated; landing
+    // in it is not a second decision, and leaving prose unwritten behind
+    // per-section buttons is not what the reviewer asked for.
+    const half = {
+      ...DOC,
+      sections: DOC.sections.map((s) =>
+        s.kind === "map" ? s : { ...s, state: "pending", body: "" }),
+    };
+    await bootWithExplainer({ status: 200, body: half }, { pending: false });
+    queueFetchResponse({ status: 200, body: half });
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(fetchCalls.some((c) => c.url === "/explainer/section/background")).toBe(true);
     expect(fetchCalls.some((c) => c.url === "/explainer/skeleton")).toBe(false);
   });
 });

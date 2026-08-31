@@ -60,6 +60,13 @@ let _symbolSearch: string | null = null;
 // `mode=overview` left in the URL is ignored rather than painting a
 // pane whose only control 409s.
 let _explainerEnabled = false;
+// Set by renderInit. A repaint asked for before it would paint the
+// empty default diff and, worse, sync the hash from default state,
+// overwriting the fold level and mode the URL carries. Nothing is lost
+// by dropping it — renderInit paints, so an early request is coalesced
+// into that one. The explainer's boot-time load is what gets here
+// first: its repaint hook is wired before the renderer.
+let _initialised = false;
 const _state: RenderState = {
   fold: "hunks",
   mode: "diff",
@@ -78,19 +85,40 @@ function renderInit(data: ViewerData): void {
   _data = data;
   _smells = data.smells_catalogue || {};
   _explainerEnabled = data.explainer === true;
+  _initialised = true;
   _state.fold = "hunks";
-  _state.mode = "diff";
+  _state.mode = _initialMode();
   _state.overrides = Object.create(null);
   _state.renderedDiffs = Object.create(null);
-  _state.focusReveal = true;
   _wireInputs();
   _restoreHash();
+  // As pressing the button clears it: the reveal belongs to a filter
+  // the reviewer is not looking at while the pane is the document.
+  _state.focusReveal = _state.mode === "diff";
   render();
+  // Being in the mode is what queues the sections a document left
+  // pending, however the mode was reached — the alternative is a
+  // default-opened document that sits unwritten behind per-section
+  // buttons. Never the skeleton: with no document `generateAllPending`
+  // does nothing, and buying one stays on the press.
+  if (_state.mode === "overview") Explainer.generateAllPending();
+}
+
+/** The mode the viewer opens in, before the URL hash gets a say.
+ *
+ *  A document that already exists is the natural first screen: it is
+ *  what the reviewer generated last time, and showing it spends nothing
+ *  (ADR 0007's addendum — a cache hit adds no budget). With no document
+ *  the diff stays the default, because entering the mode is what buys
+ *  the skeleton and that spend is the reviewer's to initiate. */
+function _initialMode(): ViewMode {
+  return _explainerEnabled && Explainer.hasDocument() ? "overview" : "diff";
 }
 
 /** Re-render the entire app DOM. Cheap-ish — STATE.renderedDiffs
  *  caches the per-hunk .diff so this isn't quadratic on revisits. */
 function render(): void {
+  if (!_initialised) return;
   const app = document.getElementById("app");
   if (!app) return;
   app.innerHTML = "";
@@ -1030,11 +1058,14 @@ function _updateStatus(): void {
 }
 
 function _syncHash(): void {
-  const parts = [`fold=${_state.fold}`];
   // The mode rides alongside the collapse level rather than replacing
   // it, so a reload into overview mode still restores the zoom the
-  // reviewer will return to.
-  if (_state.mode !== "diff") parts.push(`mode=${_state.mode}`);
+  // reviewer will return to. `mode=diff` is written too, so a URL says
+  // which mode the reviewer was in rather than only saying when they
+  // were in the document: the default in `_initialMode` applies to a
+  // hash that carries no mode at all, and an omitted key would make a
+  // reader of the diff indistinguishable from a fresh open.
+  const parts = [`fold=${_state.fold}`, `mode=${_state.mode}`];
   for (const [id, folded] of Object.entries(_state.overrides)) {
     parts.push(`${id}=${folded ? "f" : "o"}`);
   }
@@ -1044,6 +1075,9 @@ function _syncHash(): void {
   }
 }
 
+/** Apply what the hash says, leaving anything it does not mention as
+ *  the caller set it — so an absent `mode` keeps the boot default at
+ *  init, and the mode in hand on a `hashchange`. */
 function _restoreHash(): void {
   const h = window.location.hash.slice(1);
   if (!h) return;

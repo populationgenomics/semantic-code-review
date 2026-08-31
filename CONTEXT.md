@@ -425,7 +425,10 @@ validation by membership do not consult the prompt.
 Rendered in **overview mode**, which is orthogonal to [[fold-level]]
 rather than a fifth value of it — it hides nothing, so it has no span
 set, and leaving it restores the reviewer's zoom and hand-set folds
-untouched. The presentation vocabulary is `docs/explainer-presentation.md`,
+untouched. The viewer opens in the mode when a document already exists,
+since showing one that is written spends nothing; with none it opens on
+the diff, because entering the mode is what buys the skeleton. A `mode=`
+in the URL hash outranks both. The presentation vocabulary is `docs/explainer-presentation.md`,
 and it has three consumers that must agree: the prompt
 (`augment/prompts.py`), the stylesheet (`viewer/assets/viewer.css`) and
 the figure sanitiser, which runs on the way to disk

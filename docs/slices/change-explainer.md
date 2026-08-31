@@ -106,10 +106,13 @@ not an empty state.
 - **View-state persistence.** This slice landed on `main`, where ADR
   0006 is not merged: there is no `StoredViewState` and no
   `visibility.ts`, and `RenderState.fold` persists in the URL hash. So
-  the mode is `RenderState.mode` and rides the hash as `mode=overview`
-  alongside `fold=`. When ADR 0006 lands, `mode` moves onto
-  `StoredViewState` and `_VERSION` goes to 2 with the discard-with-a-
-  warning path the ADR describes.
+  the mode is `RenderState.mode` and rides the hash as `mode=`
+  alongside `fold=`. Written in both modes, not only in overview: the
+  viewer opens into an existing document, and a hash that omitted
+  `mode=diff` could not tell a reviewer who chose the diff from a fresh
+  open. When ADR 0006 lands, `mode` moves onto `StoredViewState` and
+  `_VERSION` goes to 2 with the discard-with-a-warning path the ADR
+  describes.
 - **Two localStorage keys, not one.** The plan says the section tree
   "takes its own axis id in the `<axis>:<id>` key". With one key that
   clobbers the diff-mode pill, which the same paragraph forbids, so the
@@ -507,6 +510,40 @@ addendum of 2026-08-28**; this records what landed.
   The flag is an explicit request for a document that will not be
   generated. The inline config value in the same situation stays silent
   — a setting is not a request.
+
+## Opening into the document ✅ done
+
+Not in the plan above; added after slice 6. The viewer opens in overview
+mode when the run already has a document, and on the diff when it does
+not. Precedence is explicit hash state, then the document, then the
+diff.
+
+**As built**:
+
+- **The seam is `GET /explainer`, awaited.** Boot already fires it to
+  pick up a document another tab paid for; awaiting it means the mode
+  is decided from the document the viewer will paint rather than from a
+  second advertisement of its existence that could disagree. `data.json`
+  gains no field. The cost is one localhost round trip, and only on a
+  review the feature is on for.
+- **`mode=` rides the hash in both modes.** See the view-state note
+  under slice 1.
+- **A repaint before `renderInit` is dropped.** The explainer's
+  `onChange` hook is wired before the renderer has `DATA`, so the
+  awaited load's `_adopt` now reaches `render()` first — which would
+  paint the empty default diff and sync the hash from default state,
+  overwriting the fold level and mode the URL carries. `renderInit`
+  paints immediately after, so an early request is coalesced rather
+  than lost.
+- **Being in the mode is what queues a document's pending sections**,
+  however the mode was reached: the default, a press, or `mode=overview`
+  in the URL. The skeleton is never bought that way — with no document
+  there is nothing to queue, and buying one stays on the press.
+- **A document in hand marks the explainer ready.** Readiness gated the
+  button on the `overview` SSE frame alone. A run dir is reused for the
+  same head SHA, so a tab that boots mid-pass can hold an earlier run's
+  document; it would have opened into the mode with the button that
+  leaves it disabled.
 
 ## Not in these slices
 

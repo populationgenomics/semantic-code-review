@@ -122,6 +122,18 @@ describe("readiness", () => {
     Explainer.markReady();
     expect(Explainer.isReady()).toBe(true);
   });
+
+  test("a document in hand is proof its own skeleton ran", async () => {
+    // A run dir is reused for the same head SHA, so a tab that boots
+    // mid-pass can hold an earlier run's document. Waiting for the
+    // `overview` frame there leaves it holding one the button will not
+    // open — and, since the viewer opens into the document, one the
+    // button will not leave either.
+    boot({ pending: true });
+    mockFetch([{ status: 200, body: doc() }]);
+    await Explainer.load();
+    expect(Explainer.isReady()).toBe(true);
+  });
 });
 
 // --- Loading and generating ------------------------------------------------

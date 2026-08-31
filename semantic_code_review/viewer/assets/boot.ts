@@ -48,7 +48,7 @@ const SESSION_ENDPOINT: string = (() => {
 
 // --- Boot ----------------------------------------------------------------
 
-function boot(): void {
+async function boot(): Promise<void> {
   Comments.init({
     // Sidebar pills carry per-file unresolved/total counts; repaint
     // them whenever the store changes (initial load, save, delete).
@@ -81,8 +81,10 @@ function boot(): void {
     });
     // Pick up a document another tab (or an earlier session on this run
     // dir) already paid for, so the button opens it rather than
-    // offering to generate a second one.
-    void Explainer.load();
+    // offering to generate a second one. Awaited, because whether one
+    // exists is what decides the mode the viewer opens in: resolving it
+    // after the first paint would show the diff and then take it away.
+    await Explainer.load();
   }
   Render.init(DATA);       // wires hash + keyboard + initial paint
   Progress.init(DATA);
@@ -92,11 +94,22 @@ function boot(): void {
 
 function bootAfterFetch(data: ViewerData): void {
   DATA = data;
+  const start = (): void => { boot().catch(showBootError); };
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", boot);
+    document.addEventListener("DOMContentLoaded", start);
   } else {
-    boot();
+    start();
   }
+}
+
+/** Put a boot failure on the page. `boot` is async, so a throw past its
+ *  first `await` is a rejection nothing else would show. */
+function showBootError(e: unknown): void {
+  const app = document.getElementById("app") || document.body;
+  const msg = document.createElement("div");
+  msg.className = "boot-error";
+  msg.textContent = `viewer failed to load: ${e}`;
+  app.appendChild(msg);
 }
 
 fetch("/data.json", { cache: "no-store" })
@@ -105,13 +118,7 @@ fetch("/data.json", { cache: "no-store" })
     return r.json() as Promise<ViewerData>;
   })
   .then(bootAfterFetch)
-  .catch((e) => {
-    const app = document.getElementById("app") || document.body;
-    const msg = document.createElement("div");
-    msg.className = "boot-error";
-    msg.textContent = `viewer failed to load: ${e}`;
-    app.appendChild(msg);
-  });
+  .catch(showBootError);
 
 function installPrHeader(data: ViewerData): void {
   const pr = data.pr || {} as PRBlock;

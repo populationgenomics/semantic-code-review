@@ -330,6 +330,12 @@ function _adopt(doc: ExplainerDocument, opts: { keepPhases?: boolean } = {}): vo
   _doc = doc;
   _phase = "ready";
   _error = "";
+  // A document is proof its own skeleton ran, so its inputs are on
+  // disk whether or not this tab saw the `overview` frame. Without
+  // this a tab that boots mid-pass onto an earlier run's document
+  // holds one it cannot open — and, since the viewer now opens into
+  // the document, one it cannot leave by the button either.
+  _ready = true;
   // A whole new document (a regenerate, or a first load) invalidates
   // every per-section note; a section write leaves its neighbours'
   // alone.
