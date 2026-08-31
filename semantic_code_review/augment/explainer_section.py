@@ -216,7 +216,7 @@ class SubmittedSection(BaseModel):
     )
     terms: list[SubmittedTerm] = Field(
         default_factory=list,
-        description="Names the reader needs before the prose uses them. Rendered as a definition list.",
+        description="Names your prose introduced, collected as a glossary under it.",
     )
     skip_box: SubmittedSkipBox | None = Field(
         default=None,
