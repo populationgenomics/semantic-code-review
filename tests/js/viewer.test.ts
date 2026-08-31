@@ -2695,5 +2695,68 @@ describe("overview mode (ADR 0007)", () => {
       expect(panel.querySelector(".comment-thread-entry")!.textContent)
         .toContain("this guard is new");
     });
+
+    // --- how wide the panel is ------------------------------------------
+    // jsdom has no layout, so these read the shipped rules off the
+    // cascade: the claim is which sizing the panel and the document cell
+    // ask for, not the pixels they land on.
+
+    test("the open panel is as wide as its content, and no wider", async () => {
+      const panel = await bootWithPanel();
+      installStylesheet();
+      mapRow(0).click();
+
+      const cs = getComputedStyle(panel);
+      // `auto` basis is the content's max-content width; grow 0 keeps the
+      // panel from taking slack it has nothing to put in.
+      expect(cs.flexBasis).toBe("auto");
+      expect(cs.flexGrow).toBe("0");
+      // And a file whose content is wider than the remainder shrinks back
+      // to it, so a long-line file still lands where it always did.
+      expect(Number(cs.flexShrink)).toBeGreaterThan(100);
+      expect(cs.minWidth).toBe("380px");
+
+      // What is left over belongs to the split, which paints nothing: it
+      // reads as page background rather than as empty panel.
+      const split = getComputedStyle(
+        document.querySelector("#app .explainer-split") as HTMLElement);
+      expect(split.backgroundColor).toBe("rgba(0, 0, 0, 0)");
+    });
+
+    test("the document cell is not asked for width until the panel floors", async () => {
+      // Overflow is distributed by shrink factor × base size, so the
+      // document's 1 against the panel's factor leaves the prose column
+      // at its measure; once the panel freezes at its floor the document
+      // is the only item left to give way.
+      const panel = await bootWithPanel();
+      installStylesheet();
+      const doc = document.querySelector("#app .explainer-doc") as HTMLElement;
+      expect(getComputedStyle(doc).flex).toBe("1 1 0px");   // closed: the whole pane
+
+      mapRow(0).click();
+      expect(getComputedStyle(doc).flex).toBe("0 1 auto");
+      expect(Number(getComputedStyle(doc).flexShrink))
+        .toBeLessThan(Number(getComputedStyle(panel).flexShrink));
+    });
+
+    test("prose in the panel runs at a measure, so the code sets the width", async () => {
+      // A summary or an intent is one sentence, and its max-content is
+      // that sentence unwrapped — wider than a hard-wrapped file's code,
+      // and so what the panel's content basis would follow instead.
+      await bootWithPanel();
+      installStylesheet();
+      mapRow(0).click();
+      const capOf = (sel: string): string => getComputedStyle(
+        document.querySelector(`#app .explainer-detail-body ${sel}`) as HTMLElement).maxWidth;
+      expect(capOf(".file-summary")).toBe("64ch");
+      expect(capOf(".hunk-intent")).toBe("64ch");
+
+      // Scoped to the panel: the diff reads no width off its content, so
+      // the same prose is uncapped there.
+      (document.querySelector(".explainer-detail-open") as HTMLElement).click();
+      await new Promise<void>((r) => setTimeout(r, 0));
+      expect(getComputedStyle(
+        document.querySelector("#app .file .file-summary") as HTMLElement).maxWidth).toBe("");
+    });
   });
 });

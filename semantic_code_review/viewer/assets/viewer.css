@@ -1580,13 +1580,22 @@ body { padding-bottom: 30px; }
 .explainer-doc { flex: 1 1 0; min-width: 0; }
 /* With the panel open the cell shrink-wraps to the document's own
    max-width box, so `margin-inline: auto` has nothing left to centre
-   into and the two pack together; the panel takes the whole remainder.
-   Centred, a wide window put a dead zone on each side of the prose. */
+   into and the two pack together. Centred, a wide window put a dead
+   zone on each side of the prose. */
 .explainer-split.panel-open .explainer-doc { flex: 0 1 auto; }
 .explainer-detail {
-  /* The remainder, down to a floor the diff is still readable at: below
-     it the document is what gives way. */
-  flex: 1 1 0;
+  /* The panel is as wide as what it holds: `flex-basis: auto` makes the
+     flex base size the content's max-content width — the widest code
+     line, or the prose measure below it where that is wider — so a
+     hard-wrapped .md file ends where its lines end rather than trailing
+     empty row tint to the window edge. A long-line file's base size runs
+     far past the remainder and the shrink takes it back to exactly the
+     remainder. The shrink factor is high against the document cell's 1
+     so the overflow lands here: the document is not asked for width
+     until the panel freezes at its floor, and gives way only below it.
+     Anything left over is the split's, and reads as page background. */
+  flex: 0 1000 auto;
+  /* A floor the diff is still readable at. */
   min-width: 380px;
   position: sticky;
   top: 56px;                      /* just below the sticky .pr-bar */
@@ -1624,6 +1633,18 @@ body { padding-bottom: 30px; }
 /* The panel's file is the diff's own chrome; only its outer margin is
    the panel's business. */
 .explainer-detail-body .file { margin: 8px 10px; }
+/* Prose here runs at the measure the annotation boxes already use. Its
+   max-content is its sentence on one line — a summary or an intent is a
+   sentence, a refs row is every chip in a row — and the panel's
+   content-width basis would follow that rather than the code. Scoped to
+   the panel because the panel is the only place a width is read off the
+   content. */
+.explainer-detail-body .file-summary,
+.explainer-detail-body .file-overview,
+.explainer-detail-body .hunk-intent,
+.explainer-detail-body .segment-intent,
+.explainer-detail-body .context-note,
+.explainer-detail-body .refs { max-width: 64ch; }
 
 /* The reference the panel is showing. Every chip for it is marked: they
    all point at what is already open. */

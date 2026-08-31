@@ -595,11 +595,21 @@ of leaving the mode. Rationale is the **ADR 0007 addendum of
 - **An open panel takes the slack.** The document cell centres its column
   only while it is the whole pane; with the panel open (`panel-open` on
   the split, set by `explainer_panel.ts`) the cell shrink-wraps to the
-  document's own max-width box and the panel takes the remainder down to
-  a 380px floor, below which the document gives way first. Centred, a
+  document's own max-width box and the two pack together. Centred, a
   wide window left a dead zone on each side of the prose and pinned the
   panel to the far edge. The shrink-wrap is `flex: 0 1 auto`, so nothing
   couples the layout to the serif's `ch` metrics.
+- **The panel is as wide as what it holds.** `flex: 0 1000 auto` — the
+  basis is the content's max-content width, floored at 380px and shrunk
+  back to the remainder where the content is wider, which a long-line
+  code file always is; the shrink factor against the document cell's 1
+  is what keeps the prose column at its measure until the panel floors.
+  Prose inside the panel is capped at `64ch`, the annotation boxes'
+  measure, because a summary or an intent unwrapped is one long line and
+  would be what the panel followed instead of the code. Anything left
+  over is the split's and reads as page background; taking the whole
+  remainder put that emptiness inside the panel's own chrome, which for
+  a hard-wrapped `.md` file was most of it.
 - **No draggable separator.** The document is capped at its measure, so a
   splitter could only take the prose below a readable width — and it
   would need `Annotations.reflowAll` on every drag frame. A considered
