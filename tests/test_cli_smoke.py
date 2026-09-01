@@ -227,3 +227,23 @@ def test_the_flag_against_a_disabled_explainer_exits(tmp_path: Path, monkeypatch
     assert off.value.exit_code == 2
     # The inline config value is not an explicit request, so it stays silent.
     assert resolve_explainer_prompt(None) is None
+
+
+def test_the_plugin_and_the_package_agree_on_the_version() -> None:
+    """`bin/scr` installs `semantic-code-review==` the plugin tree's own
+    `pyproject.toml` version, so the two version fields are one number
+    wearing two hats. Nothing checked them: `release.yml` validates the
+    release tag against `pyproject` alone, and `plugin.json` had drifted
+    two releases behind before anything noticed.
+    """
+    import json
+    import tomllib
+
+    root = Path(__file__).resolve().parent.parent
+    pkg = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+    plugin = json.loads((root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"]
+    assert plugin == pkg, (
+        f"plugin.json says {plugin!r} and pyproject.toml says {pkg!r}; "
+        "bin/scr installs the pyproject version from PyPI, so a plugin "
+        "advertising a different one is advertising a version it will not run"
+    )
