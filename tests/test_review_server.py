@@ -1147,7 +1147,8 @@ def test_serve_review_serves_pending_then_streams_and_finalises(tmp_path: Path) 
     events via the supplied publish callable), then swaps /data.json
     to the post-augment state and fires `done` once augmentation
     finishes."""
-    from semantic_code_review.review.runner import serve_review
+    from semantic_code_review.review.config import ReviewConfig
+    from semantic_code_review.review.runner import ServerTasks, serve_review
 
     _populate_minimal_run_dir(tmp_path)
 
@@ -1183,10 +1184,8 @@ def test_serve_review_serves_pending_then_streams_and_finalises(tmp_path: Path) 
 
         result_box["r"] = serve_review(
             tmp_path,
-            augment=fake_augment,
-            port=0,
-            timeout=10,
-            open_browser=False,
+            ReviewConfig(port=0, timeout=10, open_browser=False),
+            ServerTasks(augment=fake_augment),
             on_ready=_on_ready,
         )
 
@@ -1229,12 +1228,17 @@ def test_serve_review_serves_pending_then_streams_and_finalises(tmp_path: Path) 
 def test_serve_review_reports_the_idle_shutdown(tmp_path: Path, capsys) -> None:
     """Both CLI entry points come through serve_review, so the idle
     shutdown names itself here — once, before either prints comments."""
-    from semantic_code_review.review.runner import serve_review
+    from semantic_code_review.review.config import ReviewConfig
+    from semantic_code_review.review.runner import ServerTasks, serve_review
 
     _populate_minimal_run_dir(tmp_path)
     (tmp_path / "augmented.diff").write_text(_RAW_DIFF_FOR_RUN, encoding="utf-8")
 
-    result = serve_review(tmp_path, port=0, timeout=1, open_browser=False)
+    result = serve_review(
+        tmp_path,
+        ReviewConfig(port=0, timeout=1, open_browser=False),
+        ServerTasks(),
+    )
     assert result.clean is False
     assert "idle timeout — 1s with no request and no open viewer" in capsys.readouterr().err
 
@@ -1698,3 +1702,96 @@ def test_a_failed_section_is_broadcast_so_every_tab_sees_it_retryable(tmp_path: 
         assert srv.ctx.explainer_busy is False
     finally:
         srv.stop()
+
+
+# --- server-task bundle -------------------------------------------------
+# One builder serves both entry points, so these cover `scr review` and
+# `scr pr` at once: a generator added to the bundle reaches both or
+# neither.
+
+
+def _task_config(*, augment: bool, debug: bool = False, explainer_prompt: str | None = None):
+    from semantic_code_review.augment.agents import Client
+    from semantic_code_review.review.config import ReviewConfig
+
+    return ReviewConfig(
+        augment=augment,
+        model="claude-opus-4-7",
+        concurrency=4,
+        no_cache=True,
+        open_browser=False,
+        timeout=1,
+        client=Client(model="anthropic:claude-opus-4-7"),
+        debug=debug,
+        explainer_prompt=explainer_prompt,
+    )
+
+
+def test_build_server_tasks_wires_console_when_augmenting(tmp_path: Path) -> None:
+    from semantic_code_review.review.runner import build_server_tasks
+
+    tasks = build_server_tasks(tmp_path, _task_config(augment=True))
+    assert tasks.augment is not None
+    assert tasks.fold_summary is not None
+    assert tasks.console is not None  # the console callback the server installs
+    assert tasks.explainer is not None  # opt-out, so on unless config says otherwise
+    # Debug off by default → no sink binder.
+    assert tasks.bind_debug_sink is None
+
+
+def test_build_server_tasks_binds_debug_sink_when_debug(tmp_path: Path) -> None:
+    from semantic_code_review.review.runner import build_server_tasks
+
+    tasks = build_server_tasks(tmp_path, _task_config(augment=True, debug=True))
+    assert tasks.bind_debug_sink is not None
+
+
+def test_build_server_tasks_omits_the_explainer_when_it_is_disabled(tmp_path: Path) -> None:
+    import dataclasses
+
+    from semantic_code_review.review.runner import build_server_tasks
+
+    cfg = dataclasses.replace(_task_config(augment=True), explainer=False)
+    tasks = build_server_tasks(tmp_path, cfg)
+    # Everything else still wires; only the explainer drops out, so the
+    # server reports the feature disabled rather than "not ready yet".
+    assert tasks.console is not None
+    assert tasks.explainer is None
+    assert tasks.explainer_section is None
+
+
+def test_build_server_tasks_wires_both_explainer_generators(tmp_path: Path) -> None:
+    """The skeleton and the per-section pass go together.
+
+    `scr pr` shipped with only the skeleton wired: the Map rendered, and
+    every prose section then 409'd with "augmentation still in progress"
+    long after augmentation had finished, because that is the message an
+    unbound generator produces.
+    """
+    from semantic_code_review.review.runner import build_server_tasks
+
+    tasks = build_server_tasks(tmp_path, _task_config(augment=True))
+    assert tasks.explainer is not None
+    assert tasks.explainer_section is not None
+
+
+def test_a_disabled_explainer_gets_no_house_style_either(tmp_path: Path) -> None:
+    """`explainer = false` means no document, so nothing to style. Both
+    generators go unwired together, as they already do."""
+    import dataclasses
+
+    from semantic_code_review.review.runner import build_server_tasks
+
+    cfg = dataclasses.replace(
+        _task_config(augment=True, explainer_prompt="name the dataset"),
+        explainer=False,
+    )
+    tasks = build_server_tasks(tmp_path, cfg)
+    assert tasks.explainer is None
+    assert tasks.explainer_section is None
+
+
+def test_build_server_tasks_returns_an_empty_bundle_without_augment(tmp_path: Path) -> None:
+    from semantic_code_review.review.runner import ServerTasks, build_server_tasks
+
+    assert build_server_tasks(tmp_path, _task_config(augment=False)) == ServerTasks()

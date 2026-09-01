@@ -8,6 +8,7 @@ import typer
 
 from ..fetch import EmptyDiff, LocalDiffError
 from ..paths import default_runs_root
+from ..review.config import ReviewConfig
 from ..review.runner import ReviewOptions, run_review
 from . import app
 from ._shared import (
@@ -105,24 +106,26 @@ def review(
         spec=spec,
         spec_right=right,
         spec_markdown=spec_md,
-        runs_root=runs_root,
         repo_root=repo_root,
         no_staged=no_staged,
         no_unstaged=no_unstaged,
-        augment=augment,
-        model=model,
-        concurrency=concurrency,
-        no_cache=no_cache,
-        cache_dir=cache_dir,
-        open_browser=not no_open,
-        port=port,
-        timeout=timeout,
-        client=client,
-        extra_review_prompt=extra_review_prompt,
-        skip_globs=cfg.skip_globs,
-        explainer=cfg.explainer,
-        explainer_prompt=house_style,
-        debug=debug,
+        config=ReviewConfig(
+            runs_root=runs_root,
+            augment=augment,
+            model=model,
+            concurrency=concurrency,
+            no_cache=no_cache,
+            cache_dir=cache_dir,
+            open_browser=not no_open,
+            port=port,
+            timeout=timeout,
+            client=client,
+            extra_review_prompt=extra_review_prompt,
+            skip_globs=cfg.skip_globs,
+            explainer=cfg.explainer,
+            explainer_prompt=house_style,
+            debug=debug,
+        ),
     )
     try:
         code = run_review(opts)

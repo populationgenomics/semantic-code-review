@@ -16,7 +16,7 @@ import sys
 import threading
 import webbrowser
 from collections.abc import Callable, Coroutine
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -25,9 +25,9 @@ from ..augment.prompts import PROMPT_VERSION
 from ..cache.store import CacheStore
 from ..fetch import materialize_local_diff_run
 from ..format.parse import parse_augmented_diff
-from ..paths import default_runs_root as _default_runs_root
 from ..viewer.build_json import build_pending_viewer_json, build_viewer_json
 from .comments import CommentStore, format_markdown
+from .config import ReviewConfig
 from .github import PostResult
 from .server import PostCallable, ReviewServer
 
@@ -49,7 +49,7 @@ AugmentCallable = Callable[
 #: against the addressed file, persists the new ``FoldDescription``,
 #: and returns the broadcast payload (the dict the server fans out as
 #: an SSE event and sends back to the requesting tab). Wired up only
-#: when an LLM backend is available (``opts.augment is True``);
+#: when an LLM backend is available (``cfg.augment is True``);
 #: ``--no-augment`` reviews leave this at ``None`` and the route
 #: returns 409 unconditionally.
 FoldSummaryCallable = Callable[
@@ -103,54 +103,121 @@ ConsoleCallable = Callable[
 
 @dataclass
 class ReviewOptions:
+    """Everything `scr review` needs: where the diff comes from, plus the
+    settings every review session shares.
+    """
+
     spec: str  # git ref or range, user-supplied
+    config: ReviewConfig
     # Optional second endpoint (two-endpoint form). When set, `spec` and
     # `spec_right` are the left/right endpoints — two refs or two rev:path.
     spec_right: str | None = None
     spec_markdown: Path | None = None
-    runs_root: Path = field(default_factory=_default_runs_root)
     repo_root: Path | None = None
     no_staged: bool = False
     no_unstaged: bool = False
-    augment: bool = True
-    model: str = "claude-opus-4-7"
-    concurrency: int = 8
-    no_cache: bool = False
-    cache_dir: Path | None = None
-    open_browser: bool = True
-    port: int = 0
-    timeout: int = 3600
-    # Optional preselected backend handle. None → augment_run_dir
-    # defaults to a `Client` for the Anthropic SDK path.
-    client: Client | None = None
-    # Optional file-loaded text for the extra-review pass. When set,
-    # each hunk gets a second LLM call with this as the system prompt;
-    # the returned line-anchored notes merge into hunk.line_notes.
-    extra_review_prompt: str | None = None
-    # Extra file globs to skip in the LLM passes (config [augment].skip_globs).
-    skip_globs: tuple[str, ...] = ()
-    # Change explainer (ADR 0007). Opt-out: `[augment].explainer = false`
-    # turns it off. There is no flag to turn it on, because the reviewers
-    # who benefit most are the ones who never configured it, and
-    # generation is press-triggered so default-on costs nothing.
-    explainer: bool = True
-    # House style for the explainer document: inline
-    # `[augment].explainer_prompt`, or the file named by
-    # `--explainer-prompt`. Appended to the guidance of the three
-    # explainer passes and nothing else — the per-hunk pass has no
-    # channel for it, so the intents a document's claims are checked
-    # against stay hermetic.
-    explainer_prompt: str | None = None
-    # `--debug` / SCR_DEBUG: surface each CLI-backend subprocess spawn (raw
-    # argv + envelope) in the viewer's debug drawer.
-    debug: bool = False
+
+
+@dataclass(frozen=True)
+class ServerTasks:
+    """The optional closures `serve_review` installs for one review.
+
+    Every field is None on a `--no-augment` run: each one needs either an
+    LLM backend or the augment sidecar, and often both. One bundle serves
+    both entry points, so a generator added here reaches `scr review` and
+    `scr pr` together.
+    """
+
+    augment: AugmentCallable | None = None
+    fold_summary: FoldSummaryCallable | None = None
+    console: ConsoleCallable | None = None
+    explainer: ExplainerCallable | None = None
+    explainer_section: ExplainerSectionCallable | None = None
+    bind_debug_sink: Callable[[Callable[[dict], None]], None] | None = None
+
+
+def build_server_tasks(run_dir: Path, cfg: ReviewConfig) -> ServerTasks:
+    """Build the augment + fold-summary + console + explainer closures plus
+    a debug-sink binder, or an all-`None` bundle when augmentation is
+    skipped (the console grounds its answers in the augment sidecar, so
+    it's unavailable without it).
+
+    The binder, present only in `--debug`, lets the server route the CLI
+    driver's per-spawn records to its SSE fan-out (see `serve_review`).
+    """
+    if not cfg.augment:
+        return ServerTasks()
+
+    from ..augment.pipeline import augment_run_dir  # lazy: anthropic SDK
+
+    augment_cfg = cfg.for_augment()
+    cache = None if cfg.no_cache else CacheStore(root=cfg.cache_dir, prompt_version=PROMPT_VERSION)
+
+    async def augment_task(rd: Path, publish: Callable[..., None]) -> None:
+        await augment_run_dir(
+            rd,
+            augment_cfg,
+            client=cfg.client,
+            cache=cache,
+            on_event=publish,
+        )
+
+    # The console reuses the augment backend — SDK backends stream
+    # token-by-token, CLI subprocess backends answer one-shot per turn
+    # (ADR 0002, Slice 5). When cfg.client is None the augment path
+    # defaults to the Anthropic SDK, so we mirror that to construct
+    # the console's client.
+    console_client = cfg.client or Client(model=f"anthropic:{cfg.model}")
+    bind_debug_sink: Callable[[Callable[[dict], None]], None] | None = None
+    # In --debug, surface the client driver's per-spawn records in the
+    # viewer drawer. The augment pass shares this client, so its spawns
+    # flow too; set_debug_sink no-ops on the SDK string-model path.
+    if cfg.debug:
+        bind_debug_sink = lambda sink, c=console_client: c.set_debug_sink(sink)  # noqa: E731
+
+    # Both explainer generators or neither: a skeleton without the
+    # per-section pass yields a document whose every prose section
+    # refuses, and the refusal a bare `None` produces reads "augmentation
+    # still in progress" long after augmentation has finished.
+    explainer_task: ExplainerCallable | None = None
+    explainer_section_task: ExplainerSectionCallable | None = None
+    if cfg.explainer:
+        explainer_task = _build_explainer_task(
+            client=cfg.client,
+            model=cfg.model,
+            cache=cache,
+            run_dir=run_dir,
+            house_style=cfg.explainer_prompt,
+        )
+        explainer_section_task = _build_explainer_section_task(
+            client=cfg.client,
+            model=cfg.model,
+            cache=cache,
+            run_dir=run_dir,
+            house_style=cfg.explainer_prompt,
+        )
+
+    return ServerTasks(
+        augment=augment_task,
+        fold_summary=_build_fold_summary_task(
+            client=cfg.client,
+            model=cfg.model,
+            cache=cache,
+            run_dir=run_dir,
+        ),
+        console=_build_console_task(client=console_client, run_dir=run_dir),
+        explainer=explainer_task,
+        explainer_section=explainer_section_task,
+        bind_debug_sink=bind_debug_sink,
+    )
 
 
 def run_review(opts: ReviewOptions) -> int:
     """Run a full review session. Returns the process exit code."""
+    cfg = opts.config
     run_dir = materialize_local_diff_run(
         opts.spec,
-        opts.runs_root,
+        cfg.runs_root,
         right=opts.spec_right,
         repo_root=opts.repo_root,
         no_staged=opts.no_staged,
@@ -158,86 +225,11 @@ def run_review(opts: ReviewOptions) -> int:
         spec_md_path=opts.spec_markdown,
     )
 
-    augment_task: AugmentCallable | None = None
-    fold_summary_task: FoldSummaryCallable | None = None
-    console_task: ConsoleCallable | None = None
-    explainer_task: ExplainerCallable | None = None
-    explainer_section_task: ExplainerSectionCallable | None = None
-    bind_debug_sink: Callable[[Callable[[dict], None]], None] | None = None
-    if opts.augment:
-        from ..augment.pipeline import augment_run_dir  # lazy: anthropic SDK
-
-        cache = None if opts.no_cache else CacheStore(root=opts.cache_dir, prompt_version=PROMPT_VERSION)
-
-        async def _run_augment(rd: Path, publish: Callable[..., None]) -> None:
-            await augment_run_dir(
-                rd,
-                model=opts.model,
-                concurrency=opts.concurrency,
-                cache=cache,
-                client=opts.client,
-                extra_review_prompt=opts.extra_review_prompt,
-                skip_globs=opts.skip_globs,
-                on_event=publish,
-            )
-
-        augment_task = _run_augment
-
-        fold_summary_task = _build_fold_summary_task(
-            client=opts.client,
-            model=opts.model,
-            cache=cache,
-            run_dir=run_dir,
-        )
-
-        if opts.explainer:
-            explainer_task = _build_explainer_task(
-                client=opts.client,
-                model=opts.model,
-                cache=cache,
-                run_dir=run_dir,
-                house_style=opts.explainer_prompt,
-            )
-            explainer_section_task = _build_explainer_section_task(
-                client=opts.client,
-                model=opts.model,
-                cache=cache,
-                run_dir=run_dir,
-                house_style=opts.explainer_prompt,
-            )
-
-        # The console reuses the augment backend — SDK backends stream
-        # token-by-token, CLI subprocess backends answer one-shot per turn
-        # (ADR 0002, Slice 5). When opts.client is None the augment path
-        # defaults to the Anthropic SDK, so we mirror that to construct
-        # the console's client.
-        console_client = opts.client or Client(model=f"anthropic:{opts.model}")
-        console_task = _build_console_task(
-            client=console_client,
-            run_dir=run_dir,
-        )
-        # In --debug, surface the client driver's per-spawn records in the
-        # viewer drawer. The augment pass shares this client, so its spawns
-        # flow too; set_debug_sink no-ops on the SDK string-model path.
-        if opts.debug:
-            bind_debug_sink = lambda sink, c=console_client: c.set_debug_sink(sink)  # noqa: E731
-    else:
+    tasks = build_server_tasks(run_dir, cfg)
+    if not cfg.augment:
         ensure_augmented_diff(run_dir)
 
-    result = serve_review(
-        run_dir,
-        augment=augment_task,
-        skip_globs=opts.skip_globs,
-        fold_summary=fold_summary_task,
-        console=console_task,
-        explainer=explainer_task,
-        explainer_section=explainer_section_task,
-        port=opts.port,
-        timeout=opts.timeout,
-        open_browser=opts.open_browser,
-        debug=opts.debug,
-        bind_debug_sink=bind_debug_sink,
-    )
+    result = serve_review(run_dir, cfg, tasks)
     # The markdown dump is the reviewer's "new notes" feed — ingested
     # upstream comments are already on GitHub and would crowd it out.
     local_comments = [c for c in result.comments if c.source == "local"]
@@ -286,60 +278,48 @@ def ensure_augmented_diff(run_dir: Path) -> None:
 
 def serve_review(
     run_dir: Path,
+    cfg: ReviewConfig,
+    tasks: ServerTasks,
     *,
-    augment: AugmentCallable | None = None,
-    skip_globs: tuple[str, ...] = (),
-    fold_summary: FoldSummaryCallable | None = None,
-    console: ConsoleCallable | None = None,
-    explainer: ExplainerCallable | None = None,
-    explainer_section: ExplainerSectionCallable | None = None,
     post: PostCallable | None = None,
     post_meta: dict | None = None,
-    port: int = 0,
-    timeout: int = 3600,
-    open_browser: bool = True,
     on_ready: Callable[[str], None] | None = None,
-    debug: bool = False,
-    bind_debug_sink: Callable[[Callable[[dict], None]], None] | None = None,
 ) -> ServeResult:
     """Render the viewer for a populated run dir, host the back-channel
     server, block on the user clicking Done, and return the comments
     they left.
 
-    ``timeout`` is idle seconds, not a session lifetime: the server
-    shuts down once it has gone that long with neither a request nor a
-    connected viewer (see ``ReviewServer.wait_until_done``).
-
     Both `cli.review` (local diff) and `cli.pr` (GitHub PR) call this
     with a run dir whose `meta.json`, `raw.diff`, and worktrees are
-    already in place. If ``augment`` is supplied, the server starts
+    already in place. If ``tasks.augment`` is supplied, the server starts
     immediately with a pending viewer (file/hunk structure visible,
     no annotations yet); the augmentation coroutine then runs while
     the page is live, publishing per-hunk SSE events as completions
     land. After the pass finishes, `update_viewer_json` swaps the
     `/data.json` payload to the augmented state and a `done` event
-    flushes any still-pending placeholders. If ``augment`` is None,
-    the run dir is expected to already contain ``augmented.diff``
-    (the caller skipped augmentation upstream).
+    flushes any still-pending placeholders. If it is None, the run dir
+    is expected to already contain ``augmented.diff`` (the caller
+    skipped augmentation upstream).
     """
+    augment = tasks.augment
     if augment is not None:
         # Pre-augment: a file/hunk skeleton so the page is responsive
         # while the LLM pass runs. The viewer JS sees `pending: true`
         # and shows "analysing…" placeholders for each hunk.
-        viewer_json = build_pending_viewer_json(run_dir, skip_globs=skip_globs)
+        viewer_json = build_pending_viewer_json(run_dir, skip_globs=cfg.skip_globs)
     else:
         viewer_json = _load_viewer_json(run_dir)
     srv = ReviewServer(
         run_dir=run_dir,
         viewer_json=viewer_json,
-        port=port,
+        port=cfg.port,
         post_callback=post,
         post_meta=post_meta,
-        debug=debug,
+        debug=cfg.debug,
         # Known at construction, not at wire-up: the viewer needs to
         # decide whether to mount the overview-mode button on its first
         # /data.json, well before augmentation has finished.
-        explainer=explainer is not None,
+        explainer=tasks.explainer is not None,
     )
     srv.start()
     try:
@@ -348,11 +328,11 @@ def serve_review(
         sys.stderr.flush()
         # Route the CLI backend's per-spawn debug records to the viewer's
         # drawer. Bound before augmentation so its spawns are captured too.
-        if debug and bind_debug_sink is not None:
-            bind_debug_sink(lambda record: srv.publish("debug-log", record))
+        if cfg.debug and tasks.bind_debug_sink is not None:
+            tasks.bind_debug_sink(lambda record: srv.publish("debug-log", record))
         if on_ready is not None:
             on_ready(srv.url())
-        if open_browser:
+        if cfg.open_browser:
             try:
                 webbrowser.open(srv.url())
             except Exception as e:  # noqa: BLE001
@@ -379,32 +359,35 @@ def serve_review(
                 # route can now resolve hunk_ids. Bind the summariser here
                 # rather than at start() to prevent races against a tab
                 # that opens before augmentation lands.
-                if fold_summary is not None:
-                    srv.set_fold_summariser(fold_summary)
+                if tasks.fold_summary is not None:
+                    srv.set_fold_summariser(tasks.fold_summary)
                 # Same gate as the fold summariser: the console needs the
                 # sidecar on disk to ground its answers, so bind it here
                 # rather than at start(). Unset for --no-augment / CLI
                 # backends, where /console/ask stays 409.
-                if console is not None:
-                    srv.set_console_asker(console)
+                if tasks.console is not None:
+                    srv.set_console_asker(tasks.console)
                 # Same gate again: the skeleton is seeded with the
                 # overview, which only exists once the sidecar does.
-                if explainer is not None:
-                    srv.set_explainer_generator(explainer)
-                if explainer_section is not None:
-                    srv.set_explainer_section_generator(explainer_section)
+                if tasks.explainer is not None:
+                    srv.set_explainer_generator(tasks.explainer)
+                if tasks.explainer_section is not None:
+                    srv.set_explainer_section_generator(tasks.explainer_section)
                 srv.publish("done", {"reason": "augment-complete"})
             if augment_error is not None and not isinstance(augment_error, Exception):
                 # KeyboardInterrupt / SystemExit shouldn't be swallowed —
                 # re-raise after the page has its latest state pushed.
                 raise augment_error
 
-        clean = srv.wait_until_done(timeout=timeout)
+        # Idle seconds, not a session lifetime: the server shuts down once
+        # it has gone that long with neither a request nor a connected
+        # viewer.
+        clean = srv.wait_until_done(timeout=cfg.timeout)
         if not clean:
             # Both CLI entry points come through here, so the line lands
             # once, ahead of whatever they print about the comments.
             sys.stderr.write(
-                f"scr review: idle timeout — {timeout}s with no request and no open viewer; shutting down.\n"
+                f"scr review: idle timeout — {cfg.timeout}s with no request and no open viewer; shutting down.\n"
             )
             sys.stderr.flush()
     finally:

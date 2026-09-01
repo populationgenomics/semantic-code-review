@@ -22,7 +22,7 @@ from ..format.parse import parse_raw_diff
 from ..format.sidecar import dump_sidecar
 from ..viewer.build_json import file_fold_spans
 from ..viewer.hunk_layout import build_hunk_viewer_block
-from . import mcp_http_host, skip, source_cache, usage
+from . import config, mcp_http_host, skip, source_cache, usage
 from .agents import Client
 from .hunks import (
     build_hunk_annotations,
@@ -74,29 +74,43 @@ log = logging.getLogger(__name__)
 
 async def augment_run_dir(
     run_dir: Path,
+    cfg: config.AugmentConfig,
     *,
-    model: str = "claude-opus-4-7",
-    concurrency: int = 8,
-    client: Client | None = None,
-    cache: CacheStore | None = None,
-    skip_globs: tuple[str, ...] = (),
-    skip_context: bool = False,
-    extra_review_prompt: str | None = None,
-    batch_size: int = 1,
+    client: Client | None,
+    cache: CacheStore | None,
     on_event: OnEvent | None = None,
+    skip_context: bool = False,
+    batch_size: int = 1,
 ) -> Path:
     """Augment a fetch run directory. Returns the augmented.diff path.
 
-    `batch_size` > 1 annotates up to that many hunks of one file per call.
-    Batching exists because on the claude-cli backend nothing in the user
-    prompt is cached, so a file's summary and outline are re-paid on every
-    one of its hunks; a batch sends them once. Hunks a batch fails to
-    answer for fall back to one call each, so a fully-failed batch costs
-    1 + N calls — the wasted batch carried every hunk body — and a
-    partial one 1 + |missing|. Off by default; see ADR 0005.
+    Args:
+        run_dir: A populated [[run-directory]] — `raw.diff` + `meta.json`.
+        cfg: The pass's settings (model, concurrency, skip globs, extra
+            review prompt).
+        client: LLM backend. None falls back to the Anthropic SDK path.
+        cache: Disk cache for pass results, or None for no caching.
+        on_event: Streaming progress consumer, wired to the review
+            server's SSE channel by `serve_review`.
+        skip_context: Withhold the per-hunk repo tools from the model.
+        batch_size: >1 annotates up to that many hunks of one file per
+            call. Batching exists because on the claude-cli backend
+            nothing in the user prompt is cached, so a file's summary and
+            outline are re-paid on every one of its hunks; a batch sends
+            them once. Hunks a batch fails to answer for fall back to one
+            call each, so a fully-failed batch costs 1 + N calls — the
+            wasted batch carried every hunk body — and a partial one
+            1 + |missing|. Off by default; see ADR 0005.
+
+    Raises:
+        ValueError: If `batch_size` is below 1.
     """
     if batch_size < 1:
         raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+    model = cfg.model
+    concurrency = cfg.concurrency
+    skip_globs = cfg.skip_globs
+    extra_review_prompt = cfg.extra_review_prompt
     if client is None:
         # Default to the Anthropic SDK path via pydantic-ai. Callers that
         # need a different backend (CLI, Gemini, tests) construct the

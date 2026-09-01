@@ -491,7 +491,7 @@ addendum of 2026-08-28**; this records what landed.
   no parameter for the note, so the isolation is the absence of a
   channel rather than a check inside one. What holds it there is a test
   comparing the per-hunk pass's system text and user prompts byte for
-  byte with the note set and unset, driven through `pr_flow._build_tasks`
+  byte with the note set and unset, driven through `runner.build_server_tasks`
   — the layer that does hold it. Conventional, not structural: a later
   change could thread a config field into `hunks.py`, and the test is
   what would notice.

@@ -84,6 +84,37 @@ symlink for working-state mode) for local. Unifying them would have
 meant a multi-axis conditional inside `materialize_run_metadata` for
 no callsite benefit.
 
+**Review config**
+The half of a review's inputs that is independent of where the diff
+came from. `ReviewConfig` (in `review/config.py`) holds the fifteen
+settings `scr review` and `scr pr` share — runs root, augment on/off,
+model, concurrency, cache switches, port, idle timeout, browser,
+skip globs, extra-review prompt, client, debug, explainer on/off and
+its house style. Each flow's options type composes one as a `config`
+field and adds only its own source-side fields: `ReviewOptions` the
+[[run-spec]] endpoints, `PrFlowOptions` the repo/number/`--yes`.
+
+The rule for what belongs in it is settings vs collaborators. A value
+the user chose travels in the config; a constructed object a flow hands
+to a callee — the [[client]], the `CacheStore`, the `on_event`
+publisher — stays an explicit parameter. `no_cache` and `cache_dir` are
+settings, the `CacheStore` built from them is not. Composition is one
+level deep: `opts.config.model`, never deeper.
+
+Two consumers derive from it rather than reading it whole:
+
+- `ReviewConfig.for_augment()` projects an `AugmentConfig`
+  (`augment/config.py`) — model, concurrency, skip globs, extra-review
+  prompt. It exists so `augment_run_dir` can name its inputs without
+  the augment layer importing the review layer.
+- `build_server_tasks(run_dir, cfg)` (in `review/runner.py`) returns a
+  `ServerTasks` bundle: the augment, fold-summary, console and two
+  explainer closures plus the `--debug` sink binder, all `None` on a
+  `--no-augment` run. One builder feeds both entry points, so a
+  generator added to the bundle reaches `scr review` and `scr pr`
+  together — it was two independent builders that let the per-section
+  explainer pass ship on one path and not the other.
+
 **Hunk**
 A contiguous range of changed lines in a diff, with its `@@` header
 plus old/new start+count. Both on-disk forms — the
