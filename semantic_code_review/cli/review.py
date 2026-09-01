@@ -122,7 +122,6 @@ def review(
         skip_globs=cfg.skip_globs,
         explainer=cfg.explainer,
         explainer_prompt=house_style,
-        show_progress=not verbose,
         debug=debug,
     )
     try:

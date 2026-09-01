@@ -141,7 +141,6 @@ class ReviewOptions:
     # channel for it, so the intents a document's claims are checked
     # against stay hermetic.
     explainer_prompt: str | None = None
-    show_progress: bool = True
     # `--debug` / SCR_DEBUG: surface each CLI-backend subprocess spawn (raw
     # argv + envelope) in the viewer's debug drawer.
     debug: bool = False
@@ -179,10 +178,6 @@ def run_review(opts: ReviewOptions) -> int:
                 client=opts.client,
                 extra_review_prompt=opts.extra_review_prompt,
                 skip_globs=opts.skip_globs,
-                # The page now carries the progress display, so silence
-                # the terminal meter — its redraw line would just fight
-                # the listening-URL / per-hunk warning log lines.
-                show_progress=False,
                 on_event=publish,
             )
 

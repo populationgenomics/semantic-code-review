@@ -112,7 +112,6 @@ flowchart LR
 
         <div class="text-xs text-slate-500">
           Entry commands all go through this spine:
-          <code>scr fetch</code>, <code>scr augment</code>,
           <code>scr review</code>, <code>scr pr</code> — they
           differ in which segments they own end-to-end.
         </div>
@@ -617,11 +616,6 @@ flowchart TB
             <div class="font-semibold">format/sidecar.py</div>
             <div class="schematic">~20 L</div>
             <p class="pt-1 text-slate-600"><code>model_dump_json</code> / <code>model_validate_json</code>.</p>
-          </div>
-          <div class="module-card">
-            <div class="font-semibold">augment/progress.py</div>
-            <div class="schematic">TTY meter</div>
-            <p class="pt-1 text-slate-600">Truecolor square-grid; gates on TTY.</p>
           </div>
           <div class="module-card">
             <div class="font-semibold">augment/trace_adapter.py</div>

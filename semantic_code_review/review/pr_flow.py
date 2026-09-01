@@ -281,10 +281,6 @@ def _build_tasks(opts: PrFlowOptions, run_dir: Path) -> _ServerTasks:
             client=opts.client,
             extra_review_prompt=opts.extra_review_prompt,
             skip_globs=opts.skip_globs,
-            # Page carries the progress display now; suppress the
-            # terminal meter to avoid duplicate noise and to keep
-            # the listening-URL / warning lines unobstructed.
-            show_progress=False,
             on_event=publish,
         )
 

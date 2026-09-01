@@ -52,15 +52,12 @@ load_dotenv()
 # Typer app above. Order is irrelevant. The `noqa: F401` markers
 # acknowledge the imports are intentionally side-effect-only.
 from . import (  # noqa: E402  # side-effect imports must follow the `app` definition above
-    augment,
     config_cmd,
-    fetch,
     init_cmd,
     lint,
     pr,
     review,
     runs_cmd,
-    show,
     strip,
 )
 

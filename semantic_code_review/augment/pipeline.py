@@ -33,7 +33,6 @@ from .hunks import (
     split_batch_annotations,
 )
 from .overview import apply_overview_to_diff, run_overview_pass
-from .progress import ProgressMeter
 from .schemas import (
     AnnotatedDiff,
     AnnotatedFile,
@@ -80,14 +79,10 @@ async def augment_run_dir(
     concurrency: int = 8,
     client: Client | None = None,
     cache: CacheStore | None = None,
-    only_files: list[str] | None = None,
-    max_hunks: int | None = None,
     skip_globs: tuple[str, ...] = (),
-    skip_overview: bool = False,
     skip_context: bool = False,
     extra_review_prompt: str | None = None,
     batch_size: int = 1,
-    show_progress: bool = True,
     on_event: OnEvent | None = None,
 ) -> Path:
     """Augment a fetch run directory. Returns the augmented.diff path.
@@ -123,16 +118,12 @@ async def augment_run_dir(
         head_sha=meta.get("headRefOid", ""),
         model=model,
     )
-    parsed_files = parsed.files
-    if only_files:
-        parsed_files = [f for f in parsed_files if f.path in only_files]
-
     # Lift to AnnotatedDiff with empty annotations. Skipped (lock / binary)
     # files get their FileAnnotations pre-populated so that downstream
     # passes leave them alone and the viewer renders the right label.
     skipped_files: set[str] = set()
     diff_files: list[AnnotatedFile] = []
-    for pfile in parsed_files:
+    for pfile in parsed.files:
         if skip.should_skip(pfile.path, skip_globs):
             ann = FileAnnotations(role=FileRole.GENERATED, summary=skip.SKIP_SUMMARY)
             skipped_files.add(pfile.path)
@@ -148,28 +139,14 @@ async def augment_run_dir(
     trace_dir.mkdir(parents=True, exist_ok=True)
     _attach_file_log(trace_dir / "augment.log")
 
-    # Enumerate hunks ahead of dispatch so we know the total up front
-    # (the progress meter wants this; the dispatch loop wants ordinal
-    # indices to attribute start/finish events to the right square).
-    queued: list[tuple[int, int, int]] = []  # (file_idx, hunk_idx, ordinal)
+    # Flat work list of the hunks to annotate, skipped files excluded.
+    # Both dispatch paths and the per-file outline / removed-symbol
+    # seeds below iterate it.
+    queued: list[tuple[int, int]] = []  # (file_idx, hunk_idx)
     for fi, fp in enumerate(diff.files):
         if fp.path in skipped_files:
             continue
-        for hi in range(len(fp.hunks)):
-            if max_hunks is not None and len(queued) >= max_hunks:
-                break
-            queued.append((fi, hi, len(queued)))
-        if max_hunks is not None and len(queued) >= max_hunks:
-            break
-
-    # show_progress=False → meter is a no-op even on a truecolor TTY
-    # (caller is in --verbose mode, where the redraw line would fight
-    # the log stream). show_progress=True → meter still gates on TTY +
-    # truecolor advertising before drawing anything.
-    meter = ProgressMeter(
-        total=len(queued),
-        enabled=None if show_progress else False,
-    )
+        queued += [(fi, hi) for hi in range(len(fp.hunks))]
 
     # One read/parse memo for the whole run — the seed's base/head parse
     # and every per-hunk tool call share it (ADR 0003 Slice 1).
@@ -192,237 +169,226 @@ async def augment_run_dir(
     except Exception:  # noqa: BLE001 — seed is best-effort
         log.warning("structural symbol seed failed; overview runs unseeded", exc_info=True)
 
-    async with meter:
-        # --- Overview pass -------------------------------------------------
-        if not skip_overview:
-            log.info("overview pass for %d files", len(diff.files))
-            meter.start_overview()
-            _safe_emit(on_event, "overview-start", {})
-            try:
-                ov = await run_overview_pass(
-                    client,
-                    diff=diff,
-                    meta=meta,
-                    model=model,
-                    delta=symbol_delta,
-                    cache=cache,
-                    trace_dir=trace_dir,
-                )
-                diff = apply_overview_to_diff(diff, ov)
-                meter.finish_overview(ok=True)
-                _safe_emit(on_event, "overview", _overview_event_payload(diff))
-            except Exception:
-                meter.finish_overview(ok=False)
-                _safe_emit(on_event, "overview-failed", {})
-                raise
-
-        # --- Per-hunk pass -------------------------------------------------
-        repo_tools = (
-            RepoTools(
-                head_worktree=run_dir / "head",
-                repo_git=run_dir / "repo.git",
-                base_sha=diff.pr.base_sha,
-                head_sha=diff.pr.head_sha,
-                cache=parse_cache,
-            )
-            if not skip_context
-            else None
+    # --- Overview pass -------------------------------------------------
+    log.info("overview pass for %d files", len(diff.files))
+    _safe_emit(on_event, "overview-start", {})
+    try:
+        ov = await run_overview_pass(
+            client,
+            diff=diff,
+            meta=meta,
+            model=model,
+            delta=symbol_delta,
+            cache=cache,
+            trace_dir=trace_dir,
         )
+        diff = apply_overview_to_diff(diff, ov)
+        _safe_emit(on_event, "overview", _overview_event_payload(diff))
+    except Exception:
+        _safe_emit(on_event, "overview-failed", {})
+        raise
 
-        # CLI subprocess backends reach the tools through one warm HTTP MCP
-        # server for the whole run (ADR 0003 Slice 3) — started here, torn
-        # down with the client below — instead of cold-starting a stdio child
-        # per hunk. SDK backends get `deps=repo_tools` directly via `Agent.run`.
-        mcp_host: mcp_http_host.McpHttpHost | None = None
-        if repo_tools is not None and client.is_subprocess_backend:
-            mcp_host = mcp_http_host.McpHttpHost(repo_tools)
-            mcp_host.start()
-            client.set_mcp_endpoint(mcp_host.mcp_config())
+    # --- Per-hunk pass -------------------------------------------------
+    repo_tools = (
+        RepoTools(
+            head_worktree=run_dir / "head",
+            repo_git=run_dir / "repo.git",
+            base_sha=diff.pr.base_sha,
+            head_sha=diff.pr.head_sha,
+            cache=parse_cache,
+        )
+        if not skip_context
+        else None
+    )
 
-        overview_json = overview_to_prompt_json(diff, include_symbols=False)
+    # CLI subprocess backends reach the tools through one warm HTTP MCP
+    # server for the whole run (ADR 0003 Slice 3) — started here, torn
+    # down with the client below — instead of cold-starting a stdio child
+    # per hunk. SDK backends get `deps=repo_tools` directly via `Agent.run`.
+    mcp_host: mcp_http_host.McpHttpHost | None = None
+    if repo_tools is not None and client.is_subprocess_backend:
+        mcp_host = mcp_http_host.McpHttpHost(repo_tools)
+        mcp_host.start()
+        client.set_mcp_endpoint(mcp_host.mcp_config())
 
-        # Per-file definition spans, parsed once from the worktrees, so the
-        # per-hunk SSE re-emits below carry symbol-aware `fold_regions`
-        # addresses in lockstep with the full-page build and the viewer's
-        # client-side detector. Empty lists where a worktree is absent.
-        head_dir = run_dir / "head"
-        base_dir = run_dir / "base"
-        file_spans: dict[int, tuple[list, list]] = {
-            fi: file_fold_spans(
-                fp,
-                base_dir if base_dir.exists() else None,
-                head_dir if head_dir.exists() else None,
-            )
-            for fi, fp in enumerate(diff.files)
-        }
+    overview_json = overview_to_prompt_json(diff, include_symbols=False)
 
-        # Subprocess clients allocate temp config files at first use;
-        # `aclosing` calls `client.aclose()` on exit so /tmp doesn't
-        # accumulate them across runs. SDKBackend's aclose is a no-op
-        # so this is uniform across backends.
-        async with contextlib.AsyncExitStack() as run_stack:
-            # One scope for both tool-using passes (per-hunk + extra-review):
-            # aclose() drops the client's temp MCP config, stop() shuts the
-            # host down — exception-safe, so neither leaks on a failed run.
-            await run_stack.enter_async_context(contextlib.aclosing(client))
-            if mcp_host is not None:
-                run_stack.callback(mcp_host.stop)
+    # Per-file definition spans, parsed once from the worktrees, so the
+    # per-hunk SSE re-emits below carry symbol-aware `fold_regions`
+    # addresses in lockstep with the full-page build and the viewer's
+    # client-side detector. Empty lists where a worktree is absent.
+    head_dir = run_dir / "head"
+    base_dir = run_dir / "base"
+    file_spans: dict[int, tuple[list, list]] = {
+        fi: file_fold_spans(
+            fp,
+            base_dir if base_dir.exists() else None,
+            head_dir if head_dir.exists() else None,
+        )
+        for fi, fp in enumerate(diff.files)
+    }
 
-            sem = asyncio.Semaphore(concurrency)
-            stats = _HunkStats()
-            results: dict[tuple[int, int], HunkAnnotations] = {}
-            # One tree-sitter outline per file, shared by all its hunks:
-            # it is constant across them and rides in the cached per-file
-            # prompt prefix. Empty for unsupported languages and for files
-            # with no head side (pure deletions).
-            file_outlines: dict[int, str] = {}
-            if repo_tools is not None:
-                for fi, _hi, _ord in queued:
-                    if fi not in file_outlines:
-                        file_outlines[fi] = repo_tools.outline_seed(diff.files[fi].path)
-            # Symbols this change deletes, per file. Every tool searches the
-            # head worktree, so without this a hunk that removes code sends
-            # the model hunting for symbols that are gone — it cannot tell an
-            # empty result from a bad query, and rephrases instead of
-            # concluding. The delta is already computed for the overview seed.
-            removed_by_file: dict[int, str] = {}
-            if symbol_delta is not None:
-                for fi, _hi, _ord in queued:
-                    if fi not in removed_by_file:
-                        removed_by_file[fi] = format_removed_symbols(
-                            symbol_delta,
-                            path=diff.files[fi].path,
-                            base_sha=diff.pr.base_sha,
-                        )
-            # batch_size <= 1 keeps the original one-call-per-hunk path
-            # rather than routing through a batch of one: the batched form
-            # has its own wire format and system prompt, so "batching off"
-            # has to mean the untouched pass, not a degenerate batch.
-            if batch_size > 1:
-                tasks = [
-                    asyncio.create_task(
-                        _augment_one_batch(
-                            batch,
-                            meter,
-                            sem,
-                            client,
-                            diff,
-                            overview_json,
-                            repo_tools,
-                            model,
-                            cache,
-                            trace_dir,
-                            stats,
-                            results,
-                            on_event,
-                            file_spans,
-                            file_outlines.get(batch[0][0], ""),
-                            removed_by_file.get(batch[0][0], ""),
-                        )
+    # Subprocess clients allocate temp config files at first use;
+    # `aclosing` calls `client.aclose()` on exit so /tmp doesn't
+    # accumulate them across runs. SDKBackend's aclose is a no-op
+    # so this is uniform across backends.
+    async with contextlib.AsyncExitStack() as run_stack:
+        # One scope for both tool-using passes (per-hunk + extra-review):
+        # aclose() drops the client's temp MCP config, stop() shuts the
+        # host down — exception-safe, so neither leaks on a failed run.
+        await run_stack.enter_async_context(contextlib.aclosing(client))
+        if mcp_host is not None:
+            run_stack.callback(mcp_host.stop)
+
+        sem = asyncio.Semaphore(concurrency)
+        stats = _HunkStats()
+        results: dict[tuple[int, int], HunkAnnotations] = {}
+        # One tree-sitter outline per file, shared by all its hunks:
+        # it is constant across them and rides in the cached per-file
+        # prompt prefix. Empty for unsupported languages and for files
+        # with no head side (pure deletions).
+        file_outlines: dict[int, str] = {}
+        if repo_tools is not None:
+            for fi, _hi in queued:
+                if fi not in file_outlines:
+                    file_outlines[fi] = repo_tools.outline_seed(diff.files[fi].path)
+        # Symbols this change deletes, per file. Every tool searches the
+        # head worktree, so without this a hunk that removes code sends
+        # the model hunting for symbols that are gone — it cannot tell an
+        # empty result from a bad query, and rephrases instead of
+        # concluding. The delta is already computed for the overview seed.
+        removed_by_file: dict[int, str] = {}
+        if symbol_delta is not None:
+            for fi, _hi in queued:
+                if fi not in removed_by_file:
+                    removed_by_file[fi] = format_removed_symbols(
+                        symbol_delta,
+                        path=diff.files[fi].path,
+                        base_sha=diff.pr.base_sha,
                     )
-                    for batch in _plan_batches(queued, batch_size)
-                ]
-            else:
-                tasks = [
-                    asyncio.create_task(
-                        _augment_one_hunk(
-                            ord_idx,
-                            meter,
-                            sem,
-                            client,
-                            diff,
-                            fi,
-                            hi,
-                            overview_json,
-                            repo_tools,
-                            model,
-                            cache,
-                            trace_dir,
-                            stats,
-                            results,
-                            on_event,
-                            file_spans.get(fi, ([], [])),
-                            file_outlines.get(fi, ""),
-                            removed_by_file.get(fi, ""),
-                        )
+        # batch_size <= 1 keeps the original one-call-per-hunk path
+        # rather than routing through a batch of one: the batched form
+        # has its own wire format and system prompt, so "batching off"
+        # has to mean the untouched pass, not a degenerate batch.
+        if batch_size > 1:
+            tasks = [
+                asyncio.create_task(
+                    _augment_one_batch(
+                        batch,
+                        sem,
+                        client,
+                        diff,
+                        overview_json,
+                        repo_tools,
+                        model,
+                        cache,
+                        trace_dir,
+                        stats,
+                        results,
+                        on_event,
+                        file_spans,
+                        file_outlines.get(batch[0][0], ""),
+                        removed_by_file.get(batch[0][0], ""),
                     )
-                    for fi, hi, ord_idx in queued
-                ]
-
-            log.info(
-                "per-hunk pass: %d hunks in %d call(s) (batch_size=%d, concurrency=%d)",
-                len(queued),
-                len(tasks),
-                max(1, batch_size),
-                concurrency,
-            )
-            await asyncio.gather(*tasks)
-
-            # Merge per-hunk results back into the diff in one pass.
-            diff = _merge_hunk_results(diff, results)
-
-            # --- PR-level extra-review pass (opt-in) -------------------------
-            # Runs once over the whole diff so the user's prompt can catch
-            # cross-file concerns (schema migrations, missing tests, design
-            # consistency) that a per-hunk view fundamentally can't see.
-            # Best-effort: any failure leaves `diff` unchanged and logs.
-            if extra_review_prompt:
-                from .extra_review import run_pr_level_extra_review
-
-                diff_before = diff
-                diff = await run_pr_level_extra_review(
-                    client,
-                    diff=diff,
-                    overview_json=overview_json,
-                    diff_text=raw,
-                    prompt_text=extra_review_prompt,
-                    model=model,
-                    cache=cache,
-                    trace_dir=trace_dir,
                 )
-                # Re-emit hunk SSE events for hunks whose line_notes grew.
-                # The streaming viewer already rendered the per-hunk blocks
-                # without extras; this pushes the augmented bodies so the
-                # promote-to-comment affordance lights up on the new notes
-                # without the user needing to refresh.
-                for fi, fp in enumerate(diff.files):
-                    if fi >= len(diff_before.files):
+                for batch in _plan_batches(queued, batch_size)
+            ]
+        else:
+            tasks = [
+                asyncio.create_task(
+                    _augment_one_hunk(
+                        sem,
+                        client,
+                        diff,
+                        fi,
+                        hi,
+                        overview_json,
+                        repo_tools,
+                        model,
+                        cache,
+                        trace_dir,
+                        stats,
+                        results,
+                        on_event,
+                        file_spans.get(fi, ([], [])),
+                        file_outlines.get(fi, ""),
+                        removed_by_file.get(fi, ""),
+                    )
+                )
+                for fi, hi in queued
+            ]
+
+        log.info(
+            "per-hunk pass: %d hunks in %d call(s) (batch_size=%d, concurrency=%d)",
+            len(queued),
+            len(tasks),
+            max(1, batch_size),
+            concurrency,
+        )
+        await asyncio.gather(*tasks)
+
+        # Merge per-hunk results back into the diff in one pass.
+        diff = _merge_hunk_results(diff, results)
+
+        # --- PR-level extra-review pass (opt-in) -------------------------
+        # Runs once over the whole diff so the user's prompt can catch
+        # cross-file concerns (schema migrations, missing tests, design
+        # consistency) that a per-hunk view fundamentally can't see.
+        # Best-effort: any failure leaves `diff` unchanged and logs.
+        if extra_review_prompt:
+            from .extra_review import run_pr_level_extra_review
+
+            diff_before = diff
+            diff = await run_pr_level_extra_review(
+                client,
+                diff=diff,
+                overview_json=overview_json,
+                diff_text=raw,
+                prompt_text=extra_review_prompt,
+                model=model,
+                cache=cache,
+                trace_dir=trace_dir,
+            )
+            # Re-emit hunk SSE events for hunks whose line_notes grew.
+            # The streaming viewer already rendered the per-hunk blocks
+            # without extras; this pushes the augmented bodies so the
+            # promote-to-comment affordance lights up on the new notes
+            # without the user needing to refresh.
+            for fi, fp in enumerate(diff.files):
+                if fi >= len(diff_before.files):
+                    continue
+                old_fp = diff_before.files[fi]
+                for hi, hunk in enumerate(fp.hunks):
+                    if hi >= len(old_fp.hunks):
                         continue
-                    old_fp = diff_before.files[fi]
-                    for hi, hunk in enumerate(fp.hunks):
-                        if hi >= len(old_fp.hunks):
-                            continue
-                        if len(hunk.ann.line_notes) == len(old_fp.hunks[hi].ann.line_notes):
-                            continue
-                        block = build_hunk_viewer_block(
-                            hunk,
-                            fi,
-                            hi,
-                            *file_spans.get(fi, ([], [])),
-                        )
-                        _safe_emit(
-                            on_event,
-                            "hunk",
-                            {
-                                "file_idx": fi,
-                                "hunk_idx": hi,
-                                "ok": True,
-                                "block": block,
-                            },
-                        )
+                    if len(hunk.ann.line_notes) == len(old_fp.hunks[hi].ann.line_notes):
+                        continue
+                    block = build_hunk_viewer_block(
+                        hunk,
+                        fi,
+                        hi,
+                        *file_spans.get(fi, ([], [])),
+                    )
+                    _safe_emit(
+                        on_event,
+                        "hunk",
+                        {
+                            "file_idx": fi,
+                            "hunk_idx": hi,
+                            "ok": True,
+                            "block": block,
+                        },
+                    )
 
-        # --- Emit ----------------------------------------------------------
-        augmented_text = emit_augmented_diff(diff)
-        augmented_path.write_text(augmented_text, encoding="utf-8")
-        dump_sidecar(diff, sidecar_path)
-        log.info("wrote %s (%d bytes) + sidecar", augmented_path.name, len(augmented_text))
+    # --- Emit ----------------------------------------------------------
+    augmented_text = emit_augmented_diff(diff)
+    augmented_path.write_text(augmented_text, encoding="utf-8")
+    dump_sidecar(diff, sidecar_path)
+    log.info("wrote %s (%d bytes) + sidecar", augmented_path.name, len(augmented_text))
 
-    # After the meter has finished its final repaint and dropped to a
-    # fresh line, emit the human-readable summary to stderr so the
-    # one-liner doesn't fight the meter's redraw window.
     backend_tag = "subprocess" if client.is_subprocess_backend else "sdk"
     summary = (
-        f"scr augment: backend={backend_tag} model={model} hunks={len(queued)} ok={stats.ok} failed={stats.failed}"
+        f"scr: augment backend={backend_tag} model={model} hunks={len(queued)} ok={stats.ok} failed={stats.failed}"
     )
     usage_summary = usage.write_usage_summary(run_dir)
     if usage_summary is not None:
@@ -452,9 +418,9 @@ class _HunkStats:
 
 
 def _plan_batches(
-    queued: list[tuple[int, int, int]],
+    queued: list[tuple[int, int]],
     batch_size: int,
-) -> list[list[tuple[int, int, int]]]:
+) -> list[list[tuple[int, int]]]:
     """Group queued hunks into per-file batches of at most `batch_size`.
 
     Batches never span files: the whole point is that a file's summary and
@@ -465,19 +431,18 @@ def _plan_batches(
 
     `batch_size <= 1` yields one hunk per batch, i.e. the unbatched pass.
     """
-    by_file: dict[int, list[tuple[int, int, int]]] = {}
+    by_file: dict[int, list[tuple[int, int]]] = {}
     for entry in queued:
         by_file.setdefault(entry[0], []).append(entry)
     size = max(1, batch_size)
-    batches: list[list[tuple[int, int, int]]] = []
+    batches: list[list[tuple[int, int]]] = []
     for entries in by_file.values():
         batches += [entries[i : i + size] for i in range(0, len(entries), size)]
     return batches
 
 
 async def _augment_one_batch(
-    batch: list[tuple[int, int, int]],
-    meter: ProgressMeter,
+    batch: list[tuple[int, int]],
     sem: asyncio.Semaphore,
     client: Client,
     diff: AnnotatedDiff,
@@ -504,13 +469,11 @@ async def _augment_one_batch(
     fi = batch[0][0]
     fp = diff.files[fi]
     file_summary = (fp.ann.summary or "").strip()
-    hunks = [(hi, fp.hunks[hi]) for _fi, hi, _ord in batch]
-    ord_by_hi = {hi: ord_idx for _fi, hi, ord_idx in batch}
-    fallback: list[tuple[int, int, int]] = []
+    hunks = [(hi, fp.hunks[hi]) for _fi, hi in batch]
+    fallback: list[tuple[int, int]] = []
 
     async with sem:
-        for _fi, hi, ord_idx in batch:
-            meter.start_hunk(ord_idx)
+        for _fi, hi in batch:
             _safe_emit(on_event, "hunk-start", {"file_idx": fi, "hunk_idx": hi})
         rt = repo_tools or RepoTools(
             head_worktree=Path("/dev/null"),
@@ -573,7 +536,6 @@ async def _augment_one_batch(
                     continue
                 results[(fi, hi)] = ann
                 stats.ok += 1
-                meter.finish_hunk(ord_by_hi[hi], ok=True)
                 log.info(
                     "hunk %s @ %s (batched): intent=%r smells=%d segs=%d notes=%d",
                     fp.path,
@@ -590,10 +552,8 @@ async def _augment_one_batch(
                 )
             fallback = [entry for entry in batch if entry[1] in missing or entry[1] in unusable]
 
-    for _fi, hi, ord_idx in fallback:
+    for _fi, hi in fallback:
         await _augment_one_hunk(
-            ord_idx,
-            meter,
             sem,
             client,
             diff,
@@ -614,8 +574,6 @@ async def _augment_one_batch(
 
 
 async def _augment_one_hunk(
-    ord_idx: int,
-    meter: ProgressMeter,
     sem: asyncio.Semaphore,
     client: Client,
     diff: AnnotatedDiff,
@@ -637,9 +595,9 @@ async def _augment_one_hunk(
     hunk = fp.hunks[hi]
     file_summary = (fp.ann.summary or "").strip()
     async with sem:
-        # Mark the square live only AFTER acquiring the semaphore so
-        # queued-but-unstarted hunks still render as pending dots.
-        meter.start_hunk(ord_idx)
+        # Announced only AFTER acquiring the semaphore, so queued-but-
+        # unstarted hunks stay pending in the viewer rather than all
+        # lighting up as in-flight at dispatch.
         _safe_emit(on_event, "hunk-start", {"file_idx": fi, "hunk_idx": hi})
         try:
             if repo_tools is None:
@@ -667,7 +625,6 @@ async def _augment_one_hunk(
             ann = build_hunk_annotations(hunk.parsed, submit)
             results[(fi, hi)] = ann
             stats.ok += 1
-            meter.finish_hunk(ord_idx, ok=True)
             log.info(
                 "hunk %s @ %s: intent=%r smells=%d segs=%d notes=%d",
                 fp.path,
@@ -698,7 +655,6 @@ async def _augment_one_hunk(
             raise
         except Exception as e:  # noqa: BLE001 — a failed hunk costs one annotation
             stats.failed += 1
-            meter.finish_hunk(ord_idx, ok=False)
             log.warning(
                 "hunk %s @ %s failed: %s: %s",
                 fp.path,

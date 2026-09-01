@@ -68,7 +68,7 @@ fi
 command -v git >/dev/null 2>&1 || die "git is required but not on PATH"
 
 if ! command -v gh >/dev/null 2>&1; then
-  warn "gh not found — 'scr fetch' on a GitHub PR URL will fail. /review on local diffs still works."
+  warn "gh not found — 'scr pr' on a GitHub PR URL will fail. /review on local diffs still works."
 fi
 if ! command -v rg >/dev/null 2>&1; then
   warn "ripgrep (rg) not found — falling back to 'git grep' for LLM tool-use searches."

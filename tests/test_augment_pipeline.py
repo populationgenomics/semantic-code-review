@@ -330,42 +330,6 @@ async def test_augment_subprocess_backend_hosts_one_mcp_server(tmp_path: Path, m
     assert model.endpoints and model.endpoints[0]["type"] == "http"
 
 
-async def test_augment_only_files_filters(tmp_path: Path) -> None:
-    run = _make_run_dir(tmp_path)
-    backend, _ = _make_canned_backend(
-        overview_args={"summary": "", "files": []},
-        hunk_args_list=[{"intent": "ok"}, {"intent": "ok"}],
-    )
-    await augment_run_dir(
-        run,
-        model="t",
-        concurrency=1,
-        client=backend,
-        cache=None,
-        only_files=["does-not-exist.py"],
-    )
-    text = (run / "augmented.diff").read_text(encoding="utf-8")
-    reparsed = parse_augmented_diff(text)
-    assert reparsed.files == []
-
-
-async def test_augment_max_hunks_caps_calls(tmp_path: Path) -> None:
-    run = _make_run_dir(tmp_path)
-    backend, canned = _make_canned_backend(
-        overview_args={"summary": "", "files": []},
-        hunk_args_list=[{"intent": "first"}],
-    )
-    await augment_run_dir(
-        run,
-        model="t",
-        concurrency=1,
-        client=backend,
-        cache=None,
-        max_hunks=1,
-    )
-    assert canned.calls == 2  # overview + 1 hunk
-
-
 async def test_augment_publishes_overview_and_per_hunk_events(tmp_path: Path) -> None:
     """The on_event hook fires once for overview and once per hunk
     completion, carrying enough payload for the viewer to patch."""
@@ -827,7 +791,7 @@ async def test_batch_size_of_one_uses_the_unbatched_path(tmp_path: Path) -> None
 def test_batches_never_span_files() -> None:
     from semantic_code_review.augment.pipeline import _plan_batches
 
-    queued = [(0, 0, 0), (0, 1, 1), (1, 0, 2), (1, 1, 3), (1, 2, 4)]
+    queued = [(0, 0), (0, 1), (1, 0), (1, 1), (1, 2)]
     batches = _plan_batches(queued, 4)
     assert [[e[0] for e in b] for b in batches] == [[0, 0], [1, 1, 1]]
 
@@ -835,7 +799,7 @@ def test_batches_never_span_files() -> None:
 def test_batches_split_a_file_that_exceeds_the_cap() -> None:
     from semantic_code_review.augment.pipeline import _plan_batches
 
-    queued = [(0, i, i) for i in range(7)]
+    queued = [(0, i) for i in range(7)]
     batches = _plan_batches(queued, 3)
     assert [len(b) for b in batches] == [3, 3, 1]
 
