@@ -15,7 +15,7 @@ import logging
 import sys
 import threading
 import webbrowser
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,77 +28,18 @@ from ..format.parse import parse_augmented_diff
 from ..viewer.build_json import build_pending_viewer_json, build_viewer_json
 from .comments import CommentStore, format_markdown
 from .config import ReviewConfig
-from .github import PostResult
-from .server import PostCallable, ReviewServer
+from .server import ReviewServer
+from .session import (
+    ConsoleCallable,
+    ExplainerCallable,
+    ExplainerSectionCallable,
+    FoldSummaryCallable,
+    PostCallable,
+    PostOutcome,
+    ServerTasks,
+)
 
 log = logging.getLogger(__name__)
-
-
-#: Signature of the augment callable accepted by ``serve_review``. The
-#: second argument is the publisher bound to the live review server's
-#: SSE channel; pass it through to ``augment_run_dir(on_event=...)`` so
-#: the pipeline can stream overview / per-hunk events to the page.
-AugmentCallable = Callable[
-    [Path, Callable[[str, dict], None]],
-    Coroutine[Any, Any, None],
-]
-
-
-#: Signature of the on-demand fold-summary callable accepted by
-#: ``serve_review``. The closure resolves the sidecar, calls the LLM
-#: against the addressed file, persists the new ``FoldDescription``,
-#: and returns the broadcast payload (the dict the server fans out as
-#: an SSE event and sends back to the requesting tab). Wired up only
-#: when an LLM backend is available (``cfg.augment is True``);
-#: ``--no-augment`` reviews leave this at ``None`` and the route
-#: returns 409 unconditionally.
-FoldSummaryCallable = Callable[
-    # (file_idx, context, right_range, left_range, qualified_name, kind)
-    [
-        int,
-        str,
-        "tuple[int, int] | None",
-        "tuple[int, int] | None",
-        "str | None",
-        "str | None",
-    ],
-    Coroutine[Any, Any, dict],
-]
-
-
-#: Signature of the change-explainer skeleton generator accepted by
-#: ``serve_review``. Takes no arguments and returns the document as a
-#: jsonable dict — the closure captures the backend, cache and run dir.
-#: Wired only when an LLM backend is available *and* the feature is not
-#: disabled in config; otherwise ``/explainer/skeleton`` 409s.
-ExplainerCallable = Callable[[], Coroutine[Any, Any, dict]]
-
-
-#: Signature of the change-explainer per-section generator. Takes a
-#: section id and returns the whole document as a jsonable dict — a
-#: section write is a document write. Wired on the same terms as
-#: ``ExplainerCallable``.
-ExplainerSectionCallable = Callable[[str], Coroutine[Any, Any, dict]]
-
-
-#: Signature of the streaming console turn driver accepted by
-#: ``serve_review``. Called as ``(question, history, on_delta, on_tool,
-#: cancel)`` and awaited to ``(answer_text, new_history)``:
-#: ``on_delta(str)`` / ``on_tool(str)`` stream text and tool activity,
-#: ``cancel`` is the ``threading.Event`` the driver polls between
-#: chunks. Wired only when augmentation runs on an SDK backend;
-#: ``--no-augment`` and CLI-subprocess reviews leave this ``None`` and
-#: /console/ask 409s (CLI support is Slice 5).
-ConsoleCallable = Callable[
-    [
-        str,
-        "list | None",
-        "Callable[[str], None]",
-        "Callable[[str], None]",
-        "threading.Event",
-    ],
-    Coroutine[Any, Any, "tuple[str, list]"],
-]
 
 
 @dataclass
@@ -116,24 +57,6 @@ class ReviewOptions:
     repo_root: Path | None = None
     no_staged: bool = False
     no_unstaged: bool = False
-
-
-@dataclass(frozen=True)
-class ServerTasks:
-    """The optional closures `serve_review` installs for one review.
-
-    Every field is None on a `--no-augment` run: each one needs either an
-    LLM backend or the augment sidecar, and often both. One bundle serves
-    both entry points, so a generator added here reaches `scr review` and
-    `scr pr` together.
-    """
-
-    augment: AugmentCallable | None = None
-    fold_summary: FoldSummaryCallable | None = None
-    console: ConsoleCallable | None = None
-    explainer: ExplainerCallable | None = None
-    explainer_section: ExplainerSectionCallable | None = None
-    bind_debug_sink: Callable[[Callable[[dict], None]], None] | None = None
 
 
 def build_server_tasks(run_dir: Path, cfg: ReviewConfig) -> ServerTasks:
@@ -255,7 +178,7 @@ class ServeResult:
 
     comments: list  # list[Comment] — kept loose to avoid an import cycle
     clean: bool  # True iff the viewer signalled Done; False on idle timeout
-    posted: PostResult | None = None
+    posted: PostOutcome | None = None
 
 
 def ensure_augmented_diff(run_dir: Path) -> None:
@@ -295,9 +218,10 @@ def serve_review(
     immediately with a pending viewer (file/hunk structure visible,
     no annotations yet); the augmentation coroutine then runs while
     the page is live, publishing per-hunk SSE events as completions
-    land. After the pass finishes, `update_viewer_json` swaps the
-    `/data.json` payload to the augmented state and a `done` event
-    flushes any still-pending placeholders. If it is None, the run dir
+    land. After the pass finishes, `ReviewSession.attach` swaps the
+    `/data.json` payload to the augmented state and unlocks the tasks
+    that read the sidecar, and a `done` event flushes any still-pending
+    placeholders. If it is None, the run dir
     is expected to already contain ``augmented.diff`` (the caller
     skipped augmentation upstream).
     """
@@ -353,26 +277,12 @@ def serve_review(
                 log.exception("augmentation failed; page stays on pending view")
                 sys.stderr.write(f"scr review: augment failed: {e}\n")
             if (run_dir / "augmented.diff").exists():
-                final_json = _load_viewer_json(run_dir)
-                srv.update_viewer_json(final_json)
-                # Augmentation has emitted a sidecar, so the /fold-summary
-                # route can now resolve hunk_ids. Bind the summariser here
-                # rather than at start() to prevent races against a tab
-                # that opens before augmentation lands.
-                if tasks.fold_summary is not None:
-                    srv.set_fold_summariser(tasks.fold_summary)
-                # Same gate as the fold summariser: the console needs the
-                # sidecar on disk to ground its answers, so bind it here
-                # rather than at start(). Unset for --no-augment / CLI
-                # backends, where /console/ask stays 409.
-                if tasks.console is not None:
-                    srv.set_console_asker(tasks.console)
-                # Same gate again: the skeleton is seeded with the
-                # overview, which only exists once the sidecar does.
-                if tasks.explainer is not None:
-                    srv.set_explainer_generator(tasks.explainer)
-                if tasks.explainer_section is not None:
-                    srv.set_explainer_section_generator(tasks.explainer_section)
+                # The sidecar is on disk: the session can serve the
+                # augmented view and every task that needs to resolve
+                # the diff. Handed over here rather than at start() so a
+                # tab that opens mid-pass sees them refuse rather than
+                # resolve half a diff.
+                srv.attach(tasks, _load_viewer_json(run_dir))
                 srv.publish("done", {"reason": "augment-complete"})
             if augment_error is not None and not isinstance(augment_error, Exception):
                 # KeyboardInterrupt / SystemExit shouldn't be swallowed —
@@ -397,7 +307,7 @@ def serve_review(
     return ServeResult(
         comments=store.all(),
         clean=clean,
-        posted=srv.ctx.posted_result,
+        posted=srv.session.posted_result,
     )
 
 

@@ -1,4 +1,11 @@
-"""Comments server: routes, atomic writes, shutdown path."""
+"""The review server as transport: framing, shutdown, and the wire.
+
+What a route *does* lives on `ReviewSession` and is tested in
+tests/test_review_session.py without binding a port. What is left here
+needs a real socket: the SSE stream (framing, replay, `Last-Event-ID`), a
+client that hangs up mid-request, the idle-timeout definition, the
+comment routes' status mapping, and `serve_review` end to end.
+"""
 
 from __future__ import annotations
 
@@ -17,9 +24,9 @@ from pathlib import Path
 
 import pytest
 
-from semantic_code_review.augment import explainer_schema
 from semantic_code_review.review.comments import Comment, format_markdown
 from semantic_code_review.review.server import ReviewServer
+from semantic_code_review.review.session import ServerTasks
 
 
 @pytest.fixture
@@ -136,19 +143,6 @@ def test_get_data_json(server) -> None:
     assert body["version"] == "1"
     # Debug off by default: the viewer won't mount the drawer.
     assert body["debug"] is False
-
-
-def test_data_json_debug_flag(tmp_path: Path) -> None:
-    """--debug stamps `debug: true` into /data.json so the viewer mounts the
-    raw-log drawer."""
-    srv = ReviewServer(run_dir=tmp_path, viewer_json={"version": "1", "files": []}, debug=True)
-    srv.start()
-    try:
-        code, body = _request(srv.url() + "/data.json")
-        assert code == 200
-        assert body["debug"] is True
-    finally:
-        srv.stop()
 
 
 def test_post_comment_upserts_and_persists(server, tmp_path: Path) -> None:
@@ -527,560 +521,6 @@ def test_events_replay_buffered_after_reconnect(server) -> None:
     conn.close()
 
 
-def test_fold_summary_returns_409_when_summariser_not_wired(server) -> None:
-    """Before serve_review installs the summariser, POST returns 409."""
-    conn = HTTPConnection("127.0.0.1", int(server.url().rsplit(":", 1)[1]), timeout=5)
-    conn.request(
-        "POST",
-        "/fold-summary",
-        body=json.dumps({"hunk_id": "H0_0", "new_start": 1, "new_count": 3}),
-        headers={"Content-Type": "application/json"},
-    )
-    r = conn.getresponse()
-    assert r.status == 409
-    body = json.loads(r.read())
-    assert "augmentation" in body["error"]
-    conn.close()
-
-
-def test_fold_summary_broadcasts_and_patches_viewer_json(tmp_path: Path) -> None:
-    """Transport-only: the route dispatches to the wired-in task, then
-    patches the in-memory `viewer_json` and fans out an SSE event.
-
-    Sidecar mutation lives in :func:`apply_fold_summary_to_run`; its
-    coverage is in tests/test_fold_summary_apply.py.
-    """
-    from semantic_code_review.review.server import ReviewServer
-
-    viewer_json = {
-        "version": "1",
-        "files": [
-            {
-                "id": "F0",
-                "path": "src/x.py",
-                "hunks": [
-                    {
-                        "id": "H0_0",
-                        "fold_regions": [
-                            {
-                                "context": "right",
-                                "right_start": 1,
-                                "right_end": 3,
-                                "left_start": 0,
-                                "left_end": 0,
-                                "qualified_name": "Foo.bar",
-                                "kind": "function",
-                                "summary": "",
-                            }
-                        ],
-                    }
-                ],
-            }
-        ],
-    }
-
-    srv = ReviewServer(run_dir=tmp_path, viewer_json=viewer_json)
-    srv.start()
-    try:
-        captured = {}
-
-        async def fake_task(
-            file_idx,
-            context,
-            right_range,
-            left_range,
-            qualified_name=None,
-            kind=None,
-        ):
-            captured["file_idx"] = file_idx
-            captured["context"] = context
-            captured["right_range"] = right_range
-            captured["left_range"] = left_range
-            captured["qualified_name"] = qualified_name
-            captured["kind"] = kind
-            return {
-                "file_idx": file_idx,
-                "context": context,
-                "right_start": (right_range or (0, 0))[0],
-                "right_end": (right_range or (0, 0))[1],
-                "left_start": (left_range or (0, 0))[0],
-                "left_end": (left_range or (0, 0))[1],
-                "summary": "wraps the body in a try/except",
-            }
-
-        srv.set_fold_summariser(fake_task)
-
-        # Subscribe to /events so we can assert the broadcast happened.
-        conn = HTTPConnection("127.0.0.1", int(srv.url().rsplit(":", 1)[1]), timeout=5)
-        conn.request("GET", "/events")
-        events_resp = conn.getresponse()
-        assert events_resp.status == 200
-        events_resp.fp.readline()
-        events_resp.fp.readline()
-        for _ in range(50):
-            with srv.ctx.state_lock:
-                if srv.ctx.subscribers:
-                    break
-            time.sleep(0.01)
-
-        code, body = _request(
-            srv.url() + "/fold-summary",
-            "POST",
-            {"file_idx": 0, "context": "right", "right_start": 1, "right_end": 3},
-        )
-        assert code == 200
-        assert body["summary"].startswith("wraps the body")
-        # Task saw the parsed-out request, not raw payload.
-        assert captured["file_idx"] == 0
-        assert captured["context"] == "right"
-        assert captured["right_range"] == (1, 3)
-        assert captured["left_range"] is None
-        # The symbol the region snapped to is resolved from viewer_json
-        # and threaded through to the summariser.
-        assert captured["qualified_name"] == "Foo.bar"
-        assert captured["kind"] == "function"
-
-        # `/data.json` reflects the patched viewer_json.
-        code, data = _request(srv.url() + "/data.json")
-        assert code == 200
-        assert data["files"][0]["hunks"][0]["fold_regions"][0]["summary"].startswith("wraps the body")
-        # The SSE channel broadcast the same payload.
-        events_resp.fp.readline()  # id
-        event_line = events_resp.fp.readline()
-        data_line = events_resp.fp.readline()
-        events_resp.fp.readline()  # trailing blank
-        assert event_line == b"event: fold-summary\n"
-        assert b'"summary":' in data_line
-        conn.close()
-    finally:
-        srv.stop()
-
-
-def test_fold_summary_skips_generated_file(tmp_path: Path) -> None:
-    """A GENERATED (lock / bundle / binary) file gets a canned summary and
-    the summariser is never invoked — so expanding a fold inside one can't
-    sneak the file to the model."""
-    from semantic_code_review.review.server import ReviewServer
-
-    viewer_json = {
-        "version": "1",
-        "files": [
-            {
-                "id": "F0",
-                "path": "uv.lock",
-                "status": "generated",
-                "hunks": [
-                    {
-                        "id": "H0_0",
-                        "fold_regions": [
-                            {
-                                "context": "right",
-                                "right_start": 1,
-                                "right_end": 3,
-                                "left_start": 0,
-                                "left_end": 0,
-                                "summary": "",
-                            }
-                        ],
-                    }
-                ],
-            }
-        ],
-    }
-    srv = ReviewServer(run_dir=tmp_path, viewer_json=viewer_json)
-    srv.start()
-    try:
-
-        async def boom(*_a, **_k):
-            raise AssertionError("fold summariser must not run for a generated file")
-
-        srv.set_fold_summariser(boom)
-        code, body = _request(
-            srv.url() + "/fold-summary",
-            "POST",
-            {"file_idx": 0, "context": "right", "right_start": 1, "right_end": 3},
-        )
-        assert code == 200
-        assert "not summarised" in body["summary"]
-        # The canned note is patched into the viewer JSON like a real one.
-        _, data = _request(srv.url() + "/data.json")
-        assert data["files"][0]["hunks"][0]["fold_regions"][0]["summary"] == body["summary"]
-    finally:
-        srv.stop()
-
-
-def test_fold_summary_for_left_context_passes_ranges_through(tmp_path: Path) -> None:
-    """A pure-deletion fold posts {context:'left', left_start, left_end};
-    the server routes to the same task with right_range=None and the
-    left tuple populated."""
-    from semantic_code_review.review.server import ReviewServer
-
-    viewer_json = {"version": "1", "files": []}
-    srv = ReviewServer(run_dir=tmp_path, viewer_json=viewer_json)
-    srv.start()
-    try:
-        seen = {}
-
-        async def fake_task(
-            file_idx,
-            context,
-            right_range,
-            left_range,
-            qualified_name=None,
-            kind=None,
-        ):
-            seen["context"] = context
-            seen["right_range"] = right_range
-            seen["left_range"] = left_range
-            return {
-                "file_idx": file_idx,
-                "context": context,
-                "right_start": 0,
-                "right_end": 0,
-                "left_start": (left_range or (0, 0))[0],
-                "left_end": (left_range or (0, 0))[1],
-                "summary": "drops the legacy retry loop",
-            }
-
-        srv.set_fold_summariser(fake_task)
-        code, body = _request(
-            srv.url() + "/fold-summary",
-            "POST",
-            {"file_idx": 0, "context": "left", "left_start": 12, "left_end": 14},
-        )
-        assert code == 200
-        assert seen == {
-            "context": "left",
-            "right_range": None,
-            "left_range": (12, 14),
-        }
-        assert body["context"] == "left" and body["left_start"] == 12
-    finally:
-        srv.stop()
-
-
-def test_fold_summary_typed_errors_map_to_http_codes(tmp_path: Path) -> None:
-    """`FoldSummaryNotReady` → 409; `FoldSummaryFileIndexError` → 404."""
-    from semantic_code_review.augment.fold_summary import (
-        FoldSummaryFileIndexError,
-        FoldSummaryNotReady,
-    )
-    from semantic_code_review.review.server import ReviewServer
-
-    srv = ReviewServer(run_dir=tmp_path, viewer_json={"files": []})
-    srv.start()
-    try:
-        host = "127.0.0.1"
-        port = int(srv.url().rsplit(":", 1)[1])
-
-        def _post(payload: dict) -> tuple[int, dict]:
-            # urlopen raises on non-2xx; HTTPConnection lets us read the body.
-            conn = HTTPConnection(host, port, timeout=5)
-            conn.request(
-                "POST",
-                "/fold-summary",
-                body=json.dumps(payload),
-                headers={"Content-Type": "application/json"},
-            )
-            r = conn.getresponse()
-            body = json.loads(r.read())
-            conn.close()
-            return r.status, body
-
-        async def raises_not_ready(
-            file_idx,
-            context,
-            right_range,
-            left_range,
-            qualified_name=None,
-            kind=None,
-        ):
-            raise FoldSummaryNotReady("sidecar gone walkabout")
-
-        srv.set_fold_summariser(raises_not_ready)
-        code, body = _post(
-            {"file_idx": 0, "context": "right", "right_start": 1, "right_end": 3},
-        )
-        assert code == 409
-        assert "walkabout" in body["error"]
-
-        async def raises_oob(
-            file_idx,
-            context,
-            right_range,
-            left_range,
-            qualified_name=None,
-            kind=None,
-        ):
-            raise FoldSummaryFileIndexError("file_idx 999 not in diff")
-
-        srv.set_fold_summariser(raises_oob)
-        code, body = _post(
-            {"file_idx": 999, "context": "right", "right_start": 1, "right_end": 3},
-        )
-        assert code == 404
-        assert "999" in body["error"]
-    finally:
-        srv.stop()
-
-
-def test_console_ask_returns_409_when_asker_not_wired(server) -> None:
-    """Before serve_review installs the asker (pre-augment / non-SDK
-    backend), POST /console/ask returns 409."""
-    conn = HTTPConnection("127.0.0.1", int(server.url().rsplit(":", 1)[1]), timeout=5)
-    conn.request(
-        "POST",
-        "/console/ask",
-        body=json.dumps({"question": "what changed?"}),
-        headers={"Content-Type": "application/json"},
-    )
-    r = conn.getresponse()
-    assert r.status == 409
-    body = json.loads(r.read())
-    assert "console" in body["error"]
-    conn.close()
-
-
-def test_console_ask_empty_question_400(server) -> None:
-    async def asker(question, history, on_delta, on_tool, cancel, selection=None):
-        return "unused", []
-
-    server.ctx.console_asker = asker
-    conn = HTTPConnection("127.0.0.1", int(server.url().rsplit(":", 1)[1]), timeout=5)
-    conn.request(
-        "POST",
-        "/console/ask",
-        body=json.dumps({"question": "   "}),
-        headers={"Content-Type": "application/json"},
-    )
-    r = conn.getresponse()
-    assert r.status == 400
-    conn.close()
-
-
-def _open_console_sse(server):
-    """Open the /events stream and block until the subscriber is
-    registered, so a turn kicked off right after can't publish into the
-    void. Returns (conn, response) — caller reads frames off
-    ``response.fp`` and closes ``conn``."""
-    conn = HTTPConnection("127.0.0.1", int(server.url().rsplit(":", 1)[1]), timeout=5)
-    conn.request("GET", "/events")
-    r = conn.getresponse()
-    assert r.status == 200
-    assert r.fp.readline().startswith(b":")  # primer comment
-    assert r.fp.readline() == b"\n"
-    for _ in range(100):
-        with server.ctx.state_lock:
-            if server.ctx.subscribers:
-                break
-        time.sleep(0.01)
-    else:
-        raise AssertionError("subscriber never registered")
-    return conn, r
-
-
-def _wait_not_busy(server) -> None:
-    for _ in range(200):
-        with server.ctx.state_lock:
-            if not server.ctx.console_busy:
-                return
-        time.sleep(0.01)
-    raise AssertionError("console stayed busy")
-
-
-def _drain_console_turn(fp) -> list[tuple[str, dict]]:
-    """Read console frames off an SSE stream until the terminal
-    done/error frame, returning ``[(event_type, payload), ...]``."""
-    frames: list[tuple[str, dict]] = []
-    while True:
-        _id, etype, data = _read_sse_frame(fp)
-        frames.append((etype, json.loads(data) if data else {}))
-        if etype in ("console-done", "console-error"):
-            return frames
-
-
-def test_console_ask_streams_and_threads_history(server) -> None:
-    """A turn returns 202, streams console-delta/tool frames tagged with
-    the console_id, finishes with console-done carrying the answer, and
-    threads the returned history into the next turn."""
-    seen: list = []
-
-    async def asker(question, history, on_delta, on_tool, cancel, selection=None):
-        seen.append((question, history))
-        on_tool("grep RepoTools")
-        on_delta("answer ")
-        on_delta(f"to {question!r}")
-        return f"answer to {question!r}", (history or []) + [question]
-
-    server.set_console_asker(asker)
-
-    conn, r = _open_console_sse(server)
-    code, body = _request(
-        server.url() + "/console/ask",
-        "POST",
-        {"question": "why pagination?", "console_id": "tab-1"},
-    )
-    assert code == 202
-
-    frames = _drain_console_turn(r.fp)
-    types = [t for t, _ in frames]
-    assert types == ["console-tool", "console-delta", "console-delta", "console-done"]
-    # Every frame is tagged with the requesting tab's console_id.
-    assert all(p["console_id"] == "tab-1" for _, p in frames)
-    assert frames[0][1]["label"] == "grep RepoTools"
-    assert "".join(p["text"] for t, p in frames if t == "console-delta") == "answer to 'why pagination?'"
-    assert frames[-1][1]["answer"] == "answer to 'why pagination?'"
-    assert seen[0] == ("why pagination?", None)
-    conn.close()
-    _wait_not_busy(server)
-
-    # Second turn threads the first turn's returned history back in.
-    conn, r = _open_console_sse(server)
-    code, _ = _request(
-        server.url() + "/console/ask",
-        "POST",
-        {"question": "follow-up", "console_id": "tab-1"},
-    )
-    assert code == 202
-    _drain_console_turn(r.fp)
-    assert seen[1] == ("follow-up", ["why pagination?"])
-    conn.close()
-
-
-def test_console_cancel_discards_turn(server) -> None:
-    """Cancelling an in-flight turn ends it with a cancelled
-    console-done and leaves the conversation history untouched."""
-    from semantic_code_review.augment.console import ConsoleCancelled
-
-    async def asker(question, history, on_delta, on_tool, cancel, selection=None):
-        on_delta("partial")
-        while not cancel.is_set():
-            await asyncio.sleep(0.01)
-        raise ConsoleCancelled("cancelled")
-
-    server.set_console_asker(asker)
-
-    conn, r = _open_console_sse(server)
-    code, _ = _request(
-        server.url() + "/console/ask",
-        "POST",
-        {"question": "why?", "console_id": "tab-1"},
-    )
-    assert code == 202
-
-    # First the partial delta, then — once we cancel — the cancelled done.
-    _id, etype, data = _read_sse_frame(r.fp)
-    assert etype == "console-delta" and json.loads(data)["text"] == "partial"
-
-    code, body = _request(
-        server.url() + "/console/cancel",
-        "POST",
-        {"console_id": "tab-1"},
-    )
-    assert code == 200 and body["ok"] is True
-
-    _id, etype, data = _read_sse_frame(r.fp)
-    assert etype == "console-done"
-    assert json.loads(data)["cancelled"] is True
-    conn.close()
-
-    _wait_not_busy(server)
-    # The abandoned turn never advanced the conversation history.
-    assert server.ctx.console_history is None
-
-
-def test_console_ask_second_turn_while_busy_409(server) -> None:
-    """One in-flight turn per conversation: a second ask gets 409."""
-
-    async def asker(question, history, on_delta, on_tool, cancel, selection=None):
-        while not cancel.is_set():
-            await asyncio.sleep(0.01)
-        from semantic_code_review.augment.console import ConsoleCancelled
-
-        raise ConsoleCancelled("cancelled")
-
-    server.set_console_asker(asker)
-
-    code, _ = _request(
-        server.url() + "/console/ask",
-        "POST",
-        {"question": "q1"},
-    )
-    assert code == 202
-
-    conn = HTTPConnection("127.0.0.1", int(server.url().rsplit(":", 1)[1]), timeout=5)
-    conn.request(
-        "POST",
-        "/console/ask",
-        body=json.dumps({"question": "q2"}),
-        headers={"Content-Type": "application/json"},
-    )
-    r = conn.getresponse()
-    assert r.status == 409
-    assert "in flight" in json.loads(r.read())["error"]
-    conn.close()
-
-    # Clean up the blocked worker.
-    _request(server.url() + "/console/cancel", "POST", {})
-    _wait_not_busy(server)
-
-
-def test_console_error_emits_console_error_frame(server) -> None:
-    """A turn driver that raises surfaces as a console-error frame, not a
-    crashed worker, and clears the in-flight flag."""
-
-    async def asker(question, history, on_delta, on_tool, cancel, selection=None):
-        raise RuntimeError("boom")
-
-    server.set_console_asker(asker)
-
-    conn, r = _open_console_sse(server)
-    code, _ = _request(
-        server.url() + "/console/ask",
-        "POST",
-        {"question": "x", "console_id": "tab-1"},
-    )
-    assert code == 202
-
-    frames = _drain_console_turn(r.fp)
-    assert frames[-1][0] == "console-error"
-    assert "boom" in frames[-1][1]["error"]
-    conn.close()
-    _wait_not_busy(server)
-
-
-def test_console_ask_not_ready_emits_console_error(server) -> None:
-    """`ConsoleNotReady` from the turn driver streams as a console-error
-    frame (the route already returned 202)."""
-    from semantic_code_review.augment.console import ConsoleNotReady
-
-    async def asker(question, history, on_delta, on_tool, cancel, selection=None):
-        raise ConsoleNotReady("augmented.scr.json missing")
-
-    server.set_console_asker(asker)
-
-    conn, r = _open_console_sse(server)
-    code, _ = _request(
-        server.url() + "/console/ask",
-        "POST",
-        {"question": "x", "console_id": "tab-1"},
-    )
-    assert code == 202
-    frames = _drain_console_turn(r.fp)
-    assert frames[-1][0] == "console-error"
-    assert "missing" in frames[-1][1]["error"]
-    conn.close()
-    _wait_not_busy(server)
-
-
-def test_console_reset_clears_history(server) -> None:
-    """Reset nulls the conversation and trips any in-flight cancel."""
-    server.ctx.console_history = ["q1"]
-    code, body = _request(server.url() + "/console/reset", "POST", {})
-    assert code == 200 and body["ok"] is True
-    assert server.ctx.console_history is None
-
-
 def test_events_replay_from_zero_when_header_absent(server) -> None:
     """A fresh connection with no Last-Event-ID gets the full buffer."""
     server.publish("overview", {"summary": "first"})
@@ -1103,12 +543,40 @@ def test_events_replay_from_zero_when_header_absent(server) -> None:
     conn.close()
 
 
-def test_update_viewer_json_replaces_data_endpoint(server) -> None:
-    """`data.json` returns whatever the latest update_viewer_json set."""
-    server.update_viewer_json({"version": "1", "files": [], "marker": "ok"})
-    code, body = _request(server.url() + "/data.json")
-    assert code == 200
-    assert body["marker"] == "ok"
+# --- session outcomes on the wire ---------------------------------------
+# The session's own coverage is in tests/test_review_session.py; these
+# two pin the one mapping only the transport can perform.
+
+
+def _post(server, path: str, payload: dict) -> tuple[int, dict]:
+    """POST without urlopen's raise-on-non-2xx, so the body is readable."""
+    conn = HTTPConnection("127.0.0.1", int(server.url().rsplit(":", 1)[1]), timeout=5)
+    conn.request("POST", path, body=json.dumps(payload), headers={"Content-Type": "application/json"})
+    r = conn.getresponse()
+    body = json.loads(r.read())
+    conn.close()
+    return r.status, body
+
+
+def test_a_refusal_answers_with_the_status_it_carries(server) -> None:
+    """Nothing is attached yet, so /fold-summary refuses — and the status
+    comes off the error rather than out of the handler."""
+    code, body = _post(server, "/fold-summary", {"file_idx": 0, "context": "right"})
+    assert code == 409
+    assert "augmentation" in body["error"]
+
+
+def test_an_unexpected_failure_answers_500_naming_its_type(server) -> None:
+    """A bug is not an outcome: the client still gets a response, and it
+    names what went wrong rather than reporting a refusal."""
+
+    async def boom(*_a, **_k):
+        raise ZeroDivisionError("nope")
+
+    server.attach(ServerTasks(fold_summary=boom), {"version": "1", "files": []})
+    code, body = _post(server, "/fold-summary", {"file_idx": 0, "context": "right", "right_start": 1, "right_end": 3})
+    assert code == 500
+    assert body["error"] == "ZeroDivisionError: nope"
 
 
 # --- serve_review orchestration -----------------------------------------
@@ -1148,7 +616,7 @@ def test_serve_review_serves_pending_then_streams_and_finalises(tmp_path: Path) 
     to the post-augment state and fires `done` once augmentation
     finishes."""
     from semantic_code_review.review.config import ReviewConfig
-    from semantic_code_review.review.runner import ServerTasks, serve_review
+    from semantic_code_review.review.runner import serve_review
 
     _populate_minimal_run_dir(tmp_path)
 
@@ -1229,7 +697,7 @@ def test_serve_review_reports_the_idle_shutdown(tmp_path: Path, capsys) -> None:
     """Both CLI entry points come through serve_review, so the idle
     shutdown names itself here — once, before either prints comments."""
     from semantic_code_review.review.config import ReviewConfig
-    from semantic_code_review.review.runner import ServerTasks, serve_review
+    from semantic_code_review.review.runner import serve_review
 
     _populate_minimal_run_dir(tmp_path)
     (tmp_path / "augmented.diff").write_text(_RAW_DIFF_FOR_RUN, encoding="utf-8")
@@ -1241,98 +709,6 @@ def test_serve_review_reports_the_idle_shutdown(tmp_path: Path, capsys) -> None:
     )
     assert result.clean is False
     assert "idle timeout — 1s with no request and no open viewer" in capsys.readouterr().err
-
-
-# --- /file-text (rendered markdown mode) -------------------------------
-
-
-def _file_text_server(tmp_path: Path, files: list[dict]) -> ReviewServer:
-    srv = ReviewServer(
-        run_dir=tmp_path,
-        viewer_json={"version": "1", "files": files},
-    )
-    srv.start()
-    return srv
-
-
-def test_file_text_serves_base_and_head(tmp_path: Path) -> None:
-    """GET /file-text?file_idx=N returns both worktree sides in full."""
-    (tmp_path / "base").mkdir()
-    (tmp_path / "head").mkdir()
-    (tmp_path / "base" / "doc.md").write_text("# Old\n\nbase body\n")
-    (tmp_path / "head" / "doc.md").write_text("# New\n\nhead body\n")
-    srv = _file_text_server(tmp_path, [{"id": "F0", "path": "doc.md", "old_path": None, "status": "modified"}])
-    try:
-        code, payload = _request(srv.url() + "/file-text?file_idx=0")
-    finally:
-        srv.stop()
-    assert code == 200
-    assert payload["path"] == "doc.md"
-    assert payload["base"] == "# Old\n\nbase body\n"
-    assert payload["head"] == "# New\n\nhead body\n"
-
-
-def test_file_text_added_file_has_null_base(tmp_path: Path) -> None:
-    """An added file has no pre-image: base is null, head is present."""
-    (tmp_path / "head").mkdir()
-    (tmp_path / "head" / "new.md").write_text("# Added\n")
-    srv = _file_text_server(tmp_path, [{"id": "F0", "path": "new.md", "old_path": None, "status": "added"}])
-    try:
-        code, payload = _request(srv.url() + "/file-text?file_idx=0")
-    finally:
-        srv.stop()
-    assert code == 200
-    assert payload["base"] is None
-    assert payload["head"] == "# Added\n"
-
-
-def test_file_text_renamed_reads_base_from_old_path(tmp_path: Path) -> None:
-    """A renamed file's pre-image is read from old_path in base/."""
-    (tmp_path / "base").mkdir()
-    (tmp_path / "head").mkdir()
-    (tmp_path / "base" / "old.md").write_text("was here\n")
-    (tmp_path / "head" / "new.md").write_text("now here\n")
-    srv = _file_text_server(
-        tmp_path,
-        [{"id": "F0", "path": "new.md", "old_path": "old.md", "status": "renamed"}],
-    )
-    try:
-        code, payload = _request(srv.url() + "/file-text?file_idx=0")
-    finally:
-        srv.stop()
-    assert code == 200
-    assert payload["base"] == "was here\n"
-    assert payload["head"] == "now here\n"
-
-
-def test_file_text_bad_index(tmp_path: Path) -> None:
-    srv = _file_text_server(tmp_path, [])
-    try:
-        with pytest.raises(urllib.error.HTTPError) as oor:
-            _request(srv.url() + "/file-text?file_idx=5")
-        with pytest.raises(urllib.error.HTTPError) as bad:
-            _request(srv.url() + "/file-text?file_idx=nope")
-    finally:
-        srv.stop()
-    assert oor.value.code == 404
-    assert bad.value.code == 400
-
-
-def test_file_text_path_traversal_refused(tmp_path: Path) -> None:
-    """A traversing old_path yields null rather than escaping the worktree."""
-    (tmp_path / "secret.md").write_text("top secret\n")
-    (tmp_path / "head").mkdir()
-    (tmp_path / "head" / "doc.md").write_text("ok\n")
-    srv = _file_text_server(
-        tmp_path,
-        [{"id": "F0", "path": "doc.md", "old_path": "../secret.md", "status": "renamed"}],
-    )
-    try:
-        code, payload = _request(srv.url() + "/file-text?file_idx=0")
-    finally:
-        srv.stop()
-    assert code == 200
-    assert payload["base"] is None
 
 
 # --- format_markdown ---------------------------------------------------
@@ -1355,353 +731,6 @@ def test_format_markdown_nonempty() -> None:
     assert "> line one" in md
     assert "> line two" in md
     assert "2 comments total" in md
-
-
-# --- change explainer (ADR 0007) ----------------------------------------
-
-
-def _explainer_doc(base_sha: str = "base1234", head_sha: str = "head5678") -> dict:
-    return {
-        "version": explainer_schema.DOCUMENT_VERSION,
-        "base_sha": base_sha,
-        "head_sha": head_sha,
-        "verdict": "narrate",
-        "verdict_note": "a cursor threaded from the proto to the client.",
-        "figure_family": "boxes are services",
-        "cast": ["ListRequest"],
-        "toy_data": False,
-        "turns_used": 0,
-        "sections": [
-            {
-                "id": "background",
-                "kind": "background",
-                "pass_id": "background",
-                "title": "Background",
-                "state": "pending",
-            },
-            {
-                "id": "map",
-                "kind": "map",
-                "pass_id": "skeleton",
-                "title": "Map",
-                "state": "ready",
-                "refs": [{"kind": "file", "id": "F0"}],
-                "map_rows": [{"ref": {"kind": "file", "id": "F0"}, "why": "the contract"}],
-            },
-        ],
-        "dropped_refs": 0,
-    }
-
-
-def _explainer_server(tmp_path: Path, *, enabled: bool = True) -> ReviewServer:
-    viewer_json = {
-        "version": "1",
-        "pr": {"base_sha": "base1234", "head_sha": "head5678"},
-        "files": [],
-    }
-    srv = ReviewServer(run_dir=tmp_path, viewer_json=viewer_json, explainer=enabled)
-    srv.start()
-    return srv
-
-
-def test_data_json_advertises_whether_the_explainer_exists(tmp_path: Path) -> None:
-    """The viewer decides whether to mount the overview-mode button on
-    its first /data.json, long before augmentation finishes — so the
-    flag rides the payload rather than waiting for the wire-up."""
-    for enabled in (True, False):
-        srv = _explainer_server(tmp_path, enabled=enabled)
-        try:
-            _code, data = _request(srv.url() + "/data.json")
-            assert data["explainer"] is enabled
-        finally:
-            srv.stop()
-
-
-def test_explainer_skeleton_409s_before_the_generator_is_wired(tmp_path: Path) -> None:
-    """A --no-augment review, or one still augmenting, has no backend to
-    run the pass — same contract as /fold-summary and /console/ask."""
-    srv = _explainer_server(tmp_path)
-    try:
-        with pytest.raises(urllib.error.HTTPError) as e:
-            _request(srv.url() + "/explainer/skeleton", "POST", {})
-        assert e.value.code == 409
-        assert "augmentation" in json.loads(e.value.read())["error"]
-    finally:
-        srv.stop()
-
-
-def test_explainer_routes_409_when_the_feature_is_disabled(tmp_path: Path) -> None:
-    """Disabled is a different answer from not-ready, and the message
-    says so — otherwise the viewer tells the reviewer to wait forever."""
-    srv = _explainer_server(tmp_path, enabled=False)
-    try:
-        for method, path in (("POST", "/explainer/skeleton"), ("GET", "/explainer")):
-            with pytest.raises(urllib.error.HTTPError) as e:
-                _request(srv.url() + path, method, {} if method == "POST" else None)
-            assert e.value.code == 409
-            assert "disabled" in json.loads(e.value.read())["error"]
-    finally:
-        srv.stop()
-
-
-def test_get_explainer_404s_until_one_is_generated(tmp_path: Path) -> None:
-    """404 is the press-the-button state, not an error: generation is
-    reviewer-initiated and an ungenerated document costs nothing."""
-    srv = _explainer_server(tmp_path)
-    try:
-        with pytest.raises(urllib.error.HTTPError) as e:
-            _request(srv.url() + "/explainer")
-        assert e.value.code == 404
-    finally:
-        srv.stop()
-
-
-def test_explainer_skeleton_persists_broadcasts_and_serves(tmp_path: Path) -> None:
-    """Transport: the route dispatches to the wired-in generator, fans
-    the document out over the SSE bus, and GET serves it afterwards."""
-    srv = _explainer_server(tmp_path)
-    try:
-        calls = []
-
-        async def fake_generator() -> dict:
-            calls.append(1)
-            doc = _explainer_doc()
-            (tmp_path / "explainer.json").write_text(json.dumps(doc), encoding="utf-8")
-            return doc
-
-        srv.set_explainer_generator(fake_generator)
-
-        conn = HTTPConnection("127.0.0.1", int(srv.url().rsplit(":", 1)[1]), timeout=5)
-        conn.request("GET", "/events")
-        events_resp = conn.getresponse()
-        assert events_resp.status == 200
-        events_resp.fp.readline()
-        events_resp.fp.readline()
-        for _ in range(50):
-            with srv.ctx.state_lock:
-                if srv.ctx.subscribers:
-                    break
-            time.sleep(0.01)
-
-        code, body = _request(srv.url() + "/explainer/skeleton", "POST", {})
-        assert code == 200
-        assert body["sections"][-1]["map_rows"][0]["why"] == "the contract"
-
-        events_resp.fp.readline()  # id
-        assert events_resp.fp.readline() == b"event: explainer\n"
-        frame = json.loads(events_resp.fp.readline().split(b"data: ", 1)[1])
-        assert frame["verdict"] == "narrate"
-        events_resp.fp.readline()  # trailing blank
-        conn.close()
-
-        # GET now serves what was persisted, and a second press reuses it
-        # rather than paying for the call twice.
-        code, served = _request(srv.url() + "/explainer")
-        assert code == 200
-        assert served["verdict_note"].startswith("a cursor")
-        _request(srv.url() + "/explainer/skeleton", "POST", {})
-        assert len(calls) == 1
-    finally:
-        srv.stop()
-
-
-def test_explainer_discards_a_document_from_another_diff(tmp_path: Path) -> None:
-    """The run moved on; the prose describes code that may be gone. The
-    document is dropped wholesale rather than re-anchored, so GET is
-    back to the press-the-button state."""
-    (tmp_path / "explainer.json").write_text(json.dumps(_explainer_doc(head_sha="stale999")), encoding="utf-8")
-    srv = _explainer_server(tmp_path)
-    try:
-        with pytest.raises(urllib.error.HTTPError) as e:
-            _request(srv.url() + "/explainer")
-        assert e.value.code == 404
-    finally:
-        srv.stop()
-
-
-def test_explainer_skeleton_regenerates_over_a_corrupt_document(tmp_path: Path) -> None:
-    """A torn write must not wedge the button — regenerating is the
-    repair. GET still reports the corruption loudly."""
-    (tmp_path / "explainer.json").write_text("{ not json", encoding="utf-8")
-    srv = _explainer_server(tmp_path)
-    try:
-        with pytest.raises(urllib.error.HTTPError) as e:
-            _request(srv.url() + "/explainer")
-        assert e.value.code == 500
-
-        async def fake_generator() -> dict:
-            return _explainer_doc()
-
-        srv.set_explainer_generator(fake_generator)
-        code, body = _request(srv.url() + "/explainer/skeleton", "POST", {})
-        assert code == 200
-        assert body["verdict"] == "narrate"
-    finally:
-        srv.stop()
-
-
-def test_explainer_skeleton_maps_not_ready_to_409(tmp_path: Path) -> None:
-    srv = _explainer_server(tmp_path)
-    try:
-        from semantic_code_review.augment.explainer import ExplainerNotReady
-
-        async def fake_generator() -> dict:
-            raise ExplainerNotReady("augmented.scr.json missing — augment not complete")
-
-        srv.set_explainer_generator(fake_generator)
-        with pytest.raises(urllib.error.HTTPError) as e:
-            _request(srv.url() + "/explainer/skeleton", "POST", {})
-        assert e.value.code == 409
-        assert "augment not complete" in json.loads(e.value.read())["error"]
-    finally:
-        srv.stop()
-
-
-def test_explainer_skeleton_failure_is_a_500_not_a_crash(tmp_path: Path) -> None:
-    srv = _explainer_server(tmp_path)
-    try:
-
-        async def fake_generator() -> dict:
-            raise RuntimeError("model said no")
-
-        srv.set_explainer_generator(fake_generator)
-        with pytest.raises(urllib.error.HTTPError) as e:
-            _request(srv.url() + "/explainer/skeleton", "POST", {})
-        assert e.value.code == 500
-        assert "model said no" in json.loads(e.value.read())["error"]
-        # The failure released the busy flag, so a retry is possible.
-        assert srv.ctx.explainer_busy is False
-    finally:
-        srv.stop()
-
-
-def test_explainer_section_409s_before_the_generator_is_wired(tmp_path: Path) -> None:
-    srv = _explainer_server(tmp_path)
-    try:
-        with pytest.raises(urllib.error.HTTPError) as e:
-            _request(srv.url() + "/explainer/section/code", "POST", {})
-        assert e.value.code == 409
-    finally:
-        srv.stop()
-
-
-def test_explainer_section_writes_broadcasts_and_serves(tmp_path: Path) -> None:
-    """Transport: the route dispatches on the section id, fans the whole
-    document out (a section write is a document write) and returns it."""
-    srv = _explainer_server(tmp_path)
-    try:
-        asked: list[str] = []
-
-        async def fake_generator(section_id: str) -> dict:
-            asked.append(section_id)
-            doc = _explainer_doc()
-            doc["sections"][0].update({"state": "ready", "body": "the system before."})
-            (tmp_path / "explainer.json").write_text(json.dumps(doc), encoding="utf-8")
-            return doc
-
-        srv.set_explainer_section_generator(fake_generator)
-
-        conn = HTTPConnection("127.0.0.1", int(srv.url().rsplit(":", 1)[1]), timeout=5)
-        conn.request("GET", "/events")
-        events_resp = conn.getresponse()
-        assert events_resp.status == 200
-        events_resp.fp.readline()
-        events_resp.fp.readline()
-        for _ in range(50):
-            with srv.ctx.state_lock:
-                if srv.ctx.subscribers:
-                    break
-            time.sleep(0.01)
-
-        code, body = _request(srv.url() + "/explainer/section/background", "POST", {})
-        assert code == 200
-        assert asked == ["background"]
-        assert body["sections"][0]["body"] == "the system before."
-
-        events_resp.fp.readline()  # id
-        assert events_resp.fp.readline() == b"event: explainer\n"
-        conn.close()
-    finally:
-        srv.stop()
-
-
-def test_explainer_section_reports_what_it_is_waiting_for(tmp_path: Path) -> None:
-    """Prose over half the intents reads as fluently as prose over all of
-    them, so the reviewer is told the counts rather than handed the
-    prose."""
-    srv = _explainer_server(tmp_path)
-    try:
-        from semantic_code_review.augment.explainer_section import SectionNotReady
-
-        async def fake_generator(section_id: str) -> dict:
-            raise SectionNotReady(12, 31)
-
-        srv.set_explainer_section_generator(fake_generator)
-        with pytest.raises(urllib.error.HTTPError) as e:
-            _request(srv.url() + "/explainer/section/code", "POST", {})
-        assert e.value.code == 409
-        payload = json.loads(e.value.read())
-        assert (payload["annotated"], payload["total"]) == (12, 31)
-    finally:
-        srv.stop()
-
-
-def test_explainer_section_404s_on_a_section_that_is_not_there(tmp_path: Path) -> None:
-    srv = _explainer_server(tmp_path)
-    try:
-        from semantic_code_review.augment.explainer_section import SectionNotFound
-
-        async def fake_generator(section_id: str) -> dict:
-            raise SectionNotFound(section_id)
-
-        srv.set_explainer_section_generator(fake_generator)
-        with pytest.raises(urllib.error.HTTPError) as e:
-            _request(srv.url() + "/explainer/section/nonesuch", "POST", {})
-        assert e.value.code == 404
-    finally:
-        srv.stop()
-
-
-def test_a_failed_section_is_broadcast_so_every_tab_sees_it_retryable(tmp_path: Path) -> None:
-    """The pass raised, but the section is persisted `failed` — the other
-    tabs must not sit on `pending` forever."""
-    srv = _explainer_server(tmp_path)
-    try:
-        from semantic_code_review.augment.explainer_section import SectionFailed
-
-        failed = _explainer_doc()
-        failed["sections"][0]["state"] = "failed"
-
-        async def fake_generator(section_id: str) -> dict:
-            raise SectionFailed("RuntimeError: model said no", failed)
-
-        srv.set_explainer_section_generator(fake_generator)
-
-        conn = HTTPConnection("127.0.0.1", int(srv.url().rsplit(":", 1)[1]), timeout=5)
-        conn.request("GET", "/events")
-        events_resp = conn.getresponse()
-        events_resp.fp.readline()
-        events_resp.fp.readline()
-        for _ in range(50):
-            with srv.ctx.state_lock:
-                if srv.ctx.subscribers:
-                    break
-            time.sleep(0.01)
-
-        with pytest.raises(urllib.error.HTTPError) as e:
-            _request(srv.url() + "/explainer/section/background", "POST", {})
-        assert e.value.code == 500
-        assert "model said no" in json.loads(e.value.read())["error"]
-
-        events_resp.fp.readline()  # id
-        assert events_resp.fp.readline() == b"event: explainer\n"
-        frame = json.loads(events_resp.fp.readline().split(b"data: ", 1)[1])
-        assert frame["sections"][0]["state"] == "failed"
-        conn.close()
-        # The busy flag is released, so a retry is possible.
-        assert srv.ctx.explainer_busy is False
-    finally:
-        srv.stop()
 
 
 # --- server-task bundle -------------------------------------------------
@@ -1792,6 +821,6 @@ def test_a_disabled_explainer_gets_no_house_style_either(tmp_path: Path) -> None
 
 
 def test_build_server_tasks_returns_an_empty_bundle_without_augment(tmp_path: Path) -> None:
-    from semantic_code_review.review.runner import ServerTasks, build_server_tasks
+    from semantic_code_review.review.runner import build_server_tasks
 
     assert build_server_tasks(tmp_path, _task_config(augment=False)) == ServerTasks()

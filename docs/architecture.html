@@ -488,6 +488,15 @@ flowchart LR
           <code>POST /exit</code> from the viewer or after an idle
           timeout. No external HTTP deps.
         </p>
+        <p class="text-sm text-slate-600 max-w-2xl">
+          Transport only. The review's state and operations live on
+          <code>ReviewSession</code> (<code>review/session.py</code>); a
+          route decodes the request, calls one operation, and answers
+          with what comes back. A refusal is a <code>ScrError</code>
+          carrying its own <code>status</code> and body, so the
+          error-to-status map is one <code>_dispatch</code> rather than
+          one per handler; anything else is a bug and answers 500.
+        </p>
 
         <div class="grid grid-cols-5 gap-4 items-start">
           <div class="col-span-3 rounded-lg border border-slate-200 bg-white p-4">
@@ -502,12 +511,23 @@ flowchart LR
               </thead>
               <tbody class="text-slate-700 align-top">
                 <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">GET</td><td class="font-mono">/</td><td>viewer html</td></tr>
-                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">GET</td><td class="font-mono">/data.json</td><td>ViewerData snapshot</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">GET</td><td class="font-mono">/data.json</td><td>ViewerData snapshot + <code>debug</code> / <code>explainer</code> flags</td></tr>
                 <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">GET</td><td class="font-mono">/static/*</td><td>viewer assets (asset whitelist)</td></tr>
                 <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">GET</td><td class="font-mono">/events</td><td>SSE stream — buffered + Last-Event-ID replay</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">GET</td><td class="font-mono">/file-text?file_idx=</td><td>one file's full base+head source (rendered mode)</td></tr>
                 <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">POST</td><td class="font-mono">/fold-summary</td><td>fires the fold-summary pass; patches viewer json</td></tr>
-                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">POST</td><td class="font-mono">/comment</td><td>add reviewer comment → comments.json</td></tr>
-                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">DELETE</td><td class="font-mono">/comment</td><td>remove reviewer comment</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">GET</td><td class="font-mono">/comments</td><td>every reviewer comment</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">POST</td><td class="font-mono">/comments</td><td>add/edit reviewer comment → comments.json</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">DELETE</td><td class="font-mono">/comments/&lt;id&gt;</td><td>remove reviewer comment</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">POST</td><td class="font-mono">/console/ask</td><td>starts one streaming console turn (202; answer rides SSE)</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">POST</td><td class="font-mono">/console/cancel</td><td>trips the in-flight turn's cancel flag</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">POST</td><td class="font-mono">/console/reset</td><td>drops the in-memory conversation</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">GET</td><td class="font-mono">/explainer</td><td>the persisted document (404 = not generated yet)</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">POST</td><td class="font-mono">/explainer/skeleton</td><td>writes the Map + section plan</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">POST</td><td class="font-mono">/explainer/section/&lt;id&gt;</td><td>runs the pass that writes that section</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">GET</td><td class="font-mono">/post-config</td><td>is this review posting, and to what</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">GET</td><td class="font-mono">/post-preview</td><td>the comments the modal would send</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">POST</td><td class="font-mono">/post-review</td><td>posts the selected ids; keeps the result</td></tr>
                 <tr><td class="py-1.5 font-mono">POST</td><td class="font-mono">/exit</td><td>graceful shutdown</td></tr>
               </tbody>
             </table>
@@ -518,16 +538,20 @@ flowchart LR
             <pre class="mermaid">
 flowchart TB
   pipe["augment pipeline\n_safe_emit&#40;on_event,…&#41;"]
+  sess["ReviewSession\nfold-summary · console · explainer · posted"]
   pub["server.publish&#40;type,payload&#41;"]
   buf["ring buffer\n+ subscriber queues"]
   sse1((viewer A))
   sse2((viewer B))
-  pipe --> pub --> buf --> sse1
+  pipe --> pub
+  sess --> pub
+  pub --> buf --> sse1
   buf --> sse2
             </pre>
             <p class="text-[11px] text-slate-600">
               Each connected viewer gets a blocking queue. Publish
-              never blocks the augment pipeline.
+              never blocks the augment pipeline. The session publishes
+              through the same fan-out rather than owning one.
             </p>
           </div>
         </div>

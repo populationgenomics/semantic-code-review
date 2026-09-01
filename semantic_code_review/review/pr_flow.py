@@ -38,7 +38,7 @@ from .github import (
 )
 from .github_graphql import post_review_via_graphql
 from .runner import build_server_tasks, ensure_augmented_diff, serve_review
-from .server import PostCallable
+from .session import PostCallable, PostOutcome
 
 
 @dataclass(frozen=True)
@@ -118,7 +118,7 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
         post_meta=post_meta,
     )
 
-    posted: PostResult | None = result.posted
+    posted: PostOutcome | None = result.posted
 
     # CLI-side fallback for --yes: the server didn't post (we didn't
     # wire it for that), so post everything ourselves now.

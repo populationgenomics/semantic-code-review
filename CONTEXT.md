@@ -108,12 +108,47 @@ Two consumers derive from it rather than reading it whole:
   prompt. It exists so `augment_run_dir` can name its inputs without
   the augment layer importing the review layer.
 - `build_server_tasks(run_dir, cfg)` (in `review/runner.py`) returns a
-  `ServerTasks` bundle: the augment, fold-summary, console and two
-  explainer closures plus the `--debug` sink binder, all `None` on a
+  `ServerTasks` bundle (defined in `review/session.py`, next to what
+  consumes it): the augment, fold-summary, console and two explainer
+  closures plus the `--debug` sink binder, all `None` on a
   `--no-augment` run. One builder feeds both entry points, so a
   generator added to the bundle reaches `scr review` and `scr pr`
   together — it was two independent builders that let the per-section
   explainer pass ship on one path and not the other.
+
+**Review session**
+The state of one live review and the operations over it — `ReviewSession`
+in `review/session.py`. Holds the [[run-directory]], the [[viewer-data]]
+served as `/data.json`, the [[reviewer-comment]] store, the
+`ServerTasks` once attached, and the guards that allow one console turn
+and one explainer pass at a time. `review/server.py` is HTTP transport in
+front of it and holds no review state of its own: a route decodes the
+request, calls one session operation, and turns the result — or the
+failure — into a response.
+
+Three rules make that split hold:
+
+- **The session owns the request body.** An operation validates the
+  payload it is given and refuses a malformed one itself; only values
+  lifted out of a URL (a path segment, a query parameter) are parsed by
+  the transport. The wire format is part of what the session promises,
+  so `FoldAddress.from_payload` lives with the address type rather than
+  in a handler.
+- **Every refusal is a `ScrError`** (`semantic_code_review/errors.py`),
+  carrying the `status` and `body()` the route answers with. That is the
+  whole error-to-status map: `_Handler._dispatch` reads them off the
+  error, and anything that is *not* a `ScrError` is a bug and answers
+  500 naming its type. The augment-side refusals (`FoldSummaryNotReady`,
+  `SectionNotReady`, …) derive from it where they are defined, so the
+  server maps them without importing the augment package.
+- **The SSE fan-out stays the server's.** The session publishes
+  *through* an injected `EventPublisher`, which is what lets its
+  broadcasts be asserted without a socket.
+
+`attach(tasks, viewer_json)` is one call because it is one event: the
+augment pass has left a sidecar, so the augmented view and every task
+that resolves the diff arrive together. Before it, each LLM-backed route
+409s — the state the viewer polls against.
 
 **Hunk**
 A contiguous range of changed lines in a diff, with its `@@` header
