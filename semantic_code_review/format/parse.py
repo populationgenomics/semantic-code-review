@@ -42,6 +42,7 @@ from ..augment.schemas import (
     LineNote,
     Overview,
     OverviewEdge,
+    OverviewGroup,
     OverviewSymbol,
     ParsedDiff,
     ParsedFile,
@@ -263,6 +264,7 @@ def _build_overview(data: dict) -> Overview:
         symbols_removed=[OverviewSymbol(**s) for s in data.get("symbols_removed", [])],
         callgraph_edges=[OverviewEdge.model_validate(e) for e in data.get("callgraph_edges", [])],
         themes=list(data.get("themes", [])),
+        groups=[OverviewGroup.model_validate(g) for g in data.get("groups", [])],
     )
 
 

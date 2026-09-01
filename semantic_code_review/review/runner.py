@@ -66,6 +66,21 @@ FoldSummaryCallable = Callable[
 ]
 
 
+#: Signature of the change-explainer skeleton generator accepted by
+#: ``serve_review``. Takes no arguments and returns the document as a
+#: jsonable dict — the closure captures the backend, cache and run dir.
+#: Wired only when an LLM backend is available *and* the feature is not
+#: disabled in config; otherwise ``/explainer/skeleton`` 409s.
+ExplainerCallable = Callable[[], Coroutine[Any, Any, dict]]
+
+
+#: Signature of the change-explainer per-section generator. Takes a
+#: section id and returns the whole document as a jsonable dict — a
+#: section write is a document write. Wired on the same terms as
+#: ``ExplainerCallable``.
+ExplainerSectionCallable = Callable[[str], Coroutine[Any, Any, dict]]
+
+
 #: Signature of the streaming console turn driver accepted by
 #: ``serve_review``. Called as ``(question, history, on_delta, on_tool,
 #: cancel)`` and awaited to ``(answer_text, new_history)``:
@@ -114,6 +129,18 @@ class ReviewOptions:
     extra_review_prompt: str | None = None
     # Extra file globs to skip in the LLM passes (config [augment].skip_globs).
     skip_globs: tuple[str, ...] = ()
+    # Change explainer (ADR 0007). Opt-out: `[augment].explainer = false`
+    # turns it off. There is no flag to turn it on, because the reviewers
+    # who benefit most are the ones who never configured it, and
+    # generation is press-triggered so default-on costs nothing.
+    explainer: bool = True
+    # House style for the explainer document: inline
+    # `[augment].explainer_prompt`, or the file named by
+    # `--explainer-prompt`. Appended to the guidance of the three
+    # explainer passes and nothing else — the per-hunk pass has no
+    # channel for it, so the intents a document's claims are checked
+    # against stay hermetic.
+    explainer_prompt: str | None = None
     show_progress: bool = True
     # `--debug` / SCR_DEBUG: surface each CLI-backend subprocess spawn (raw
     # argv + envelope) in the viewer's debug drawer.
@@ -135,6 +162,8 @@ def run_review(opts: ReviewOptions) -> int:
     augment_task: AugmentCallable | None = None
     fold_summary_task: FoldSummaryCallable | None = None
     console_task: ConsoleCallable | None = None
+    explainer_task: ExplainerCallable | None = None
+    explainer_section_task: ExplainerSectionCallable | None = None
     bind_debug_sink: Callable[[Callable[[dict], None]], None] | None = None
     if opts.augment:
         from ..augment.pipeline import augment_run_dir  # lazy: anthropic SDK
@@ -166,6 +195,22 @@ def run_review(opts: ReviewOptions) -> int:
             run_dir=run_dir,
         )
 
+        if opts.explainer:
+            explainer_task = _build_explainer_task(
+                client=opts.client,
+                model=opts.model,
+                cache=cache,
+                run_dir=run_dir,
+                house_style=opts.explainer_prompt,
+            )
+            explainer_section_task = _build_explainer_section_task(
+                client=opts.client,
+                model=opts.model,
+                cache=cache,
+                run_dir=run_dir,
+                house_style=opts.explainer_prompt,
+            )
+
         # The console reuses the augment backend — SDK backends stream
         # token-by-token, CLI subprocess backends answer one-shot per turn
         # (ADR 0002, Slice 5). When opts.client is None the augment path
@@ -182,12 +227,7 @@ def run_review(opts: ReviewOptions) -> int:
         if opts.debug:
             bind_debug_sink = lambda sink, c=console_client: c.set_debug_sink(sink)  # noqa: E731
     else:
-        # When augment is skipped, copy raw.diff to augmented.diff so render
-        # has something to parse. It'll have no annotations.
-        (run_dir / "augmented.diff").write_text(
-            (run_dir / "raw.diff").read_text(encoding="utf-8"),
-            encoding="utf-8",
-        )
+        ensure_augmented_diff(run_dir)
 
     result = serve_review(
         run_dir,
@@ -195,6 +235,8 @@ def run_review(opts: ReviewOptions) -> int:
         skip_globs=opts.skip_globs,
         fold_summary=fold_summary_task,
         console=console_task,
+        explainer=explainer_task,
+        explainer_section=explainer_section_task,
         port=opts.port,
         timeout=opts.timeout,
         open_browser=opts.open_browser,
@@ -225,8 +267,26 @@ class ServeResult:
     """
 
     comments: list  # list[Comment] — kept loose to avoid an import cycle
-    clean: bool  # True iff the viewer signalled Done within the timeout
+    clean: bool  # True iff the viewer signalled Done; False on idle timeout
     posted: PostResult | None = None
+
+
+def ensure_augmented_diff(run_dir: Path) -> None:
+    """Give the renderer an ``augmented.diff`` to parse without spending
+    an augmentation pass.
+
+    The ``--no-augment`` path calls this: an absent one is filled with
+    ``raw.diff``, annotation-free. An existing one is left alone. Run
+    dirs are keyed by head SHA, so re-running ``--no-augment`` — which
+    is what a failed post tells the reviewer to do to retry — lands in
+    the run dir a paid-for pass already augmented; overwriting it would
+    drop those annotations and desync the text form from
+    ``augmented.scr.json``.
+    """
+    augmented = run_dir / "augmented.diff"
+    if augmented.exists():
+        return
+    augmented.write_text((run_dir / "raw.diff").read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def serve_review(
@@ -236,6 +296,8 @@ def serve_review(
     skip_globs: tuple[str, ...] = (),
     fold_summary: FoldSummaryCallable | None = None,
     console: ConsoleCallable | None = None,
+    explainer: ExplainerCallable | None = None,
+    explainer_section: ExplainerSectionCallable | None = None,
     post: PostCallable | None = None,
     post_meta: dict | None = None,
     port: int = 0,
@@ -248,6 +310,10 @@ def serve_review(
     """Render the viewer for a populated run dir, host the back-channel
     server, block on the user clicking Done, and return the comments
     they left.
+
+    ``timeout`` is idle seconds, not a session lifetime: the server
+    shuts down once it has gone that long with neither a request nor a
+    connected viewer (see ``ReviewServer.wait_until_done``).
 
     Both `cli.review` (local diff) and `cli.pr` (GitHub PR) call this
     with a run dir whose `meta.json`, `raw.diff`, and worktrees are
@@ -275,6 +341,10 @@ def serve_review(
         post_callback=post,
         post_meta=post_meta,
         debug=debug,
+        # Known at construction, not at wire-up: the viewer needs to
+        # decide whether to mount the overview-mode button on its first
+        # /data.json, well before augmentation has finished.
+        explainer=explainer is not None,
     )
     srv.start()
     try:
@@ -322,6 +392,12 @@ def serve_review(
                 # backends, where /console/ask stays 409.
                 if console is not None:
                     srv.set_console_asker(console)
+                # Same gate again: the skeleton is seeded with the
+                # overview, which only exists once the sidecar does.
+                if explainer is not None:
+                    srv.set_explainer_generator(explainer)
+                if explainer_section is not None:
+                    srv.set_explainer_section_generator(explainer_section)
                 srv.publish("done", {"reason": "augment-complete"})
             if augment_error is not None and not isinstance(augment_error, Exception):
                 # KeyboardInterrupt / SystemExit shouldn't be swallowed —
@@ -329,6 +405,13 @@ def serve_review(
                 raise augment_error
 
         clean = srv.wait_until_done(timeout=timeout)
+        if not clean:
+            # Both CLI entry points come through here, so the line lands
+            # once, ahead of whatever they print about the comments.
+            sys.stderr.write(
+                f"scr review: idle timeout — {timeout}s with no request and no open viewer; shutting down.\n"
+            )
+            sys.stderr.flush()
     finally:
         srv.stop()
 
@@ -380,6 +463,82 @@ def _build_fold_summary_task(
             model=model,
             cache=cache,
         )
+
+    return task
+
+
+def _build_explainer_task(
+    *,
+    client: Client | None,
+    model: str,
+    cache: CacheStore | None,
+    run_dir: Path,
+    house_style: str | None,
+) -> ExplainerCallable:
+    """Construct the change-explainer generator ``serve_review`` installs
+    once augmentation completes. Captures the LLM backend + cache +
+    run_dir so the server module stays independent of the augment-side
+    machinery.
+
+    ``house_style`` is the reviewed repo's ``[augment].explainer_prompt``
+    text (or ``--explainer-prompt``), appended to the explainer passes'
+    guidance. It has no default: ``scr review`` and ``scr pr`` build
+    their bundles independently, and that is how the per-section
+    generator came to be missing from the PR path — an omission here is
+    a ``TypeError`` rather than a silently unstyled document.
+    """
+    # Lazy import: keeps pydantic-ai off the `--no-augment` path.
+    from ..augment.explainer import document_to_payload, generate_explainer_skeleton
+
+    async def task() -> dict:
+        # client is None only when augment is False, and serve_review
+        # never wires this task up in that case — a None here is a
+        # wiring bug, so fail loudly.
+        assert client is not None, "explainer task called without an LLM backend"
+        doc = await generate_explainer_skeleton(
+            client,
+            run_dir=run_dir,
+            model=model,
+            house_style=house_style,
+            cache=cache,
+            trace_dir=run_dir / "trace",
+        )
+        return document_to_payload(doc)
+
+    return task
+
+
+def _build_explainer_section_task(
+    *,
+    client: Client | None,
+    model: str,
+    cache: CacheStore | None,
+    run_dir: Path,
+    house_style: str | None,
+) -> ExplainerSectionCallable:
+    """Construct the per-section prose generator ``serve_review``
+    installs alongside the skeleton one. Same capture, same lazy import,
+    same no-default ``house_style``; the section id is the only
+    per-call input.
+    """
+    # Lazy import: keeps pydantic-ai off the `--no-augment` path.
+    from ..augment.explainer import document_to_payload
+    from ..augment.explainer_section import generate_explainer_section
+
+    async def task(section_id: str) -> dict:
+        # As with the skeleton task: serve_review never wires this up
+        # without a backend, so a None here is a wiring bug.
+        assert client is not None, "explainer section task called without an LLM backend"
+        doc = await generate_explainer_section(
+            client,
+            run_dir=run_dir,
+            section_id=section_id,
+            model=model,
+            house_style=house_style,
+            cache=cache,
+            trace_dir=run_dir / "trace",
+        )
+        return document_to_payload(doc)
 
     return task
 

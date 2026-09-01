@@ -180,6 +180,8 @@ function renderBody(body: HTMLElement, f: FileBlock): void {
   const pairs = _align(baseBlocks, headBlocks);
   container.appendChild(_renderControls(f.id, pairs));
   const grid = _el("div", "rmd-grid");
+  const live = _livePane(pairs);
+  if (live) grid.classList.add(`rmd-only-${live}`);
   for (const item of _plan(pairs, foldLevel(f.id), f.id)) {
     if (item.kind === "pair") {
       const oldCol = _renderCol(item.pair.base, "old", f);
@@ -193,6 +195,24 @@ function renderBody(body: HTMLElement, f: FileBlock): void {
   }
   container.appendChild(grid);
   body.appendChild(container);
+}
+
+/** The pane carrying every block-pair, when the other is an alignment
+ *  pad for the file's whole length — an added file has no base, a
+ *  deleted one no head. Null when both panes hold blocks (or neither),
+ *  which is when both are worth their width. The text diff's `_liveSide`
+ *  answers the same question one representation down. */
+function _livePane(pairs: BlockPair[]): "old" | "new" | null {
+  let anyBase = false;
+  let anyHead = false;
+  for (const p of pairs) {
+    if (p.base) anyBase = true;
+    if (p.head) anyHead = true;
+    if (anyBase && anyHead) return null;
+  }
+  if (anyHead) return "new";
+  if (anyBase) return "old";
+  return null;
 }
 
 // --- Block classification + alignment -----------------------------------

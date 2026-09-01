@@ -38,7 +38,7 @@ def _pass_name(relative_path: str) -> str:
     attributes to its pass instead of falling through to `other`.
     """
     head = relative_path.split("/", 1)[0].removesuffix(".json")
-    for prefix in ("hunk", "fold", "extra-review", "overview"):
+    for prefix in ("hunk", "fold", "extra-review", "overview", "explainer"):
         if head == prefix or head.startswith(f"{prefix}-"):
             return prefix
     return "other"

@@ -10,3 +10,5 @@ edit: a later ADR can mark an earlier one `Superseded by NNNN`.
 - [0003 — Tool surface: shared cache, long-lived MCP host](0003-tool-surface-hosting.md)
 - [0004 — Rendered markdown diff](0004-rendered-markdown-diff.md)
 - [0005 — Thinking on the augment passes, and the output mode it forces](0005-thinking-on-the-augment-passes.md)
+- [0006 — One visibility model](0006-one-visibility-model.md) — in flight, PR #11
+- [0007 — Change explainer](0007-change-explainer.md)

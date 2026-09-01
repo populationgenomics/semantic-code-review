@@ -60,21 +60,35 @@ def config_show() -> None:
             # credential source), and `config show` output ends up in logs
             # and screen-shares.
             typer.echo(f"  {k} = <redacted> (from {cfg.sources.get(f'env.{k}', '?')}, {applied})")
-    if cfg.extra_review_prompt is not None or cfg.skip_globs:
+    if cfg.extra_review_prompt is not None or cfg.explainer_prompt is not None or cfg.skip_globs or not cfg.explainer:
         typer.echo("[augment]")
     if cfg.extra_review_prompt is not None:
-        # Show line count + a leading snippet rather than the whole
-        # body — extra-review prompts are typically multi-paragraph
-        # and would crowd the resolved-config display.
-        prompt = cfg.extra_review_prompt
-        lines = prompt.count("\n") + 1
-        first_line = prompt.split("\n", 1)[0][:80]
         typer.echo(
-            f"  extra_prompt = <{lines}-line prompt: {first_line!r}…> "
+            f"  extra_prompt = {_prompt_snippet(cfg.extra_review_prompt)} "
             f"(from {cfg.sources.get('augment.extra_prompt', '?')})"
+        )
+    if cfg.explainer_prompt is not None:
+        typer.echo(
+            f"  explainer_prompt = {_prompt_snippet(cfg.explainer_prompt)} "
+            f"(from {cfg.sources.get('augment.explainer_prompt', '?')})"
         )
     if cfg.skip_globs:
         typer.echo(f"  skip_globs = {list(cfg.skip_globs)} (from {cfg.sources.get('augment.skip_globs', '?')})")
+    # Only shown when off: the explainer is opt-out, so "on" is the
+    # default and listing it every time would be noise.
+    if not cfg.explainer:
+        typer.echo(f"  explainer = false (from {cfg.sources.get('augment.explainer', '?')})")
+
+
+def _prompt_snippet(prompt: str) -> str:
+    """Line count plus the first line, for the resolved-config display.
+
+    Inline prompts are multi-paragraph prose; printed whole they crowd
+    out every other setting.
+    """
+    lines = prompt.count("\n") + 1
+    first_line = prompt.split("\n", 1)[0][:80]
+    return f"<{lines}-line prompt: {first_line!r}…>"
 
 
 @config_app.command("edit")
@@ -276,4 +290,20 @@ _CONFIG_TEMPLATE = """\
 # lockfile/bundle/binary denylist. Accumulates with the user scope.
 # [augment]
 # skip_globs = ["go.sum", "gen/**", "*.generated.ts"]
+
+# The change explainer generates a reading guide for the diff on request
+# (a button in the viewer). Set to false to remove the button entirely.
+# [augment]
+# explainer = false
+
+# House style for that reading guide: how a document about a change
+# should read in this repo. Appended to the explainer's own guidance as
+# the repository's preference — it cannot change the document's sections,
+# its presentation vocabulary, or the per-hunk annotations. Overridden
+# per run by `--explainer-prompt <file>`.
+# [augment]
+# explainer_prompt = \"\"\"
+# Assume the reader knows Hail and the analysis-runner, and not the
+# cohort model. Name the dataset in every example.
+# \"\"\"
 """

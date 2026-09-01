@@ -31,6 +31,11 @@ interface ViewerData {
   /** Server runtime debug flag (--debug / SCR_DEBUG). When true the
    *  viewer mounts the raw-log drawer and subscribes to `debug-log`. */
   debug?: boolean;
+  /** Whether the change explainer is available for this review (ADR
+   *  0007). False for `--no-augment` and when `[augment].explainer` is
+   *  off; the overview-mode button is then not mounted at all. Rides
+   *  /data.json because the button is decided before augment finishes. */
+  explainer?: boolean;
 }
 
 interface SmellCatalogueEntry {
@@ -286,6 +291,103 @@ interface SseFoldSummaryEvent {
 interface SseDoneEvent {
   reason: string;
 }
+
+// --- Change explainer (ADR 0007) --------------------------------------------
+// The document served by GET /explainer, produced by POST
+// /explainer/skeleton, and fanned out as the `explainer` SSE frame so a
+// second tab picks up a document the first one paid for.
+
+/** A pointer from the document into the diff: a whole file or a whole
+ *  hunk, never a line range. Validated server-side by membership in the
+ *  viewer's id space, so a reference that arrives here resolves. */
+interface ExplainerRef {
+  kind: "file" | "hunk";
+  id: string;
+}
+
+/** One step of the reading order. `ref` is always a file. */
+interface ExplainerMapRow {
+  ref: ExplainerRef;
+  why: string;
+}
+
+/** A diagram in a structured slot. `svg` has already been through the
+ *  server-side sanitiser; the renderer runs the same rules again because
+ *  a document can reach a browser from a run dir this server never
+ *  wrote. `stripped` is what sanitisation removed — rendered, not
+ *  swallowed. `alt` is required and becomes the SVG's `aria-label`. */
+interface ExplainerFigure {
+  svg: string;
+  alt: string;
+  caption: string;
+  stripped: number;
+}
+
+type ExplainerSectionKind = "background" | "intuition" | "code" | "map";
+type ExplainerSectionState = "pending" | "ready" | "failed";
+
+/** One entry of a section's term list. */
+interface ExplainerTerm {
+  term: string;
+  definition: string;
+}
+
+/** Background's escape hatch past its first layer. `target_section_id`
+ *  is validated server-side, so a box that arrives here resolves. */
+interface ExplainerSkipBox {
+  body: string;
+  target_section_id: string;
+}
+
+interface ExplainerSection {
+  id: string;
+  kind: ExplainerSectionKind;
+  title: string;
+  /** Which server-side call writes this section. Sections do not map
+   *  one-to-one onto calls — Intuition and Code share one — so this is
+   *  what keeps one press from buying one call twice, and what groups
+   *  the citation line under the prose it accounts for. A subsection
+   *  carries its parent's. The Map's is `"skeleton"`. */
+  pass_id: string;
+  state: ExplainerSectionState;
+  /** Markdown prose. Empty until the section's own pass runs. */
+  body: string;
+  refs: ExplainerRef[];
+  map_rows: ExplainerMapRow[];
+  terms: ExplainerTerm[];
+  skip_box: ExplainerSkipBox | null;
+  figures: ExplainerFigure[];
+  /** Repo paths this section's pass actually opened, recorded from the
+   *  tool surface rather than claimed by the model. It is the *pass's*
+   *  read list, so every section one call wrote carries the same one
+   *  and the viewer renders it once, under the last of them. */
+  sources: string[];
+  subsections: ExplainerSection[];
+}
+
+interface ExplainerDocument {
+  version: number;
+  base_sha: string;
+  head_sha: string;
+  /** `not_warranted` is a real answer — the document is then the
+   *  verdict note plus, at most, the Map. */
+  verdict: "narrate" | "not_warranted";
+  verdict_note: string;
+  figure_family: string;
+  cast: string[];
+  toy_data: boolean;
+  /** Model requests the document's prose calls have spent between them,
+   *  against one shared budget. Persisted, so a reload does not
+   *  re-grant it. */
+  turns_used: number;
+  sections: ExplainerSection[];
+  /** References the model emitted that addressed nothing, dropped
+   *  server-side. Rendered, because references thinning out unnoticed
+   *  is the failure the count exists to prevent. */
+  dropped_refs: number;
+}
+
+interface SseExplainerEvent extends ExplainerDocument {}
 
 // --- Console stream events --------------------------------------------------
 // Emitted by the background console worker (Slice 2). Every frame is

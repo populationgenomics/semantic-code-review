@@ -17,6 +17,7 @@ from . import app
 from ._shared import (
     configure_logging,
     get_config,
+    resolve_explainer_prompt,
     resolve_extra_review_prompt,
     select_client,
 )
@@ -56,6 +57,17 @@ def pr(
             "matching hunk's line_notes. Overrides [augment].extra_prompt."
         ),
     ),
+    explainer_prompt: Path = typer.Option(
+        None,
+        "--explainer-prompt",
+        help=(
+            "Path to a markdown/text file of house style for the change "
+            "explainer — how a document about a change should read in "
+            "this repo. Appended to the explainer passes' guidance and "
+            "nothing else; the per-hunk annotations are unaffected. "
+            "Overrides [augment].explainer_prompt."
+        ),
+    ),
     yes: bool = typer.Option(
         False,
         "--yes",
@@ -81,6 +93,7 @@ def pr(
     backend = cfg.resolve_backend(backend)
     model = cfg.resolve_model(backend=backend, cli_value=model)
     extra_review_prompt = resolve_extra_review_prompt(extra_prompt) if augment else None
+    house_style = resolve_explainer_prompt(explainer_prompt) if augment else None
     # Resolve the backend up-front so a misconfiguration fails fast,
     # before we spend time on PR resolution and worktree fetch.
     client = select_client(backend, model=model) if augment else None
@@ -99,6 +112,8 @@ def pr(
         timeout=timeout,
         extra_review_prompt=extra_review_prompt,
         skip_globs=cfg.skip_globs,
+        explainer=cfg.explainer,
+        explainer_prompt=house_style,
         client=client,
         yes=yes,
         debug=debug,

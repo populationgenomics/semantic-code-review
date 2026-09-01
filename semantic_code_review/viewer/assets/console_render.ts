@@ -51,11 +51,34 @@ const md: MarkdownIt = new MarkdownIt({
   },
 });
 
+/** Render markdown into `target`, sanitised. Replaces `target`'s
+ *  content.
+ *
+ *  The shared path for every surface that renders model prose: the
+ *  console's answers and the change explainer's sections. One
+ *  markdown-it instance and one DOMPurify call, so a hardening change
+ *  cannot land on one surface and miss the other. Mermaid is the
+ *  console's own concern and stays in `renderConsoleMarkdown`. */
+export function renderMarkdown(target: HTMLElement, markdown: string): void {
+  target.innerHTML = DOMPurify.sanitize(md.render(markdown));
+}
+
+/** Render a short string as *inline* markdown — no wrapping paragraph.
+ *
+ *  For the schema's short text fields (a term's name, a subsection's
+ *  title). They are as likely to carry a code span as any sentence of
+ *  prose, and rendering them as text while their bodies go through
+ *  markdown is how `\`prompt\` field` reaches the page with its
+ *  backticks showing. */
+export function renderInlineMarkdown(target: HTMLElement, markdown: string): void {
+  target.innerHTML = DOMPurify.sanitize(md.renderInline(markdown));
+}
+
 /** Render the accumulated answer markdown into `target`, then paint any
  *  completed mermaid fences. Safe to call on every delta — it fully
  *  replaces `target`'s content each time. */
 export function renderConsoleMarkdown(target: HTMLElement, markdown: string): void {
-  target.innerHTML = DOMPurify.sanitize(md.render(markdown));
+  renderMarkdown(target, markdown);
   paintMermaid(target, markdown);
 }
 

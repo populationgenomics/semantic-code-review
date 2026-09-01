@@ -137,3 +137,93 @@ def test_show_prints_augmented(tmp_path: Path) -> None:
     result = runner.invoke(app, ["show", str(run)])
     assert result.exit_code == 0
     assert "scr-version" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# --explainer-prompt / [augment].explainer_prompt
+# ---------------------------------------------------------------------------
+
+
+def _isolated_config(tmp_path: Path, monkeypatch, body: str) -> None:
+    """Point the CLI's config loader at a config file holding `body`.
+
+    The per-repo lookup is stubbed out rather than redirected: it walks
+    up to the filesystem root, so a `.scr/config.toml` anywhere above the
+    checkout would otherwise merge into these assertions.
+    """
+    xdg = tmp_path / "xdg"
+    (xdg / "scr").mkdir(parents=True)
+    (xdg / "scr" / "config.toml").write_text(body, encoding="utf-8")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+
+    from semantic_code_review import cli as cli_module
+    from semantic_code_review import config as config_module
+
+    monkeypatch.setattr(config_module, "find_repo_config_path", lambda *_a, **_k: None)
+    cli_module._reset_config_cache()
+
+
+def test_config_show_reports_the_explainer_house_style(tmp_path: Path, monkeypatch) -> None:
+    """Reported as a line count and its first line, like extra_prompt —
+    a multi-paragraph body printed whole crowds out every other setting.
+    """
+    _isolated_config(
+        tmp_path,
+        monkeypatch,
+        '[augment]\nexplainer_prompt = """\nName the dataset in every example.\nBe terse.\n"""\n',
+    )
+    result = CliRunner().invoke(app, ["config", "show"])
+    assert result.exit_code == 0, result.stdout
+    assert "explainer_prompt = <2-line prompt: 'Name the dataset in every example.'…>" in result.stdout
+
+
+def test_the_flag_loads_the_house_style_and_beats_the_config(tmp_path: Path, monkeypatch) -> None:
+    from semantic_code_review.cli._shared import resolve_explainer_prompt
+
+    _isolated_config(tmp_path, monkeypatch, '[augment]\nexplainer_prompt = "from the config"\n')
+    assert resolve_explainer_prompt(None) == "from the config"
+
+    note = tmp_path / "house.md"
+    note.write_text("from the file\n", encoding="utf-8")
+    assert resolve_explainer_prompt(note) == "from the file"
+
+
+def test_a_missing_or_empty_house_style_file_is_a_hard_error(tmp_path: Path, monkeypatch) -> None:
+    """The user named a file. Reviewing without it is a silently
+    different document, so it exits rather than falling back."""
+    import pytest
+    import typer
+
+    from semantic_code_review.cli._shared import resolve_explainer_prompt
+
+    _isolated_config(tmp_path, monkeypatch, '[augment]\nexplainer_prompt = "from the config"\n')
+
+    with pytest.raises(typer.Exit) as missing:
+        resolve_explainer_prompt(tmp_path / "absent.md")
+    assert missing.value.exit_code == 2
+
+    empty = tmp_path / "empty.md"
+    empty.write_text("   \n", encoding="utf-8")
+    with pytest.raises(typer.Exit) as blank:
+        resolve_explainer_prompt(empty)
+    assert blank.value.exit_code == 2
+
+
+def test_the_flag_against_a_disabled_explainer_exits(tmp_path: Path, monkeypatch) -> None:
+    """`explainer = false` lives in a file the user may not have read
+    today; accepting house style for a document that will never be
+    generated is a silent no-op on an explicit request."""
+    import pytest
+    import typer
+
+    from semantic_code_review.cli._shared import resolve_explainer_prompt
+
+    _isolated_config(tmp_path, monkeypatch, "[augment]\nexplainer = false\n")
+    note = tmp_path / "house.md"
+    note.write_text("name the dataset\n", encoding="utf-8")
+
+    with pytest.raises(typer.Exit) as off:
+        resolve_explainer_prompt(note)
+    assert off.value.exit_code == 2
+    # The inline config value is not an explicit request, so it stays silent.
+    assert resolve_explainer_prompt(None) is None

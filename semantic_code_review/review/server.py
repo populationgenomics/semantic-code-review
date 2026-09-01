@@ -18,6 +18,8 @@ import logging
 import os
 import queue
 import re
+import socket
+import sys
 import threading
 import time
 import urllib.parse
@@ -359,6 +361,30 @@ FoldSummariser = Callable[..., Coroutine[Any, Any, dict]]
 ConsoleAsker = Callable[..., Coroutine[Any, Any, Any]]
 
 
+#: Signature of the change-explainer skeleton generator wired by
+#: ``serve_review`` once augmentation completes. Called with no
+#: arguments and awaited to the document as a jsonable dict — the
+#: closure owns model selection, cache, run dir and persistence, so the
+#: server stays diff-source-agnostic. Stored as ``Any`` to keep the
+#: augment-side schemas out of this stdlib-only module; the concrete
+#: signature lives in ``review/runner.py``.
+ExplainerGenerator = Callable[[], Coroutine[Any, Any, dict[str, Any]]]
+
+
+#: `POST /explainer/section/<id>`. A path prefix rather than an exact
+#: match because the section id is in the path — it is passed straight
+#: to the generator, which 404s on anything it does not know.
+_EXPLAINER_SECTION_PREFIX = "/explainer/section/"
+
+
+#: Signature of the prose generator, wired alongside the skeleton one.
+#: Called with a section id and awaited to the whole document as a
+#: jsonable dict — a prose call may write more than one section, and a
+#: section write is a document write either way, so the route fans out
+#: the document rather than a fragment of it.
+ExplainerSectionGenerator = Callable[[str], Coroutine[Any, Any, dict[str, Any]]]
+
+
 #: Signature of the post callback accepted by ``serve_review`` when the
 #: caller wants the viewer to handle confirm-and-post in-browser.
 #: Takes the comment IDs the reviewer selected in the confirmation
@@ -402,6 +428,21 @@ class ServerContext:
     # it — no cross-loop signalling.
     console_busy: bool = False
     console_cancel: threading.Event | None = None
+    # Change explainer (ADR 0007). ``explainer_enabled`` is known at
+    # construction and rides /data.json so the viewer can mount (or
+    # omit) the overview-mode button before any pass has run;
+    # ``explainer_generator`` is wired later, once augmentation has left
+    # a sidecar for the skeleton to be seeded from, and until then
+    # /explainer/skeleton 409s the way /fold-summary does.
+    # ``explainer_busy`` gives one generation per server, skeleton and
+    # per-section alike: a second POST while one is in flight gets 409
+    # rather than a duplicate spend. It is also what keeps concurrent
+    # section writes from racing each other's read-modify-write of
+    # `explainer.json` — with one pass at a time there is no interleave.
+    explainer_enabled: bool = False
+    explainer_generator: ExplainerGenerator | None = None
+    explainer_section_generator: ExplainerSectionGenerator | None = None
+    explainer_busy: bool = False
     # Optional, wired by serve_review when the caller wants posting to
     # happen via the in-browser confirmation modal (``scr pr``). When
     # both are None the modal stays absent and Done exits the way it
@@ -481,13 +522,23 @@ class _Handler(BaseHTTPRequestHandler):
             # Stamp the runtime debug flag alongside the diff payload so the
             # viewer knows whether to mount the debug drawer. Merged at serve
             # time because update_viewer_json swaps viewer_json wholesale.
-            self._json(200, {**self.ctx.viewer_json, "debug": self.ctx.debug})
+            self._json(
+                200,
+                {
+                    **self.ctx.viewer_json,
+                    "debug": self.ctx.debug,
+                    "explainer": self.ctx.explainer_enabled,
+                },
+            )
             return
         if path == "/file-text":
             self._handle_file_text()
             return
         if path == "/comments":
             self._json(200, {"comments": [c.model_dump() for c in self.ctx.store.all()]})
+            return
+        if path == "/explainer":
+            self._handle_get_explainer()
             return
         if path == "/post-config":
             self._handle_post_config()
@@ -661,6 +712,12 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             self._handle_console_ask(payload)
             return
+        if path == "/explainer/skeleton":
+            self._handle_explainer_skeleton()
+            return
+        if path.startswith(_EXPLAINER_SECTION_PREFIX):
+            self._handle_explainer_section(path[len(_EXPLAINER_SECTION_PREFIX) :])
+            return
         if path == "/console/cancel":
             self._handle_console_cancel()
             return
@@ -777,6 +834,194 @@ class _Handler(BaseHTTPRequestHandler):
         # Caller's RPC response carries the summary so the requesting
         # tab doesn't need to wait for its own SSE event to round-trip.
         self._json(200, result)
+
+    # --- change explainer (ADR 0007) -----------------------------------
+
+    def _run_shas(self) -> tuple[str, str]:
+        """The `(base_sha, head_sha)` the current viewer JSON was built for.
+
+        The explainer document is invalidated wholesale when this pair
+        moves, so it is the identity a persisted document is checked
+        against on load.
+        """
+        pr = (self.ctx.viewer_json or {}).get("pr") or {}
+        return (str(pr.get("base_sha", "")), str(pr.get("head_sha", "")))
+
+    def _load_explainer_document(self) -> dict[str, Any] | None:
+        """The run's persisted document, or None when there isn't one.
+
+        Local import: the explainer schema is pydantic, and this module
+        is stdlib-only so a `--no-augment` review never pays for it.
+        """
+        from ..augment import explainer_schema
+
+        base_sha, head_sha = self._run_shas()
+        doc = explainer_schema.load_explainer(self.ctx.run_dir, base_sha=base_sha, head_sha=head_sha)
+        return None if doc is None else doc.model_dump(mode="json")
+
+    def _handle_get_explainer(self) -> None:
+        """Serve the persisted document, or 404 when none has been made.
+
+        404 is the "press the button" state, not an error: generation is
+        reviewer-initiated, and a document nobody asked for costs
+        nothing precisely because it does not exist.
+        """
+        if not self.ctx.explainer_enabled:
+            self._json(409, {"error": "the change explainer is disabled for this review"})
+            return
+        from ..augment.explainer_schema import ExplainerCorrupt
+
+        try:
+            payload = self._load_explainer_document()
+        except ExplainerCorrupt as e:
+            log.warning("explainer.json is unreadable: %s", e)
+            self._json(500, {"error": str(e)})
+            return
+        if payload is None:
+            self._json(404, {"error": "no explainer document for this diff"})
+            return
+        self._json(200, payload)
+
+    def _handle_explainer_skeleton(self) -> None:
+        """Generate the document skeleton, persist it, fan it out.
+
+        Idempotent against an existing document: a second press (or a
+        second tab) gets what is already on disk rather than paying for
+        the call again. One generation at a time — a concurrent POST
+        gets 409, mirroring the console's single-turn rule.
+        """
+        if self.ctx.explainer_generator is None:
+            # Two states, one of which clears itself: the feature is off
+            # for this review (permanent), or the generator is not bound
+            # yet because augmentation has not finished (transient, so
+            # `retry` — the caller re-queues rather than latching the
+            # section to `failed` for a condition that resolves).
+            if not self.ctx.explainer_enabled:
+                self._json(409, {"error": "the change explainer is disabled for this review"})
+                return
+            self._json(409, {"error": "augmentation still in progress", "retry": True})
+            return
+
+        from ..augment.explainer import ExplainerNotReady
+        from ..augment.explainer_schema import ExplainerCorrupt
+
+        try:
+            existing = self._load_explainer_document()
+        except ExplainerCorrupt:
+            # A torn or hand-edited document must not wedge the button:
+            # regenerating overwrites it, which is the intended repair.
+            log.warning("explainer.json is unreadable — regenerating", exc_info=True)
+            existing = None
+        if existing is not None:
+            self._json(200, existing)
+            return
+
+        with self.ctx.state_lock:
+            if self.ctx.explainer_busy:
+                # `retry`: another pass holds the slot, which clears on its
+                # own. Distinct from the readiness 409 (which carries
+                # `total`) and from a real failure — a caller that treats
+                # this as terminal makes the reviewer press again for a
+                # condition that resolves itself.
+                self._json(409, {"error": "an explainer pass is already running", "retry": True})
+                return
+            self.ctx.explainer_busy = True
+        try:
+            payload = asyncio.run(self.ctx.explainer_generator())
+        except ExplainerNotReady as e:
+            self._json(409, {"error": str(e)})
+            return
+        except Exception as e:
+            log.exception("explainer skeleton failed")
+            self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            return
+        finally:
+            with self.ctx.state_lock:
+                self.ctx.explainer_busy = False
+
+        _ctx_publish(self.ctx, "explainer", payload)
+        self._json(200, payload)
+
+    def _handle_explainer_section(self, section_id: str) -> None:
+        """Write the prose for the call that owns a section; fan it out.
+
+        The route addresses a section; what runs is the pass that writes
+        it, and a pass may write more than one (ADR 0007 addendum —
+        Intuition and Code are merged). POSTing either of a merged pair
+        runs the same call and lands both, which is why the response is
+        the whole document rather than the section: a caller that does
+        not know they are merged still sees everything that changed.
+
+        Generation is reviewer-initiated: the viewer POSTs here the
+        first time a `pending` section is opened. The same
+        one-pass-at-a-time rule as the skeleton applies, and it is also
+        what keeps two calls from interleaving their read-modify-write
+        of `explainer.json`.
+
+        A call whose anchored hunks are not all annotated is a 409
+        carrying the counts — the reviewer is told what it is waiting
+        for rather than handed prose written over the gaps. A pass that
+        raises is a 500, but its sections are already persisted `failed`
+        and the updated document is fanned out first, so every tab sees
+        the retryable state.
+        """
+        if self.ctx.explainer_section_generator is None:
+            # Two states, one of which clears itself: the feature is off
+            # for this review (permanent), or the generator is not bound
+            # yet because augmentation has not finished (transient, so
+            # `retry` — the caller re-queues rather than latching the
+            # section to `failed` for a condition that resolves).
+            if not self.ctx.explainer_enabled:
+                self._json(409, {"error": "the change explainer is disabled for this review"})
+                return
+            self._json(409, {"error": "augmentation still in progress", "retry": True})
+            return
+
+        from ..augment.explainer import ExplainerNotReady
+        from ..augment.explainer_section import SectionFailed, SectionNotFound, SectionNotReady
+
+        with self.ctx.state_lock:
+            if self.ctx.explainer_busy:
+                # `retry`: another pass holds the slot, which clears on its
+                # own. Distinct from the readiness 409 (which carries
+                # `total`) and from a real failure — a caller that treats
+                # this as terminal makes the reviewer press again for a
+                # condition that resolves itself.
+                self._json(409, {"error": "an explainer pass is already running", "retry": True})
+                return
+            self.ctx.explainer_busy = True
+        try:
+            payload = asyncio.run(self.ctx.explainer_section_generator(section_id))
+        except SectionNotFound:
+            self._json(404, {"error": f"no section {section_id!r} in this document"})
+            return
+        except SectionNotReady as e:
+            self._json(
+                409,
+                {
+                    "error": f"{e.annotated} of {e.total} hunks under this section are annotated",
+                    "annotated": e.annotated,
+                    "total": e.total,
+                },
+            )
+            return
+        except ExplainerNotReady as e:
+            self._json(409, {"error": str(e)})
+            return
+        except SectionFailed as e:
+            _ctx_publish(self.ctx, "explainer", e.document)
+            self._json(500, {"error": str(e)})
+            return
+        except Exception as e:
+            log.exception("explainer section %s failed", section_id)
+            self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            return
+        finally:
+            with self.ctx.state_lock:
+                self.ctx.explainer_busy = False
+
+        _ctx_publish(self.ctx, "explainer", payload)
+        self._json(200, payload)
 
     # --- console (free-form Q&A) ---------------------------------------
 
@@ -1012,6 +1257,40 @@ class _Handler(BaseHTTPRequestHandler):
         self.ctx.done_event.set()
 
 
+def _is_client_hangup(exc: BaseException | None) -> bool:
+    """True when ``exc`` is — or was raised from — a client hanging up."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, ConnectionResetError | BrokenPipeError):
+            return True
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+class _ReviewHTTPServer(ThreadingHTTPServer):
+    """A ThreadingHTTPServer that stays quiet when a client hangs up.
+
+    A browser dropping a connection mid-request — Chrome freezes
+    background tabs and tears their sockets down — reaches
+    ``handle_error`` as a ConnectionResetError / BrokenPipeError, which
+    stdlib prints as a full traceback on stderr. Routine here, and next
+    to the review's own output it reads as a crash. Every other
+    exception keeps the traceback: those are ours.
+    """
+
+    def handle_error(
+        self,
+        request: socket.socket | tuple[bytes, socket.socket],
+        client_address: str | tuple[str, int],
+    ) -> None:
+        exc = sys.exception()
+        if _is_client_hangup(exc):
+            log.debug("client %s disconnected mid-request: %r", client_address, exc)
+            return
+        super().handle_error(request, client_address)
+
+
 class ReviewServer:
     """Thin wrapper over :class:`ThreadingHTTPServer`.
 
@@ -1034,6 +1313,7 @@ class ReviewServer:
         post_callback: PostCallable | None = None,
         post_meta: dict[str, Any] | None = None,
         debug: bool = False,
+        explainer: bool = False,
     ) -> None:
         self.run_dir = run_dir
         self.store = CommentStore(run_dir / "comments.json")
@@ -1047,10 +1327,11 @@ class ReviewServer:
             post_callback=post_callback,
             post_meta=post_meta,
             debug=debug,
+            explainer_enabled=explainer,
         )
         self._host = host
         self._port = port
-        self._httpd: ThreadingHTTPServer | None = None
+        self._httpd: _ReviewHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
@@ -1063,7 +1344,7 @@ class ReviewServer:
         _Bound.ctx = ctx  # type: ignore[assignment]
         handler_cls = _Bound
 
-        self._httpd = ThreadingHTTPServer((self._host, self._port), handler_cls)
+        self._httpd = _ReviewHTTPServer((self._host, self._port), handler_cls)
         self._httpd.daemon_threads = True
         self._port = self._httpd.server_address[1]
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
@@ -1101,6 +1382,24 @@ class ReviewServer:
         """
         self.ctx.console_asker = asker
 
+    def set_explainer_generator(self, generator: ExplainerGenerator | None) -> None:
+        """Install (or clear) the change-explainer skeleton generator.
+
+        ``serve_review`` calls this once augmentation completes: the
+        skeleton is seeded with the overview, so it needs the sidecar on
+        disk. Before then /explainer/skeleton returns 409.
+        """
+        self.ctx.explainer_generator = generator
+
+    def set_explainer_section_generator(self, generator: ExplainerSectionGenerator | None) -> None:
+        """Install (or clear) the change-explainer per-section generator.
+
+        Wired at the same moment as the skeleton generator, and for the
+        same reason: a section is seeded with the hunk intents under it,
+        which only exist once the sidecar does.
+        """
+        self.ctx.explainer_section_generator = generator
+
     def update_viewer_json(self, viewer_json: dict[str, Any]) -> None:
         """Replace the JSON returned by ``GET /data.json``.
 
@@ -1117,17 +1416,40 @@ class ReviewServer:
         idle_poll: float = 5.0,
         on_poll: Callable[[], None] | None = None,
     ) -> bool:
-        """Block until /exit fires or ``timeout`` elapses. Returns True on clean exit."""
-        deadline = time.time() + timeout
+        """Block until /exit fires or the server sits idle for ``timeout``
+        seconds. Returns True on clean exit, False on the idle timeout.
+
+        Idle means two things at once: no request has been handled
+        (``ctx.last_activity``, set by every route) and no viewer is
+        holding an SSE stream open. An open tab is attention, so a
+        reviewer reading for an hour without clicking anything is never
+        cut off; a closed tab — or one Chrome froze until its socket
+        dropped — starts the countdown.
+        """
+        # The later of the last handled request and the last poll that
+        # saw a viewer. Carrying the observation forward is what starts
+        # the countdown when a tab drops, rather than at whenever that
+        # tab last made a request.
+        last_seen = self.ctx.last_activity
         while not self.done_event.is_set():
-            remaining = max(0.0, deadline - time.time())
-            if remaining <= 0:
+            if self._connected_viewers():
+                last_seen = time.time()
+            last_seen = max(last_seen, self.ctx.last_activity)
+            idle = time.time() - last_seen
+            if idle >= timeout:
                 return False
-            if self.done_event.wait(timeout=min(idle_poll, remaining)):
+            if self.done_event.wait(timeout=min(idle_poll, timeout - idle)):
                 return True
             if on_poll is not None:
                 on_poll()
         return True
+
+    def _connected_viewers(self) -> int:
+        """How many viewers hold an open SSE stream. Read under
+        ``state_lock``, which the handler threads take to (un)register.
+        """
+        with self.ctx.state_lock:
+            return len(self.ctx.subscribers)
 
     def stop(self) -> None:
         # Wake any SSE handler threads parked on their queue so they

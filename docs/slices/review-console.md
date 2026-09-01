@@ -74,12 +74,13 @@ The tracer bullet: a working text Q&A console, thinnest everything.
   (left) sharing the bar with the existing status counts (right);
   focusable by click or `Ctrl-P` (intercept browser Print). On submit,
   POST and render the answer as **plain text** in a transcript drawer
-  that grows upward (to ~50–60vh, then scrolls). `Esc` collapses + drops
-  history.
+  that grows upward (to ~50–60vh, then scrolls). `Esc` in the prompt
+  collapses + drops history.
 
 **Done when:** in an SDK-backed `scr review`, the reviewer focuses the
 bar, asks a question, and a tool-grounded plain-text answer appears in
-the drawer; follow-ups retain context; `Esc` clears the conversation;
+the drawer; follow-ups retain context; `Esc` in the prompt clears the
+conversation;
 the bar is absent on `--no-augment` / static `render`.
 
 ## Slice 2 — Streaming over SSE, with cancel (SDK) ✅ done

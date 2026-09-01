@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import queue
+import socket
+import struct
 import threading
 import time
 import urllib.error
@@ -13,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from semantic_code_review.augment import explainer_schema
 from semantic_code_review.review.comments import Comment, format_markdown
 from semantic_code_review.review.server import ReviewServer
 
@@ -344,6 +349,86 @@ def test_wait_until_done_times_out_cleanly(server) -> None:
     t.start()
     t.join(timeout=2.0)
     assert result["done"] is False
+
+
+def _spawn_waiter(server, *, timeout: float, idle_poll: float) -> tuple[threading.Thread, dict]:
+    """Run wait_until_done off-thread; the dict carries its verdict."""
+    result: dict = {"done": None}
+
+    def wait():
+        result["done"] = server.wait_until_done(timeout=timeout, idle_poll=idle_poll)
+
+    t = threading.Thread(target=wait, daemon=True)
+    t.start()
+    return t, result
+
+
+def test_an_open_viewer_is_not_idle(server) -> None:
+    """A registered SSE subscriber holds the server open indefinitely;
+    the countdown only starts once the last one goes away."""
+    q: queue.Queue = queue.Queue()
+    with server.ctx.state_lock:
+        server.ctx.subscribers.append(q)
+
+    t, result = _spawn_waiter(server, timeout=0.2, idle_poll=0.02)
+    t.join(timeout=1.0)
+    assert t.is_alive()
+    assert result["done"] is None
+
+    with server.ctx.state_lock:
+        server.ctx.subscribers.remove(q)
+    t.join(timeout=2.0)
+    assert result["done"] is False
+
+
+def test_a_request_resets_the_idle_countdown(server) -> None:
+    """Every route touches `last_activity`, and the countdown restarts
+    from it — so a reviewer poking the server outlives the window."""
+    t, result = _spawn_waiter(server, timeout=0.3, idle_poll=0.02)
+    for _ in range(6):
+        _request(server.url() + "/data.json")
+        time.sleep(0.1)
+    assert result["done"] is None
+
+    t.join(timeout=3.0)
+    assert result["done"] is False
+
+
+def test_exit_beats_the_idle_countdown(server) -> None:
+    """/exit returns True promptly even with the idle window wide open."""
+    t, result = _spawn_waiter(server, timeout=60.0, idle_poll=0.02)
+    _request(server.url() + "/exit", "POST", {})
+    t.join(timeout=5.0)
+    assert result["done"] is True
+
+
+# --- client hangups -----------------------------------------------------
+
+
+def test_a_dropped_connection_is_logged_not_printed(server, capfd, caplog) -> None:
+    """A client that vanishes mid-request costs a debug line, not a
+    traceback on the reviewer's terminal, and the server keeps serving."""
+    caplog.set_level(logging.DEBUG, logger="semantic_code_review.review.server")
+    port = int(server.url().rsplit(":", 1)[1])
+    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    # Headers left unterminated, so the handler is parked in readline when
+    # the reset lands; SO_LINGER with a zero timeout sends RST rather than
+    # FIN, which is what a frozen tab's teardown looks like to the server.
+    s.sendall(b"GET /data.json HTTP/1.1\r\nHost: localhost\r\n")
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    s.close()
+
+    for _ in range(100):
+        if any("disconnected mid-request" in r.getMessage() for r in caplog.records):
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("hangup never reached handle_error")
+
+    code, body = _request(server.url() + "/data.json")
+    assert code == 200
+    assert body["version"] == "1"
+    assert "Traceback" not in capfd.readouterr().err
 
 
 # --- /events SSE channel ------------------------------------------------
@@ -1141,6 +1226,19 @@ def test_serve_review_serves_pending_then_streams_and_finalises(tmp_path: Path) 
     assert "r" in result_box
 
 
+def test_serve_review_reports_the_idle_shutdown(tmp_path: Path, capsys) -> None:
+    """Both CLI entry points come through serve_review, so the idle
+    shutdown names itself here — once, before either prints comments."""
+    from semantic_code_review.review.runner import serve_review
+
+    _populate_minimal_run_dir(tmp_path)
+    (tmp_path / "augmented.diff").write_text(_RAW_DIFF_FOR_RUN, encoding="utf-8")
+
+    result = serve_review(tmp_path, port=0, timeout=1, open_browser=False)
+    assert result.clean is False
+    assert "idle timeout — 1s with no request and no open viewer" in capsys.readouterr().err
+
+
 # --- /file-text (rendered markdown mode) -------------------------------
 
 
@@ -1253,3 +1351,350 @@ def test_format_markdown_nonempty() -> None:
     assert "> line one" in md
     assert "> line two" in md
     assert "2 comments total" in md
+
+
+# --- change explainer (ADR 0007) ----------------------------------------
+
+
+def _explainer_doc(base_sha: str = "base1234", head_sha: str = "head5678") -> dict:
+    return {
+        "version": explainer_schema.DOCUMENT_VERSION,
+        "base_sha": base_sha,
+        "head_sha": head_sha,
+        "verdict": "narrate",
+        "verdict_note": "a cursor threaded from the proto to the client.",
+        "figure_family": "boxes are services",
+        "cast": ["ListRequest"],
+        "toy_data": False,
+        "turns_used": 0,
+        "sections": [
+            {
+                "id": "background",
+                "kind": "background",
+                "pass_id": "background",
+                "title": "Background",
+                "state": "pending",
+            },
+            {
+                "id": "map",
+                "kind": "map",
+                "pass_id": "skeleton",
+                "title": "Map",
+                "state": "ready",
+                "refs": [{"kind": "file", "id": "F0"}],
+                "map_rows": [{"ref": {"kind": "file", "id": "F0"}, "why": "the contract"}],
+            },
+        ],
+        "dropped_refs": 0,
+    }
+
+
+def _explainer_server(tmp_path: Path, *, enabled: bool = True) -> ReviewServer:
+    viewer_json = {
+        "version": "1",
+        "pr": {"base_sha": "base1234", "head_sha": "head5678"},
+        "files": [],
+    }
+    srv = ReviewServer(run_dir=tmp_path, viewer_json=viewer_json, explainer=enabled)
+    srv.start()
+    return srv
+
+
+def test_data_json_advertises_whether_the_explainer_exists(tmp_path: Path) -> None:
+    """The viewer decides whether to mount the overview-mode button on
+    its first /data.json, long before augmentation finishes — so the
+    flag rides the payload rather than waiting for the wire-up."""
+    for enabled in (True, False):
+        srv = _explainer_server(tmp_path, enabled=enabled)
+        try:
+            _code, data = _request(srv.url() + "/data.json")
+            assert data["explainer"] is enabled
+        finally:
+            srv.stop()
+
+
+def test_explainer_skeleton_409s_before_the_generator_is_wired(tmp_path: Path) -> None:
+    """A --no-augment review, or one still augmenting, has no backend to
+    run the pass — same contract as /fold-summary and /console/ask."""
+    srv = _explainer_server(tmp_path)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _request(srv.url() + "/explainer/skeleton", "POST", {})
+        assert e.value.code == 409
+        assert "augmentation" in json.loads(e.value.read())["error"]
+    finally:
+        srv.stop()
+
+
+def test_explainer_routes_409_when_the_feature_is_disabled(tmp_path: Path) -> None:
+    """Disabled is a different answer from not-ready, and the message
+    says so — otherwise the viewer tells the reviewer to wait forever."""
+    srv = _explainer_server(tmp_path, enabled=False)
+    try:
+        for method, path in (("POST", "/explainer/skeleton"), ("GET", "/explainer")):
+            with pytest.raises(urllib.error.HTTPError) as e:
+                _request(srv.url() + path, method, {} if method == "POST" else None)
+            assert e.value.code == 409
+            assert "disabled" in json.loads(e.value.read())["error"]
+    finally:
+        srv.stop()
+
+
+def test_get_explainer_404s_until_one_is_generated(tmp_path: Path) -> None:
+    """404 is the press-the-button state, not an error: generation is
+    reviewer-initiated and an ungenerated document costs nothing."""
+    srv = _explainer_server(tmp_path)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _request(srv.url() + "/explainer")
+        assert e.value.code == 404
+    finally:
+        srv.stop()
+
+
+def test_explainer_skeleton_persists_broadcasts_and_serves(tmp_path: Path) -> None:
+    """Transport: the route dispatches to the wired-in generator, fans
+    the document out over the SSE bus, and GET serves it afterwards."""
+    srv = _explainer_server(tmp_path)
+    try:
+        calls = []
+
+        async def fake_generator() -> dict:
+            calls.append(1)
+            doc = _explainer_doc()
+            (tmp_path / "explainer.json").write_text(json.dumps(doc), encoding="utf-8")
+            return doc
+
+        srv.set_explainer_generator(fake_generator)
+
+        conn = HTTPConnection("127.0.0.1", int(srv.url().rsplit(":", 1)[1]), timeout=5)
+        conn.request("GET", "/events")
+        events_resp = conn.getresponse()
+        assert events_resp.status == 200
+        events_resp.fp.readline()
+        events_resp.fp.readline()
+        for _ in range(50):
+            with srv.ctx.state_lock:
+                if srv.ctx.subscribers:
+                    break
+            time.sleep(0.01)
+
+        code, body = _request(srv.url() + "/explainer/skeleton", "POST", {})
+        assert code == 200
+        assert body["sections"][-1]["map_rows"][0]["why"] == "the contract"
+
+        events_resp.fp.readline()  # id
+        assert events_resp.fp.readline() == b"event: explainer\n"
+        frame = json.loads(events_resp.fp.readline().split(b"data: ", 1)[1])
+        assert frame["verdict"] == "narrate"
+        events_resp.fp.readline()  # trailing blank
+        conn.close()
+
+        # GET now serves what was persisted, and a second press reuses it
+        # rather than paying for the call twice.
+        code, served = _request(srv.url() + "/explainer")
+        assert code == 200
+        assert served["verdict_note"].startswith("a cursor")
+        _request(srv.url() + "/explainer/skeleton", "POST", {})
+        assert len(calls) == 1
+    finally:
+        srv.stop()
+
+
+def test_explainer_discards_a_document_from_another_diff(tmp_path: Path) -> None:
+    """The run moved on; the prose describes code that may be gone. The
+    document is dropped wholesale rather than re-anchored, so GET is
+    back to the press-the-button state."""
+    (tmp_path / "explainer.json").write_text(json.dumps(_explainer_doc(head_sha="stale999")), encoding="utf-8")
+    srv = _explainer_server(tmp_path)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _request(srv.url() + "/explainer")
+        assert e.value.code == 404
+    finally:
+        srv.stop()
+
+
+def test_explainer_skeleton_regenerates_over_a_corrupt_document(tmp_path: Path) -> None:
+    """A torn write must not wedge the button — regenerating is the
+    repair. GET still reports the corruption loudly."""
+    (tmp_path / "explainer.json").write_text("{ not json", encoding="utf-8")
+    srv = _explainer_server(tmp_path)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _request(srv.url() + "/explainer")
+        assert e.value.code == 500
+
+        async def fake_generator() -> dict:
+            return _explainer_doc()
+
+        srv.set_explainer_generator(fake_generator)
+        code, body = _request(srv.url() + "/explainer/skeleton", "POST", {})
+        assert code == 200
+        assert body["verdict"] == "narrate"
+    finally:
+        srv.stop()
+
+
+def test_explainer_skeleton_maps_not_ready_to_409(tmp_path: Path) -> None:
+    srv = _explainer_server(tmp_path)
+    try:
+        from semantic_code_review.augment.explainer import ExplainerNotReady
+
+        async def fake_generator() -> dict:
+            raise ExplainerNotReady("augmented.scr.json missing — augment not complete")
+
+        srv.set_explainer_generator(fake_generator)
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _request(srv.url() + "/explainer/skeleton", "POST", {})
+        assert e.value.code == 409
+        assert "augment not complete" in json.loads(e.value.read())["error"]
+    finally:
+        srv.stop()
+
+
+def test_explainer_skeleton_failure_is_a_500_not_a_crash(tmp_path: Path) -> None:
+    srv = _explainer_server(tmp_path)
+    try:
+
+        async def fake_generator() -> dict:
+            raise RuntimeError("model said no")
+
+        srv.set_explainer_generator(fake_generator)
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _request(srv.url() + "/explainer/skeleton", "POST", {})
+        assert e.value.code == 500
+        assert "model said no" in json.loads(e.value.read())["error"]
+        # The failure released the busy flag, so a retry is possible.
+        assert srv.ctx.explainer_busy is False
+    finally:
+        srv.stop()
+
+
+def test_explainer_section_409s_before_the_generator_is_wired(tmp_path: Path) -> None:
+    srv = _explainer_server(tmp_path)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _request(srv.url() + "/explainer/section/code", "POST", {})
+        assert e.value.code == 409
+    finally:
+        srv.stop()
+
+
+def test_explainer_section_writes_broadcasts_and_serves(tmp_path: Path) -> None:
+    """Transport: the route dispatches on the section id, fans the whole
+    document out (a section write is a document write) and returns it."""
+    srv = _explainer_server(tmp_path)
+    try:
+        asked: list[str] = []
+
+        async def fake_generator(section_id: str) -> dict:
+            asked.append(section_id)
+            doc = _explainer_doc()
+            doc["sections"][0].update({"state": "ready", "body": "the system before."})
+            (tmp_path / "explainer.json").write_text(json.dumps(doc), encoding="utf-8")
+            return doc
+
+        srv.set_explainer_section_generator(fake_generator)
+
+        conn = HTTPConnection("127.0.0.1", int(srv.url().rsplit(":", 1)[1]), timeout=5)
+        conn.request("GET", "/events")
+        events_resp = conn.getresponse()
+        assert events_resp.status == 200
+        events_resp.fp.readline()
+        events_resp.fp.readline()
+        for _ in range(50):
+            with srv.ctx.state_lock:
+                if srv.ctx.subscribers:
+                    break
+            time.sleep(0.01)
+
+        code, body = _request(srv.url() + "/explainer/section/background", "POST", {})
+        assert code == 200
+        assert asked == ["background"]
+        assert body["sections"][0]["body"] == "the system before."
+
+        events_resp.fp.readline()  # id
+        assert events_resp.fp.readline() == b"event: explainer\n"
+        conn.close()
+    finally:
+        srv.stop()
+
+
+def test_explainer_section_reports_what_it_is_waiting_for(tmp_path: Path) -> None:
+    """Prose over half the intents reads as fluently as prose over all of
+    them, so the reviewer is told the counts rather than handed the
+    prose."""
+    srv = _explainer_server(tmp_path)
+    try:
+        from semantic_code_review.augment.explainer_section import SectionNotReady
+
+        async def fake_generator(section_id: str) -> dict:
+            raise SectionNotReady(12, 31)
+
+        srv.set_explainer_section_generator(fake_generator)
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _request(srv.url() + "/explainer/section/code", "POST", {})
+        assert e.value.code == 409
+        payload = json.loads(e.value.read())
+        assert (payload["annotated"], payload["total"]) == (12, 31)
+    finally:
+        srv.stop()
+
+
+def test_explainer_section_404s_on_a_section_that_is_not_there(tmp_path: Path) -> None:
+    srv = _explainer_server(tmp_path)
+    try:
+        from semantic_code_review.augment.explainer_section import SectionNotFound
+
+        async def fake_generator(section_id: str) -> dict:
+            raise SectionNotFound(section_id)
+
+        srv.set_explainer_section_generator(fake_generator)
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _request(srv.url() + "/explainer/section/nonesuch", "POST", {})
+        assert e.value.code == 404
+    finally:
+        srv.stop()
+
+
+def test_a_failed_section_is_broadcast_so_every_tab_sees_it_retryable(tmp_path: Path) -> None:
+    """The pass raised, but the section is persisted `failed` — the other
+    tabs must not sit on `pending` forever."""
+    srv = _explainer_server(tmp_path)
+    try:
+        from semantic_code_review.augment.explainer_section import SectionFailed
+
+        failed = _explainer_doc()
+        failed["sections"][0]["state"] = "failed"
+
+        async def fake_generator(section_id: str) -> dict:
+            raise SectionFailed("RuntimeError: model said no", failed)
+
+        srv.set_explainer_section_generator(fake_generator)
+
+        conn = HTTPConnection("127.0.0.1", int(srv.url().rsplit(":", 1)[1]), timeout=5)
+        conn.request("GET", "/events")
+        events_resp = conn.getresponse()
+        events_resp.fp.readline()
+        events_resp.fp.readline()
+        for _ in range(50):
+            with srv.ctx.state_lock:
+                if srv.ctx.subscribers:
+                    break
+            time.sleep(0.01)
+
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _request(srv.url() + "/explainer/section/background", "POST", {})
+        assert e.value.code == 500
+        assert "model said no" in json.loads(e.value.read())["error"]
+
+        events_resp.fp.readline()  # id
+        assert events_resp.fp.readline() == b"event: explainer\n"
+        frame = json.loads(events_resp.fp.readline().split(b"data: ", 1)[1])
+        assert frame["sections"][0]["state"] == "failed"
+        conn.close()
+        # The busy flag is released, so a retry is possible.
+        assert srv.ctx.explainer_busy is False
+    finally:
+        srv.stop()

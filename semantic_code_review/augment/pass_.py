@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -78,9 +79,12 @@ async def run_pass(
     cache_inputs: tuple[Any, ...],
     deps: Any = None,
     model_settings: Any = None,
+    request_limit: int | None = None,
     cache: CacheStore | None = None,
     trace_path: Path | None = None,
     cache_request: dict[str, Any] | None = None,
+    payload_extra: Callable[[], dict[str, Any]] | None = None,
+    on_requests: Callable[[int], None] | None = None,
 ) -> dict[str, Any] | None:
     """Run one LLM pass through the shared recipe.
 
@@ -94,6 +98,22 @@ async def run_pass(
     across the SDK/CLI driver split for the same logical model. The
     trace envelope records ``str(client.model)`` instead so the
     diagnostic surface carries the precise model identifier.
+
+    ``payload_extra`` supplies facts about the run that the model did not
+    submit — the explainer's prose passes record the files their tool
+    loop opened this way. They are merged into the payload *before* it is
+    cached, so a cache hit restores them too: provenance that survives
+    the prose it belongs to is the only kind worth rendering.
+
+    ``on_requests`` reports the model requests spent, for a caller
+    metering a budget across several passes. It is the driver's own
+    count — the figure ``UsageLimits`` meters against ``request_limit``
+    and the one ``turn_budget.used`` puts in the trace — so a shared
+    budget and the ceiling that enforces it cannot disagree. It counts a
+    final request that errored and fires on the raising path too. It
+    fires once per agent attempt, not once per pass: a grammar retry
+    re-drives the whole loop and genuinely re-bills it, so the caller
+    adds them up. A cache hit spends nothing and reports ``0``.
     """
     key = None
     if cache is not None:
@@ -102,13 +122,18 @@ async def run_pass(
         if entry is not None:
             if trace_path is not None:
                 _write_cache_hit_marker(trace_path, meta.name, entry)
+            if on_requests is not None:
+                on_requests(0)
             return entry["response"]
 
     # Bound the agentic loop. The CLI drivers get this from `--max-turns`;
     # SDK backends have no equivalent, so without a limit here a pass that
     # cannot answer its question keeps investigating until pydantic-ai's
     # default ceiling — losing the hunk after spending the most on it.
-    usage_limits = UsageLimits(request_limit=client.request_limit) if client.request_limit else None
+    # `request_limit` lets a pass narrow that to its own budget; the
+    # effective figure and the requests actually made go to the trace.
+    limit = request_limit if request_limit is not None else client.request_limit
+    usage_limits = UsageLimits(request_limit=limit) if limit else None
     # The last attempt is outside the loop so the function has one exit on
     # each path — the retries swallow the grammar error, the final call
     # propagates whatever it raises.
@@ -123,10 +148,13 @@ async def run_pass(
                 deps=deps,
                 model_settings=model_settings,
                 usage_limits=usage_limits,
+                turn_cap=limit,
                 cache=cache,
                 key=key,
                 trace_path=trace_path,
                 cache_request=cache_request,
+                payload_extra=payload_extra,
+                on_requests=on_requests,
             )
         except Exception as exc:
             if _GRAMMAR_TIMEOUT not in str(exc):
@@ -148,10 +176,13 @@ async def run_pass(
         deps=deps,
         model_settings=model_settings,
         usage_limits=usage_limits,
+        turn_cap=limit,
         cache=cache,
         key=key,
         trace_path=trace_path,
         cache_request=cache_request,
+        payload_extra=payload_extra,
+        on_requests=on_requests,
     )
 
 
@@ -181,10 +212,13 @@ async def _drive_agent(
     deps: Any,
     model_settings: Any,
     usage_limits: Any,
+    turn_cap: int | None,
     cache: CacheStore | None,
     key: CacheKey | None,
     trace_path: Path | None,
     cache_request: dict[str, Any] | None,
+    payload_extra: Callable[[], dict[str, Any]] | None,
+    on_requests: Callable[[int], None] | None,
 ) -> dict[str, Any] | None:
     """One attempt at the agent loop: drive, trace, account, cache."""
     async with agent.iter(
@@ -197,6 +231,13 @@ async def _drive_agent(
             async for _ in agent_run:
                 pass
         except BaseException as exc:
+            # Charged before the trace write and before any re-raise: a
+            # loop that died at its ceiling spent every request it made,
+            # and a budget that only counts successful passes is one a
+            # failing pass can spend without limit.
+            requests_used = agent_run.usage.requests  # pydantic-ai 2.x: property, not a method
+            if on_requests is not None:
+                on_requests(requests_used)
             if trace_path is not None:
                 write_partial_trace(
                     list(agent_run.all_messages()),
@@ -206,6 +247,8 @@ async def _drive_agent(
                     tool_names=list(meta.tool_names),
                     submit_tool=meta.submit_tool,
                     error=exc,
+                    turn_cap=turn_cap,
+                    requests_used=requests_used,
                 )
             if meta.swallow_errors:
                 log.warning(
@@ -220,6 +263,13 @@ async def _drive_agent(
 
     assert run_result is not None  # the agent run completed without an early return
 
+    # The driver's own count, which is what `UsageLimits` meters against
+    # `request_limit` — a caller charging a shared budget and the
+    # ceiling that cut the loop off have to be counting the same thing.
+    requests_used = run_result.usage.requests
+    if on_requests is not None:
+        on_requests(requests_used)
+
     if trace_path is not None:
         write_pydantic_ai_trace(
             run_result,
@@ -228,9 +278,13 @@ async def _drive_agent(
             system=system,
             tool_names=list(meta.tool_names),
             submit_tool=meta.submit_tool,
+            turn_cap=turn_cap,
+            requests_used=requests_used,
         )
 
     payload = submit_args_from_result(run_result)
+    if payload_extra is not None:
+        payload = {**payload, **payload_extra()}
 
     if cache is not None and key is not None:
         usage = run_result.usage  # pydantic-ai 2.x: property, not a method

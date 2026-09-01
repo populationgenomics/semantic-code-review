@@ -4,7 +4,7 @@
 // per-type JSON payload, and dispatches to typed handlers the
 // caller registers. The wire format is one EventSource frame per
 // pipeline phase (overview-start, overview, overview-failed,
-// hunk-start, hunk, fold-summary, done); payload shapes live in
+// hunk-start, hunk, fold-summary, explainer, done); payload shapes live in
 // `types.d.ts`. Replay on reconnect is handled by the browser's
 // EventSource implementation (it sends Last-Event-ID automatically;
 // the server replays from its buffer).
@@ -16,6 +16,7 @@ interface SseHandlers {
   hunkStart?: (payload: SseHunkStartEvent) => void;
   hunk?: (payload: SseHunkEvent) => void;
   foldSummary?: (payload: SseFoldSummaryEvent) => void;
+  explainer?: (payload: SseExplainerEvent) => void;
   done?: (payload: SseDoneEvent) => void;
   consoleDelta?: (payload: SseConsoleDeltaEvent) => void;
   consoleTool?: (payload: SseConsoleToolEvent) => void;
@@ -67,6 +68,7 @@ function connect(endpoint: string, handlers: SseHandlers): EventSource | null {
   if (handlers.hunkStart) wireJson<SseHunkStartEvent>("hunk-start", handlers.hunkStart);
   if (handlers.hunk) wireJson<SseHunkEvent>("hunk", handlers.hunk);
   if (handlers.foldSummary) wireJson<SseFoldSummaryEvent>("fold-summary", handlers.foldSummary);
+  if (handlers.explainer) wireJson<SseExplainerEvent>("explainer", handlers.explainer);
   if (handlers.done) wireJson<SseDoneEvent>("done", handlers.done);
   if (handlers.consoleDelta) wireJson<SseConsoleDeltaEvent>("console-delta", handlers.consoleDelta);
   if (handlers.consoleTool) wireJson<SseConsoleToolEvent>("console-tool", handlers.consoleTool);

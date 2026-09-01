@@ -41,6 +41,11 @@ def _user_text(messages: list[ModelMessage]) -> str:
     return "\n".join(parts)
 
 
+def _instructions(messages: list[ModelMessage]) -> str:
+    """Concatenate the system/instruction text of every request in `messages`."""
+    return "\n".join(text for m in messages if (text := getattr(m, "instructions", None)))
+
+
 class _CannedModel(Model):
     """Pydantic-ai Model that returns pre-baked tool calls per pass.
 
@@ -71,6 +76,9 @@ class _CannedModel(Model):
         # Flattened user-prompt text per call, keyed by output tool, so
         # tests can assert what a pass actually sent.
         self.prompts: list[tuple[str, str]] = []
+        # The same calls with their system text as well, for tests that
+        # have to compare a whole envelope rather than a substring.
+        self.envelopes: list[tuple[str, str, str]] = []
 
     @property
     def model_name(self) -> str:
@@ -91,6 +99,7 @@ class _CannedModel(Model):
             raise AssertionError("_CannedModel expects a ToolOutput-driven Agent — no output_tools present")
         tool_name = model_request_parameters.output_tools[0].name
         self.prompts.append((tool_name, _user_text(messages)))
+        self.envelopes.append((tool_name, _instructions(messages), _user_text(messages)))
         if tool_name == "submit_overview":
             args = self._overview
         elif tool_name == "submit_annotations":
@@ -894,3 +903,73 @@ async def test_a_nonsense_batch_size_is_rejected(tmp_path: Path, size: int) -> N
     )
     with pytest.raises(ValueError, match="batch_size must be >= 1"):
         await augment_run_dir(run, model="t", concurrency=8, client=backend, cache=None, batch_size=size)
+
+
+# ---------------------------------------------------------------------------
+# The explainer's house style stops at the explainer.
+# ---------------------------------------------------------------------------
+
+#: A string no prompt in this repo contains, so finding it anywhere in a
+#: per-hunk envelope is unambiguous.
+_HOUSE_STYLE = "HOUSE-STYLE-SENTINEL-8f21: write every intent as a limerick."
+
+
+async def test_a_house_style_for_the_explainer_never_reaches_the_hunk_pass(tmp_path: Path) -> None:
+    """The per-hunk pass's envelope is byte-identical with the house style
+    set and unset.
+
+    The hunk intents are the ground truth the explainer document is
+    written from, and clicking a reference is how a reviewer checks a
+    claim against them. If one instruction could shape both, the document
+    and the annotations could agree because the same text shaped them
+    rather than because both are right — so the annotations stay
+    hermetic.
+
+    Driven through the PR flow's own bundle builder rather than
+    `augment_run_dir` directly: `augment_run_dir` has no parameter for
+    the house style, and the guard worth having is that the layer which
+    *does* hold it hands the pipeline the same envelope either way.
+    """
+    from semantic_code_review.review import pr_flow
+
+    async def envelopes(house_style: str | None) -> list[tuple[str, str, str]]:
+        root = tmp_path / ("styled" if house_style else "plain")
+        root.mkdir()
+        run = _make_run_dir(root)
+        backend, canned = _make_canned_backend(
+            overview_args={"summary": "s", "themes": [], "files": [{"path": "f.py", "summary": "fs"}]},
+            hunk_args_list=[
+                {"intent": "a", "confidence": 90, "smells": []},
+                {"intent": "b", "confidence": 90, "smells": []},
+            ],
+        )
+        opts = pr_flow.PrFlowOptions(
+            repo="o/r",
+            number=1,
+            runs_root=root,
+            augment=True,
+            model="t",
+            concurrency=1,
+            no_cache=True,
+            cache_dir=None,
+            open_browser=False,
+            port=0,
+            timeout=1,
+            extra_review_prompt=None,
+            client=backend,
+            yes=True,
+            explainer_prompt=house_style,
+        )
+        tasks = pr_flow._build_tasks(opts, run)
+        assert tasks.explainer is not None  # the bundle that holds the house style
+        await tasks.augment(run, lambda *_args, **_kwargs: None)
+        return canned.envelopes
+
+    styled = await envelopes(_HOUSE_STYLE)
+    plain = await envelopes(None)
+
+    hunk_envelopes = [e for e in styled if e[0] == "submit_annotations"]
+    assert len(hunk_envelopes) == 2
+    assert hunk_envelopes == [e for e in plain if e[0] == "submit_annotations"]
+    # And no other pass on the pipeline picked it up either.
+    assert not any(_HOUSE_STYLE in system or _HOUSE_STYLE in user for _tool, system, user in styled)

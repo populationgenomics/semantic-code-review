@@ -1,0 +1,659 @@
+# ADR 0007 — Change explainer
+
+- Status: Accepted
+- Date: 2026-08-27
+
+> ADR 0006 (one visibility model), cited throughout, is in flight on
+> PR #11 and not yet on `main`. This ADR is written against it.
+
+## Context
+
+scr's annotations are bottom-up. The per-hunk pass answers "what does
+this hunk do" forty times independently; the overview pass adds a
+summary, themes and hunk groups. Nothing answers "what is this change,
+what did the system look like before it, and in what order should I read
+it."
+
+The gap shows on a change like `themis-internal#365` — 17 files, +2722
+/ −1161. The viewer's first screen is `apps/web/src/gen/themis/rpc/
+literature_pb.ts` because file order is diff order is git's path sort,
+and that file is regenerated exhaust. The file a reviewer must read
+first, `schema/proto/themis/rpc/literature.proto`, is fourth of the five
+non-generated paths. Every semantic decision in the change is stated in
+that proto and restated nowhere.
+
+The theme groups do not close this. `OverviewGroup` is a *filter*:
+members may overlap, groups need not cover every hunk, and the target is
+2–6 per change. Filtering answers "show me the hunks about X" for a
+reviewer who already knows to ask about X. It does not answer "what
+should I look at, and why."
+
+The prior art is a hand-run explainer prompt (Geoffrey Litt's
+`explain-diff`, in use at CPG against real PRs) that produces a
+standalone HTML page: Background, Intuition, a code walkthrough, and a
+reading map. The outputs are good. Two things prevent adopting it as-is.
+It is a one-shot artifact that *duplicates* the diff rather than
+indexing it, so the prose is not clickable and drifts from the code it
+describes. And it references another skill for its drawing mechanics,
+which scr cannot rely on: skills are deliberately disabled on the
+`claude-cli` path (`--disable-slash-commands`, because an
+advertised-but-unloadable skill makes the model hedge), and three of the
+five supported backends have no skill mechanism at all.
+
+### The bar
+
+This ADR assumes the counterfactual is **a human skimming a large diff
+and forming a confident wrong model of it**, not an oracle. That
+happens routinely and leaves no artifact anyone can interrogate. A
+generated explanation that is wrong is wrong in writing, anchored to
+the hunks it claims to describe, and adjacent to a console that can be
+asked to defend it.
+
+Every decision below — no quality gate, no LLM-as-judge, opt-out rather
+than opt-in — rests on that assumption. A future reader who disagrees
+with the bar should expect to revisit all three.
+
+## Decision
+
+### Shape — a document, not a partition
+
+The explainer is a **document about the change**, an extension of the
+change summary, carrying typed references into the diff. It is not a
+second grouping of hunks. The themes axis remains the only partition, so
+there is never a question of why two sidebar selections light up
+different hunk sets.
+
+### Surface — a mode, orthogonal to the collapse level
+
+The viewer gains an **overview mode**, reached from the same control
+strip as the collapse-level buttons (`files` / `hunks` / `segments` /
+`off`) but *not* a member of `CollapseLevel`.
+
+Levels are span sets: ADR 0006's model is that a line is visible iff no
+`HiddenSpan` covers it, and each level seeds `level`-owned spans. The
+overview hides nothing — it replaces the main pane. Encoding it as a
+span covering every line would make the span store assert a reason for
+hiding that is not the real one, and every consumer of the store would
+need a case for it.
+
+Keeping it orthogonal also makes the return trip free: `collapseLevel`
+is untouched while in overview mode, so leaving it restores the
+reviewer's zoom and their hand-set `user`-owned folds without a latch.
+The intended loop is: read the document, drop into the ladder to check
+or comment, return and keep reading. Read position is restored
+**section-granularly** (active section, scrolled to its heading) rather
+than by scroll offset, because offsets go stale when prose streams in
+above them.
+
+In overview mode the sidebar shows the document's section tree in place
+of the themes / files / symbols axes. It takes its own axis id in the
+`<axis>:<id>` localStorage key; switching modes must not clobber the
+diff-mode pill.
+
+### Placement — a route on the live server, not a pipeline pass
+
+Generation is **not** part of `augment_run_dir`. It is a route on
+`serve_review`, following the shipped `/fold-summary` pattern: an async
+LLM closure wired in after augment completes, results fanned out over
+the existing SSE bus, `RepoTools` bound per request. `console.py`
+already demonstrates both halves of this — `RepoTools` constructed per
+turn, `McpHttpHost` opened per turn as a context manager.
+
+Nothing runs until the reviewer asks. The button is **disabled until the
+`overview` SSE event lands** (the skeleton's inputs are the overview and
+the symbol delta; both complete before the per-hunk pass starts), then
+enabled. Pressing it generates the skeleton. Prose is generated per
+section on first open.
+
+This makes spend user-initiated, which matters given the review cost
+curve (~18,994·hunks^1.16 tokens, ~98% of it context re-transmission). A
+document nobody opens costs nothing.
+
+The two halves have different readiness preconditions, and the
+difference is not cosmetic: prose built on half the hunk intents reads
+exactly as fluently as prose built on all of them. A section whose
+anchored hunks are not yet annotated says so and offers to wait.
+
+### Gating — opt-out
+
+A config flag disables the feature; there is no flag to enable it. An
+opt-in gate would mean the reviewers who benefit most — someone opening
+a large change they did not write — are the ones who have not configured
+it. Since generation is press-triggered, default-on costs nothing.
+
+The skeleton may return **"no narrative warranted"** as a first-class
+value, rendered as the document. A three-hunk rename gets "read them
+directly" rather than a padded Background section. This is the same
+distinction the skipped-file placeholder needs between "we chose not to"
+and "the pass failed".
+
+### Sections — four fixed, model-chosen subsections under Code
+
+Top level is fixed: **Map**, **Background**, **Intuition**, **Code**.
+
+Map leads because it is the only section the skeleton can fill, so it
+is what renders the moment the button is pressed. Behind the three
+prose sections the first screen would be entirely things that are not
+ready yet.
+
+The top level is fixed for a structural reason, not an aesthetic one —
+the four behave differently:
+
+| Section | Cache key | Tools | Cost |
+|---|---|---|---|
+| Map | `(base_sha, head_sha)` | no | cheap; part of the skeleton |
+| Background | `base_sha` | yes | expensive |
+| Intuition | `(base_sha, head_sha)` | no | moderate |
+| Code | `(base_sha, head_sha)` | no | moderate |
+
+Background describes the system *before* the change, so it is invariant
+across head movement and across every prompt-iteration re-run on the
+same branch. It is the only section asserting facts about code outside
+the diff, so it is the only one granted tools. A model-chosen section
+list has nowhere to hang any of that: you cannot key a cache on a
+heading the model invented, nor grant tools to "whichever section turns
+out to need the worktree."
+
+**Map** is the reading order — an ordered list of files with one
+sentence of *why* each. It is the direct answer to the case in Context,
+it is the cheapest section, and it is worth the most at t=0. It is
+produced by the skeleton, so it renders the moment the button is
+pressed, with prose filling in behind it.
+
+Subsections under **Code** are model-chosen, because that is where the
+change-specific grouping lives. For `#365` the natural order is proto
+contract → hand-written consumers → design docs → generated exhaust, and
+no fixed taxonomy produces that.
+
+Background is a separate lazy unit so a reader who knows the codebase
+never pays for it.
+
+### Anchors — file or hunk, validated by membership
+
+A reference addresses a **file** (`F<i>`) or a **hunk**
+(`H<fi>_<hi>`) — the ids the viewer already uses. No line ranges: a
+hunk reference reveals the hunk and the reviewer reads it, and file
+references are what a claim like "these five files are regenerated from
+the proto — skim them" actually needs.
+
+Validation is membership in the two id maps built at render time. An
+invented reference is caught without AST work, which is the failure
+mode `PARKED_IDEAS.md` #17 files as speculative for `refs[]` — avoided
+rather than solved.
+
+Index-based ids appear to contradict CONTEXT.md's rule that durable
+addresses use absolute file lines. They do not, because the document is
+not durable across a moving diff. That rule earns its keep for
+`comments.json`, which must survive a rebase (hence `anchor_status`
+with `file_gone` / `commit_unavailable`). If the head SHA moves, the
+narrative is stale as *prose*: re-anchoring a paragraph describing code
+that no longer exists yields a correct pointer to a wrong sentence. So
+the document is **invalidated wholesale on any change to
+`(base_sha, head_sha)`**, and within one run indices are stable by
+construction.
+
+An invalid reference is **dropped, counted, and surfaced** — not raised,
+not silenced. Aborting the document because one reference of forty is
+bad discards thirty-nine good ones plus the prose; dropping silently is
+how references thin out unnoticed. Coverage ("covers 31 of 47 hunks, 2
+references dropped") is rendered, and doubles as navigation.
+
+### Persistence — its own file
+
+The document is `explainer.json` in the run directory, referencing hunk
+and file ids. It is not a field on `AnnotatedDiff`.
+
+Lazy per-section generation means repeated partial writes. The shipped
+lazy-fold-summary path rewrites `augmented.scr.json` wholesale for each
+summary; adding per-section explainer writes multiplies that churn on a
+file that is already large. A separate file keeps each write small and
+makes a torn write lose the document rather than the annotations.
+
+The lifetimes also differ. `AnnotatedDiff` is the annotation tree for
+the diff; the explainer is a document *about* the change that references
+that tree, regenerable section by section without touching annotations.
+
+It also leaves the emit/parse equivalence contract alone. That contract
+is currently broken in a way this decision must not widen:
+`Overview.groups` is written to the sidecar but dropped by
+`_overview_to_jsonable`, while `lint_text` compares `model_dump()`
+wholesale — so `scr lint --sidecar` reports a mismatch on any run whose
+overview produced groups. Fixing that is a separate change; adding
+another sidecar-only field would have added a second instance of it.
+
+### Prompt carrier — content is backend-agnostic, transport is not
+
+The guidance block is inline in `augment/prompts.py`. No skill
+references: they are unavailable or actively harmful on the backends
+scr supports.
+
+`claude_cli.py` splits its payload — `user_text` goes to **stdin**,
+while `system_text` and `schema_json` go on **argv** (`--system-prompt`,
+`--json-schema`). Long command lines are not free: Cortex XDR, deployed
+on CPG laptops, parses them quadratically.
+
+So the rule is **argv carries only bounded, fixed strings; anything
+that scales with the change, or is bulk guidance, rides stdin**, and the
+guidance block's carrier is chosen per backend on the existing
+`Client.is_subprocess_backend` discriminator — system prompt on SDK
+backends (where it is the cacheable prefix), prepended to stdin on
+subprocess backends (where nothing in the user prompt is cached anyway).
+The model sees the same words either way.
+
+### Presentation — slots, not markup
+
+Prose is **markdown**, rendered by the existing `markdown-it`
+(`html: false`) + DOMPurify path. Everything above plain markdown —
+callouts, skip boxes, figures, the Map table — is a **structured field
+with a closed kind enum**, styled by scr. The model never chooses
+presentation.
+
+Figures are inline SVG in a structured slot, sanitised through
+DOMPurify's SVG profile with presentation attributes stripped and
+`class` filtered to a fixed vocabulary in which every fill and stroke
+resolves to a theme custom property. Consistency comes from constraining
+the *paint*, not the diagram grammar — which leaves layout free, so a
+figure can place two framed regions side by side over a third. Mermaid
+was considered and rejected for this reason; it remains available for
+console answers, which have no such requirement.
+
+The contract both the prompt and the stylesheet must agree on lives in
+[`../explainer-presentation.md`](../explainer-presentation.md). Drift
+between them is how the look degrades.
+
+Overview mode gets **reading typography** — serif, ~18px, ~1.6 line
+height, ~72ch measure — rather than inheriting the diff's dense
+monospace chrome. It is a reading surface and should look like one.
+
+### Console integration
+
+The document is available to the console agent, but not by seeding it
+wholesale: ADR 0002's discipline is "seed compact, pull on demand" and
+the document is unbounded prose. The console's seed grows the **section
+list** (titles and references — bounded); bodies come through a
+`section(id)` accessor beside the existing `hunk(id)`.
+
+`ConsoleSelection` grows a fourth kind, `"explainer"`, carrying
+`section_id`. It is the richest of the four: `_format_selection` can
+inline both the section body and its anchored hunks, so "why does it
+claim this?" arrives with the claim *and* the code the claim is about. A
+code selection can only ever supply the latter. The explainer pane must
+be matched before the `"plain"` fallthrough and must not be swept up by
+the `.console-drawer, .console-input, #status-bar` ignore.
+
+This is the "are you sure?" surface, and it is why no quality gate is
+needed in v1.
+
+### Quality — no gate
+
+Two mechanical affordances, neither a gate:
+
+- **Reference coverage and drop count**, rendered.
+- **Background's read list** as a visible citation. A Background section
+  citing no reads is one that made it up, and that is legible without
+  judging the prose.
+
+No score, no suppression. There is no calibrated score to threshold on,
+and a silently withheld document is worse than a visibly thin one.
+`PARKED_IDEAS.md` #19 (LLM-as-judge harness) stays parked; a judge
+written before fifty real outputs have been read scores the wrong
+things.
+
+## Consequences
+
+- `serve_review` gains explainer routes and `ServerContext` gains the
+  document. `augment_run_dir` is untouched.
+- The run directory gains `explainer.json`; CONTEXT.md's run-directory
+  entry grows accordingly.
+- `StoredViewState` grows a `mode` field and `_VERSION` goes to 2. Older
+  records are discarded with a warning — distinct from the loud
+  `ViewStateError` raised for corruption.
+- Entering overview mode clears `focusReveal`, as touching the collapse
+  slider already does.
+- viewer.css gains reading typography, the affordance styles, and the
+  diagram class vocabulary. It already has the token structure (dark
+  default, `prefers-color-scheme: light` flip); it needs `--accent2`,
+  `--box`, `--box-alt` and the soft variants.
+- A document built from slots is less inventive than one where the model
+  draws the page. Bespoke one-off layout is lost. This is a real trade,
+  taken because model-authored markup is both a styling conflict and an
+  injection surface — prose here derives from a diff that may be
+  hostile, which `console_render.ts` already names as its threat model.
+- Reference resolution and mode switching are new interaction paths in
+  `render.ts`; the diff renderer itself is unchanged.
+
+## Alternatives considered
+
+**Extend the overview pass in place.** Add fields to `Overview` and let
+the existing pass fill them. Rejected: the overview pass has no tools
+(`run_overview_pass` takes no `RepoTools`; the instance is constructed
+after it), so Background would be inferred from diff text alone. It is
+also on the critical path for first render.
+
+**A fourth pipeline pass at position 4.** Runs after the per-hunk pass,
+inside the `AsyncExitStack` where `repo_tools` and a warm `mcp_host` are
+live, modelled on `run_pr_level_extra_review`. Rejected in favour of a
+route: press-triggered generation makes the pipeline stage unnecessary,
+and a route needs no new SSE skeleton event or partially-populated
+pipeline state.
+
+**Hang narration on `OverviewGroup`.** Rejected: groups may overlap and
+may omit hunks, so a narrative built on them silently omits code with no
+way for the reviewer to distinguish omission from "nothing to say".
+
+**The explainer supersedes the themes axis.** Coherent — one semantic
+grouping, better informed. Rejected because the axis would then mean
+different things depending on a config flag.
+
+**A fifth `CollapseLevel`.** Rejected under ADR 0006; see Surface.
+
+**A console conversation with a fixed opening move.** Much less new
+code, and "regenerate with a nudge" falls out of `message_history`.
+Rejected: the document needs a schema, and the console is deliberately
+the one agent without a `ToolOutput` submit tool. Console turns are also
+transient, and this document is persisted.
+
+**Model-authored HTML**, as the prior-art artifact produces. Rejected;
+see Presentation.
+
+**Mermaid for figures.** Rejected; see Presentation.
+
+## Backlog (deliberately not v1)
+
+- Regenerate-a-section-with-a-nudge (`PARKED_IDEAS.md` #3), which this
+  makes natural.
+- Per-section follow-up conversation pinned to the section's references
+  (#4, #6).
+- `scr eval` as the judged-quality instrument (#19).
+- Cross-run reuse of Background beyond the `base_sha` cache key.
+- Fixing the `Overview.groups` emit/parse loss — separate change,
+  required before `scr lint --sidecar` is trustworthy.
+- Whether the **Code** section earns its prose, or collapses to the
+  subsection list that drives navigation. Connective tissue between
+  hunks is what forty independent per-hunk calls structurally cannot
+  produce, so it is kept for v1 — but it is the first section to cut if
+  the document reads bloated.
+
+---
+
+## Addendum — prose passes, one tool grant, one budget (2026-08-28)
+
+Amends **Sections** and **Quality** above. The taxonomy stands; the
+claim that it maps onto calls does not.
+
+### Sections are not calls
+
+The Sections table reads as one row per call. It is now one row per
+*thing a reader navigates*; what gets paid for is a **pass**, and
+`explainer_schema.PROSE_PASSES` is the mapping:
+
+| Pass | Sections | Cache key | Tools |
+|---|---|---|---|
+| skeleton | Map | `(base_sha, head_sha)` | no |
+| background | Background | `base_sha` | yes |
+| walkthrough | Intuition, Code | assembled user text | yes |
+
+Background stays its own call for the reason the table already gives:
+it is keyed on `base_sha` alone, so it survives head movement and every
+prompt-iteration re-run on the branch, and merging it with anything
+would collapse it to the narrower key. Intuition and Code share the
+narrower key already, are the two that most need to agree with each
+other, and re-paying the large seed twice is the dominant cost on
+backends where the user prompt is not cached. The walkthrough is seeded
+with the Map and with Background's finished text.
+
+The walkthrough's key is the assembled user text rather than
+`(base_sha, head_sha)` literally, because the seed carries the hunk
+intents: prose written over a different set of them is different prose,
+and the pair alone would serve one for the other. `run_pass` already
+folds the pass name, the model and the system text into every key.
+
+A section carries its `pass_id` in the document. The viewer needs it —
+otherwise entering the mode enqueues two sections and buys one call
+twice — and a reader needs it to know which prose a citation line
+accounts for.
+
+### Every prose pass gets `RepoTools`
+
+The original grant was Background-only, on the argument that Intuition
+and Code are "re-expressions of data the pipeline already computed".
+That was wrong, and wrong in a way the rest of this ADR already
+implies:
+
+- Code's job is stated here as "connective tissue between hunks … what
+  forty independent per-hunk calls structurally cannot produce". The
+  questions that produce it — is this new function called anywhere,
+  what did this replace, did a removal leave something behind — are
+  what `references` and `changed_symbols` answer, and are exactly what
+  is *not* in the seed. A seeded, tool-less call is as blind to them as
+  the forty it was meant to improve on.
+- Intuition's worked examples need real identifiers and literals. With
+  no tools it invents them and sets `toy_data` to excuse it, which
+  turns an affordance for the rare case into the ordinary one.
+- The prior art in Context runs as an ordinary agent with full tool
+  access over the whole document. The outputs judged good came from a
+  tool-enabled agent; granting tools to one section of three and
+  keeping the verdict was not a fair reading of the evidence.
+
+On subprocess backends this means the per-request `McpHttpHost` the
+console already opens, not just the pydantic-ai `deps` path.
+
+### One budget for the document
+
+`BACKGROUND_TURN_CAP = 12` was a per-section cap. A per-section cap on
+three tool-using sections is a document at thirty-six turns, which
+nobody chose; and the passes do not want equal shares. It is replaced
+by `DOCUMENT_TURN_BUDGET`, a total for the whole document, tracked as
+`turns_used` on `explainer.json`.
+
+Persisted, not held in memory: the passes are separated in time, and a
+reload, a second tab or a restart must not re-grant a budget already
+spent. The scope is exactly the document's — a new `(base_sha,
+head_sha)` is a new document and a fresh budget. A cache hit spends
+nothing and adds nothing, so re-opening a document that is already
+written costs no budget.
+
+Each call's ceiling is what is left. Below `MIN_TOOL_TURNS` the pass
+runs with no tools and is not told about them — a ceiling it cannot
+finish under loses the pass after spending the most on it, and
+advertising an unreachable surface makes the model hedge, which is the
+same reason skills are disabled on the `claude-cli` path. The cap and
+the spend still reach `trace/` as `turn_budget`.
+
+Fixing this surfaced that `turn_budget.used` was over-reporting by one
+on every successful pass: it counted trace *iterations*, and a run that
+ends on a tool return the model never saw has one more iteration than
+it made requests. It is now the driver's own request count — the figure
+`UsageLimits` meters `request_limit` against, so the budget and the
+ceiling that enforces it cannot disagree.
+
+### Provenance generalises
+
+`Section.sources` and the read recorder were Background-only, and the
+viewer rendered the citation line only for `kind === "background"`.
+Every pass that can read now records and shows what it read, on the
+same terms: off the tool surface, never from the model's self-report.
+The list belongs to the *call*, so every section one call wrote carries
+it and the viewer renders one line under the last of them.
+
+This strengthens **Quality** rather than changing it. The affordance
+was "a Background citing no reads is one that made it up"; it now
+covers the walkthrough, which is the section whose claims about code
+outside the diff are hardest to check by eye.
+
+### What a POST to a merged section does
+
+`POST /explainer/section/{id}` still addresses a section. It runs the
+pass that owns it and lands every section that pass writes; the
+response is the whole document, as it already was. A caller that does
+not know Intuition and Code are merged sees both written and nothing
+inconsistent.
+
+A call that comes back with one of its two sections lands the one it
+got. The other is left `failed`, not `pending`: failing both discards
+prose that was paid for, and `pending` is what the viewer auto-queues,
+so it would buy the same call again unasked.
+
+---
+
+## Addendum — house style for the document, hermetic annotations (2026-08-28)
+
+Adds to **Prompt carrier** and **Quality**. Nothing above is reversed.
+
+### The decision
+
+`[augment].explainer_prompt`, and `--explainer-prompt PATH` on both
+`scr review` and `scr pr`, carry a note from the repository under review
+about how a document like this reads there — voice, level of detail, what
+a reader of that codebase already knows. It is appended to the guidance
+of the three explainer passes: the skeleton, and the two prose passes.
+It is not a pass of its own, which is where it differs from
+`extra_prompt`: that runs a whole PR-level review call whose output is
+`line_notes` on hunks.
+
+Resolution, scope merging (user then repo, repo wins) and `scr config
+show` reporting mirror `extra_prompt` exactly. Both are read by one
+parser, so a whitespace-only body means "unset" for both.
+
+### Why the annotations stay hermetic
+
+There is no channel from this note to the per-hunk pass, and there must
+not be one.
+
+The hunk intents are the ground truth the document is written from, and
+clicking a reference is how a reviewer checks a claim against the code
+it is about. That check is worth something only if the two were produced
+independently. One instruction able to reshape both would let the
+document and the annotations agree because the same text shaped them
+rather than because both are right — which is the failure that leaves no
+trace, because agreement is what the reviewer is looking for.
+
+So the note reaches the document and stops. `augment_run_dir` takes no
+parameter for it. The guard is that the per-hunk pass's system text and
+user prompts are byte-identical with the note set and unset, compared
+through the flow layer that holds it — nothing structurally prevents a
+later change from threading a config field into `hunks.py`, since it
+would just be another field in scope.
+
+### Standing, and what enforces it
+
+The block is framed as the repository's preference, not as instructions
+that outrank the built-in guidance. That framing is for the model's
+benefit, not for safety: the structural rules are enforced downstream of
+the prompt and do not depend on being obeyed.
+
+- Figures: the element and `class` allowlists in
+  `augment/explainer_figures.py`, applied in `save_explainer` on the way
+  to disk and again behind DOMPurify's SVG profile at render. A note
+  asking for a hardcoded fill loses there.
+- References: validated by membership in the two id maps. A note asking
+  for an invented reference loses there, counted into `dropped_refs`.
+- Sections: the four top-level sections and the pass table are code. A
+  note cannot add one, and the schema has no field for what it might
+  ask for beyond them.
+
+The note is delimited in the prompt and attributed to the repository, so
+a sentence inside it that reads as an instruction to the model is
+presented as what it is.
+
+### Trust
+
+The note can arrive in a committed `.scr/config.toml`, authored by
+whoever wrote the diff. This does not widen scr's trust boundary: the
+same file can already set `extra_prompt`, which buys a whole review
+pass, so the decision to trust a repo's `.scr/` exists and this follows
+it.
+
+It is also the deliberate, opt-in replacement for something scr removed.
+Plain `claude -p` reads the reviewed repo's `CLAUDE.md`; scr's augment
+calls pass `--setting-sources ""`, so they do not — verified against the
+CLI with a codeword probe. A repo that wants its conventions to reach
+the reviewer now says so in one named field that reaches one document,
+rather than through implicit inheritance into every pass.
+
+### Cache
+
+The note needs no cache key of its own. `run_pass` folds the system text
+into every key, and where `carry_guidance` puts the guidance on stdin
+instead it lands in the user text, which is also in the key. Background
+keys on `(base_sha, guidance)` for the reason the previous addendum's
+fix records, and the note is part of `guidance`.
+
+---
+
+## Addendum — a reference opens beside the document (2026-08-31)
+
+Amends **Surface**. The mode, and its free return trip, stand; where a
+reference lands does not.
+
+A reference — an inline chip, a Map row — left the mode: the pane was
+rebuilt around the diff and the reader's place in the prose went with
+it. So the claim and the code it is about were never on screen together,
+and the loop Surface describes — read, drop into the ladder to check,
+return — cost a mode switch each way for what is usually a ten-second
+look. Section-granular restore put the reader back at a heading, not at
+the sentence.
+
+A reference now opens the file it addresses in a **detail panel beside
+the document**. The document column keeps its DOM and its scroll
+position; the panel is sticky with its own scroll, so checking happens
+in place and the return trip is looking left. The panel renders the
+diff's own DOM, so comments work in it unchanged.
+
+The panel has **its own fold state**. A hunk reference arrives unfolded,
+on the same terms `revealHunk` uses — the reference is the claim "read
+these lines" — but the unfold is the panel's: reading twenty references
+beside the document must not leave twenty files unfolded in the diff.
+That is the same argument the mode's orthogonality to the collapse level
+already makes, one level down.
+
+**"Open in diff"** in the panel header keeps the old jump for the reader
+who wants the file with the whole change around it. Leaving the mode is
+then a decision rather than the price of a glance, and section-granular
+restore covers those exits, which are now the deliberate ones.
+
+The reading measure survives the split: the document's 72ch column comes
+from its own `max-width` and auto margins, so it holds inside a narrower
+flex item and the panel takes the width the prose was not using. Each
+diff half keeps its content-driven minimum width and scrolls
+horizontally inside the panel — the price of the two side by side.
+
+---
+
+## Addendum — assignment routes, it does not scope (2026-08-31)
+
+Amends the first addendum's seed description. The pass table, the tool
+grant and the budget stand.
+
+Each prose pass was seeded with the hunks of the files the skeleton
+assigned it, so the assignment decided what the pass could see. A
+tool-less call that sees paths, line counts and one-line summaries was
+thereby the bound on what a tool-bearing call could know — the same
+misreading of the evidence the tools addendum corrects, one level down.
+It cost a real document: on a 28-file change the skeleton gave the
+change's central subsystem five Map rows and no prose section, and the
+walkthrough, seeded without it, wrote around it.
+
+Every prose pass is now seeded with the whole change: every file with
+its role and hunk count, and every hunk with its header and the intent
+already established for it. About two lines a hunk, so the listing is
+strictly smaller than the raw diff the overview pass takes in one call;
+it has no size cap for the same reason that one does not.
+
+The assignment stays, as routing rather than as scope. It is what a
+section is *about* — the subject the brief is read against, the
+references the section is born with, and the coverage counts the sidebar
+reads off them — and it is one line in the seed naming the files routed
+there. A section routed nothing is told that in one line instead of
+being handed a smaller seed.
+
+The readiness gate stays on the routed hunks. Those are the ones a
+section's own claims rest on; a hunk elsewhere in the listing that the
+per-hunk pass has not reached yet is shown as `(not annotated)` rather
+than blocking every section on the whole diff.
+
+Caching is unaffected in shape. The walkthrough keys on its assembled
+user text, so a wider seed is a new key. Background keys on `(base_sha,
+guidance)` and its seed now moves with the head in more places than it
+did — the deliberate trade the first addendum's table already makes,
+since the point of that key is prose that survives head movement.

@@ -129,6 +129,85 @@ describe("resolveSelection", () => {
     });
   });
 
+  test("resolves a selection in the explainer document to its section", () => {
+    const pane = document.createElement("div");
+    pane.className = "explainer";
+    const section = document.createElement("section");
+    section.className = "explainer-section";
+    section.dataset.sectionId = "code_guard";
+    const body = document.createElement("p");
+    body.className = "explainer-body";
+    body.textContent = "deactivate now refuses an inactive user";
+    section.appendChild(body);
+    pane.appendChild(section);
+    document.body.appendChild(pane);
+
+    const out = resolveSelection(
+      fakeSelection(body.firstChild, "refuses an inactive user"),
+    );
+    expect(out).toEqual({
+      selection_text: "refuses an inactive user",
+      selection_kind: "explainer",
+      section_id: "code_guard",
+    });
+  });
+
+  test("keeps an explainer selection outside any section", () => {
+    const pane = document.createElement("div");
+    pane.className = "explainer";
+    const footer = document.createElement("p");
+    footer.className = "explainer-footnote";
+    footer.textContent = "4 references · 1 dropped";
+    pane.appendChild(footer);
+    document.body.appendChild(pane);
+
+    const out = resolveSelection(fakeSelection(footer.firstChild, "1 dropped"));
+    expect(out).toEqual({
+      selection_text: "1 dropped",
+      selection_kind: "explainer",
+    });
+  });
+
+  test("code in the detail panel is code, not the document around it", () => {
+    // The panel is a sibling of `.explainer` inside the mode's split, so
+    // a selection in it resolves to the hunk it is: the console can
+    // inline that, which is what asking about the code needs.
+    const split = document.createElement("div");
+    split.className = "explainer-split";
+    const doc = document.createElement("div");
+    doc.className = "explainer";
+    const panel = document.createElement("aside");
+    panel.className = "explainer-detail";
+    const file = document.createElement("div");
+    file.className = "file";
+    const path = document.createElement("div");
+    path.className = "file-path";
+    path.textContent = "src/users.py";
+    const hunk = document.createElement("div");
+    hunk.className = "hunk";
+    hunk.setAttribute("data-id", "H0_1");
+    const row = makeRow("new", 10, "def deactivate(user):");
+    hunk.appendChild(row);
+    file.appendChild(path);
+    file.appendChild(hunk);
+    panel.appendChild(file);
+    split.appendChild(doc);
+    split.appendChild(panel);
+    document.body.appendChild(split);
+
+    const out = resolveSelection(
+      fakeSelection(row.querySelector(".cell-code")!.firstChild, "def deactivate(user):"),
+    );
+    expect(out).toEqual({
+      selection_text: "def deactivate(user):",
+      selection_kind: "code",
+      side: "new",
+      file: "src/users.py",
+      hunk_id: "H0_1",
+      line_range: [10, 10],
+    });
+  });
+
   test("ignores selections inside the console UI", () => {
     const drawer = document.createElement("div");
     drawer.className = "console-drawer";
@@ -137,5 +216,23 @@ describe("resolveSelection", () => {
     drawer.appendChild(t);
     document.body.appendChild(drawer);
     expect(resolveSelection(fakeSelection(t.firstChild, "previous answer"))).toBeNull();
+  });
+
+  test("ignores the prompt and the status bar too", () => {
+    const input = document.createElement("div");
+    input.className = "console-input";
+    const draft = document.createElement("textarea");
+    draft.textContent = "what does this do";
+    input.appendChild(draft);
+    const bar = document.createElement("div");
+    bar.id = "status-bar";
+    const counts = document.createElement("span");
+    counts.textContent = "12 hunks";
+    bar.appendChild(counts);
+    document.body.appendChild(input);
+    document.body.appendChild(bar);
+
+    expect(resolveSelection(fakeSelection(draft.firstChild, "what does this do"))).toBeNull();
+    expect(resolveSelection(fakeSelection(counts.firstChild, "12 hunks"))).toBeNull();
   });
 });
