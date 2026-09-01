@@ -56,6 +56,7 @@ from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.output import ToolOutput
 
+from .. import errors
 from ..cache.store import CacheStore
 from ..viewer.build_json import ViewerIdIndex, viewer_id_index
 from . import explainer_schema, mcp_http_host, source_cache
@@ -105,33 +106,53 @@ DOCUMENT_TURN_BUDGET = 36
 MIN_TOOL_TURNS = 2
 
 
-class SectionNotFound(KeyError):
+class SectionNotFound(errors.ScrError, KeyError):
     """No fillable section with that id in this run's document.
 
-    Maps to HTTP 404. The Map is written by the skeleton and subsections
-    are written by their parent's pass, so neither is addressable here.
+    The Map is written by the skeleton and subsections are written by
+    their parent's pass, so neither is addressable here.
     """
 
+    status = 404
 
-class SectionNotReady(RuntimeError):
+    def __init__(self, section_id: str) -> None:
+        super().__init__(section_id)
+        self.section_id = section_id
+
+    def body(self) -> dict[str, Any]:
+        # KeyError renders its argument as a repr, which reads as a bare
+        # quoted id; say what the id failed to address instead.
+        return {"error": f"no section {self.section_id!r} in this document"}
+
+
+class SectionNotReady(errors.ScrError):
     """The hunks this call is anchored to are not all annotated yet.
 
     Prose built on half the hunk intents reads exactly as fluently as
     prose built on all of them, which is why this is a refusal rather
-    than a caveat in the output. Maps to HTTP 409 with the counts, so
-    the viewer can say what it is waiting for.
+    than a caveat in the output. Carries the counts, so the viewer can
+    say what it is waiting for.
     """
+
+    status = 409
 
     def __init__(self, annotated: int, total: int) -> None:
         super().__init__(f"{annotated} of {total} anchored hunks are annotated")
         self.annotated = annotated
         self.total = total
 
+    def body(self) -> dict[str, Any]:
+        return {
+            "error": f"{self.annotated} of {self.total} hunks under this section are annotated",
+            "annotated": self.annotated,
+            "total": self.total,
+        }
 
-class SectionFailed(RuntimeError):
+
+class SectionFailed(errors.ScrError):
     """A prose call raised; its sections are recorded `failed`.
 
-    Carries the persisted document so the route can fan the `failed`
+    Carries the persisted document so the session can fan the `failed`
     state out to every tab rather than leaving the other readers on
     `pending` forever.
     """

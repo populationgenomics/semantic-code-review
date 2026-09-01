@@ -11,13 +11,17 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from .. import errors
+
 CommentSource = Literal["local", "github"]
 
 
-class ReadOnlyCommentError(Exception):
+class ReadOnlyCommentError(errors.ScrError):
     """Raised by CommentStore when the caller tries to mutate a comment
     that wasn't authored in this run (e.g. an ingested PR comment).
     """
+
+    status = 403
 
 
 class Comment(BaseModel):

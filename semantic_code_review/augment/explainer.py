@@ -27,6 +27,7 @@ from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.output import ToolOutput
 
+from .. import errors
 from ..cache.store import CacheStore
 from ..structural import SymbolDelta
 from ..viewer.build_json import ViewerIdIndex, viewer_id_index
@@ -47,13 +48,14 @@ _SKELETON = PassMeta(name="explainer-skeleton", submit_tool="submit_explainer_sk
 _PROSE_KINDS: tuple[explainer_schema.SectionKind, ...] = explainer_schema.prose_kinds()
 
 
-class ExplainerNotReady(RuntimeError):
+class ExplainerNotReady(errors.ScrError):
     """The run dir has no `augmented.scr.json` yet.
 
-    Maps to HTTP 409 at the review-server boundary — the skeleton is
-    seeded with the overview, so it cannot run before the augment pass
-    has produced one.
+    The skeleton is seeded with the overview, so it cannot run before
+    the augment pass has produced one.
     """
+
+    status = 409
 
 
 class SkeletonMapRow(BaseModel):

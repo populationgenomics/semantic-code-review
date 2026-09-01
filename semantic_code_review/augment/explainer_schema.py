@@ -24,6 +24,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
+from .. import errors
 from . import explainer_figures
 
 log = logging.getLogger(__name__)
@@ -240,7 +241,7 @@ class ExplainerDocument(BaseModel):
     dropped_refs: int = 0
 
 
-class ExplainerCorrupt(RuntimeError):
+class ExplainerCorrupt(errors.ScrError):
     """`explainer.json` is on disk but is not a readable document.
 
     Distinct from the SHA-mismatch and version-mismatch cases, which

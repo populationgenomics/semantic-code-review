@@ -28,6 +28,7 @@ from pydantic_ai.messages import UserContent
 from pydantic_ai.models import Model
 from pydantic_ai.output import ToolOutput
 
+from .. import errors
 from ..cache.store import CacheStore
 from .agents import Client
 from .pass_ import PassMeta, run_pass
@@ -268,19 +269,19 @@ async def summarise_fold(
     return str(payload.get("summary", "")).strip()
 
 
-class FoldSummaryNotReady(RuntimeError):
+class FoldSummaryNotReady(errors.ScrError):
     """The run dir doesn't yet hold an `augmented.scr.json`.
 
-    Maps to HTTP 409 at the review-server boundary — the augmentation
-    pass is still in flight or was skipped entirely.
+    The augmentation pass is still in flight or was skipped entirely.
     """
 
+    status = 409
 
-class FoldSummaryFileIndexError(LookupError):
-    """`file_idx` from the request doesn't address a file in the diff.
 
-    Maps to HTTP 404 at the review-server boundary.
-    """
+class FoldSummaryFileIndexError(errors.ScrError, LookupError):
+    """`file_idx` from the request doesn't address a file in the diff."""
+
+    status = 404
 
 
 async def apply_fold_summary_to_run(
