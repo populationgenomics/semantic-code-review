@@ -1,7 +1,7 @@
 {
   "name": "scr",
-  "version": "0.31.0",
-  "description": "Review agent-authored code you're accountable for but didn't write. /scr:review opens a side-by-side viewer that clusters the diff into semantic groups and annotates what each block changed, so you can judge whether it matches intent and how it was built; your inline comments round-trip back into the session for the agent to iterate on. The LLM directs attention — it never gates.",
+  "version": "0.33.0",
+  "description": "Review agent-authored code you're accountable for but didn't write. /scr:review opens a side-by-side viewer that clusters the diff into semantic groups and annotates what each block changed, so you can judge whether it matches intent and how it was built; your inline comments round-trip back into the session for the agent to iterate on. The LLM directs attention \u2014 it never gates.",
   "author": {
     "name": "Toby Sargeant",
     "email": "toby.sargeant@populationgenomics.org.au"
