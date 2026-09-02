@@ -224,14 +224,17 @@ class _Handler(BaseHTTPRequestHandler):
 
         The single error-to-status map: a `ScrError` is an outcome and
         names its own status and body; anything else is a bug and gets a
-        500 naming its type. The session has already logged it with the
-        request's own context, so this doesn't log again.
+        500 naming its type, logged here with its traceback. Only some
+        session operations log their own failures, and the 500 body
+        reaches a browser console rather than the terminal the review is
+        being run from.
         """
         try:
             payload = op()
         except errors.ScrError as e:
             self._json(e.status, e.body())
-        except Exception as e:  # noqa: BLE001 — every failure owes the client a response
+        except Exception as e:  # every failure owes the client a response
+            log.exception("unhandled failure serving %s %s", self.command, self.path)
             self._json(500, {"error": f"{type(e).__name__}: {e}"})
         else:
             self._json(ok, payload)
