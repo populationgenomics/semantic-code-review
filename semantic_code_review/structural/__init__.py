@@ -15,7 +15,7 @@ result — never a raise.
 
 from __future__ import annotations
 
-from .diff import ChangedSymbol, SymbolDelta, diff_file, flatten, merge
+from .diff import ChangedSymbol, ChangeReason, SymbolDelta, diff_file, flatten, merge
 from .parse import (
     enclosing_symbol,
     language_for_path,
@@ -26,6 +26,7 @@ from .parse import (
 from .symbols import Symbol, SymbolRange
 
 __all__ = [
+    "ChangeReason",
     "ChangedSymbol",
     "Symbol",
     "SymbolDelta",

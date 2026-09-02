@@ -255,7 +255,7 @@ class RepoTools:
             head_src = self._read_source(path, None)
             base_syms = self._outline_symbols(path, self.base_sha, base_src, lang) if base_src is not None else []
             head_syms = self._outline_symbols(path, None, head_src, lang) if head_src is not None else []
-            deltas.append(structural.diff_file(path, base_syms, head_syms))
+            deltas.append(structural.diff_file(path, base_syms, head_syms, base_src=base_src, head_src=head_src))
         return structural.merge(deltas)
 
     @_tool
@@ -263,15 +263,22 @@ class RepoTools:
         """Deterministic structural delta of the diff, as JSON.
 
         Compares the base commit against the head worktree for every
-        changed file in a supported language, returning
-        `{added, removed, modified}` lists of symbols by `qualified_name`
-        set-diff — no LLM, no hallucination. `modified` means the same
-        qualified name on both sides with a differing line range; a
-        same-span body edit is not flagged. Each entry carries its
-        `path`, `kind`, `name`, `qualified_name`, declared `signature`,
-        and the line `range` on its live side (head for added/modified,
-        base for removed). Changed files in unsupported languages are
-        silently absent.
+        changed file in a supported language — no LLM, no hallucination.
+        Four buckets by `qualified_name` set-diff:
+
+        - `added` / `removed` — the name exists on one side only.
+        - `modified` — same name, and the code differs. `reason` is
+          `signature` (the declared header changed — an API change) or
+          `body` (header unchanged, implementation differs).
+        - `moved` — same name and byte-identical text: the definition
+          only shifted. `from_path` names the base-side file when the
+          move crossed files; absent for a line shift within one file.
+
+        Read `modified` first: it is what actually changed. Each entry
+        carries its `path`, `kind`, `name`, `qualified_name`, declared
+        `signature`, and the line `range` on its live side (head for
+        added/modified/moved, base for removed). Changed files in
+        unsupported languages are silently absent.
 
         This is the whole-PR symbol inventory the hunk prompt no longer
         carries inline: on a large diff it ran to tens of thousands of
@@ -292,6 +299,9 @@ class RepoTools:
                 added=[s for s in delta.added if s.path == path],
                 removed=[s for s in delta.removed if s.path == path],
                 modified=[s for s in delta.modified if s.path == path],
+                # A cross-file move is in `moved` under its head path; the
+                # base-side file wants to see it leave, so match either end.
+                moved=[s for s in delta.moved if path in (s.path, s.from_path)],
             )
         return _cap(delta.model_dump_json())
 

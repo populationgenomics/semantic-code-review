@@ -8,6 +8,8 @@ the all-unsupported-language case).
 
 from __future__ import annotations
 
+import hashlib
+
 from semantic_code_review.augment.overview import format_overview_prompt
 from semantic_code_review.augment.schemas import (
     AnnotatedDiff,
@@ -16,7 +18,7 @@ from semantic_code_review.augment.schemas import (
     ParsedHunk,
     PRInfo,
 )
-from semantic_code_review.structural import ChangedSymbol, SymbolDelta, SymbolRange
+from semantic_code_review.structural import ChangedSymbol, ChangeReason, SymbolDelta, SymbolRange
 
 
 def _hunk(header: str) -> AnnotatedHunk:
@@ -48,13 +50,20 @@ def _make_diff() -> AnnotatedDiff:
 _META = {"title": "T", "body": ""}
 
 
-def _changed(name: str, qn: str, kind: str = "function") -> ChangedSymbol:
+def _changed(
+    name: str,
+    qn: str,
+    kind: str = "function",
+    reason: ChangeReason | None = None,
+) -> ChangedSymbol:
     return ChangedSymbol(
         path="a.py",
         kind=kind,
         name=name,
         qualified_name=qn,
         range=SymbolRange(start_line=1, end_line=2, start_col=0, end_col=0),
+        reason=reason,
+        body_sha=hashlib.sha256(qn.encode()).hexdigest(),
     )
 
 
@@ -74,17 +83,27 @@ def test_non_empty_delta_appends_seed_section() -> None:
     diff = _make_diff()
     delta = SymbolDelta(
         added=[_changed("bar", "bar")],
-        modified=[_changed("baz", "Foo.baz", kind="method")],
+        modified=[_changed("baz", "Foo.baz", kind="method", reason=ChangeReason.SIGNATURE)],
         removed=[_changed("gone", "gone")],
     )
     out = format_overview_prompt(diff, _META, delta)
     assert "# Symbols changed (deterministic" in out
-    # Each entry rendered as `kind qualified_name  (path)`.
+    # Each entry rendered as `kind qualified_name[ [reason]]  (path)`.
     assert "  function bar  (a.py)" in out
-    assert "  method Foo.baz  (a.py)" in out
+    assert "  method Foo.baz [signature]  (a.py)" in out
     assert "  function gone  (a.py)" in out
     # The seed extends — never replaces — the existing prompt body.
     assert "# Hunk headers" in out
+
+
+def test_moved_only_symbols_are_left_out_of_the_seed() -> None:
+    """A definition whose text is byte-identical says nothing about the
+    change, and it is the bulk of the delta — 244 of 262 entries on a
+    measured 6-file diff."""
+    diff = _make_diff()
+    baseline = format_overview_prompt(diff, _META)
+    delta = SymbolDelta(moved=[_changed("shifted", "shifted")])
+    assert format_overview_prompt(diff, _META, delta) == baseline
 
 
 def test_seed_section_is_strict_suffix_of_unseeded() -> None:

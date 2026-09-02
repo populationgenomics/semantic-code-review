@@ -108,6 +108,7 @@ def test_prompt_seeds_the_symbol_delta_when_there_is_one(diff: AnnotatedDiff) ->
                 name="cursor",
                 qualified_name="ListRequest.cursor",
                 range=SymbolRange(start_line=3, end_line=3, start_col=0, end_col=0),
+                body_sha="0" * 64,
             )
         ]
     )

@@ -40,10 +40,10 @@ def format_overview_prompt(
     """Produce the user-message text for the overview call.
 
     `delta`, when present and non-empty, seeds the prompt with the
-    deterministic tree-sitter symbol delta (ADR 0001) so the model
-    reports `symbols_*` from ground truth rather than guessing from hunk
-    headers. An absent or empty delta (no supported-language change)
-    appends nothing — the prompt is byte-identical to the pre-seed form.
+    deterministic tree-sitter symbol delta (ADR 0001) — grounding for the
+    summary, themes and groups, not something the model reports back. An
+    absent or empty delta (no supported-language change) appends nothing
+    — the prompt is byte-identical to the pre-seed form.
     """
     parts: list[str] = []
     title = meta.get("title", "")
@@ -80,9 +80,15 @@ def format_overview_prompt(
 def _format_symbol_seed(delta: SymbolDelta | None) -> str:
     """Render the deterministic symbol delta as a prompt section, or `""`.
 
+    `delta.moved` is omitted: byte-identical code that only shifted lines
+    says nothing about the change, and it is the bulk of the delta.
+    A `modified` entry is labelled by its `reason`, so the model can see
+    which changes touched a declaration.
+
     Returns the empty string when there's nothing to seed (no delta, or
-    every bucket empty) so callers can keep the prompt byte-identical to
-    the unseeded form for all-unsupported-language diffs.
+    every rendered bucket empty) so callers can keep the prompt
+    byte-identical to the unseeded form for all-unsupported-language
+    diffs.
     """
     if delta is None:
         return ""
@@ -92,9 +98,11 @@ def _format_symbol_seed(delta: SymbolDelta | None) -> str:
     lines = [
         "\n# Symbols changed (deterministic — tree-sitter, not your inference)",
         "These are the exact definitions that changed between base and head, by "
-        "name and kind — ground truth, not your inference. Use them to ground the "
-        "summary, themes and groups; do not restate the list back. Languages "
-        "absent here are simply not yet parseable.",
+        "name and kind — ground truth, not your inference. A `modified` entry is "
+        "tagged `signature` when its declaration changed (an API change) or `body` "
+        "when only the implementation did. Definitions that merely shifted lines are "
+        "omitted. Use these to ground the summary, themes and groups; do not restate "
+        "the list back. Languages absent here are simply not yet parseable.",
     ]
     for label, items in buckets:
         lines.append(f"{label}:")
@@ -102,7 +110,8 @@ def _format_symbol_seed(delta: SymbolDelta | None) -> str:
             lines.append("  (none)")
             continue
         for c in items:
-            lines.append(f"  {c.kind} {c.qualified_name}  ({c.path})")
+            tag = f" [{c.reason}]" if c.reason is not None else ""
+            lines.append(f"  {c.kind} {c.qualified_name}{tag}  ({c.path})")
     return "\n".join(lines)
 
 

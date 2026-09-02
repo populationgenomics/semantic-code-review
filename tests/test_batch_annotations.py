@@ -6,6 +6,8 @@ five of six hunks must surface the sixth, not quietly drop it.
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from semantic_code_review.augment.hunks import split_batch_annotations
@@ -191,6 +193,7 @@ def _removed(name: str = "mod._mcp_config_for", start: int = 159, end: int = 196
         qualified_name=name,
         range=SymbolRange(start_line=start, end_line=end, start_col=0, end_col=0),
         signature=f"def {name.rsplit('.', maxsplit=1)[-1]}(self)",
+        body_sha=hashlib.sha256(name.encode()).hexdigest(),
     )
 
 

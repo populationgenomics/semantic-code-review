@@ -219,8 +219,11 @@ def _format_file_list(diff: AnnotatedDiff) -> str:
 def _format_symbol_section(delta: SymbolDelta | None) -> str:
     """Render the deterministic symbol delta compactly, or `""`.
 
-    Kind and qualified name only: the skeleton is ordering files, so a
-    symbol's line range would be weight it cannot spend.
+    Kind, qualified name and — for a `modified` entry — whether the
+    declaration or only the body changed. No line ranges: the skeleton is
+    ordering files, so a symbol's span would be weight it cannot spend.
+    `delta.moved` is omitted for the same reason it is omitted from the
+    overview seed: byte-identical code that shifted lines is not a change.
     """
     if delta is None:
         return ""
@@ -233,7 +236,8 @@ def _format_symbol_section(delta: SymbolDelta | None) -> str:
             continue
         lines.append(f"{label}:")
         for c in items:
-            lines.append(f"  {c.kind} {c.qualified_name}  ({c.path})")
+            tag = f" [{c.reason}]" if c.reason is not None else ""
+            lines.append(f"  {c.kind} {c.qualified_name}{tag}  ({c.path})")
     return "\n".join(lines)
 
 
