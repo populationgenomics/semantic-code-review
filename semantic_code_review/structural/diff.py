@@ -34,7 +34,10 @@ similarity — `qualified_name` is only unique within a file, so two
 unrelated files each defining `helper` must not be linked. A symbol
 that both moved file and changed stays as separate added/removed
 entries; calling those one event would be an inference, and ADR 0001
-keeps this layer to parse-and-compare.
+keeps this layer to parse-and-compare. The rule reads a one-line
+boilerplate definition (`log = logging.getLogger(__name__)` deleted from
+one module, present in another) as a move. Deterministically true, and
+not worth a span-length threshold to suppress.
 
 Each `ChangedSymbol` carries its `path` (the delta is diff-wide, across
 files) and the span on its *live* side: head for added/modified/moved,
