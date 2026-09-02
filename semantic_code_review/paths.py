@@ -79,7 +79,7 @@ def default_runs_root() -> Path:
     fingerprint is a sha256 of the resolved `git rev-parse
     --git-common-dir`. Worktrees of the same repo share a fingerprint;
     different repos get different ones. Falls back to a hash of cwd
-    when not in a git repo (e.g. `scr fetch` outside a checkout).
+    when not in a git repo (e.g. `scr pr` outside a checkout).
 
     Lives outside the repo on purpose: a `.scr/` at repo root is a
     deploy-tool footgun (gcloud, docker, tar), and its worktrees can

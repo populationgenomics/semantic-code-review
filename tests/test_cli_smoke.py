@@ -1,4 +1,4 @@
-"""CLI smoke tests for offline commands: strip, lint, show."""
+"""CLI smoke tests for offline commands: strip, lint."""
 
 from __future__ import annotations
 
@@ -127,16 +127,6 @@ def test_lint_fails_on_bad_smell(tmp_path: Path) -> None:
     assert result.exit_code == 1
     combined = result.stdout + (getattr(result, "stderr", "") or "")
     assert "made-up-smell" in combined
-
-
-def test_show_prints_augmented(tmp_path: Path) -> None:
-    run = tmp_path / "run"
-    run.mkdir()
-    (run / "augmented.diff").write_text(FIXTURE.read_text())
-    runner = CliRunner()
-    result = runner.invoke(app, ["show", str(run)])
-    assert result.exit_code == 0
-    assert "scr-version" in result.stdout
 
 
 # ---------------------------------------------------------------------------

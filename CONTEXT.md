@@ -84,6 +84,72 @@ symlink for working-state mode) for local. Unifying them would have
 meant a multi-axis conditional inside `materialize_run_metadata` for
 no callsite benefit.
 
+**Review config**
+The half of a review's inputs that is independent of where the diff
+came from. `ReviewConfig` (in `review/config.py`) holds the fifteen
+settings `scr review` and `scr pr` share — runs root, augment on/off,
+model, concurrency, cache switches, port, idle timeout, browser,
+skip globs, extra-review prompt, client, debug, explainer on/off and
+its house style. Each flow's options type composes one as a `config`
+field and adds only its own source-side fields: `ReviewOptions` the
+[[run-spec]] endpoints, `PrFlowOptions` the repo/number/`--yes`.
+
+The rule for what belongs in it is settings vs collaborators. A value
+the user chose travels in the config; a constructed object a flow hands
+to a callee — the [[client]], the `CacheStore`, the `on_event`
+publisher — stays an explicit parameter. `no_cache` and `cache_dir` are
+settings, the `CacheStore` built from them is not. Composition is one
+level deep: `opts.config.model`, never deeper.
+
+Two consumers derive from it rather than reading it whole:
+
+- `ReviewConfig.for_augment()` projects an `AugmentConfig`
+  (`augment/config.py`) — model, concurrency, skip globs, extra-review
+  prompt. It exists so `augment_run_dir` can name its inputs without
+  the augment layer importing the review layer.
+- `build_server_tasks(run_dir, cfg)` (in `review/runner.py`) returns a
+  `ServerTasks` bundle (defined in `review/session.py`, next to what
+  consumes it): the augment, fold-summary, console and two explainer
+  closures plus the `--debug` sink binder, all `None` on a
+  `--no-augment` run. One builder feeds both entry points, so a
+  generator added to the bundle reaches `scr review` and `scr pr`
+  together — it was two independent builders that let the per-section
+  explainer pass ship on one path and not the other.
+
+**Review session**
+The state of one live review and the operations over it — `ReviewSession`
+in `review/session.py`. Holds the [[run-directory]], the [[viewer-data]]
+served as `/data.json`, the [[reviewer-comment]] store, the
+`ServerTasks` once attached, and the guards that allow one console turn
+and one explainer pass at a time. `review/server.py` is HTTP transport in
+front of it and holds no review state of its own: a route decodes the
+request, calls one session operation, and turns the result — or the
+failure — into a response.
+
+Three rules make that split hold:
+
+- **The session owns the request body.** An operation validates the
+  payload it is given and refuses a malformed one itself; only values
+  lifted out of a URL (a path segment, a query parameter) are parsed by
+  the transport. The wire format is part of what the session promises,
+  so `FoldAddress.from_payload` lives with the address type rather than
+  in a handler.
+- **Every refusal is a `ScrError`** (`semantic_code_review/errors.py`),
+  carrying the `status` and `body()` the route answers with. That is the
+  whole error-to-status map: `_Handler._dispatch` reads them off the
+  error, and anything that is *not* a `ScrError` is a bug and answers
+  500 naming its type. The augment-side refusals (`FoldSummaryNotReady`,
+  `SectionNotReady`, …) derive from it where they are defined, so the
+  server maps them without importing the augment package.
+- **The SSE fan-out stays the server's.** The session publishes
+  *through* an injected `EventPublisher`, which is what lets its
+  broadcasts be asserted without a socket.
+
+`attach(tasks, viewer_json)` is one call because it is one event: the
+augment pass has left a sidecar, so the augmented view and every task
+that resolves the diff arrive together. Before it, each LLM-backed route
+409s — the state the viewer polls against.
+
 **Hunk**
 A contiguous range of changed lines in a diff, with its `@@` header
 plus old/new start+count. Both on-disk forms — the
@@ -353,9 +419,8 @@ changed (deterministic …)` section listing each changed symbol by kind
 and `qualified_name`. The overview system prompt instructs the model to
 populate `Overview.symbols_*` from that section verbatim — turning the
 symbol fields from inference into a deterministic seed (ADR 0001 Slice
-3). The seed is independent of `--skip-context` (it's our own tree-sitter
-parse, not LLM tool access) and best-effort (a failure leaves the
-overview unseeded). When the delta is empty — every changed file is in
+3). The seed is our own tree-sitter parse rather than LLM tool access,
+and best-effort (a failure leaves the overview unseeded). When the delta is empty — every changed file is in
 an unsupported language — no section is appended and the prompt is
 byte-identical to the pre-seed form.
 

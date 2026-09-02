@@ -12,6 +12,7 @@ from pathlib import Path
 import typer
 
 from ..paths import default_runs_root
+from ..review.config import ReviewConfig
 from ..review.pr_flow import PrFlowOptions, run_pr_flow
 from . import app
 from ._shared import (
@@ -101,21 +102,23 @@ def pr(
     opts = PrFlowOptions(
         repo=repo,
         number=number,
-        runs_root=runs_root or default_runs_root(),
-        augment=augment,
-        model=model,
-        concurrency=concurrency,
-        no_cache=no_cache,
-        cache_dir=cache_dir,
-        open_browser=not no_open,
-        port=port,
-        timeout=timeout,
-        extra_review_prompt=extra_review_prompt,
-        skip_globs=cfg.skip_globs,
-        explainer=cfg.explainer,
-        explainer_prompt=house_style,
-        client=client,
         yes=yes,
-        debug=debug,
+        config=ReviewConfig(
+            runs_root=runs_root or default_runs_root(),
+            augment=augment,
+            model=model,
+            concurrency=concurrency,
+            no_cache=no_cache,
+            cache_dir=cache_dir,
+            open_browser=not no_open,
+            port=port,
+            timeout=timeout,
+            extra_review_prompt=extra_review_prompt,
+            skip_globs=cfg.skip_globs,
+            explainer=cfg.explainer,
+            explainer_prompt=house_style,
+            client=client,
+            debug=debug,
+        ),
     )
     raise typer.Exit(code=run_pr_flow(opts))

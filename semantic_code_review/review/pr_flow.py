@@ -22,14 +22,13 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..augment.agents import Client
 from ..fetch import GhFetchError, materialize_github_pr_run, preflight_gh
 from .comments import CommentStore, format_markdown
+from .config import ReviewConfig
 from .github import (
     GhError,
     PostResult,
@@ -38,55 +37,24 @@ from .github import (
     pick_pr_interactive,
 )
 from .github_graphql import post_review_via_graphql
-from .runner import (
-    _build_console_task,
-    _build_explainer_section_task,
-    _build_explainer_task,
-    _build_fold_summary_task,
-    ensure_augmented_diff,
-    serve_review,
-)
-from .server import PostCallable
+from .runner import build_server_tasks, ensure_augmented_diff, serve_review
+from .session import PostCallable, PostOutcome
 
 
 @dataclass(frozen=True)
 class PrFlowOptions:
-    """All inputs the PR flow needs.
+    """All inputs the PR flow needs: which PR, plus the settings every
+    review session shares.
 
-    ``model`` and ``client`` are caller-resolved (typically via the CLI's
-    config + backend selection); ``extra_review_prompt`` is the
-    already-resolved prompt text (None means none). ``yes`` bypasses the
-    in-browser confirmation modal — the viewer's Done button stays a
-    plain exit and the CLI posts everything after it returns.
+    ``yes`` bypasses the in-browser confirmation modal — the viewer's
+    Done button stays a plain exit and the CLI posts everything after it
+    returns.
     """
 
     repo: str
     number: int | None
-    runs_root: Path
-    augment: bool
-    model: str
-    concurrency: int
-    no_cache: bool
-    cache_dir: Path | None
-    open_browser: bool
-    port: int
-    timeout: int
-    extra_review_prompt: str | None
-    client: Client | None
+    config: ReviewConfig
     yes: bool
-    # `--debug` / SCR_DEBUG: surface each CLI-backend subprocess spawn in
-    # the viewer's debug drawer.
-    debug: bool = False
-    # Extra file globs to skip in the LLM passes (config [augment].skip_globs).
-    # Trailing + defaulted so existing constructors need no change.
-    skip_globs: tuple[str, ...] = ()
-    # Change explainer (ADR 0007); opt-out via `[augment].explainer = false`.
-    explainer: bool = True
-    # House style for the explainer document: inline
-    # `[augment].explainer_prompt`, or the file named by
-    # `--explainer-prompt`. Reaches the three explainer passes only; the
-    # per-hunk pass has no channel for it.
-    explainer_prompt: str | None = None
 
 
 def run_pr_flow(opts: PrFlowOptions) -> int:
@@ -113,7 +81,7 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
 
     pr_url = f"https://github.com/{opts.repo}/pull/{number}"
     try:
-        run_dir = materialize_github_pr_run(pr_url, opts.runs_root)
+        run_dir = materialize_github_pr_run(pr_url, opts.config.runs_root)
     except GhFetchError as e:
         _err(f"scr pr: {e}")
         return 2
@@ -124,8 +92,8 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
         _err("scr pr: meta.json is missing headRefOid; can't anchor review")
         return 2
 
-    tasks = _build_tasks(opts, run_dir)
-    if not opts.augment:
+    tasks = build_server_tasks(run_dir, opts.config)
+    if not opts.config.augment:
         ensure_augmented_diff(run_dir)
 
     # `--yes` skips the modal entirely — server stays out of posting
@@ -144,22 +112,13 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
 
     result = serve_review(
         run_dir,
-        augment=tasks.augment,
-        skip_globs=opts.skip_globs,
-        fold_summary=tasks.fold_summary,
-        console=tasks.console,
-        explainer=tasks.explainer,
-        explainer_section=tasks.explainer_section,
+        opts.config,
+        tasks,
         post=post_callback,
         post_meta=post_meta,
-        port=opts.port,
-        timeout=opts.timeout,
-        open_browser=opts.open_browser,
-        debug=opts.debug,
-        bind_debug_sink=tasks.bind_debug_sink,
     )
 
-    posted: PostResult | None = result.posted
+    posted: PostOutcome | None = result.posted
 
     # CLI-side fallback for --yes: the server didn't post (we didn't
     # wire it for that), so post everything ourselves now.
@@ -227,110 +186,6 @@ def _resolve_pr_number(repo: str) -> tuple[int | None, int | None]:
         _err("scr pr: no PR selected")
         return 1, None
     return None, picked
-
-
-@dataclass(frozen=True)
-class _ServerTasks:
-    """The optional closures ``serve_review`` is handed for one PR review.
-
-    Every field is None on a ``--no-augment`` run: each one needs either
-    an LLM backend or the augment sidecar, and often both.
-    """
-
-    augment: Callable | None = None
-    fold_summary: Callable | None = None
-    console: Callable | None = None
-    explainer: Callable | None = None
-    explainer_section: Callable | None = None
-    bind_debug_sink: Callable[[Callable[[dict], None]], None] | None = None
-
-
-def _build_tasks(opts: PrFlowOptions, run_dir: Path) -> _ServerTasks:
-    """Build the augment + fold-summary + console + explainer closures plus
-    a debug-sink binder, or an all-``None`` bundle when augmentation is
-    skipped (the console grounds its answers in the augment sidecar, so
-    it's unavailable without it).
-
-    The binder, present only in ``--debug``, lets the server route the CLI
-    driver's per-spawn records to its SSE fan-out (see ``serve_review``).
-    """
-    if not opts.augment:
-        return _ServerTasks()
-
-    # Imports inside: anthropic SDK + augment pipeline are lazy-loaded so
-    # `--no-augment` runs (and `scr --help`) don't pay the cost.
-    from ..augment.pipeline import augment_run_dir
-    from ..augment.prompts import PROMPT_VERSION
-    from ..cache.store import CacheStore
-
-    cache = (
-        None
-        if opts.no_cache
-        else CacheStore(
-            root=opts.cache_dir,
-            prompt_version=PROMPT_VERSION,
-        )
-    )
-
-    async def augment_task(rd: Path, publish: Callable[[str, dict[str, Any]], None]) -> None:
-        await augment_run_dir(
-            rd,
-            model=opts.model,
-            concurrency=opts.concurrency,
-            cache=cache,
-            client=opts.client,
-            extra_review_prompt=opts.extra_review_prompt,
-            skip_globs=opts.skip_globs,
-            # Page carries the progress display now; suppress the
-            # terminal meter to avoid duplicate noise and to keep
-            # the listening-URL / warning lines unobstructed.
-            show_progress=False,
-            on_event=publish,
-        )
-
-    fold_summary_task = _build_fold_summary_task(
-        client=opts.client,
-        model=opts.model,
-        cache=cache,
-        run_dir=run_dir,
-    )
-    # Console reuses the augment backend (SDK streams; CLI answers
-    # one-shot). When opts.client is None augment defaults to the
-    # Anthropic SDK, so mirror that for the console's client.
-    console_client = opts.client or Client(model=f"anthropic:{opts.model}")
-    console_task = _build_console_task(client=console_client, run_dir=run_dir)
-    bind_debug_sink: Callable[[Callable[[dict], None]], None] | None = None
-    if opts.debug:
-        bind_debug_sink = lambda sink, c=console_client: c.set_debug_sink(sink)  # noqa: E731
-    # Both explainer generators or neither: a skeleton without the
-    # per-section pass yields a document whose every prose section
-    # refuses, and the refusal a bare `None` produces reads "augmentation
-    # still in progress" long after augmentation has finished.
-    explainer_task = None
-    explainer_section_task = None
-    if opts.explainer:
-        explainer_task = _build_explainer_task(
-            client=opts.client,
-            model=opts.model,
-            cache=cache,
-            run_dir=run_dir,
-            house_style=opts.explainer_prompt,
-        )
-        explainer_section_task = _build_explainer_section_task(
-            client=opts.client,
-            model=opts.model,
-            cache=cache,
-            run_dir=run_dir,
-            house_style=opts.explainer_prompt,
-        )
-    return _ServerTasks(
-        augment=augment_task,
-        fold_summary=fold_summary_task,
-        console=console_task,
-        explainer=explainer_task,
-        explainer_section=explainer_section_task,
-        bind_debug_sink=bind_debug_sink,
-    )
 
 
 def _build_post_callback(

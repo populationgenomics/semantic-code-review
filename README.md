@@ -46,8 +46,7 @@ Prerequisites on the user's machine:
 
 Optional:
 
-- `gh` — only needed for GitHub-PR review (`scr pr`, or the
-  lower-level `scr fetch`)
+- `gh` — only needed for GitHub-PR review (`scr pr`)
 - `ripgrep` (`rg`) — speeds up the LLM's code-search tool; `git grep`
   is used as a fallback
 
@@ -225,13 +224,8 @@ prior judgments attached to the code as it converges, instead of losing
 them on every push.
 
 <details>
-<summary>Plumbing — the review/pr pipeline split into stages, for
-scripting or debugging</summary>
+<summary>Plumbing — side commands, for scripting or debugging</summary>
 
-- `scr fetch <pr-url>` — materialise a GitHub PR into a run directory.
-- `scr augment <run-dir>` — run the LLM augmentation pass on a run
-  directory.
-- `scr show <run-dir>` — print the augmented diff to stdout.
 - `scr strip <augmented.diff>` — strip annotations back to a plain
   unified diff on stdout.
 - `scr lint <augmented.diff>` — validate the augmented-diff format.

@@ -45,6 +45,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models import Model
 
+from .. import errors
 from . import explainer_schema, mcp_http_host, source_cache
 from .agents import Client
 from .hunks import overview_to_prompt_json
@@ -97,13 +98,16 @@ CONSOLE_SYSTEM = (
 )
 
 
-class ConsoleNotReady(RuntimeError):
+class ConsoleNotReady(errors.ScrError):
     """The run dir doesn't yet hold an `augmented.scr.json`.
 
-    Maps to HTTP 409 at the review-server boundary — augmentation is
-    still in flight or was skipped, so there's no diff to ground the
-    console against.
+    Augmentation is still in flight or was skipped, so there's no diff
+    to ground the console against. Reaches the reviewer as a
+    `console-error` frame, not a status: the route has already answered
+    202 by the time the turn runs.
     """
+
+    status = 409
 
 
 class ConsoleCancelled(RuntimeError):

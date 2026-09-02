@@ -17,6 +17,7 @@ from pydantic_ai.models import Model, ModelRequestParameters
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RequestUsage
 
+from semantic_code_review.augment import config
 from semantic_code_review.augment.agents import Client
 from semantic_code_review.augment.pipeline import augment_run_dir
 from semantic_code_review.format.parse import parse_augmented_diff
@@ -190,7 +191,7 @@ async def test_augment_produces_parseable_output(tmp_path: Path) -> None:
             {"intent": "Bump y from 1 to 2", "confidence": 90, "smells": []},
         ],
     )
-    await augment_run_dir(run, model="t", concurrency=1, client=backend, cache=None)
+    await augment_run_dir(run, config.AugmentConfig(model="t", concurrency=1), client=backend, cache=None)
 
     augmented_path = run / "augmented.diff"
     sidecar_path = run / "augmented.scr.json"
@@ -232,7 +233,7 @@ async def test_hunk_prompt_carries_the_file_outline(tmp_path: Path) -> None:
             {"intent": "b", "confidence": 90, "smells": []},
         ],
     )
-    await augment_run_dir(run, model="t", concurrency=1, client=backend, cache=None)
+    await augment_run_dir(run, config.AugmentConfig(model="t", concurrency=1), client=backend, cache=None)
 
     hunk_prompts = [text for tool, text in canned.prompts if tool == "submit_annotations"]
     assert len(hunk_prompts) == 2
@@ -253,27 +254,10 @@ async def test_overview_prompt_has_no_hunk_seeds(tmp_path: Path) -> None:
             {"intent": "b", "confidence": 90, "smells": []},
         ],
     )
-    await augment_run_dir(run, model="t", concurrency=1, client=backend, cache=None)
+    await augment_run_dir(run, config.AugmentConfig(model="t", concurrency=1), client=backend, cache=None)
 
     overview_prompt = next(text for tool, text in canned.prompts if tool == "submit_overview")
     assert "# File outline" not in overview_prompt
-
-
-async def test_hunk_prompt_omits_seeds_when_context_is_skipped(tmp_path: Path) -> None:
-    """`--skip-context` means no worktree grounding — including the seeds."""
-    run = _make_run_dir(tmp_path)
-    backend, canned = _make_canned_backend(
-        overview_args={"summary": "s", "themes": [], "files": [{"path": "f.py", "summary": "fs"}]},
-        hunk_args_list=[
-            {"intent": "a", "confidence": 90, "smells": []},
-            {"intent": "b", "confidence": 90, "smells": []},
-        ],
-    )
-    await augment_run_dir(run, model="t", concurrency=1, client=backend, cache=None, skip_context=True)
-
-    for tool, text in canned.prompts:
-        if tool == "submit_annotations":
-            assert "# File outline" not in text
 
 
 class _RecordingSubprocModel(_CannedModel):
@@ -322,48 +306,12 @@ async def test_augment_subprocess_backend_hosts_one_mcp_server(tmp_path: Path, m
 
     monkeypatch.setattr(pipeline_mod.mcp_http_host, "McpHttpHost", _FakeHost)
 
-    await augment_run_dir(run, model="t", concurrency=1, client=backend, cache=None)
+    await augment_run_dir(run, config.AugmentConfig(model="t", concurrency=1), client=backend, cache=None)
 
     assert len(created) == 1  # one warm host for the whole run, not per hunk
     assert created[0].started
     assert created[0].stopped  # torn down at end
     assert model.endpoints and model.endpoints[0]["type"] == "http"
-
-
-async def test_augment_only_files_filters(tmp_path: Path) -> None:
-    run = _make_run_dir(tmp_path)
-    backend, _ = _make_canned_backend(
-        overview_args={"summary": "", "files": []},
-        hunk_args_list=[{"intent": "ok"}, {"intent": "ok"}],
-    )
-    await augment_run_dir(
-        run,
-        model="t",
-        concurrency=1,
-        client=backend,
-        cache=None,
-        only_files=["does-not-exist.py"],
-    )
-    text = (run / "augmented.diff").read_text(encoding="utf-8")
-    reparsed = parse_augmented_diff(text)
-    assert reparsed.files == []
-
-
-async def test_augment_max_hunks_caps_calls(tmp_path: Path) -> None:
-    run = _make_run_dir(tmp_path)
-    backend, canned = _make_canned_backend(
-        overview_args={"summary": "", "files": []},
-        hunk_args_list=[{"intent": "first"}],
-    )
-    await augment_run_dir(
-        run,
-        model="t",
-        concurrency=1,
-        client=backend,
-        cache=None,
-        max_hunks=1,
-    )
-    assert canned.calls == 2  # overview + 1 hunk
 
 
 async def test_augment_publishes_overview_and_per_hunk_events(tmp_path: Path) -> None:
@@ -388,12 +336,7 @@ async def test_augment_publishes_overview_and_per_hunk_events(tmp_path: Path) ->
         events.append((event_type, payload))
 
     await augment_run_dir(
-        run,
-        model="t",
-        concurrency=1,
-        client=backend,
-        cache=None,
-        on_event=collect,
+        run, config.AugmentConfig(model="t", concurrency=1), client=backend, cache=None, on_event=collect
     )
 
     types = [t for t, _ in events]
@@ -437,12 +380,7 @@ async def test_augment_event_consumer_failure_does_not_break_pipeline(
         raise RuntimeError("consumer is on fire")
 
     await augment_run_dir(
-        run,
-        model="t",
-        concurrency=1,
-        client=backend,
-        cache=None,
-        on_event=explode,
+        run, config.AugmentConfig(model="t", concurrency=1), client=backend, cache=None, on_event=explode
     )
     # Run still produced parseable output.
     assert (run / "augmented.diff").exists()
@@ -481,7 +419,7 @@ async def test_per_hunk_trace_written_on_agent_failure(tmp_path: Path) -> None:
 
     # Pipeline-level: the failing hunks are caught and accounted as
     # `failed`; the run still completes.
-    await augment_run_dir(run, model="t", concurrency=1, client=backend, cache=None)
+    await augment_run_dir(run, config.AugmentConfig(model="t", concurrency=1), client=backend, cache=None)
 
     trace_dir = run / "trace"
     hunk_traces = list(trace_dir.glob("hunk-*.json"))
@@ -528,11 +466,9 @@ async def test_augment_extra_review_buckets_notes_into_matching_hunks(tmp_path: 
     )
     await augment_run_dir(
         run,
-        model="t",
-        concurrency=1,
+        config.AugmentConfig(model="t", concurrency=1, extra_review_prompt="Reviewer prompt body"),
         client=backend,
         cache=None,
-        extra_review_prompt="Reviewer prompt body",
     )
     reparsed = parse_augmented_diff((run / "augmented.diff").read_text())
     h0_notes = [(n.line, n.body) for n in reparsed.files[0].hunks[0].ann.line_notes]
@@ -571,11 +507,9 @@ async def test_augment_extra_review_drops_notes_outside_any_hunk(tmp_path: Path)
     )
     await augment_run_dir(
         run,
-        model="t",
-        concurrency=1,
+        config.AugmentConfig(model="t", concurrency=1, extra_review_prompt="Reviewer prompt body"),
         client=backend,
         cache=None,
-        extra_review_prompt="Reviewer prompt body",
     )
     reparsed = parse_augmented_diff((run / "augmented.diff").read_text())
     h0_notes = [(n.line, n.body) for n in reparsed.files[0].hunks[0].ann.line_notes]
@@ -593,14 +527,8 @@ async def test_augment_no_extra_review_when_prompt_unset(tmp_path: Path) -> None
         hunk_args_list=[{"intent": "x"}, {"intent": "y"}],
         extra_args_list=[],  # no payloads — assertion fires if asked
     )
-    await augment_run_dir(
-        run,
-        model="t",
-        concurrency=1,
-        client=backend,
-        cache=None,
-        # no extra_review_prompt
-    )
+    # No extra_review_prompt on the config.
+    await augment_run_dir(run, config.AugmentConfig(model="t", concurrency=1), client=backend, cache=None)
     assert canned.calls == 3  # 1 overview + 2 main hunks; no extras.
 
 
@@ -628,11 +556,9 @@ async def test_augment_extra_review_re_emits_sse_for_touched_hunks(tmp_path: Pat
 
     await augment_run_dir(
         run,
-        model="t",
-        concurrency=1,
+        config.AugmentConfig(model="t", concurrency=1, extra_review_prompt="Reviewer prompt body"),
         client=backend,
         cache=None,
-        extra_review_prompt="Reviewer prompt body",
         on_event=_capture,
     )
     # Count `hunk` events targeting (file_idx=0, hunk_idx=*).
@@ -713,7 +639,7 @@ async def test_batching_sends_one_call_per_file(tmp_path: Path) -> None:
             {"annotations": [{"hunk_index": 0, "intent": "a"}, {"hunk_index": 1, "intent": "b"}]},
         ],
     )
-    await augment_run_dir(run, model="t", concurrency=8, client=backend, cache=None, batch_size=2)
+    await augment_run_dir(run, config.AugmentConfig(model="t", concurrency=8), client=backend, cache=None, batch_size=2)
 
     assert canned.calls == 2  # 1 overview + 1 batch
     reparsed = parse_augmented_diff((run / "augmented.diff").read_text(encoding="utf-8"))
@@ -726,7 +652,7 @@ async def test_batch_user_prompt_carries_file_context_once(tmp_path: Path) -> No
         overview_args={"summary": "s", "themes": [], "files": [{"path": "f.py", "summary": "fs"}]},
         hunk_args_list=[{"annotations": [{"hunk_index": 0, "intent": "a"}, {"hunk_index": 1, "intent": "b"}]}],
     )
-    await augment_run_dir(run, model="t", concurrency=8, client=backend, cache=None, batch_size=2)
+    await augment_run_dir(run, config.AugmentConfig(model="t", concurrency=8), client=backend, cache=None, batch_size=2)
 
     batch_prompt = next(text for tool, text in canned.prompts if tool == "submit_annotations")
     assert "# Hunk 0" in batch_prompt and "# Hunk 1" in batch_prompt
@@ -746,7 +672,7 @@ async def test_hunk_missing_from_a_batch_is_retried_individually(tmp_path: Path)
             {"intent": "retried singly"},  # the fallback call, single-hunk shaped
         ],
     )
-    await augment_run_dir(run, model="t", concurrency=8, client=backend, cache=None, batch_size=2)
+    await augment_run_dir(run, config.AugmentConfig(model="t", concurrency=8), client=backend, cache=None, batch_size=2)
 
     assert canned.calls == 3  # overview + batch + one fallback
     reparsed = parse_augmented_diff((run / "augmented.diff").read_text(encoding="utf-8"))
@@ -782,7 +708,7 @@ async def test_unusable_batch_entry_costs_one_hunk_not_the_run(tmp_path: Path, m
         return real(parsed, args)
 
     monkeypatch.setattr(pipeline_mod, "build_hunk_annotations", flaky)
-    await augment_run_dir(run, model="t", concurrency=8, client=backend, cache=None, batch_size=2)
+    await augment_run_dir(run, config.AugmentConfig(model="t", concurrency=8), client=backend, cache=None, batch_size=2)
 
     assert (run / "augmented.diff").exists()
     reparsed = parse_augmented_diff((run / "augmented.diff").read_text(encoding="utf-8"))
@@ -807,7 +733,9 @@ async def test_a_bug_in_the_batch_path_is_not_swallowed_as_a_model_failure(
 
     monkeypatch.setattr(pipeline_mod, "run_batch_pass", boom)
     with pytest.raises(TypeError, match="unexpected keyword argument"):
-        await augment_run_dir(run, model="t", concurrency=8, client=backend, cache=None, batch_size=2)
+        await augment_run_dir(
+            run, config.AugmentConfig(model="t", concurrency=8), client=backend, cache=None, batch_size=2
+        )
 
 
 async def test_batch_size_of_one_uses_the_unbatched_path(tmp_path: Path) -> None:
@@ -817,7 +745,7 @@ async def test_batch_size_of_one_uses_the_unbatched_path(tmp_path: Path) -> None
         overview_args={"summary": "s", "themes": [], "files": [{"path": "f.py", "summary": "fs"}]},
         hunk_args_list=[{"intent": "a"}, {"intent": "b"}],
     )
-    await augment_run_dir(run, model="t", concurrency=8, client=backend, cache=None, batch_size=1)
+    await augment_run_dir(run, config.AugmentConfig(model="t", concurrency=8), client=backend, cache=None, batch_size=1)
 
     assert canned.calls == 3  # overview + one call per hunk
     prompt = next(text for tool, text in canned.prompts if tool == "submit_annotations")
@@ -827,7 +755,7 @@ async def test_batch_size_of_one_uses_the_unbatched_path(tmp_path: Path) -> None
 def test_batches_never_span_files() -> None:
     from semantic_code_review.augment.pipeline import _plan_batches
 
-    queued = [(0, 0, 0), (0, 1, 1), (1, 0, 2), (1, 1, 3), (1, 2, 4)]
+    queued = [(0, 0), (0, 1), (1, 0), (1, 1), (1, 2)]
     batches = _plan_batches(queued, 4)
     assert [[e[0] for e in b] for b in batches] == [[0, 0], [1, 1, 1]]
 
@@ -835,7 +763,7 @@ def test_batches_never_span_files() -> None:
 def test_batches_split_a_file_that_exceeds_the_cap() -> None:
     from semantic_code_review.augment.pipeline import _plan_batches
 
-    queued = [(0, i, i) for i in range(7)]
+    queued = [(0, i) for i in range(7)]
     batches = _plan_batches(queued, 3)
     assert [len(b) for b in batches] == [3, 3, 1]
 
@@ -853,7 +781,7 @@ async def test_removed_symbols_reach_the_hunk_prompt(tmp_path: Path) -> None:
         overview_args={"summary": "s", "themes": [], "files": [{"path": "f.py", "summary": "fs"}]},
         hunk_args_list=[{"intent": "a"}, {"intent": "b"}],
     )
-    await augment_run_dir(run, model="t", concurrency=1, client=backend, cache=None)
+    await augment_run_dir(run, config.AugmentConfig(model="t", concurrency=1), client=backend, cache=None)
 
     # With no resolvable base worktree the delta is empty, so the section is
     # absent — the point is that an empty delta emits nothing rather than a
@@ -902,7 +830,9 @@ async def test_a_nonsense_batch_size_is_rejected(tmp_path: Path, size: int) -> N
         hunk_args_list=[],
     )
     with pytest.raises(ValueError, match="batch_size must be >= 1"):
-        await augment_run_dir(run, model="t", concurrency=8, client=backend, cache=None, batch_size=size)
+        await augment_run_dir(
+            run, config.AugmentConfig(model="t", concurrency=8), client=backend, cache=None, batch_size=size
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -925,12 +855,13 @@ async def test_a_house_style_for_the_explainer_never_reaches_the_hunk_pass(tmp_p
     rather than because both are right — so the annotations stay
     hermetic.
 
-    Driven through the PR flow's own bundle builder rather than
+    Driven through the shared server-task bundle rather than
     `augment_run_dir` directly: `augment_run_dir` has no parameter for
     the house style, and the guard worth having is that the layer which
     *does* hold it hands the pipeline the same envelope either way.
     """
-    from semantic_code_review.review import pr_flow
+    from semantic_code_review.review import runner
+    from semantic_code_review.review.config import ReviewConfig
 
     async def envelopes(house_style: str | None) -> list[tuple[str, str, str]]:
         root = tmp_path / ("styled" if house_style else "plain")
@@ -943,24 +874,18 @@ async def test_a_house_style_for_the_explainer_never_reaches_the_hunk_pass(tmp_p
                 {"intent": "b", "confidence": 90, "smells": []},
             ],
         )
-        opts = pr_flow.PrFlowOptions(
-            repo="o/r",
-            number=1,
+        cfg = ReviewConfig(
             runs_root=root,
             augment=True,
             model="t",
             concurrency=1,
             no_cache=True,
-            cache_dir=None,
             open_browser=False,
-            port=0,
             timeout=1,
-            extra_review_prompt=None,
             client=backend,
-            yes=True,
             explainer_prompt=house_style,
         )
-        tasks = pr_flow._build_tasks(opts, run)
+        tasks = runner.build_server_tasks(run, cfg)
         assert tasks.explainer is not None  # the bundle that holds the house style
         await tasks.augment(run, lambda *_args, **_kwargs: None)
         return canned.envelopes
