@@ -189,6 +189,30 @@ def _capped(entries: list[str]) -> list[str]:
     return [*entries[:_REMOVED_SEED_MAX], f"... and {dropped} more (list truncated)"]
 
 
+def _hunk_block(label: str, hunk: AnnotatedHunk) -> str:
+    """One `# Hunk` prompt block: label, post-image range, numbered body.
+
+    The range line states the hunk's first and last post-image line
+    outright. Left to derive the bound from the `@@` header, the model
+    lands on `new_start + new_count` — one past the last line — so its
+    final segment overshoots the hunk and gets clamped or dropped.
+    """
+    parsed = hunk.parsed
+    if parsed.new_count <= 0:
+        span = "post-image lines: none — this hunk only deletes, so emit no `segments`."
+    else:
+        last = parsed.new_start + parsed.new_count - 1
+        span = (
+            f"post-image lines: +{parsed.new_start}..+{last} inclusive — the first line is "
+            f"+{parsed.new_start}, the LAST line is +{last}. Every `segments[]` entry must lie "
+            f"inside that range (`new_start` >= {parsed.new_start}, "
+            f"`new_start + new_count - 1` <= {last}) and must not overlap another: a segment "
+            f"starts one line AFTER the previous segment's last line."
+        )
+    numbered = linenos.number_for_prompt(f"{parsed.header}\n{parsed.body}")
+    return f"{label}\n{span}\n{numbered}"
+
+
 def format_hunk_prompt(
     fp: AnnotatedFile,
     hunk: AnnotatedHunk,
@@ -214,13 +238,12 @@ def format_hunk_prompt(
     has no outline, and a header-only section reads as "there is nothing
     here".
     """
-    numbered = linenos.number_for_prompt(f"{hunk.parsed.header}\n{hunk.parsed.body}")
     file_block = f"# File summary\n{file_summary}"
     if file_outline:
         file_block += f"\n\n# File outline (deterministic — tree-sitter, head side)\n{file_outline}"
     if removed_symbols:
         file_block += f"\n\n{removed_symbols}"
-    hunk_text = f"# File\npath: {fp.path}\nlang: {fp.ann.lang or ''}\n\n# Hunk\n{numbered}"
+    hunk_text = f"# File\npath: {fp.path}\nlang: {fp.ann.lang or ''}\n\n{_hunk_block('# Hunk', hunk)}"
     return [
         f"# PR overview\n{overview_json}",
         CachePoint(),
@@ -337,8 +360,7 @@ def format_batch_prompt(
         file_block += f"\n\n{removed_symbols}"
     blocks = [file_block]
     for index, hunk in hunks:
-        numbered = linenos.number_for_prompt(f"{hunk.parsed.header}\n{hunk.parsed.body}")
-        blocks.append(f"# Hunk {index}\n{numbered}")
+        blocks.append(_hunk_block(f"# Hunk {index}", hunk))
     return ["\n\n".join(blocks)]
 
 
