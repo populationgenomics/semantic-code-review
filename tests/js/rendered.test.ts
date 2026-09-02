@@ -1,16 +1,20 @@
 // Rendered-mode orchestration: markdown detection, the lazy /file-text
-// fetch + cache, the toggle's flip-then-repaint contract, and the
-// head-only body render (ADR 0004 slice 1).
+// fetch + cache, the toggle's flip-then-repaint contract, the head-only
+// body render (ADR 0004 slice 1), and the per-pane split of the view
+// state a `PaneState` carries.
 
 import { describe, test, expect, vi, beforeEach } from "vitest";
 import {
-  Rendered, _plan, _outline, _reveal, _sectionOpen, _diffLines, _classify, _align,
-  type BlockPair, type PlanItem,
+  Rendered, _plan, _outline, _diffLines, _classify, _align,
+  type BlockPair, type PlanItem, type PaneState,
 } from "../../semantic_code_review/viewer/assets/rendered";
 
 function file(id: string, path: string): FileBlock {
   return { id, path } as FileBlock;
 }
+
+// The pane most cases drive. A case about two panes makes its own.
+let st: PaneState;
 
 function mockFileText(body: { base: string | null; head: string | null }): void {
   vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -23,6 +27,7 @@ function mockFileText(body: { base: string | null; head: string | null }): void 
 
 beforeEach(() => {
   Rendered.init("");
+  st = Rendered.newPaneState();
 });
 
 describe("Rendered.isMarkdown", () => {
@@ -44,10 +49,10 @@ describe("Rendered.toggle", () => {
     const f = file("F1", "a.md");
     const rerender = vi.fn();
 
-    await Rendered.toggle(f, rerender);
+    await Rendered.toggle(st, f, rerender);
 
     expect(globalThis.fetch).toHaveBeenCalledWith("/file-text?file_idx=1", { cache: "no-store" });
-    expect(Rendered.isOn("F1")).toBe(true);
+    expect(Rendered.isOn(st, "F1")).toBe(true);
     expect(rerender).toHaveBeenCalledTimes(1);
   });
 
@@ -56,11 +61,11 @@ describe("Rendered.toggle", () => {
     const f = file("F2", "a.md");
     const rerender = vi.fn();
 
-    await Rendered.toggle(f, rerender);       // on (1 fetch)
-    await Rendered.toggle(f, rerender);       // off (no fetch)
+    await Rendered.toggle(st, f, rerender);   // on (1 fetch)
+    await Rendered.toggle(st, f, rerender);   // off (no fetch)
 
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
-    expect(Rendered.isOn("F2")).toBe(false);
+    expect(Rendered.isOn(st, "F2")).toBe(false);
     expect(rerender).toHaveBeenCalledTimes(2);
   });
 
@@ -70,9 +75,9 @@ describe("Rendered.toggle", () => {
     const f = file("F3", "a.md");
     const rerender = vi.fn();
 
-    await Rendered.toggle(f, rerender);
+    await Rendered.toggle(st, f, rerender);
 
-    expect(Rendered.isOn("F3")).toBe(false);
+    expect(Rendered.isOn(st, "F3")).toBe(false);
     expect(rerender).not.toHaveBeenCalled();
   });
 });
@@ -86,18 +91,33 @@ function mdFile(id: string, rows: Array<Partial<RowBlock>> = []): FileBlock {
   } as FileBlock;
 }
 
-async function flip(f: FileBlock, body: { base: string | null; head: string | null }): Promise<void> {
+async function flip(
+  pane: PaneState, f: FileBlock, body: { base: string | null; head: string | null },
+): Promise<void> {
   mockFileText(body);
-  await Rendered.toggle(f, () => {});
+  await Rendered.toggle(pane, f, () => {});
+}
+
+/** Paint one pane's body into `el`, wiring the repaint the controls fire
+ *  back into the same element — what render.ts's `scope.repaint` does one
+ *  layer up. */
+function paint(pane: PaneState, el: HTMLElement, f: FileBlock, spy?: () => void): void {
+  const repaint = (): void => {
+    spy?.();
+    el.innerHTML = "";
+    Rendered.renderBody(pane, el, f, repaint);
+  };
+  el.innerHTML = "";
+  Rendered.renderBody(pane, el, f, repaint);
 }
 
 describe("Rendered.renderBody — two-pane", () => {
   test("renders base left and head right into the block grid", async () => {
     const f = mdFile("F4");
-    await flip(f, { base: "# Old", head: "# New\n\nbody text" });
+    await flip(st, f, { base: "# Old", head: "# New\n\nbody text" });
 
     const body = document.createElement("div");
-    Rendered.renderBody(body, f);
+    Rendered.renderBody(st, body, f, () => {});
 
     const grid = body.querySelector(".rmd-grid");
     expect(grid).not.toBeNull();
@@ -114,10 +134,10 @@ describe("Rendered.renderBody — two-pane", () => {
     const f = mdFile("F5", [
       { kind: "pair", old_line: 1, new_line: 1, old_text: "# Old", new_text: "# New" },
     ]);
-    await flip(f, { base: "# Old\n\nkeep", head: "# New\n\nkeep" });
+    await flip(st, f, { base: "# Old\n\nkeep", head: "# New\n\nkeep" });
 
     const body = document.createElement("div");
-    Rendered.renderBody(body, f);
+    Rendered.renderBody(st, body, f, () => {});
 
     const removed = body.querySelectorAll(".rmd-col-old .rmd-removed");
     const added = body.querySelectorAll(".rmd-col-new .rmd-added");
@@ -135,10 +155,10 @@ describe("Rendered.renderBody — two-pane", () => {
     const f = mdFile("F6", [
       { kind: "pair", old_line: 3, new_line: 3, old_text: "old body", new_text: "new body" },
     ]);
-    await flip(f, { base: "# H\n\nold body", head: "# H\n\nnew body" });
+    await flip(st, f, { base: "# H\n\nold body", head: "# H\n\nnew body" });
 
     const body = document.createElement("div");
-    Rendered.renderBody(body, f);
+    Rendered.renderBody(st, body, f, () => {});
 
     // Two block-pairs → four columns: (H,H) then (old body, new body).
     const cols = body.querySelectorAll(".rmd-grid > .rmd-col");
@@ -154,10 +174,10 @@ describe("Rendered.renderBody — two-pane", () => {
       { kind: "ins", old_line: null, new_line: 1, old_text: "", new_text: "# A" },
       { kind: "ins", old_line: null, new_line: 3, old_text: "", new_text: "body" },
     ]);
-    await flip(f, { base: null, head: "# A\n\nbody" });
+    await flip(st, f, { base: null, head: "# A\n\nbody" });
 
     const body = document.createElement("div");
-    Rendered.renderBody(body, f);
+    Rendered.renderBody(st, body, f, () => {});
 
     expect(body.querySelectorAll(".rmd-col-old.rmd-col-empty")).toHaveLength(2);
     expect(body.querySelectorAll(".rmd-col-new .rmd-added")).toHaveLength(2);
@@ -167,10 +187,10 @@ describe("Rendered.renderBody — two-pane", () => {
     const f = mdFile("F12", [
       { kind: "pair", old_line: 1, new_line: 1, old_text: "the quick brown fox", new_text: "the slow brown fox" },
     ]);
-    await flip(f, { base: "the quick brown fox", head: "the slow brown fox" });
+    await flip(st, f, { base: "the quick brown fox", head: "the slow brown fox" });
 
     const body = document.createElement("div");
-    Rendered.renderBody(body, f);
+    Rendered.renderBody(st, body, f, () => {});
 
     const oldMarks = body.querySelectorAll(".rmd-col-old .char-chg");
     const newMarks = body.querySelectorAll(".rmd-col-new .char-chg");
@@ -182,10 +202,10 @@ describe("Rendered.renderBody — two-pane", () => {
     const f = mdFile("F13", [
       { kind: "pair", old_line: 1, new_line: 1, old_text: "a **quick** fox", new_text: "a **slow** fox" },
     ]);
-    await flip(f, { base: "a **quick** fox", head: "a **slow** fox" });
+    await flip(st, f, { base: "a **quick** fox", head: "a **slow** fox" });
 
     const body = document.createElement("div");
-    Rendered.renderBody(body, f);
+    Rendered.renderBody(st, body, f, () => {});
 
     // The changed word sits inside <strong>; the mark lands within it,
     // leaving the surrounding text unmarked.
@@ -201,10 +221,10 @@ describe("Rendered.renderBody — two-pane", () => {
     const f = mdFile("F14", [
       { kind: "ins", old_line: null, new_line: 3, old_text: "", new_text: "added para" },
     ]);
-    await flip(f, { base: "# H", head: "# H\n\nadded para" });
+    await flip(st, f, { base: "# H", head: "# H\n\nadded para" });
 
     const body = document.createElement("div");
-    Rendered.renderBody(body, f);
+    Rendered.renderBody(st, body, f, () => {});
 
     // The inserted paragraph is wholly green (block tint), no intra marks.
     expect(body.querySelectorAll(".char-chg")).toHaveLength(0);
@@ -213,10 +233,10 @@ describe("Rendered.renderBody — two-pane", () => {
 
   test("shows a notice when both sides are null", async () => {
     const f = mdFile("F8");
-    await flip(f, { base: null, head: null });
+    await flip(st, f, { base: null, head: null });
 
     const body = document.createElement("div");
-    Rendered.renderBody(body, f);
+    Rendered.renderBody(st, body, f, () => {});
 
     expect(body.querySelector(".rmd-grid")).toBeNull();
     expect(body.querySelector(".rendered-md-notice")).not.toBeNull();
@@ -315,11 +335,6 @@ function folds(plan: PlanItem[]): Extract<PlanItem, { kind: "fold" }>[] {
 }
 
 describe("Rendered._plan — run folding", () => {
-  beforeEach(() => {
-    for (const k of Object.keys(_reveal)) delete _reveal[k];
-    for (const k of Object.keys(_sectionOpen)) delete _sectionOpen[k];
-  });
-
   test("collapses a long unchanged run, bleeding one block toward a change", () => {
     // heading landmark, 6 unchanged body blocks, then a change.
     const pairs = [
@@ -327,7 +342,7 @@ describe("Rendered._plan — run folding", () => {
       p(3), p(4), p(5), p(6), p(7), p(8),
       p(10, { changed: true }),
     ];
-    const plan = _plan(pairs, "runs", "F0");
+    const plan = _plan(st, pairs, "runs", "F0");
     const fs = folds(plan);
     expect(fs).toHaveLength(1);
     expect(fs[0].scope).toBe("run");
@@ -344,7 +359,7 @@ describe("Rendered._plan — run folding", () => {
       p(2), p(3), p(4),        // 2 collapsible after bleeding both ends
       p(5, { changed: true }),
     ];
-    const plan = _plan(pairs, "runs", "F0");
+    const plan = _plan(st, pairs, "runs", "F0");
     expect(folds(plan)).toHaveLength(0);
     expect(plan.every((i) => i.kind === "pair")).toBe(true);
   });
@@ -357,7 +372,7 @@ describe("Rendered._plan — run folding", () => {
       p(5, { heading: 2 }),
       p(6), p(7), p(8), p(9),
     ];
-    const plan = _plan(pairs, "runs", "F0");
+    const plan = _plan(st, pairs, "runs", "F0");
     expect(folds(plan)).toHaveLength(2);
     // The heading pair survives between the two chips.
     const headingKept = plan.some(
@@ -368,7 +383,7 @@ describe("Rendered._plan — run folding", () => {
 
   test("open level collapses nothing", () => {
     const pairs = [p(1), p(2), p(3), p(4), p(5), p(6)];
-    const plan = _plan(pairs, "open", "F0");
+    const plan = _plan(st, pairs, "open", "F0");
     expect(folds(plan)).toHaveLength(0);
     expect(plan).toHaveLength(6);
   });
@@ -378,7 +393,7 @@ describe("Rendered._plan — run folding", () => {
       p(1, { heading: 1 }), p(2), p(3),           // unchanged section
       p(5, { heading: 1 }), p(6, { changed: true }), // changed section
     ];
-    const plan = _plan(pairs, "sections", "F0");
+    const plan = _plan(st, pairs, "sections", "F0");
     const fs = folds(plan);
     expect(fs).toHaveLength(1);
     expect(fs[0].scope).toBe("section");
@@ -394,8 +409,8 @@ describe("Rendered._plan — run folding", () => {
       p(10, { changed: true }),
     ];
     // The run keys off its topmost collapsible block (line 3, head side).
-    _reveal["F0"] = { h3: { top: 2, bottom: 0 } };
-    const plan = _plan(pairs, "runs", "F0");
+    st.reveal["F0"] = { h3: { top: 2, bottom: 0 } };
+    const plan = _plan(st, pairs, "runs", "F0");
     const fs = folds(plan);
     expect(fs).toHaveLength(1);
     expect(fs[0].count).toBe(3);   // 5 − 2 revealed from the top
@@ -423,21 +438,15 @@ describe("Rendered._outline", () => {
 });
 
 describe("Rendered.renderBody — fold chip DOM", () => {
-  beforeEach(() => {
-    for (const k of Object.keys(_reveal)) delete _reveal[k];
-    for (const k of Object.keys(_sectionOpen)) delete _sectionOpen[k];
-  });
-
   test("an unchanged run renders one chip with a chevron at each end; a click reveals into it", async () => {
     // Heading landmark + 6 identical paragraphs, no diff → one long run.
     const doc = "# Head\n\n" + [1, 2, 3, 4, 5, 6].map((n) => `para ${n}`).join("\n\n");
     const f = mdFile("F9");
-    await flip(f, { base: doc, head: doc });
+    await flip(st, f, { base: doc, head: doc });
 
     const body = document.createElement("div");
     // Repaint into the same element so the chevron click re-renders.
-    Rendered.init("", () => { body.innerHTML = ""; Rendered.renderBody(body, f); });
-    Rendered.renderBody(body, f);
+    paint(st, body, f);
 
     const chip = body.querySelector(".rmd-fold");
     expect(chip).not.toBeNull();
@@ -454,11 +463,10 @@ describe("Rendered.renderBody — fold chip DOM", () => {
   test("in-body ladder switches fold level; Open reveals the whole run", async () => {
     const doc = "# Head\n\n" + [1, 2, 3, 4, 5, 6].map((n) => `para ${n}`).join("\n\n");
     const f = mdFile("F10");
-    await flip(f, { base: doc, head: doc });
+    await flip(st, f, { base: doc, head: doc });
 
     const body = document.createElement("div");
-    Rendered.init("", () => { body.innerHTML = ""; Rendered.renderBody(body, f); });
-    Rendered.renderBody(body, f);
+    paint(st, body, f);
 
     const ladder = body.querySelector(".rmd-ladder");
     expect(ladder!.querySelectorAll(".rmd-ladder-btn")).toHaveLength(3);
@@ -476,11 +484,10 @@ describe("Rendered.renderBody — fold chip DOM", () => {
   test("outline entry expands its whole section", async () => {
     const doc = "# Head\n\n" + [1, 2, 3, 4, 5, 6].map((n) => `para ${n}`).join("\n\n");
     const f = mdFile("F11");
-    await flip(f, { base: doc, head: doc });
+    await flip(st, f, { base: doc, head: doc });
 
     const body = document.createElement("div");
-    Rendered.init("", () => { body.innerHTML = ""; Rendered.renderBody(body, f); });
-    Rendered.renderBody(body, f);
+    paint(st, body, f);
 
     // One outline entry for the single heading; the run is collapsed.
     const entry = body.querySelector(".rmd-outline-entry") as HTMLElement;

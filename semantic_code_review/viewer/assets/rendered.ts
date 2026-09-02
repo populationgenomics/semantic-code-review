@@ -26,11 +26,12 @@
 // carries its source line via the markdown-it token map, so a comment on
 // a block round-trips unchanged (comments.ts owns the editor/store).
 //
-// This module owns rendered-mode state (which files are flipped, the
-// source cache) and the async fetch; render.ts consults isMarkdown /
-// isOn and delegates the body to renderBody. The toggle handler fetches
-// then repaints via a callback rather than importing render.ts, keeping
-// the dependency one-way (render.ts → rendered.ts).
+// This module owns rendered-mode state and the async fetch; render.ts
+// consults isMarkdown / isOn and delegates the body to renderBody. The
+// view state lives in a `PaneState` the caller hands in — render.ts keeps
+// one per pane on its `PaneScope` — and every control repaints through a
+// callback rather than importing render.ts, keeping the dependency
+// one-way (render.ts → rendered.ts).
 
 import { Comments } from "./comments";
 import { Markdown, type HeadingInfo, type RenderedBlock } from "./markdown";
@@ -67,45 +68,68 @@ const _MIN_RUN = 3;
 // Prefixed onto the /file-text fetch; the same session-endpoint boot.ts
 // resolves for the other back-channel routes. Empty string = same origin.
 let _endpoint = "";
-// Full re-render, injected by boot (Render.render). Fold-level changes
-// and chevron reveals repaint through this rather than importing
-// render.ts, keeping the dependency one-way (render.ts → rendered.ts).
-let _rerender: () => void = () => {};
-// File ids (F<idx>) currently flipped to rendered mode.
-const _on = new Set<string>();
-// Lazy per-file source cache, keyed by file id. Populated on first flip;
-// never invalidated (the base/head worktrees are pinned for the run).
+
+// Rendered mode's *view* state for one pane. The change explainer's
+// detail panel (ADR 0007) renders a file beside the document while the
+// diff pane holds its own copy of it, so each pane carries its own: a
+// reference read beside the document must not move what is waiting in the
+// diff — the rule `PaneScope.overrides` already states for text-mode
+// folds. render.ts hangs one of these off each `PaneScope`.
+//
+// Which files are flipped is view state too, so opening a `.md` reference
+// in the panel starts on the text diff even when the diff pane has that
+// file flipped, and flipping it in the panel leaves the diff where the
+// reviewer left it. The panel renders its own file header, so its toggle
+// is one click away.
+interface PaneState {
+  /** File ids (F<idx>) currently flipped to rendered mode in this pane. */
+  on: Set<string>;
+  /** Per-file fold level, keyed by file id; absent → the `runs` default. */
+  foldLevel: Record<string, MdFoldLevel>;
+  /** Ephemeral incremental-reveal state, per file then per run key: how
+   *  many blocks the reviewer has revealed from each end of a collapsed
+   *  run. Cleared for a file when its fold level moves (the ladder is
+   *  authoritative), so partial reveals never leak into a fresh level. */
+  reveal: Record<string, Record<string, { top: number; bottom: number }>>;
+  /** Section keys the reviewer has forced fully open (section chip /
+   *  outline expand). Same ephemeral lifetime as `reveal`. */
+  sectionOpen: Record<string, Set<string>>;
+}
+
+function newPaneState(): PaneState {
+  return {
+    on: new Set<string>(),
+    foldLevel: Object.create(null),
+    reveal: Object.create(null),
+    sectionOpen: Object.create(null),
+  };
+}
+
+// Lazy per-file source cache, keyed by file id. Deliberately *not* in
+// PaneState: the base+head text is pane-independent and costs a /file-text
+// round trip, which is the whole point of fetching it lazily — a second
+// pane flipping the same file reads it back. Only view state splits by
+// pane. Never invalidated (the base/head worktrees are pinned for the run).
 const _cache: Record<string, FileText> = Object.create(null);
 
-// Per-file fold level, keyed by file id; absent → the `runs` default.
-const _foldLevel: Record<string, MdFoldLevel> = Object.create(null);
-// Ephemeral incremental-reveal state, per file then per run key: how many
-// blocks the reviewer has revealed from each end of a collapsed run.
-// Cleared for a file when its fold level moves (the ladder is
-// authoritative), so partial reveals never leak into a fresh level.
-const _reveal: Record<string, Record<string, { top: number; bottom: number }>> =
-  Object.create(null);
-// Section keys the reviewer has forced fully open (section chip / outline
-// expand). Same ephemeral lifetime as _reveal.
-const _sectionOpen: Record<string, Set<string>> = Object.create(null);
-
-function init(endpoint: string, rerender?: () => void): void {
+function init(endpoint: string): void {
   _endpoint = endpoint;
-  if (rerender) _rerender = rerender;
 }
 
-function foldLevel(fileId: string): MdFoldLevel {
-  return _foldLevel[fileId] || "runs";
+function foldLevel(st: PaneState, fileId: string): MdFoldLevel {
+  return st.foldLevel[fileId] || "runs";
 }
 
-/** Set one file's rendered-mode fold level and repaint. Clears that
- *  file's ephemeral reveal state — the level is authoritative, same as
- *  the text-mode slider's `_setGlobalFold`. */
-function setFoldLevel(fileId: string, level: MdFoldLevel): void {
-  _foldLevel[fileId] = level;
-  delete _reveal[fileId];
-  delete _sectionOpen[fileId];
-  _rerender();
+/** Set one file's rendered-mode fold level in one pane and repaint it.
+ *  Clears that file's ephemeral reveal state — the level is
+ *  authoritative, same as the text-mode slider's `_setGlobalFold`. */
+function setFoldLevel(
+  st: PaneState, fileId: string, level: MdFoldLevel, repaint: () => void,
+): void {
+  st.foldLevel[fileId] = level;
+  delete st.reveal[fileId];
+  delete st.sectionOpen[fileId];
+  repaint();
 }
 
 /** True for files rendered mode can handle — markdown by extension. */
@@ -114,20 +138,21 @@ function isMarkdown(f: FileBlock): boolean {
   return p.endsWith(".md") || p.endsWith(".markdown");
 }
 
-function isOn(fileId: string): boolean {
-  return _on.has(fileId);
+function isOn(st: PaneState, fileId: string): boolean {
+  return st.on.has(fileId);
 }
 
-/** Flip a file between text-diff and rendered mode, then repaint.
+/** Flip a file between text-diff and rendered mode in one pane, then
+ *  repaint it.
  *
  *  Enabling fetches the file's source on first use; a failed fetch
  *  leaves the file in text mode (no flip, no repaint) rather than
  *  showing an empty rendered pane. Disabling is synchronous.
  */
-async function toggle(f: FileBlock, rerender: () => void): Promise<void> {
-  if (_on.has(f.id)) {
-    _on.delete(f.id);
-    rerender();
+async function toggle(st: PaneState, f: FileBlock, repaint: () => void): Promise<void> {
+  if (st.on.has(f.id)) {
+    st.on.delete(f.id);
+    repaint();
     return;
   }
   if (!_cache[f.id]) {
@@ -138,8 +163,8 @@ async function toggle(f: FileBlock, rerender: () => void): Promise<void> {
       return;
     }
   }
-  _on.add(f.id);
-  rerender();
+  st.on.add(f.id);
+  repaint();
 }
 
 async function _fetchText(f: FileBlock): Promise<FileText> {
@@ -156,9 +181,13 @@ function _fileIdx(f: FileBlock): number {
   return n;
 }
 
-/** Render the file's rendered-mode body into `body`. Requires the
- *  source to be cached (toggle guarantees it before flipping on). */
-function renderBody(body: HTMLElement, f: FileBlock): void {
+/** Render the file's rendered-mode body into `body`, reading and writing
+ *  `st` for the pane it belongs to; the controls it hangs off the body
+ *  repaint through `repaint`. Requires the source to be cached (toggle
+ *  guarantees it before flipping on). */
+function renderBody(
+  st: PaneState, body: HTMLElement, f: FileBlock, repaint: () => void,
+): void {
   const text = _cache[f.id];
   const base = text ? text.base : null;
   const head = text ? text.head : null;
@@ -178,11 +207,11 @@ function renderBody(body: HTMLElement, f: FileBlock): void {
   const baseBlocks = _classify(Markdown.renderBlocks(base ?? ""), diff.baseChanged, diff.baseDeleted);
   const headBlocks = _classify(Markdown.renderBlocks(head ?? ""), diff.headChanged, diff.headInserted);
   const pairs = _align(baseBlocks, headBlocks);
-  container.appendChild(_renderControls(f.id, pairs));
+  container.appendChild(_renderControls(st, f.id, pairs, repaint));
   const grid = _el("div", "rmd-grid");
   const live = _livePane(pairs);
   if (live) grid.classList.add(`rmd-only-${live}`);
-  for (const item of _plan(pairs, foldLevel(f.id), f.id)) {
+  for (const item of _plan(st, pairs, foldLevel(st, f.id), f.id)) {
     if (item.kind === "pair") {
       const oldCol = _renderCol(item.pair.base, "old", f);
       const newCol = _renderCol(item.pair.head, "new", f);
@@ -190,7 +219,7 @@ function renderBody(body: HTMLElement, f: FileBlock): void {
       grid.appendChild(oldCol);
       grid.appendChild(newCol);
     } else {
-      grid.appendChild(_renderFoldChip(item, f.id));
+      grid.appendChild(_renderFoldChip(st, item, f.id, repaint));
     }
   }
   container.appendChild(grid);
@@ -405,13 +434,15 @@ function _outline(pairs: BlockPair[]): OutlineEntry[] {
   return out;
 }
 
-function _revealFor(fileId: string, key: string): { top: number; bottom: number } {
-  const perFile = _reveal[fileId];
+function _revealFor(st: PaneState, fileId: string, key: string): { top: number; bottom: number } {
+  const perFile = st.reveal[fileId];
   return (perFile && perFile[key]) || { top: 0, bottom: 0 };
 }
 
-function _plan(pairs: BlockPair[], level: MdFoldLevel, fileId: string): PlanItem[] {
-  const open = _sectionOpen[fileId];
+function _plan(
+  st: PaneState, pairs: BlockPair[], level: MdFoldLevel, fileId: string,
+): PlanItem[] {
+  const open = st.sectionOpen[fileId];
   const out: PlanItem[] = [];
   for (const s of _sections(pairs)) {
     const forcedOpen = s.heading != null && !!open && open.has(_pairKey(s.heading));
@@ -427,7 +458,7 @@ function _plan(pairs: BlockPair[], level: MdFoldLevel, fileId: string): PlanItem
     // section the reviewer expanded (chip / outline) renders fully open.
     if (s.heading) out.push({ kind: "pair", pair: s.heading });
     const bodyLevel = forcedOpen ? "open" : level;
-    out.push(..._foldBody(s.body, s.heading != null && _pairChanged(s.heading), bodyLevel, fileId));
+    out.push(..._foldBody(st, s.body, s.heading != null && _pairChanged(s.heading), bodyLevel, fileId));
   }
   return out;
 }
@@ -436,7 +467,7 @@ function _plan(pairs: BlockPair[], level: MdFoldLevel, fileId: string): PlanItem
  *  whether the block preceding the body (the heading) was itself a
  *  change — the first run bleeds context against it. */
 function _foldBody(
-  body: BlockPair[], leftIsChange: boolean, level: MdFoldLevel, fileId: string,
+  st: PaneState, body: BlockPair[], leftIsChange: boolean, level: MdFoldLevel, fileId: string,
 ): PlanItem[] {
   if (level === "open") return body.map((pair) => ({ kind: "pair", pair }));
   const out: PlanItem[] = [];
@@ -453,16 +484,16 @@ function _foldBody(
     // body edges the bound is the heading (start) or section end (end).
     const leftChange = start === 0 ? leftIsChange : true;
     const rightChange = i < body.length;
-    out.push(..._foldRun(run, leftChange, rightChange, fileId));
+    out.push(..._foldRun(st, run, leftChange, rightChange, fileId));
   }
   return out;
 }
 
 function _foldRun(
-  run: BlockPair[], leftChange: boolean, rightChange: boolean, fileId: string,
+  st: PaneState, run: BlockPair[], leftChange: boolean, rightChange: boolean, fileId: string,
 ): PlanItem[] {
   const key = _pairKey(run[0]);
-  const reveal = _revealFor(fileId, key);
+  const reveal = _revealFor(st, fileId, key);
   const topKeep = (leftChange ? _BLEED : 0) + reveal.top;
   const bottomKeep = (rightChange ? _BLEED : 0) + reveal.bottom;
   const collapsible = run.length - topKeep - bottomKeep;
@@ -483,9 +514,10 @@ function _foldRun(
  *  rather than one block. A run never crosses a heading, so "to the
  *  section boundary" is just "the rest of this run". */
 function _revealRun(
-  fileId: string, key: string, end: "top" | "bottom", toBoundary: boolean,
+  st: PaneState, fileId: string, key: string, end: "top" | "bottom",
+  toBoundary: boolean, repaint: () => void,
 ): void {
-  const perFile = (_reveal[fileId] ||= Object.create(null));
+  const perFile = (st.reveal[fileId] ||= Object.create(null));
   const cur = perFile[key] || { top: 0, bottom: 0 };
   // A generous bump for "to boundary": foldRun clamps against run length,
   // so any value ≥ run length fully reveals that end.
@@ -494,12 +526,14 @@ function _revealRun(
     top: cur.top + (end === "top" ? step : 0),
     bottom: cur.bottom + (end === "bottom" ? step : 0),
   };
-  _rerender();
+  repaint();
 }
 
-function _openSection(fileId: string, key: string): void {
-  (_sectionOpen[fileId] ||= new Set<string>()).add(key);
-  _rerender();
+function _openSection(
+  st: PaneState, fileId: string, key: string, repaint: () => void,
+): void {
+  (st.sectionOpen[fileId] ||= new Set<string>()).add(key);
+  repaint();
 }
 
 // --- Column DOM ---------------------------------------------------------
@@ -576,16 +610,18 @@ function _markInlineChanges(pair: BlockPair, oldCol: HTMLElement, newCol: HTMLEl
  *  heading outline. Per-file (not the global text-mode slider), so a
  *  rendered `.md` carries its own structural controls without touching
  *  any other file's fold state. */
-function _renderControls(fileId: string, pairs: BlockPair[]): HTMLElement {
+function _renderControls(
+  st: PaneState, fileId: string, pairs: BlockPair[], repaint: () => void,
+): HTMLElement {
   const bar = _el("div", "rmd-controls");
-  bar.appendChild(_renderLadder(fileId));
-  const outline = _renderOutline(fileId, pairs);
+  bar.appendChild(_renderLadder(st, fileId, repaint));
+  const outline = _renderOutline(st, fileId, pairs, repaint);
   if (outline) bar.appendChild(outline);
   return bar;
 }
 
-function _renderLadder(fileId: string): HTMLElement {
-  const cur = foldLevel(fileId);
+function _renderLadder(st: PaneState, fileId: string, repaint: () => void): HTMLElement {
+  const cur = foldLevel(st, fileId);
   const ladder = _el("div", "rmd-ladder");
   ladder.setAttribute("role", "tablist");
   ladder.setAttribute("aria-label", "Fold level");
@@ -595,7 +631,7 @@ function _renderLadder(fileId: string): HTMLElement {
     btn.dataset.level = step.level;
     if (step.level === cur) btn.classList.add("active");
     btn.setAttribute("aria-selected", step.level === cur ? "true" : "false");
-    btn.addEventListener("click", () => setFoldLevel(fileId, step.level));
+    btn.addEventListener("click", () => setFoldLevel(st, fileId, step.level, repaint));
     ladder.appendChild(btn);
   }
   return ladder;
@@ -604,7 +640,9 @@ function _renderLadder(fileId: string): HTMLElement {
 /** The heading outline: one entry per section, indented by heading level
  *  and badged changed/unchanged. Clicking expands that section fully
  *  (all its runs revealed). Returns null when the doc has no headings. */
-function _renderOutline(fileId: string, pairs: BlockPair[]): HTMLElement | null {
+function _renderOutline(
+  st: PaneState, fileId: string, pairs: BlockPair[], repaint: () => void,
+): HTMLElement | null {
   const entries = _outline(pairs);
   if (entries.length === 0) return null;
   const nav = _el("div", "rmd-outline");
@@ -616,7 +654,7 @@ function _renderOutline(fileId: string, pairs: BlockPair[]): HTMLElement | null 
     btn.title = (e.changed ? "changed" : "unchanged") + " — expand this section";
     btn.appendChild(_el("span", "rmd-outline-badge"));
     btn.appendChild(_el("span", "rmd-outline-text", e.text));
-    btn.addEventListener("click", () => _openSection(fileId, e.key));
+    btn.addEventListener("click", () => _openSection(st, fileId, e.key, repaint));
     nav.appendChild(btn);
   }
   return nav;
@@ -627,20 +665,22 @@ function _renderOutline(fileId: string, pairs: BlockPair[]): HTMLElement | null 
  *  shift-click); a section chip is a single expand into runs-level view.
  *  Height is symmetric across both panes by construction, so the grid
  *  stays aligned. */
-function _renderFoldChip(item: FoldItem, fileId: string): HTMLElement {
+function _renderFoldChip(
+  st: PaneState, item: FoldItem, fileId: string, repaint: () => void,
+): HTMLElement {
   const chip = _el("div", `rmd-fold rmd-fold-${item.scope}`);
   const noun = item.scope === "section" ? "section" : "block";
   const label = `${item.count} unchanged ${noun}${item.count === 1 ? "" : "s"}`;
   if (item.scope === "section") {
     const btn = _el("button", "rmd-fold-expand", `⋯ ${label} ⋯`);
     btn.title = "Expand this section";
-    btn.addEventListener("click", () => _openSection(fileId, item.key));
+    btn.addEventListener("click", () => _openSection(st, fileId, item.key, repaint));
     chip.appendChild(btn);
     return chip;
   }
-  chip.appendChild(_revealChevron(fileId, item.key, "top"));
+  chip.appendChild(_revealChevron(st, fileId, item.key, "top", repaint));
   chip.appendChild(_el("span", "rmd-fold-label", `⋯ ${label} ⋯`));
-  chip.appendChild(_revealChevron(fileId, item.key, "bottom"));
+  chip.appendChild(_revealChevron(st, fileId, item.key, "bottom", repaint));
   return chip;
 }
 
@@ -648,12 +688,14 @@ function _renderFoldChip(item: FoldItem, fileId: string): HTMLElement {
 // button — so `dblclick` never fires across the replacement. shift-click
 // is the reliable "reveal to the section boundary" gesture; the chip
 // re-renders after every reveal regardless.
-function _revealChevron(fileId: string, key: string, end: "top" | "bottom"): HTMLElement {
+function _revealChevron(
+  st: PaneState, fileId: string, key: string, end: "top" | "bottom", repaint: () => void,
+): HTMLElement {
   const btn = _el("button", `rmd-fold-chev rmd-fold-chev-${end}`);
   btn.textContent = end === "top" ? "▲" : "▼";
   const dir = end === "top" ? "above" : "below";
   btn.title = `Reveal the block ${dir} (shift-click for the whole run)`;
-  btn.addEventListener("click", (e) => _revealRun(fileId, key, end, e.shiftKey));
+  btn.addEventListener("click", (e) => _revealRun(st, fileId, key, end, e.shiftKey, repaint));
   return btn;
 }
 
@@ -665,11 +707,11 @@ function _el(tag: string, cls: string, text?: string): HTMLElement {
 }
 
 export const Rendered = {
-  init, isMarkdown, isOn, toggle, renderBody, foldLevel, setFoldLevel,
+  init, newPaneState, isMarkdown, isOn, toggle, renderBody, foldLevel, setFoldLevel,
 };
 
 // Exposed for unit tests (tests/js/rendered.test.ts): the pure fold
-// planner + outline and the reveal state, plus the diff-driven block
-// classification + alignment — all driven directly without DOM/rerender.
-export { _plan, _outline, _reveal, _sectionOpen, _diffLines, _classify, _align };
-export type { BlockPair, PlanItem, OutlineEntry, DiffBlock };
+// planner + outline, plus the diff-driven block classification +
+// alignment — all driven directly without DOM/repaint.
+export { _plan, _outline, _diffLines, _classify, _align };
+export type { BlockPair, PlanItem, OutlineEntry, DiffBlock, PaneState };

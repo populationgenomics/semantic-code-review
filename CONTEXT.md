@@ -263,9 +263,9 @@ The stable per-node identity the viewer keys DOM and state on, minted in
 `build_json.py`: `F<idx>` per file (index into the diff's file list),
 `H<fileidx>_<hunkidx>` per [[hunk]], `G<i>` per [[overview-seed]] group,
 `SY<i>` per [[symbol]] node ([[symbols-axis]]). The `F<idx>` id is a
-file's identity everywhere client-side: [[rendered-mode]] keys its
-per-file state (source cache, flipped set, fold level, reveal/section
-overrides) on it and parses the index back out for the
+file's identity everywhere client-side: [[rendered-mode]] keys both its
+source cache and each pane's view state (flipped set, fold level,
+reveal/section overrides) on it, and parses the index back out for the
 `/file-text?file_idx=` fetch. Ids are position-derived, so they're
 stable only within one build of a given diff — not across diffs.
 
@@ -281,12 +281,24 @@ the existing one: nothing keyed on row objects carries over.
 Client-side given two inputs: the file's full base+head source (fetched
 lazily from the `/file-text` server route on first flip, cached per
 file — kept out of [[viewer-data]] so untoggled docs stay lean) and the
-existing line diff. `rendered.ts` owns the mode state (which files are
-flipped, the source cache); `markdown.ts` turns source into sanitized
-HTML (markdown-it GFM → DOMPurify); `render.ts` consults
-`Rendered.isOn` and delegates the body. The dependency is one-way
-(`render.ts → rendered.ts`); the toggle repaints via a callback rather
-than importing back.
+existing line diff. `markdown.ts` turns source into sanitized HTML
+(markdown-it GFM → DOMPurify); `render.ts` consults `Rendered.isOn` and
+delegates the body. The dependency is one-way (`render.ts →
+rendered.ts`); every control repaints via a callback rather than
+importing back.
+
+State splits two ways. The **view** state — which files are flipped,
+and per file the fold level, run reveals and forced-open sections — is
+a `Rendered.PaneState` the caller owns; `render.ts` hangs one off each
+`PaneScope`, so the diff pane and the explainer's detail panel each
+have their own and a control repaints only the pane it sits in. Two
+consequences: a `.md` reference opens in the panel on the text diff
+even when the diff pane has it flipped, and flipping it there leaves
+the diff as the reviewer left it (the rule `PaneScope.overrides`
+already states). The **source cache** stays module-global in
+`rendered.ts`: base+head text is pane-independent and costs a
+`/file-text` round trip, so a second pane flipping the same file reads
+it back rather than refetching.
 
 Fully built (ADR 0004 slices 1–4 plus follow-ups). Two-pane base→head
 render with block-level delta and run folding — `_plan` in `rendered.ts`
@@ -494,8 +506,9 @@ Rendered in **overview mode**, which is orthogonal to [[fold-level]]
 rather than a fifth value of it — it hides nothing, so it has no span
 set, and leaving it restores the reviewer's zoom and hand-set folds
 untouched. Inside the mode a reference opens the file it addresses in a
-detail panel beside the document, with its own fold state, so checking a
-claim costs no mode switch and moves nothing in the diff; the panel's
+detail panel beside the document, with its own pane state — text-mode
+folds and [[rendered-mode]]'s alike — so checking a claim costs no mode
+switch and moves nothing in the diff; the panel's
 "Open in diff" is the way out to the full ladder. The viewer opens in
 the mode when a document already exists, since showing one that is
 written spends nothing; with none it opens on the diff, because entering
