@@ -5,7 +5,9 @@ all wrap the same five-step recipe around a per-pass prompt and apply
 step: cache lookup → ``agent.iter()`` driver → trace write → usage
 accounting → cache put. This module owns the recipe; each pass file
 owns only the prompt assembly, agent construction, and the apply step
-that folds the returned payload into an ``AnnotatedDiff``.
+that folds the returned payload into an ``AnnotatedDiff``. The middle
+three steps — ceiling, trace, request accounting — are
+:class:`recording.RunRecorder`, which the console drives too.
 
 Driving via ``agent.iter()`` rather than ``agent.run()`` keeps the
 partial message history accessible on the failure path — without it,
@@ -25,15 +27,11 @@ from pathlib import Path
 from typing import Any
 
 from pydantic_ai import Agent
-from pydantic_ai.usage import UsageLimits
 
 from ..cache.store import CacheKey, CacheStore
+from . import recording
 from .agents import Client
-from .trace_adapter import (
-    submit_args_from_result,
-    write_partial_trace,
-    write_pydantic_ai_trace,
-)
+from .trace_adapter import submit_args_from_result
 
 log = logging.getLogger(__name__)
 
@@ -126,14 +124,18 @@ async def run_pass(
                 on_requests(0)
             return entry["response"]
 
-    # Bound the agentic loop. The CLI drivers get this from `--max-turns`;
-    # SDK backends have no equivalent, so without a limit here a pass that
-    # cannot answer its question keeps investigating until pydantic-ai's
-    # default ceiling — losing the hunk after spending the most on it.
-    # `request_limit` lets a pass narrow that to its own budget; the
-    # effective figure and the requests actually made go to the trace.
-    limit = request_limit if request_limit is not None else client.request_limit
-    usage_limits = UsageLimits(request_limit=limit) if limit else None
+    # The ceiling on the agentic loop and the trace of what it spent are
+    # the console's envelope too, so they live in `recording`; a pass adds
+    # the cache and the submit-tool extraction around them.
+    recorder = recording.RunRecorder(
+        client=client,
+        system=system,
+        trace_path=trace_path,
+        submit_tool=meta.submit_tool,
+        tool_names=meta.tool_names,
+        request_limit=request_limit,
+        on_requests=on_requests,
+    )
     # The last attempt is outside the loop so the function has one exit on
     # each path — the retries swallow the grammar error, the final call
     # propagates whatever it raises.
@@ -141,20 +143,15 @@ async def run_pass(
         try:
             return await _drive_agent(
                 meta,
-                client=client,
                 agent=agent,
                 user_content=user_content,
-                system=system,
                 deps=deps,
                 model_settings=model_settings,
-                usage_limits=usage_limits,
-                turn_cap=limit,
+                recorder=recorder,
                 cache=cache,
                 key=key,
-                trace_path=trace_path,
                 cache_request=cache_request,
                 payload_extra=payload_extra,
-                on_requests=on_requests,
             )
         except Exception as exc:
             if _GRAMMAR_TIMEOUT not in str(exc):
@@ -169,20 +166,15 @@ async def run_pass(
             await asyncio.sleep(_GRAMMAR_BACKOFF_SECONDS * (attempt + 1))
     return await _drive_agent(
         meta,
-        client=client,
         agent=agent,
         user_content=user_content,
-        system=system,
         deps=deps,
         model_settings=model_settings,
-        usage_limits=usage_limits,
-        turn_cap=limit,
+        recorder=recorder,
         cache=cache,
         key=key,
-        trace_path=trace_path,
         cache_request=cache_request,
         payload_extra=payload_extra,
-        on_requests=on_requests,
     )
 
 
@@ -205,51 +197,28 @@ def _preserve_attempt_trace(trace_path: Path | None, attempt: int) -> None:
 async def _drive_agent(
     meta: PassMeta,
     *,
-    client: Client,
     agent: Agent[Any, Any],
     user_content: Any,
-    system: str,
     deps: Any,
     model_settings: Any,
-    usage_limits: Any,
-    turn_cap: int | None,
+    recorder: recording.RunRecorder,
     cache: CacheStore | None,
     key: CacheKey | None,
-    trace_path: Path | None,
     cache_request: dict[str, Any] | None,
     payload_extra: Callable[[], dict[str, Any]] | None,
-    on_requests: Callable[[int], None] | None,
 ) -> dict[str, Any] | None:
     """One attempt at the agent loop: drive, trace, account, cache."""
     async with agent.iter(
         user_content,
         deps=deps,
         model_settings=model_settings,
-        usage_limits=usage_limits,
+        usage_limits=recorder.usage_limits,
     ) as agent_run:
         try:
             async for _ in agent_run:
                 pass
         except BaseException as exc:
-            # Charged before the trace write and before any re-raise: a
-            # loop that died at its ceiling spent every request it made,
-            # and a budget that only counts successful passes is one a
-            # failing pass can spend without limit.
-            requests_used = agent_run.usage.requests  # pydantic-ai 2.x: property, not a method
-            if on_requests is not None:
-                on_requests(requests_used)
-            if trace_path is not None:
-                write_partial_trace(
-                    list(agent_run.all_messages()),
-                    trace_path=trace_path,
-                    model=str(client.model),
-                    system=system,
-                    tool_names=list(meta.tool_names),
-                    submit_tool=meta.submit_tool,
-                    error=exc,
-                    turn_cap=turn_cap,
-                    requests_used=requests_used,
-                )
+            recorder.record(agent_run, error=exc)
             if meta.swallow_errors:
                 log.warning(
                     "%s pass failed: %s: %s",
@@ -263,24 +232,7 @@ async def _drive_agent(
 
     assert run_result is not None  # the agent run completed without an early return
 
-    # The driver's own count, which is what `UsageLimits` meters against
-    # `request_limit` — a caller charging a shared budget and the
-    # ceiling that cut the loop off have to be counting the same thing.
-    requests_used = run_result.usage.requests
-    if on_requests is not None:
-        on_requests(requests_used)
-
-    if trace_path is not None:
-        write_pydantic_ai_trace(
-            run_result,
-            trace_path=trace_path,
-            model=str(client.model),
-            system=system,
-            tool_names=list(meta.tool_names),
-            submit_tool=meta.submit_tool,
-            turn_cap=turn_cap,
-            requests_used=requests_used,
-        )
+    recorder.record(run_result)
 
     payload = submit_args_from_result(run_result)
     if payload_extra is not None:

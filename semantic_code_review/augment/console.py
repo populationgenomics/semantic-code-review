@@ -17,6 +17,10 @@ detects them and falls back to a one-shot `Agent.run`
 no intermediate deltas. `run_console_turn` is the Slice 1 blocking
 shape, retained as a thin no-callback wrapper.
 
+Every turn is bounded and recorded by the `recording.RunRecorder` the
+augment passes use, so a conversation's spend lands in `trace/` and
+`usage.py` accounts for it against the same quota as the review.
+
 Context discipline (ADR 0002): **seed compact, pull on demand.** The
 first turn carries the overview JSON + changed-file list + the
 deterministic `SymbolDelta` + the change-explainer document's section
@@ -28,8 +32,10 @@ per turn.
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
+import pathlib
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -45,7 +51,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import Model
 
 from .. import errors, paths
-from . import explainer_schema, mcp_http_host, source_cache
+from . import explainer_schema, mcp_http_host, recording, source_cache, trace_adapter
 from .agents import Client
 from .hunks import overview_to_prompt_json
 from .tools import RepoTools, console_tool_functions
@@ -445,17 +451,130 @@ def _tool_label_from_call(name: str, args: dict[str, Any]) -> str:
     return name
 
 
+#: Trace-filename prefix for a console turn. `usage.py` buckets a trace
+#: by this, so console spend is reported as its own pass rather than
+#: disappearing into `other`.
+_CONSOLE_TRACE_PREFIX = "console"
+
+
+def _console_trace_path(run_dir: paths.RunDir, question: str) -> pathlib.Path:
+    """Where this turn's trace lands, under the run's `trace/`.
+
+    Timestamped rather than indexed: turns arrive after the passes have
+    finished writing, and the same question asked twice must not land on
+    one path — an overwritten trace under-reports the run by exactly the
+    turn it hid.
+    """
+    stamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%S%f")
+    return run_dir.trace / trace_adapter.trace_filename(_CONSOLE_TRACE_PREFIX, stamp, question)
+
+
+async def _pump(
+    run: Any,
+    *,
+    stream: bool,
+    on_delta: Callable[[str], None] | None,
+    on_tool: Callable[[str], None] | None,
+    cancelled: Callable[[], bool],
+) -> bool:
+    """Consume the agent graph; return True if the cancel flag tripped.
+
+    With ``stream`` false the nodes are simply drained — a subprocess
+    backend's driver implements `request()`, not `request_stream()`, so
+    asking a node to stream would hit the unimplemented path.
+    """
+    async for node in run:
+        if cancelled():
+            return True
+        if not stream:
+            continue
+        if Agent.is_model_request_node(node):
+            async with node.stream(run.ctx) as events:
+                async for event in events:
+                    if cancelled():
+                        return True
+                    chunk = _delta_text(event)
+                    if chunk and on_delta is not None:
+                        on_delta(chunk)
+        elif Agent.is_call_tools_node(node):
+            async with node.stream(run.ctx) as events:
+                async for event in events:
+                    if isinstance(event, FunctionToolCallEvent) and on_tool is not None:
+                        on_tool(_tool_label(event.part))
+    return False
+
+
+async def _drive_turn(
+    agent: Agent[RepoTools, str],
+    prompt: str,
+    repo_tools: RepoTools,
+    *,
+    recorder: recording.RunRecorder,
+    message_history: Any,
+    stream: bool,
+    on_delta: Callable[[str], None] | None = None,
+    on_tool: Callable[[str], None] | None = None,
+    cancel: threading.Event | None = None,
+) -> Any:
+    """Drive one turn through `agent.iter` and record what it spent.
+
+    One driver for both transports — ``stream`` decides only whether each
+    node's events are pumped out — so the ceiling and the trace are
+    applied identically whether or not the backend can stream.
+
+    Records on every exit that made a request: completion, failure, and
+    cancellation all spend what they spent, and a turn missing from
+    `trace/` is a turn `usage.json` reports as free.
+
+    Returns the ``AgentRunResult``.
+
+    Raises:
+        ConsoleCancelled: The cancel flag tripped mid-turn. The partial
+            turn is abandoned; its messages never join the history.
+    """
+
+    def cancelled() -> bool:
+        return cancel is not None and cancel.is_set()
+
+    async with agent.iter(
+        prompt,
+        deps=repo_tools,
+        message_history=message_history,
+        usage_limits=recorder.usage_limits,
+    ) as run:
+        try:
+            aborted = await _pump(run, stream=stream, on_delta=on_delta, on_tool=on_tool, cancelled=cancelled)
+        except BaseException as exc:
+            recorder.record(run, error=exc)
+            raise
+        if aborted:
+            cancellation = ConsoleCancelled("console turn cancelled")
+            # A cancel landing before the first request abandons a turn
+            # that spent nothing; tracing it would report a call that
+            # never happened.
+            if run.usage.requests:
+                recorder.record(run, error=cancellation)
+            raise cancellation
+        result = run.result
+        # Non-None once the iteration runs to completion (only the cancel
+        # path leaves it unset, and that raised above).
+        assert result is not None, "agent run finished without a result"
+        recorder.record(result)
+        return result
+
+
 async def _run_console_turn_oneshot(
     client: Client,
     agent: Agent[RepoTools, str],
     prompt: str,
     repo_tools: RepoTools,
     *,
+    recorder: recording.RunRecorder,
     session_id: str | None,
     cancel: threading.Event | None,
     on_tool: Callable[[str], None] | None = None,
 ) -> tuple[str, str | None]:
-    """Run one console turn to completion via `Agent.run` (CLI backends).
+    """Run one console turn to completion, unstreamed (CLI backends).
 
     CLI drivers can't stream, and — unlike SDK backends — don't carry the
     conversation as pydantic `message_history`. Each turn resumes the
@@ -497,7 +616,15 @@ async def _run_console_turn_oneshot(
     with mcp_http_host.McpHttpHost(repo_tools, on_tool=host_on_tool) as host:
         client.set_mcp_endpoint(host.mcp_config())
         try:
-            result = await agent.run(prompt, deps=repo_tools, message_history=None)
+            result = await _drive_turn(
+                agent,
+                prompt,
+                repo_tools,
+                recorder=recorder,
+                message_history=None,
+                stream=False,
+                cancel=cancel,
+            )
         finally:
             client.set_mcp_endpoint(None)
     if cancel is not None and cancel.is_set():
@@ -541,13 +668,25 @@ async def stream_console_turn(
         selection=selection,
     )
 
+    # A turn takes the passes' envelope — the request ceiling and the
+    # trace `usage.py` accounts from — but not their cache. A pass is
+    # idempotent given its inputs; a turn is not: it carries
+    # `message_history`, so the same question twice is two different
+    # questions, and a content-hash hit would answer the second from the
+    # first's context (ADR 0002).
+    recorder = recording.RunRecorder(
+        client=client,
+        system=CONSOLE_SYSTEM,
+        trace_path=_console_trace_path(run_dir, question),
+        tool_names=tuple(fn.__name__ for fn in console_tool_functions()),
+    )
+
     # CLI backends (Slice 5) can't stream: the subprocess runs its own
-    # opaque tool loop and returns the whole answer at once, and
-    # `Agent.iter`'s per-node streaming would hit the driver's
-    # unimplemented `request_stream`. Run one-shot via `Agent.run`
-    # instead — the worker emits a single `console-done` with the full
-    # text, which the frontend renders identically to "zero deltas, one
-    # done". `on_delta`/`on_tool` simply never fire.
+    # opaque tool loop and returns the whole answer at once, and per-node
+    # streaming would hit the driver's unimplemented `request_stream`.
+    # The worker emits a single `console-done` with the full text, which
+    # the frontend renders identically to "zero deltas, one done".
+    # `on_delta`/`on_tool` simply never fire.
     #
     # For subprocess backends `history` is the prior turn's `claude -p`
     # session id (a str), not pydantic messages: the CLI session holds the
@@ -558,47 +697,23 @@ async def stream_console_turn(
             agent,
             prompt,
             repo_tools,
+            recorder=recorder,
             session_id=history,
             cancel=cancel,
             on_tool=on_tool,
         )
 
-    def cancelled() -> bool:
-        return cancel is not None and cancel.is_set()
-
-    abort = False
-    async with agent.iter(
+    result = await _drive_turn(
+        agent,
         prompt,
-        deps=repo_tools,
+        repo_tools,
+        recorder=recorder,
         message_history=history,
-    ) as run:
-        async for node in run:
-            if cancelled():
-                abort = True
-                break
-            if Agent.is_model_request_node(node):
-                async with node.stream(run.ctx) as stream:
-                    async for event in stream:
-                        if cancelled():
-                            abort = True
-                            break
-                        chunk = _delta_text(event)
-                        if chunk and on_delta is not None:
-                            on_delta(chunk)
-                if abort:
-                    break
-            elif Agent.is_call_tools_node(node):
-                async with node.stream(run.ctx) as stream:
-                    async for event in stream:
-                        if isinstance(event, FunctionToolCallEvent) and on_tool is not None:
-                            on_tool(_tool_label(event.part))
-
-    if abort:
-        raise ConsoleCancelled("console turn cancelled")
-    result = run.result
-    # Non-None once the iteration runs to completion (only the cancel
-    # path leaves it unset, and that raised above).
-    assert result is not None, "agent run finished without a result"
+        stream=True,
+        on_delta=on_delta,
+        on_tool=on_tool,
+        cancel=cancel,
+    )
     return result.output, list(result.all_messages())
 
 
