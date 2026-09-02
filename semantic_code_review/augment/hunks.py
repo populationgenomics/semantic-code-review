@@ -459,18 +459,72 @@ def split_batch_annotations(
     return by_index, missing
 
 
+def _clamped_segment_range(parsed: ParsedHunk, start: int, count: int, *, last_end: int) -> tuple[int, int] | None:
+    """Fit one model-supplied segment range to the hunk, or reject it.
+
+    Returns the inclusive `(start, end)` to keep, or `None` to drop.
+
+    The model routinely miscounts a boundary by one — it treats
+    `new_start + new_count` as the hunk's last post-image line, and starts
+    a segment on the line the previous one ended. Those ranges name the
+    right code and the wrong edge, so they are clamped rather than
+    discarded; the downstream `parse_augmented_diff` rejects an
+    out-of-hunk or overlapping segment outright, so the clamp is also what
+    keeps the emitted sidecar parseable.
+
+    A range is only dropped when the clamp has nothing to work with: an
+    empty or inverted `count`, a start outside the hunk altogether (the
+    model has emitted pre-image line numbers), or a start already covered
+    by the previous segment.
+    """
+    end = start + count - 1
+    hunk_end = parsed.new_start + parsed.new_count - 1
+    if count <= 0 or start < parsed.new_start or start > hunk_end:
+        log.warning(
+            "hunk %s: segment +%d..+%d outside range +%d..+%d — dropped",
+            parsed.header,
+            start,
+            end,
+            parsed.new_start,
+            hunk_end,
+        )
+        return None
+    clamped_start = max(start, last_end + 1)
+    clamped_end = min(end, hunk_end)
+    if clamped_end < clamped_start:
+        log.warning(
+            "hunk %s: segment +%d..+%d covered by previous (ends +%d) — dropped",
+            parsed.header,
+            start,
+            end,
+            last_end,
+        )
+        return None
+    if (clamped_start, clamped_end) != (start, end):
+        log.debug(
+            "hunk %s: segment +%d..+%d clamped to +%d..+%d (range +%d..+%d, previous ends +%d)",
+            parsed.header,
+            start,
+            end,
+            clamped_start,
+            clamped_end,
+            parsed.new_start,
+            hunk_end,
+            last_end,
+        )
+    return clamped_start, clamped_end
+
+
 def build_hunk_annotations(parsed: ParsedHunk, submit_args: dict[str, Any]) -> HunkAnnotations:
     """Validate a submit_annotations payload against `parsed` and return
     a `HunkAnnotations` record.
 
-    Drops segments outside the hunk's post-image range or overlapping a
-    previously-kept segment — the LLM occasionally emits pre-image line
-    numbers or off-by-a-few ranges. `fold_descriptions` is not read: it
-    is not part of `HunkSubmission`, so the model is never asked for it;
-    the fold-summary pass fills it later.
+    Segment ranges are clamped into the hunk's post-image range and past
+    the previous kept segment, and dropped only when nothing survives the
+    clamp — see `_clamped_segment_range`. `fold_descriptions` is not read:
+    it is not part of `HunkSubmission`, so the model is never asked for
+    it; the fold-summary pass fills it later.
     """
-    hunk_end = parsed.new_start + parsed.new_count - 1
-
     segments: list[Segment] = []
     last_end = parsed.new_start - 1
     for seg in submit_args.get("segments") or []:
@@ -480,30 +534,14 @@ def build_hunk_annotations(parsed: ParsedHunk, submit_args: dict[str, Any]) -> H
         except (KeyError, TypeError, ValueError):
             log.warning("hunk %s: malformed segment %r — dropped", parsed.header, seg)
             continue
-        end = start + count - 1
-        if count <= 0 or start < parsed.new_start or end > hunk_end:
-            log.warning(
-                "hunk %s: segment +%d..+%d outside range +%d..+%d — dropped",
-                parsed.header,
-                start,
-                end,
-                parsed.new_start,
-                hunk_end,
-            )
+        kept = _clamped_segment_range(parsed, start, count, last_end=last_end)
+        if kept is None:
             continue
-        if start <= last_end:
-            log.warning(
-                "hunk %s: segment +%d..+%d overlaps previous (ends +%d) — dropped",
-                parsed.header,
-                start,
-                end,
-                last_end,
-            )
-            continue
+        start, end = kept
         segments.append(
             Segment(
                 new_start=start,
-                new_count=count,
+                new_count=end - start + 1,
                 intent=seg.get("intent", "") or "",
                 smells=[_smell(s) for s in seg.get("smells") or []],
                 context=seg.get("context", "") or "",

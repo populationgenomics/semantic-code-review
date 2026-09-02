@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
+from semantic_code_review.augment import hunks as hunks_mod
 from semantic_code_review.augment.schemas import (
     AnnotatedDiff,
     AnnotatedFile,
@@ -173,3 +176,116 @@ def test_segment_directive_outside_block_rejected() -> None:
     )
     with pytest.raises(ParseError, match="outside of a scr-segment-begin"):
         parse_augmented_diff(text)
+
+
+# --- build_hunk_annotations: boundary arithmetic on model-supplied ranges ---
+#
+# The per-hunk pass reports segments as POST-IMAGE `new_start`/`new_count`
+# and reliably miscounts the edges: it treats `new_start + new_count` as the
+# hunk's last line, and starts a segment on the line the previous one ended.
+# Both name the right code with a wrong edge, so they are clamped; a range
+# the clamp cannot rescue is dropped.
+
+
+def _addition_hunk(*, new_start: int, new_count: int) -> ParsedHunk:
+    return ParsedHunk(
+        header=f"@@ -{new_start - 1},0 +{new_start},{new_count} @@",
+        old_start=new_start - 1,
+        old_count=0,
+        new_start=new_start,
+        new_count=new_count,
+        body="".join(f"+line {n}\n" for n in range(new_start, new_start + new_count)),
+    )
+
+
+def _kept(parsed: ParsedHunk, *ranges: tuple[int, int]) -> list[tuple[int, int]]:
+    """`build_hunk_annotations` over `(new_start, new_count)` pairs."""
+    ann = _annotate(parsed, *ranges)
+    return [(s.new_start, s.new_count) for s in ann.segments]
+
+
+def _annotate(parsed: ParsedHunk, *ranges: tuple[int, int]) -> HunkAnnotations:
+    return hunks_mod.build_hunk_annotations(
+        parsed,
+        {"segments": [{"new_start": s, "new_count": c, "intent": f"seg {s}"} for s, c in ranges]},
+    )
+
+
+def test_segment_reaching_the_hunks_true_last_line_survives_untouched() -> None:
+    # +9..+82 is the hunk; a segment ending exactly on +82 is correct as given.
+    assert _kept(_addition_hunk(new_start=9, new_count=74), (60, 23)) == [(60, 23)]
+
+
+def test_segment_one_past_the_hunk_end_is_clamped_not_dropped() -> None:
+    # The exclusive-end error: +60..+83 against a hunk whose last line is +82.
+    assert _kept(_addition_hunk(new_start=9, new_count=74), (60, 24)) == [(60, 23)]
+
+
+def test_segment_starting_on_the_previous_segments_last_line_is_clamped() -> None:
+    # The same error at an internal boundary: +9..+20 then +20..+40.
+    parsed = _addition_hunk(new_start=9, new_count=74)
+    assert _kept(parsed, (9, 12), (20, 21)) == [(9, 12), (21, 20)]
+
+
+def test_a_run_of_segments_survives_the_exclusive_end_convention_throughout() -> None:
+    # Every boundary off by one, the last one included.
+    parsed = _addition_hunk(new_start=1, new_count=30)
+    assert _kept(parsed, (1, 11), (11, 11), (21, 11)) == [(1, 11), (12, 10), (22, 9)]
+
+
+@pytest.mark.parametrize(
+    ("ranges", "expected", "warning"),
+    [
+        pytest.param([(20, 0)], [], "outside range", id="empty-count"),
+        pytest.param([(20, -3)], [], "outside range", id="inverted-count"),
+        pytest.param([(5, 4)], [], "outside range", id="starts-before-the-hunk"),
+        pytest.param([(83, 4)], [], "outside range", id="starts-past-the-hunks-last-line"),
+        pytest.param([(20, 30), (25, 3)], [(20, 30)], "covered by previous", id="covered-by-the-previous"),
+    ],
+)
+def test_segment_ranges_the_clamp_cannot_rescue_are_dropped(
+    ranges: list[tuple[int, int]],
+    expected: list[tuple[int, int]],
+    warning: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The warning text is the only telemetry a drop has — it is what a
+    sweep of `trace/augment.log` classifies, so the two shapes must stay
+    distinguishable."""
+    with caplog.at_level(logging.WARNING, logger=hunks_mod.__name__):
+        assert _kept(_addition_hunk(new_start=9, new_count=74), *ranges) == expected
+    assert warning in caplog.text
+
+
+def test_a_deletion_only_hunk_accepts_no_segments() -> None:
+    parsed = ParsedHunk(header="@@ -9,4 +8,0 @@", old_start=9, old_count=4, new_start=8, new_count=0, body="-a\n")
+    assert _kept(parsed, (8, 1)) == []
+
+
+def test_a_clamped_segment_round_trips_through_the_on_disk_format() -> None:
+    """The clamp is also what keeps the sidecar readable: `parse_augmented_diff`
+    rejects an out-of-hunk segment outright, so an unclamped overshoot would
+    make the emitted diff unparseable rather than merely wrong."""
+    parsed = ParsedHunk(
+        header="@@ -1,1 +1,4 @@",
+        old_start=1,
+        old_count=1,
+        new_start=1,
+        new_count=4,
+        body="-a\n+a1\n+a2\n+a3\n+a4\n",
+    )
+    diff = AnnotatedDiff(
+        pr=PRInfo(pr_url="x", base_sha="a", head_sha="b"),
+        files=[
+            AnnotatedFile(
+                path="f.py",
+                diff_git_line="diff --git a/f.py b/f.py",
+                old_file_marker="--- a/f.py",
+                new_file_marker="+++ b/f.py",
+                hunks=[AnnotatedHunk(parsed=parsed, ann=_annotate(parsed, (1, 5)))],
+            ),
+        ],
+    )
+    reparsed = parse_augmented_diff(emit_augmented_diff(diff))
+    segs = reparsed.files[0].hunks[0].ann.segments
+    assert [(s.new_start, s.new_count) for s in segs] == [(1, 4)]
