@@ -8,14 +8,15 @@ completes, for both SDK and CLI subprocess backends (ADR 0002 —
 console).
 
 This module owns the agent factory, the compact first-turn seed, and
-the turn drivers. The streaming driver (`stream_console_turn`, Slice 2)
-drives `Agent.iter` and pumps text deltas + tool-activity out through
-caller-supplied callbacks while polling a cancel flag between chunks.
-CLI subprocess backends (Slice 5) can't stream, so `stream_console_turn`
-detects them and falls back to a one-shot `Agent.run`
-(`_run_console_turn_oneshot`): one `console-done` with the whole answer,
-no intermediate deltas. `run_console_turn` is the Slice 1 blocking
-shape, retained as a thin no-callback wrapper.
+the turn drivers. Every turn runs `Agent.iter` through `_drive_turn`;
+streaming (Slice 2) decides only whether each node's events are pumped
+out to caller-supplied callbacks — text deltas and tool activity — while
+a cancel flag is polled between chunks. CLI subprocess backends
+(Slice 5) can't stream, so `stream_console_turn` detects them and runs
+the same drive unstreamed (`_run_console_turn_oneshot`): one
+`console-done` with the whole answer, no intermediate deltas.
+`run_console_turn` is the Slice 1 blocking shape, retained as a thin
+no-callback wrapper.
 
 Every turn is bounded and recorded by the `recording.RunRecorder` the
 augment passes use, so a conversation's spend lands in `trace/` and
@@ -49,6 +50,7 @@ from pydantic_ai.messages import (
     TextPartDelta,
 )
 from pydantic_ai.models import Model
+from pydantic_ai.run import AgentRun, AgentRunResult
 
 from .. import errors, paths
 from . import explainer_schema, mcp_http_host, recording, source_cache, trace_adapter
@@ -470,7 +472,7 @@ def _console_trace_path(run_dir: paths.RunDir, question: str) -> pathlib.Path:
 
 
 async def _pump(
-    run: Any,
+    run: AgentRun[RepoTools, str],
     *,
     stream: bool,
     on_delta: Callable[[str], None] | None,
@@ -515,7 +517,7 @@ async def _drive_turn(
     on_delta: Callable[[str], None] | None = None,
     on_tool: Callable[[str], None] | None = None,
     cancel: threading.Event | None = None,
-) -> Any:
+) -> AgentRunResult[str]:
     """Drive one turn through `agent.iter` and record what it spent.
 
     One driver for both transports — ``stream`` decides only whether each
