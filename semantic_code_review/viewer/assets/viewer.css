@@ -1845,15 +1845,6 @@ body { padding-bottom: 30px; }
   margin-inline: auto;
 }
 
-/* Labels centre on their coordinate unless the figure says otherwise.
-   SVG's default is `start`, so a label placed at a box's centre x — the
-   natural thing to compute, and what every figure so far has done —
-   renders its left edge there and runs out of the box to the right.
-   Anchoring is appearance, and appearance is the stylesheet's; the
-   `:not()` leaves an explicit `text-anchor` on the element winning, for
-   a label that really is meant to start at a left edge. */
-.explainer-figure svg text:not([text-anchor]),
-.explainer-figure svg tspan:not([text-anchor]) { text-anchor: middle; }
 .explainer-figure figcaption {
   font-family: var(--ui);
   margin: 8px 4ch 0;

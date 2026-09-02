@@ -55,9 +55,20 @@ describe("paint is not the model's to choose", () => {
   });
 
   test("an unknown class is removed and the known ones stay", () => {
-    const out = sanitizeFigureSvg(svg('<rect class="d-box brand-purple t-b" x="0" y="0" width="4" height="4"/>'), "f0");
-    expect(out).toContain('class="d-box t-b"');
+    const out = sanitizeFigureSvg(svg('<rect class="d-box brand-purple hl" x="0" y="0" width="4" height="4"/>'), "f0");
+    expect(out).toContain('class="d-box hl"');
     expect(out).not.toContain("brand-purple");
+  });
+
+  test("a shape class on a text element is dropped", () => {
+    const out = sanitizeFigureSvg(svg('<text class="chip" x="1" y="2">=1000</text>'), "f");
+    expect(out).not.toContain("chip");
+    expect(out).toContain("=1000");
+  });
+
+  test("a text class on a shape is dropped", () => {
+    const out = sanitizeFigureSvg(svg('<rect class="t-b" x="0" y="0" width="4" height="4"/>'), "f");
+    expect(out).not.toContain("t-b");
   });
 
   test("a class attribute with nothing known left is removed entirely", () => {

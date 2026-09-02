@@ -55,6 +55,25 @@ const FIGURE_CLASSES = new Set([
   "rule",
 ]);
 
+// Mirrors TEXT_CLASSES in augment/explainer_figures.py. These are the
+// only classes that set font-*; every other class is paint. The split
+// decides which elements a class may appear on, and misapplication is
+// not cosmetic: a line class on a glyph sets fill:none and renders it
+// invisible, and `chip` on one outlines the text instead of drawing the
+// pill it names. A container takes either kind, because a class on one
+// is inherited styling for its children; `title` and `desc` are metadata
+// and are never painted.
+const TEXT_CLASSES = new Set(["t", "t-b", "t-sm", "t-cap", "t-mono", "t-mono-sm", "t-acc", "t-warn", "t-ok"]);
+const CONTAINERS = ["g", "svg", "marker", "defs"];
+const TEXT_ELEMENTS = new Set(["text", "tspan", ...CONTAINERS]);
+const PAINT_ELEMENTS = new Set(["rect", "circle", "ellipse", "line", "polyline", "polygon", "path", ...CONTAINERS]);
+
+/** The elements `token` may appear on; empty when it is not vocabulary. */
+function classElements(token: string): Set<string> {
+  if (!FIGURE_CLASSES.has(token)) return new Set();
+  return TEXT_CLASSES.has(token) ? TEXT_ELEMENTS : PAINT_ELEMENTS;
+}
+
 const MARKER_REFS = ["marker-start", "marker-mid", "marker-end"];
 const GLOBAL_ATTRS = ["class", "transform"];
 
@@ -114,7 +133,7 @@ function scrub(el: Element, prefix: string): boolean {
       el.removeAttribute(name);
       continue;
     }
-    const value = cleanValue(name, el.getAttribute(name) || "", prefix);
+    const value = cleanValue(name, el.getAttribute(name) || "", tag, prefix);
     if (value === null) el.removeAttribute(name);
     else if (value !== el.getAttribute(name)) el.setAttribute(name, value);
   }
@@ -124,9 +143,9 @@ function scrub(el: Element, prefix: string): boolean {
   return true;
 }
 
-function cleanValue(name: string, value: string, prefix: string): string | null {
+function cleanValue(name: string, value: string, tag: string, prefix: string): string | null {
   if (name === "class") {
-    const kept = value.split(/\s+/).filter((c) => FIGURE_CLASSES.has(c));
+    const kept = value.split(/\s+/).filter((c) => classElements(c).has(tag));
     return kept.length > 0 ? kept.join(" ") : null;
   }
   if (name === "id") return ID.test(value) ? `${prefix}-${value}` : null;

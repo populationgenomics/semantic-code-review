@@ -76,12 +76,34 @@ FIGURE_CLASSES = frozenset(
     }
 )
 
+#: The type half of :data:`FIGURE_CLASSES`. These are the only classes
+#: that set `font-*`; every other class is paint. The split decides which
+#: elements a class may appear on, and misapplication is not cosmetic: a
+#: line class on a glyph sets `fill: none` and renders it invisible, and
+#: `chip` on one outlines the text instead of drawing the pill it names.
+TEXT_CLASSES = frozenset({"t", "t-b", "t-sm", "t-cap", "t-mono", "t-mono-sm", "t-acc", "t-warn", "t-ok"})
+
+#: A container takes either kind, because a class on one is inherited
+#: styling for its children. `title` and `desc` are metadata and are
+#: never painted, so a class on them means nothing and is dropped.
+_CONTAINERS = frozenset({"g", "svg", "marker", "defs"})
+_TEXT_ELEMENTS = frozenset({"text", "tspan"}) | _CONTAINERS
+_PAINT_ELEMENTS = frozenset({"rect", "circle", "ellipse", "line", "polyline", "polygon", "path"}) | _CONTAINERS
+
+
+def class_elements(token: str) -> frozenset[str]:
+    """The elements `token` may appear on; empty when it is not vocabulary."""
+    if token not in FIGURE_CLASSES:
+        return frozenset()
+    return _TEXT_ELEMENTS if token in TEXT_CLASSES else _PAINT_ELEMENTS
+
+
 #: Marker references. Not paint, so they survive — but only pointing at
 #: a marker in this figure's own `defs`.
 _MARKER_REFS = frozenset({"marker-start", "marker-mid", "marker-end"})
 
 #: Allowed on any allowed element. `transform` is geometry; `class` is
-#: filtered to :data:`FIGURE_CLASSES` before it is kept.
+#: filtered to the classes :func:`class_elements` allows on that element.
 _GLOBAL_ATTRS = frozenset({"class", "transform"})
 
 #: Per-element geometry attributes. `width`/`height` appear on `rect`
@@ -242,7 +264,7 @@ def _clean_attrs(el: ET.Element, *, tag: str, namespace: str, counter: _Counter)
         if raw_name.startswith("{") or name not in allowed:
             counter.n += 1
             continue
-        kept = _clean_value(name, value, namespace=namespace, counter=counter)
+        kept = _clean_value(name, value, tag=tag, namespace=namespace, counter=counter)
         if kept is None:
             counter.n += 1
             continue
@@ -250,9 +272,9 @@ def _clean_attrs(el: ET.Element, *, tag: str, namespace: str, counter: _Counter)
     return out
 
 
-def _clean_value(name: str, value: str, *, namespace: str, counter: _Counter) -> str | None:
+def _clean_value(name: str, value: str, *, tag: str, namespace: str, counter: _Counter) -> str | None:
     if name == "class":
-        return _clean_classes(value, counter=counter)
+        return _clean_classes(value, tag=tag, counter=counter)
     if name == "id":
         return _namespaced(value, namespace) if _ID.match(value) else None
     if name in _MARKER_REFS:
@@ -275,10 +297,10 @@ def _namespaced(value: str, namespace: str) -> str:
     return value if value.startswith(prefix) else prefix + value
 
 
-def _clean_classes(value: str, *, counter: _Counter) -> str | None:
+def _clean_classes(value: str, *, tag: str, counter: _Counter) -> str | None:
     kept = []
     for token in value.split():
-        if token in FIGURE_CLASSES:
+        if tag in class_elements(token):
             kept.append(token)
         else:
             counter.n += 1
@@ -299,6 +321,8 @@ __all__ = [
     "ALLOWED_ELEMENTS",
     "FIGURE_CLASSES",
     "SVG_NAMESPACE",
+    "TEXT_CLASSES",
     "SanitizedSvg",
+    "class_elements",
     "sanitize_svg",
 ]

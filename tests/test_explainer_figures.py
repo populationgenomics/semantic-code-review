@@ -69,8 +69,8 @@ def test_every_presentation_attribute_named_by_the_contract_goes(attr: str) -> N
 
 
 def test_an_unknown_class_is_removed_but_the_known_ones_stay() -> None:
-    out = _clean('<rect class="d-box brand-purple t-b" x="0" y="0" width="4" height="4"/>')
-    assert 'class="d-box t-b"' in out.svg
+    out = _clean('<rect class="d-box brand-purple hl" x="0" y="0" width="4" height="4"/>')
+    assert 'class="d-box hl"' in out.svg
     assert "brand-purple" not in out.svg
     assert out.stripped == 1
 
@@ -320,6 +320,116 @@ def test_the_prompt_names_exactly_the_vocabulary_the_sanitiser_keeps() -> None:
 def test_the_prompt_names_every_element_the_sanitiser_allows() -> None:
     named = set(re.findall(r"`([\w-]+)`", prompts.EXPLAINER_FIGURE_GUIDANCE))
     assert set(explainer_figures.ALLOWED_ELEMENTS) - named == set()
+
+
+def _ts_tokens(ts: str, name: str) -> set[str]:
+    """The strings of a `const <name> = [...]` literal, resolving a
+    `...OTHER` spread against the same file."""
+    block = re.search(rf"const {name}\b[^[]*\[(.*?)\]", ts, re.S)
+    assert block is not None, f"explainer_figure.ts no longer declares {name} as an array literal"
+    body = block.group(1)
+    out = set(re.findall(r'"([^"]+)"', body))
+    for spread in re.findall(r"\.\.\.(\w+)", body):
+        out |= _ts_tokens(ts, spread)
+    return out
+
+
+def test_the_renderer_and_the_sanitiser_agree_on_which_classes_are_text() -> None:
+    """The applicability half of the vocabulary. A class kept on the
+    wrong element renders wrong rather than unstyled."""
+    ts = (_ASSETS / "explainer_figure.ts").read_text(encoding="utf-8")
+    assert _ts_tokens(ts, "TEXT_CLASSES") == set(explainer_figures.TEXT_CLASSES)
+
+
+def test_the_renderer_and_the_sanitiser_agree_on_which_elements_take_a_class() -> None:
+    """The class lists agreeing is not enough: the two sides must also
+    agree on where each class may go. Drift here renders a figure
+    differently depending on which server wrote the document."""
+    ts = (_ASSETS / "explainer_figure.ts").read_text(encoding="utf-8")
+    text_classes = _ts_tokens(ts, "TEXT_CLASSES")
+    text_elements = _ts_tokens(ts, "TEXT_ELEMENTS")
+    paint_elements = _ts_tokens(ts, "PAINT_ELEMENTS")
+    for cls in explainer_figures.FIGURE_CLASSES:
+        expected = text_elements if cls in text_classes else paint_elements
+        assert expected == set(explainer_figures.class_elements(cls)), cls
+
+
+def test_a_font_setting_class_is_declared_a_text_class() -> None:
+    """`TEXT_CLASSES` is hand-maintained and the stylesheet is evidence
+    for it, in one direction only: a class that sets a font but is not
+    declared text gets stripped off every `<text>` it belongs on, so its
+    font never applies. The converse is allowed — a text class may set
+    only colour, as a status label reasonably would.
+
+    Iterates the vocabulary, so a rule in the stylesheet that no class
+    names is not in scope here; the sanitiser drops those anyway.
+    """
+    css = (_ASSETS / "viewer.css").read_text(encoding="utf-8")
+    for cls in explainer_figures.FIGURE_CLASSES:
+        rule = re.search(rf"\.explainer-figure svg \.{re.escape(cls)} \{{(.*?)\}}", css, re.S)
+        assert rule is not None, f"{cls} has no rule in viewer.css"
+        if "font-" in rule.group(1):
+            assert cls in explainer_figures.TEXT_CLASSES, (
+                f"{cls} sets a font property but is not in TEXT_CLASSES, so it would be "
+                f"stripped from the elements it is meant to style"
+            )
+
+
+def test_the_stylesheet_does_not_decide_text_alignment() -> None:
+    """`text-anchor` binds to the `x` the figure computed, so only the
+    figure can choose it. A stylesheet default silently re-anchors every
+    label that omitted the attribute to mean `start`."""
+    css = (_ASSETS / "viewer.css").read_text(encoding="utf-8")
+    offenders = [
+        selector.strip()
+        for selector, body in re.findall(r"([^{}]*\.explainer-figure[^{]*)\{([^}]*)\}", css)
+        if "text-anchor" in body
+    ]
+    assert offenders == []
+    assert "text-anchor` defaults to `start`" in prompts.EXPLAINER_FIGURE_GUIDANCE
+
+
+def test_a_shape_class_on_a_text_element_is_dropped() -> None:
+    """`chip` names a pill. On a `<text>` it outlines the glyphs instead,
+    which is how it reached a rendered document."""
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+        '<text class="chip" x="1" y="2">=1000</text>'
+        '<text class="t-b" x="1" y="4">kept</text>'
+        '<rect class="chip" x="0" y="0" width="2" height="2"/>'
+        "</svg>"
+    )
+    out = explainer_figures.sanitize_svg(svg, namespace="f")
+    assert '<text x="1" y="2">=1000</text>' in out.svg
+    assert '<text class="t-b" x="1" y="4">kept</text>' in out.svg
+    assert '<rect class="chip"' in out.svg
+
+
+def test_a_container_takes_either_kind_of_class() -> None:
+    """A class on a container is inherited styling, so it cannot be
+    resolved to one kind. `title` and `desc` are never painted."""
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10" class="t-sm">'
+        '<g class="ln"><line class="ln" x1="0" y1="0" x2="4" y2="4"/></g>'
+        '<title class="t-b">alt</title>'
+        '<desc class="t-sm">d</desc>'
+        "</svg>"
+    )
+    out = explainer_figures.sanitize_svg(svg, namespace="f")
+    assert 'class="t-sm"' in out.svg
+    assert '<g class="ln">' in out.svg
+    assert "<title>alt</title>" in out.svg
+    assert "<desc>d</desc>" in out.svg
+
+
+def test_a_text_class_on_a_shape_is_dropped() -> None:
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+        '<rect class="t-b" x="0" y="0" width="2" height="2"/>'
+        "</svg>"
+    )
+    out = explainer_figures.sanitize_svg(svg, namespace="f")
+    assert "t-b" not in out.svg
 
 
 # --- Threading the family and cast into a prose call ----------------------
