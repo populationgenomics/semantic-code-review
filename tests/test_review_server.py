@@ -579,6 +579,108 @@ def test_an_unexpected_failure_answers_500_naming_its_type(server) -> None:
     assert body["error"] == "ZeroDivisionError: nope"
 
 
+# --- The route table ------------------------------------------------------
+
+#: Every route, and the status it answers before any task is attached —
+#: the state a viewer meets while augmentation is still running. What each
+#: one *does* is tested on the session; this holds the wire the viewer
+#: addresses it by. The TS reads these paths and discriminates on these
+#: codes, and it is not built from this table, so a rename here is a
+#: broken viewer rather than a failing type check.
+_ROUTES = [
+    ("GET", "/data.json", 200),
+    ("GET", "/comments", 200),
+    ("GET", "/post-config", 200),
+    ("GET", "/post-preview", 409),
+    ("GET", "/explainer", 409),
+    ("GET", "/file-text?file_idx=0", 404),
+    ("GET", "/file-text?file_idx=abc", 400),
+    ("GET", "/nope", 404),
+    ("POST", "/fold-summary", 409),
+    ("POST", "/console/ask", 409),
+    ("POST", "/console/cancel", 200),
+    ("POST", "/console/reset", 200),
+    ("POST", "/explainer/skeleton", 409),
+    ("POST", "/explainer/section/background", 409),
+    ("POST", "/post-review", 409),
+    ("POST", "/nope", 404),
+    ("DELETE", "/comments/nope", 404),
+    ("DELETE", "/nope", 404),
+]
+
+
+def _status(server, method: str, path: str) -> int:
+    """The status alone, for the routes whose refusal is the point."""
+    req = urllib.request.Request(
+        server.url() + path,
+        method=method,
+        data=b"{}" if method == "POST" else None,
+        headers={"Content-Type": "application/json"} if method == "POST" else {},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+@pytest.mark.parametrize(("method", "path", "expected"), _ROUTES, ids=str)
+def test_a_route_answers_its_own_status(server, method: str, path: str, expected: int) -> None:
+    assert _status(server, method, path) == expected
+
+
+def test_an_out_of_range_file_is_not_a_malformed_one(server) -> None:
+    """404 and 400 are different answers: the reviewer asked for a file
+    that isn't there, or the viewer sent something that was never a file
+    index. Only the second is a bug in the caller."""
+    assert _status(server, "GET", "/file-text?file_idx=99") == 404
+    assert _status(server, "GET", "/file-text?file_idx=abc") == 400
+
+
+def test_cancel_and_reset_answer_without_a_console(server) -> None:
+    """Both are idempotent: a console that was never started has nothing
+    in flight and no history, which is the state they ask for."""
+    for path in ("/console/cancel", "/console/reset"):
+        code, body = _post(server, path, {})
+        assert (code, body) == (200, {"ok": True})
+
+
+def test_a_console_turn_is_accepted_not_awaited(server) -> None:
+    """202, not 200: the answer arrives over SSE, and a viewer that read
+    this as the turn's result would render an empty one."""
+    started = threading.Event()
+
+    def asker(*_a, **_k) -> None:
+        started.set()
+
+    server.attach(ServerTasks(console=asker), {"version": "1", "files": []})
+    code, body = _post(server, "/console/ask", {"question": "why?"})
+    assert code == 202
+    assert "console_id" in body
+    assert started.wait(timeout=5)
+
+
+def test_the_house_style_reaches_both_explainer_generators(tmp_path: Path, monkeypatch) -> None:
+    """The house style reaches the document and nothing else, so its only
+    guard is that the layer holding it hands both generators the same
+    value. Dropping it changes no shape and fails no other test."""
+    from semantic_code_review.review import runner
+
+    seen: dict[str, str | None] = {}
+
+    def _spy(name: str):
+        def build(*, house_style: str | None, **_kw):
+            seen[name] = house_style
+            return lambda *_a, **_k: None
+
+        return build
+
+    monkeypatch.setattr(runner, "_build_explainer_task", _spy("skeleton"))
+    monkeypatch.setattr(runner, "_build_explainer_section_task", _spy("section"))
+    runner.build_server_tasks(tmp_path, _task_config(augment=True, explainer_prompt="name the dataset"))
+    assert seen == {"skeleton": "name the dataset", "section": "name the dataset"}
+
+
 # --- serve_review orchestration -----------------------------------------
 
 
