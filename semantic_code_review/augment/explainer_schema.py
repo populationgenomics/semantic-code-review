@@ -30,12 +30,14 @@ log = logging.getLogger(__name__)
 
 EXPLAINER_FILENAME = "explainer.json"
 
-#: Bump when the persisted shape changes incompatibly. A document at a
-#: different version is discarded on load, the same way a SHA mismatch
-#: is — the document is cheap to regenerate and never worth migrating.
-#: Checked before the document is parsed, so a shape the current models
-#: reject is discarded rather than raising :class:`ExplainerCorrupt`.
-DOCUMENT_VERSION = 2
+#: Bump when a stored document stops being one this build renders
+#: correctly — an incompatible shape, or a change to how its contents are
+#: drawn. A document at a different version is discarded on load, the same
+#: way a SHA mismatch is: it is cheap to regenerate and never worth
+#: migrating. Checked before the document is parsed, so a shape the
+#: current models reject is discarded rather than raising
+#: :class:`ExplainerCorrupt`.
+DOCUMENT_VERSION = 3
 
 
 RefKind = Literal["file", "hunk"]
