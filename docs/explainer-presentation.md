@@ -278,8 +278,24 @@ in both colour schemes without the model knowing which is active.
 | class | use |
 |---|---|
 | `hl` | highlight over an existing shape |
-| `chip` | small accent pill, for a value or count |
+| `chip` | small accent pill, for a value or count — a `<rect>` behind a separate `<text>` |
 | `rule` | thick rounded separator |
+
+**Which element a class goes on.** The text classes belong on `<text>`
+and `<tspan>`; every other class belongs on a shape (`<rect>`, `<circle>`,
+`<ellipse>`, `<line>`, `<polyline>`, `<polygon>`, `<path>`). A container —
+`<g>`, `<svg>`, `<marker>`, `<defs>` — takes either and passes it to its
+children. Both sanitisers drop a class on the
+wrong kind, because the mistake is not cosmetic: a line class sets
+`fill: none`, which on a glyph renders it invisible, and `chip` on a
+`<text>` outlines the glyphs instead of drawing the pill it names.
+
+**Text alignment.** `text-anchor` is the figure's, not the stylesheet's —
+the stylesheet cannot know whether an `x` was computed as a label's left
+edge or its centre, and only the figure's author does. SVG's own default
+(`start`) therefore stands: a label centred on its coordinate says
+`text-anchor="middle"` explicitly, and one omitting the attribute is
+left-aligned at its `x`.
 
 Arrow heads are `<marker>` elements defined in the figure's own `defs`,
 with the head class applied to the marker's `path`. Ids are namespaced
