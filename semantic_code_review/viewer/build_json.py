@@ -430,9 +430,6 @@ def _pr_block(diff: AnnotatedDiff, meta: dict[str, Any]) -> dict[str, Any]:
         "url": meta.get("url", ""),
         "summary": ov.summary if ov else "",
         "themes": ov.themes if ov else [],
-        "symbols_added": [s.model_dump() for s in (ov.symbols_added if ov else [])],
-        "symbols_modified": [s.model_dump() for s in (ov.symbols_modified if ov else [])],
-        "symbols_removed": [s.model_dump() for s in (ov.symbols_removed if ov else [])],
         "callgraph_edges": [e.model_dump(by_alias=True) for e in (ov.callgraph_edges if ov else [])],
     }
 

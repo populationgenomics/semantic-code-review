@@ -384,7 +384,7 @@ async def generate_explainer_skeleton(
     system_text, user_prefix = carry_guidance(client, guidance)
     user_text = format_skeleton_prompt(
         diff,
-        overview_json=overview_to_prompt_json(diff, include_symbols=False),
+        overview_json=overview_to_prompt_json(diff),
         delta=_symbol_delta(run_dir, diff),
     )
     if user_prefix:

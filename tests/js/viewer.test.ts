@@ -271,7 +271,7 @@ function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
   return {
     version: "1",
     pending: true,
-    pr: { title: "test", themes: [], symbols_added: [], symbols_modified: [], symbols_removed: [], callgraph_edges: [] },
+    pr: { title: "test", themes: [], callgraph_edges: [] },
     smells_catalogue: {},
     files: [{
       id: "F0",
@@ -488,7 +488,7 @@ describe("streaming events", () => {
 
     const es = lastEventSource();
     es.dispatch("overview", {
-      pr: { summary: "bumps return values", themes: ["constants"], symbols_added: [], symbols_modified: [], symbols_removed: [], callgraph_edges: [] },
+      pr: { summary: "bumps return values", themes: ["constants"], callgraph_edges: [] },
       groups: [
         { id: "G0", title: "return value bumps", rationale: "two related edits", hunk_ids: ["H0_0", "H0_1"] },
       ],

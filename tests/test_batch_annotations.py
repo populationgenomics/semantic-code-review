@@ -330,7 +330,7 @@ def test_the_overview_block_carries_the_base_sha() -> None:
         overview=Overview(summary="s"),
     )
 
-    payload = json.loads(overview_to_prompt_json(diff, include_symbols=False))
+    payload = json.loads(overview_to_prompt_json(diff))
 
     assert payload["base_sha"] == "deadbeefcafe"
 

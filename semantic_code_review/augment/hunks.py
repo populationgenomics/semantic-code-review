@@ -522,20 +522,13 @@ def _ref(d: dict[str, Any]) -> dict[str, Any]:
     return {"path": d["path"], "line": int(d["line"]), "reason": d.get("reason", "") or ""}
 
 
-def overview_to_prompt_json(diff: AnnotatedDiff, *, include_symbols: bool = True) -> str:
+def overview_to_prompt_json(diff: AnnotatedDiff) -> str:
     """Serialize the overview into a compact JSON string for a prompt.
 
-    `include_symbols=False` drops the three symbol inventories, leaving
-    the prose. They are the bulk of the overview — measured at 92% of it
-    on a 47-file diff, 14,353 of 15,656 characters — and a per-hunk
-    prompt re-sends the whole thing for every hunk of the file, so the
-    cost grows with the diff rather than with the hunk. The passes that
-    repeat per hunk therefore leave them out and let the model pull what
-    it needs from the `changed_symbols` tool, which can filter by path
-    and carries more per entry than the overview did.
-
-    The console keeps them: it is one long-lived conversation, not a
-    call per hunk, so there is nothing to amortise.
+    Prose only. The symbol inventory lives in the deterministic
+    `SymbolDelta` — reachable through the `changed_symbols` tool, which
+    filters by path and carries more per entry than the overview ever
+    did — so nothing here restates it.
     """
     if not isinstance(diff.overview, Overview):
         return "{}"
@@ -552,8 +545,4 @@ def overview_to_prompt_json(diff: AnnotatedDiff, *, include_symbols: bool = True
         "themes": list(diff.overview.themes),
         "callgraph_edges": [e.model_dump(by_alias=True) for e in diff.overview.callgraph_edges],
     }
-    if include_symbols:
-        payload["symbols_added"] = [s.model_dump() for s in diff.overview.symbols_added]
-        payload["symbols_modified"] = [s.model_dump() for s in diff.overview.symbols_modified]
-        payload["symbols_removed"] = [s.model_dump() for s in diff.overview.symbols_removed]
     return json.dumps(payload, ensure_ascii=False)

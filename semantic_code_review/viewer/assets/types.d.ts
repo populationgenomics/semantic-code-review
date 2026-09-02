@@ -58,16 +58,7 @@ interface PRBlock {
   url: string;
   summary: string;
   themes: string[];
-  symbols_added: OverviewSymbol[];
-  symbols_modified: OverviewSymbol[];
-  symbols_removed: OverviewSymbol[];
   callgraph_edges: OverviewEdge[];
-}
-
-interface OverviewSymbol {
-  kind: string;
-  name: string;
-  path: string;
 }
 
 interface OverviewEdge {

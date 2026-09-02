@@ -54,9 +54,6 @@ def _emit_preamble(diff: AnnotatedDiff) -> list[str]:
 def _overview_to_jsonable(ov: Overview) -> dict[str, Any]:
     return {
         "summary": ov.summary,
-        "symbols_added": [s.model_dump() for s in ov.symbols_added],
-        "symbols_modified": [s.model_dump() for s in ov.symbols_modified],
-        "symbols_removed": [s.model_dump() for s in ov.symbols_removed],
         "callgraph_edges": [e.model_dump(by_alias=True) for e in ov.callgraph_edges],
         "themes": list(ov.themes),
         "groups": [g.model_dump() for g in ov.groups],

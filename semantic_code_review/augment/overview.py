@@ -19,7 +19,6 @@ from ..augment.schemas import (
     OverviewEdge,
     OverviewGroup,
     OverviewGroupMember,
-    OverviewSymbol,
 )
 from ..cache.store import CacheStore
 from ..structural import SymbolDelta
@@ -93,10 +92,9 @@ def _format_symbol_seed(delta: SymbolDelta | None) -> str:
     lines = [
         "\n# Symbols changed (deterministic — tree-sitter, not your inference)",
         "These are the exact definitions that changed between base and head, by "
-        "name and kind. Populate `symbols_added` / `symbols_modified` / "
-        "`symbols_removed` from THIS list verbatim — one entry per line below, "
-        "using its `qualified_name` as the symbol `name`. Do not add, drop, or "
-        "rename entries; languages absent here are simply not yet parseable.",
+        "name and kind — ground truth, not your inference. Use them to ground the "
+        "summary, themes and groups; do not restate the list back. Languages "
+        "absent here are simply not yet parseable.",
     ]
     for label, items in buckets:
         lines.append(f"{label}:")
@@ -153,9 +151,6 @@ def apply_overview_to_diff(diff: AnnotatedDiff, submit_args: dict[str, Any]) -> 
     """
     overview = Overview(
         summary=submit_args.get("summary", ""),
-        symbols_added=[OverviewSymbol(**s) for s in submit_args.get("symbols_added", [])],
-        symbols_modified=[OverviewSymbol(**s) for s in submit_args.get("symbols_modified", [])],
-        symbols_removed=[OverviewSymbol(**s) for s in submit_args.get("symbols_removed", [])],
         callgraph_edges=[OverviewEdge.model_validate(e) for e in submit_args.get("callgraph_edges", [])],
         themes=list(submit_args.get("themes", [])),
         groups=_resolve_groups(diff, submit_args.get("groups") or []),

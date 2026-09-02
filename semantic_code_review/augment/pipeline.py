@@ -214,7 +214,7 @@ async def augment_run_dir(
         mcp_host.start()
         client.set_mcp_endpoint(mcp_host.mcp_config())
 
-    overview_json = overview_to_prompt_json(diff, include_symbols=False)
+    overview_json = overview_to_prompt_json(diff)
 
     # Per-file definition spans, parsed once from the worktrees, so the
     # per-hunk SSE re-emits below carry symbol-aware `fold_regions`
@@ -709,9 +709,6 @@ def _overview_event_payload(diff: AnnotatedDiff) -> dict[str, Any]:
         "pr": {
             "summary": ov.summary if ov else "",
             "themes": ov.themes if ov else [],
-            "symbols_added": [s.model_dump() for s in (ov.symbols_added if ov else [])],
-            "symbols_modified": [s.model_dump() for s in (ov.symbols_modified if ov else [])],
-            "symbols_removed": [s.model_dump() for s in (ov.symbols_removed if ov else [])],
             "callgraph_edges": [e.model_dump(by_alias=True) for e in (ov.callgraph_edges if ov else [])],
         },
         "groups": groups,
