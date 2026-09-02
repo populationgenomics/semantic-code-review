@@ -498,3 +498,139 @@ describe("Rendered.renderBody — fold chip DOM", () => {
     expect(body.querySelector(".rmd-fold")).toBeNull();
   });
 });
+
+// --- Per-pane state ------------------------------------------------------
+//
+// The change explainer's detail panel (ADR 0007) renders a file beside the
+// document while the diff pane holds its own copy of it. Each pane drives
+// rendered mode through its own `PaneState` and its own repaint, so a
+// control in one moves that one and nothing else. Every case below passes
+// trivially with a single shared state bag and a single shared repaint —
+// which is what these guard against.
+
+describe("two panes holding the same file", () => {
+  const DOC = "# Head\n\n" + [1, 2, 3, 4, 5, 6].map((n) => `para ${n}`).join("\n\n");
+
+  interface Pane {
+    state: PaneState;
+    el: HTMLElement;
+    repaints: ReturnType<typeof vi.fn>;
+  }
+
+  /** Two panes over one file, each painted into its own element behind
+   *  its own repaint spy. The second flip reads the shared source cache,
+   *  so only the first fetches.
+   *
+   *  Cases below drive the *first*-painted pane: a module-level repaint
+   *  set by the latest paint would serve the second pane correctly and
+   *  only misroute this one. */
+  async function twoPanes(f: FileBlock): Promise<[Pane, Pane]> {
+    const make = (): Pane => ({
+      state: Rendered.newPaneState(),
+      el: document.createElement("div"),
+      repaints: vi.fn(),
+    });
+    const a = make();
+    const b = make();
+    await flip(a.state, f, { base: DOC, head: DOC });
+    await Rendered.toggle(b.state, f, () => {});
+    paint(a.state, a.el, f, a.repaints);
+    paint(b.state, b.el, f, b.repaints);
+    return [a, b];
+  }
+
+  function chipLabel(pane: Pane): string | null {
+    return pane.el.querySelector(".rmd-fold-label")?.textContent ?? null;
+  }
+
+  test("the fold ladder moves its own pane's level and repaints only it", async () => {
+    const f = mdFile("F20");
+    const [a, b] = await twoPanes(f);
+
+    const ladder = (pane: Pane, label: string): HTMLElement =>
+      Array.from(pane.el.querySelectorAll<HTMLElement>(".rmd-ladder-btn"))
+        .find((btn) => btn.textContent === label)!;
+
+    ladder(a, "Open").click();
+
+    expect(a.repaints).toHaveBeenCalledTimes(1);
+    expect(b.repaints).not.toHaveBeenCalled();
+    expect(Rendered.foldLevel(a.state, f.id)).toBe("open");
+    expect(Rendered.foldLevel(b.state, f.id)).toBe("runs");
+    expect(a.el.querySelector(".rmd-fold")).toBeNull();
+    expect(b.el.querySelector(".rmd-fold")).not.toBeNull();
+    expect(b.el.querySelector(".rmd-ladder-btn.active")!.textContent).toBe("Runs");
+
+    // And the other way round: the second pane's ladder leaves the first
+    // on the level it now holds.
+    ladder(b, "Sections").click();
+
+    expect(b.repaints).toHaveBeenCalledTimes(1);
+    expect(a.repaints).toHaveBeenCalledTimes(1);
+    expect(Rendered.foldLevel(b.state, f.id)).toBe("sections");
+    expect(Rendered.foldLevel(a.state, f.id)).toBe("open");
+  });
+
+  test("a chevron reveal peels a block off its own pane's chip only", async () => {
+    const f = mdFile("F21");
+    const [a, b] = await twoPanes(f);
+    expect(chipLabel(a)).toContain("6 unchanged blocks");
+    expect(chipLabel(b)).toContain("6 unchanged blocks");
+
+    (a.el.querySelector(".rmd-fold-chev-top") as HTMLElement).click();
+
+    expect(a.repaints).toHaveBeenCalledTimes(1);
+    expect(b.repaints).not.toHaveBeenCalled();
+    expect(chipLabel(a)).toContain("5 unchanged blocks");
+    // Repainted from its own state rather than left stale, the other
+    // pane's chip is still whole.
+    paint(b.state, b.el, f);
+    expect(chipLabel(b)).toContain("6 unchanged blocks");
+  });
+
+  test("an outline expand opens the section in its own pane only", async () => {
+    const f = mdFile("F22");
+    const [a, b] = await twoPanes(f);
+
+    (a.el.querySelector(".rmd-outline-entry") as HTMLElement).click();
+
+    expect(a.repaints).toHaveBeenCalledTimes(1);
+    expect(b.repaints).not.toHaveBeenCalled();
+    expect(a.el.querySelector(".rmd-fold")).toBeNull();
+    paint(b.state, b.el, f);
+    expect(b.el.querySelector(".rmd-fold")).not.toBeNull();
+  });
+
+  test("flipping a file on in one pane leaves the other in text mode", async () => {
+    const f = mdFile("F23");
+    const diff = Rendered.newPaneState();
+    const panel = Rendered.newPaneState();
+
+    await flip(diff, f, { base: DOC, head: DOC });
+
+    expect(Rendered.isOn(diff, f.id)).toBe(true);
+    expect(Rendered.isOn(panel, f.id)).toBe(false);
+
+    await Rendered.toggle(panel, f, () => {});
+    await Rendered.toggle(diff, f, () => {});
+
+    expect(Rendered.isOn(panel, f.id)).toBe(true);
+    expect(Rendered.isOn(diff, f.id)).toBe(false);
+  });
+
+  test("the source cache is shared: a second pane's flip does not refetch", async () => {
+    const f = mdFile("F24");
+    const diff = Rendered.newPaneState();
+    const panel = Rendered.newPaneState();
+
+    await flip(diff, f, { base: DOC, head: DOC });
+    await Rendered.toggle(panel, f, () => {});
+
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    // And the second pane got the cached text, not an empty body.
+    const el = document.createElement("div");
+    paint(panel, el, f);
+    expect(el.querySelector(".rendered-md-notice")).toBeNull();
+    expect(el.querySelector(".rmd-block")!.innerHTML).toContain("<h1>Head</h1>");
+  });
+});
