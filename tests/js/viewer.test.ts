@@ -2992,6 +2992,108 @@ describe("overview mode (ADR 0007)", () => {
         .toContain("this guard is new");
     });
 
+    // --- rendered mode beside the document -------------------------------
+    // A `.md` reference opens in the panel with rendered mode's state its
+    // own: the flip, the fold ladder, the chevrons and the outline act on
+    // the panel and leave the diff pane where the reviewer left it.
+
+    describe("a markdown reference", () => {
+      const MD = "# Head\n\n" + [1, 2, 3, 4, 5, 6].map((n) => `para ${n}`).join("\n\n");
+      const MD_FILES = [{
+        id: "F0", path: "docs/x.md", status: "modified", language: "markdown",
+        adds: 1, dels: 1, summary: "", head_lines: null,
+        symbols: { added: [], modified: [], removed: [] },
+        hunks: [makeHunkBlock("H0_0")],
+      }];
+
+      /** Open the document with a single `.md` file, click its Map row to
+       *  put it in the panel, and flip the panel's copy to rendered mode. */
+      async function panelRendered(): Promise<HTMLElement> {
+        await bootWithExplainer({ status: 200, body: DOC }, { pending: false, files: MD_FILES });
+        const panel = document.querySelector("#app .explainer-detail") as HTMLElement;
+        mapRow(0).click();
+        queueFetchResponse({
+          status: 200,
+          body: { file_idx: 0, path: "docs/x.md", base: MD, head: MD },
+        });
+        (panel.querySelector(".md-toggle") as HTMLElement).click();
+        await new Promise<void>((r) => setTimeout(r, 0));
+        return panel;
+      }
+
+      /** Leave the mode and land on the diff pane's copy of the file. */
+      async function toDiffPane(): Promise<HTMLElement> {
+        (document.getElementById("overview-btn") as HTMLButtonElement).click();
+        await new Promise<void>((r) => setTimeout(r, 0));
+        return document.querySelector('#app .file[data-id="F0"]') as HTMLElement;
+      }
+
+      test("flipping it in the panel leaves the diff pane on the text diff", async () => {
+        const panel = await panelRendered();
+        expect(panel.querySelector(".rmd-grid")).not.toBeNull();
+        expect(panel.querySelector(".md-toggle")!.textContent).toBe("Diff");
+
+        const inDiff = await toDiffPane();
+        expect(inDiff.querySelector(".rmd-grid")).toBeNull();
+        expect(inDiff.querySelector(".md-toggle")!.textContent).toBe("Rendered");
+      });
+
+      test("the fold ladder repaints the panel", async () => {
+        const panel = await panelRendered();
+        expect(panel.querySelector(".rmd-fold")).not.toBeNull();
+        expect(panel.querySelector(".rmd-ladder-btn.active")!.textContent).toBe("Runs");
+
+        Array.from(panel.querySelectorAll<HTMLElement>(".rmd-ladder-btn"))
+          .find((b) => b.textContent === "Open")!.click();
+
+        expect(panel.querySelector(".rmd-fold")).toBeNull();
+        expect(panel.querySelector(".rmd-ladder-btn.active")!.textContent).toBe("Open");
+        // The document beside it is untouched — the repaint was the
+        // panel's, not the pane's.
+        expect(document.querySelector("#app .explainer")!.textContent).toContain("Ground.");
+      });
+
+      test("a chevron reveal repaints the panel", async () => {
+        const panel = await panelRendered();
+        // "⋯ N unchanged blocks ⋯"
+        const hidden = (): number => Number(
+          /(\d+) unchanged/.exec(panel.querySelector(".rmd-fold-label")!.textContent || "")![1]);
+        const before = hidden();
+        expect(before).toBeGreaterThan(1);
+
+        (panel.querySelector(".rmd-fold-chev-top") as HTMLElement).click();
+
+        expect(hidden()).toBe(before - 1);
+      });
+
+      test("an outline entry repaints the panel", async () => {
+        const panel = await panelRendered();
+        expect(panel.querySelector(".rmd-fold")).not.toBeNull();
+
+        (panel.querySelector(".rmd-outline-entry") as HTMLElement).click();
+
+        expect(panel.querySelector(".rmd-fold")).toBeNull();
+      });
+
+      test("the panel's fold level does not follow the reviewer into the diff", async () => {
+        const panel = await panelRendered();
+        Array.from(panel.querySelectorAll<HTMLElement>(".rmd-ladder-btn"))
+          .find((b) => b.textContent === "Open")!.click();
+
+        // The diff pane's copy flips on its own — one fetch served both,
+        // so the source cache is shared even though the view state is not.
+        const inDiff = await toDiffPane();
+        const hits = fetchCalls.filter((c) => c.url.includes("/file-text")).length;
+        (inDiff.querySelector(".md-toggle") as HTMLElement).click();
+        await new Promise<void>((r) => setTimeout(r, 0));
+        expect(fetchCalls.filter((c) => c.url.includes("/file-text")).length).toBe(hits);
+
+        const file = document.querySelector('#app .file[data-id="F0"]') as HTMLElement;
+        expect(file.querySelector(".rmd-ladder-btn.active")!.textContent).toBe("Runs");
+        expect(file.querySelector(".rmd-fold")).not.toBeNull();
+      });
+    });
+
     // --- how wide the panel is ------------------------------------------
     // jsdom has no layout, so these read the shipped rules off the
     // cascade: the claim is which sizing the panel and the document cell

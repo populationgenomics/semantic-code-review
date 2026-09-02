@@ -28,7 +28,7 @@ import { ExplainerPanel, type PanelHost } from "./explainer_panel";
 import { FileRows } from "./file_rows";
 import { Folds } from "./folds";
 import { Progress } from "./progress";
-import { Rendered } from "./rendered";
+import { Rendered, type PaneState } from "./rendered";
 import { Sidebar } from "./sidebar";
 import { blockDiff, matchRanges, wrapRanges, type CharRange } from "./text_highlight";
 
@@ -47,6 +47,7 @@ interface RenderState {
   mode: ViewMode;
   overrides: Record<string, boolean>;
   renderedDiffs: Record<string, HTMLElement>;
+  rendered: PaneState;
   // Ephemeral: reveal the focused hunks' code (set when a sidebar pill is
   // clicked, cleared the moment the fold-level slider is touched). Kept
   // out of `overrides` on purpose — a stored per-hunk override would leak
@@ -79,6 +80,7 @@ const _state: RenderState = {
   mode: "diff",
   overrides: Object.create(null),
   renderedDiffs: Object.create(null),
+  rendered: Rendered.newPaneState(),
   focusReveal: true,
 };
 
@@ -98,6 +100,10 @@ interface PaneScope {
    *  panel: a reference addresses a file whether or not the filter the
    *  reviewer left in the diff covers it. */
   filtered: boolean;
+  /** Rendered mode's view state (ADR 0004) for this pane: which `.md`
+   *  files are flipped, and their fold level / reveals. Per-pane for the
+   *  same reason `overrides` is. */
+  rendered: PaneState;
   repaint: () => void;
 }
 
@@ -109,6 +115,7 @@ function _diffScope(): PaneScope {
     overrides: _state.overrides,
     cache: _state.renderedDiffs,
     filtered: true,
+    rendered: _state.rendered,
     repaint: render,
   };
 }
@@ -119,6 +126,7 @@ const _panelScope: PaneScope = {
   overrides: Object.create(null),
   cache: null,
   filtered: false,
+  rendered: Rendered.newPaneState(),
   repaint: () => ExplainerPanel.repaint(),
 };
 
@@ -137,6 +145,7 @@ function renderInit(data: ViewerData): void {
   _state.mode = _initialMode();
   _state.overrides = Object.create(null);
   _state.renderedDiffs = Object.create(null);
+  _state.rendered = Rendered.newPaneState();
   _wireInputs();
   _restoreHash();
   // As pressing the button clears it: the reveal belongs to a filter
@@ -566,10 +575,10 @@ function _renderFile(f: FileBlock, scope: PaneScope): HTMLElement | null {
   div.appendChild(_renderFileHeader(f, folded, scope));
   if (!folded) {
     const body = _el("div", "file-body");
-    if (Rendered.isOn(f.id)) {
+    if (Rendered.isOn(scope.rendered, f.id)) {
       // Rendered markdown mode is a separate body renderer: no diff
       // overview, no fold chevrons — just the rendered prose.
-      Rendered.renderBody(body, f);
+      Rendered.renderBody(scope.rendered, body, f, scope.repaint);
       div.appendChild(body);
     } else {
       const overview = _renderFileOverview(f);
@@ -646,14 +655,14 @@ function _renderFileHeader(f: FileBlock, folded: boolean, scope: PaneScope): HTM
  *  rendered mode. stopPropagation keeps the click off the header's
  *  fold handler; the toggle fetches (if needed) then re-renders. */
 function _renderMdToggle(f: FileBlock, scope: PaneScope): HTMLElement {
-  const on = Rendered.isOn(f.id);
+  const on = Rendered.isOn(scope.rendered, f.id);
   const btn = _el("button", "md-toggle");
   btn.textContent = on ? "Diff" : "Rendered";
   btn.title = on ? "Show the text diff" : "Show the rendered markdown";
   btn.setAttribute("aria-pressed", on ? "true" : "false");
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
-    void Rendered.toggle(f, scope.repaint);
+    void Rendered.toggle(scope.rendered, f, scope.repaint);
   });
   return btn;
 }
