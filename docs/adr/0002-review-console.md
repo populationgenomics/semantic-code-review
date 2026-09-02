@@ -124,6 +124,16 @@ Console turns are exploratory, history-dependent, and one-off; the
 content-hash `CacheStore` the augment/fold passes use would serve stale
 answers to re-asked questions. Skip it.
 
+Amended: the *trace* half was wrong and is reversed. A turn's tokens
+come off the same budget as the review — the same subscription window
+on a CLI backend — and `usage.py` derives `usage.json` from the traces
+alone, so a turn that wrote none was a turn the run reported as free.
+Each turn now writes a `console-*.json` trace, and takes the rest of the
+pass envelope (`request_limit` bounding the tool loop) from the same
+place `run_pass` does: `augment/recording.py`. The no-caching half
+stands, and is the line between them: a pass is idempotent given its
+inputs, a turn carries `message_history` and is not.
+
 ## Consequences
 
 - The CLI driver gains a second mode (free-form text) alongside the
