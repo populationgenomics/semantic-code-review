@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .. import paths
 from ..cache.store import CacheStore
 from ..format.emit import emit_augmented_diff
 from ..format.parse import parse_raw_diff
@@ -73,7 +74,7 @@ log = logging.getLogger(__name__)
 
 
 async def augment_run_dir(
-    run_dir: Path,
+    run_dir: paths.RunDir,
     cfg: config.AugmentConfig,
     *,
     client: Client | None,
@@ -116,13 +117,8 @@ async def augment_run_dir(
         client = Client(model=f"anthropic:{model}")
     # cache=None means "no disk caching"; callers pass a CacheStore to enable.
 
-    raw_diff_path = run_dir / "raw.diff"
-    meta_path = run_dir / "meta.json"
-    augmented_path = run_dir / "augmented.diff"
-    sidecar_path = run_dir / "augmented.scr.json"
-
-    meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    raw = raw_diff_path.read_text(encoding="utf-8")
+    meta = json.loads(run_dir.meta.read_text(encoding="utf-8"))
+    raw = run_dir.raw_diff.read_text(encoding="utf-8")
     parsed = parse_raw_diff(raw)
     pr = PRInfo(
         pr_url=meta.get("url", ""),
@@ -147,7 +143,7 @@ async def augment_run_dir(
     if skipped_files:
         log.info("skipping %d generated file(s): %s", len(skipped_files), ", ".join(sorted(skipped_files)))
 
-    trace_dir = run_dir / "trace"
+    trace_dir = run_dir.trace
     trace_dir.mkdir(parents=True, exist_ok=True)
     _attach_file_log(trace_dir / "augment.log")
 
@@ -171,8 +167,8 @@ async def augment_run_dir(
     symbol_delta = None
     try:
         symbol_delta = RepoTools(
-            head_worktree=run_dir / "head",
-            repo_git=run_dir / "repo.git",
+            head_worktree=run_dir.head,
+            repo_git=run_dir.repo_git,
             base_sha=diff.pr.base_sha,
             head_sha=diff.pr.head_sha,
             cache=parse_cache,
@@ -201,8 +197,8 @@ async def augment_run_dir(
 
     # --- Per-hunk pass -------------------------------------------------
     repo_tools = RepoTools(
-        head_worktree=run_dir / "head",
-        repo_git=run_dir / "repo.git",
+        head_worktree=run_dir.head,
+        repo_git=run_dir.repo_git,
         base_sha=diff.pr.base_sha,
         head_sha=diff.pr.head_sha,
         cache=parse_cache,
@@ -224,8 +220,8 @@ async def augment_run_dir(
     # per-hunk SSE re-emits below carry symbol-aware `fold_regions`
     # addresses in lockstep with the full-page build and the viewer's
     # client-side detector. Empty lists where a worktree is absent.
-    head_dir = run_dir / "head"
-    base_dir = run_dir / "base"
+    head_dir = run_dir.head
+    base_dir = run_dir.base
     file_spans: dict[int, tuple[list, list]] = {
         fi: file_fold_spans(
             fp,
@@ -388,9 +384,9 @@ async def augment_run_dir(
 
     # --- Emit ----------------------------------------------------------
     augmented_text = emit_augmented_diff(diff)
-    augmented_path.write_text(augmented_text, encoding="utf-8")
-    dump_sidecar(diff, sidecar_path)
-    log.info("wrote %s (%d bytes) + sidecar", augmented_path.name, len(augmented_text))
+    run_dir.augmented.write_text(augmented_text, encoding="utf-8")
+    dump_sidecar(diff, run_dir.sidecar)
+    log.info("wrote %s (%d bytes) + sidecar", run_dir.augmented.name, len(augmented_text))
 
     backend_tag = "subprocess" if client.is_subprocess_backend else "sdk"
     summary = (
@@ -414,7 +410,7 @@ async def augment_run_dir(
             stats.failed,
             trace_dir,
         )
-    return augmented_path
+    return run_dir.augmented
 
 
 @dataclass

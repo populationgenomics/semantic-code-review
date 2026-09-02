@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .. import git_ops
+from .. import git_ops, paths
 from ..git_ops import GhError
 from ..review.comments import Comment
 from .anchor import _PathDiff, apply_path_diff, load_path_diff
@@ -358,7 +358,7 @@ def fetch_comment_commits(repo_git: Path, comments: list[Comment]) -> set[str]:
 
 
 def materialize_pr_comments(
-    run_dir: Path,
+    run_dir: paths.RunDir,
     ref: PRRef,
     head_sha: str | None = None,
 ) -> int:
@@ -370,13 +370,13 @@ def materialize_pr_comments(
     session-local comments from a previous review) so we don't clobber
     in-flight reviewer state on a re-materialise.
 
-    Comment-anchor commits are shallow-fetched into ``run_dir/repo.git``
-    so the propagator can diff each comment's commit_id against
+    Comment-anchor commits are shallow-fetched into the run's
+    ``repo.git`` so the propagator can diff each comment's commit_id against
     ``head_sha``. Passing ``head_sha`` enables anchor propagation; if
     omitted, comments land with no ``head_line`` / ``anchor_status``
     (used by callers that don't yet care about movement tracking).
     """
-    target = run_dir / "comments.json"
+    target = run_dir.comments
     if target.exists():
         return 0
     try:
@@ -384,7 +384,7 @@ def materialize_pr_comments(
     except GhError as e:
         log.warning("skipping PR comment ingest for %s: %s", ref.url, e)
         return 0
-    repo_git = run_dir / "repo.git"
+    repo_git = run_dir.repo_git
     if repo_git.exists():
         fetch_comment_commits(repo_git, comments)
         if head_sha is not None:

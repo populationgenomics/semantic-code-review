@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from semantic_code_review import paths
 from semantic_code_review.format.parse import parse_augmented_diff
 from semantic_code_review.viewer.build_json import (
     build_pending_viewer_json,
@@ -86,12 +87,12 @@ index 0123456..89abcde 100644
 """
 
 
-def test_build_pending_viewer_json_emits_skeleton_with_pending_flag(tmp_path: Path) -> None:
+def test_build_pending_viewer_json_emits_skeleton_with_pending_flag(run_dir: paths.RunDir) -> None:
     """Pre-augment JSON carries file/hunk structure but no annotations
     and is tagged `pending: true` so the viewer JS shows a spinner
     placeholder instead of the failure copy."""
-    (tmp_path / "raw.diff").write_text(_RAW_DIFF, encoding="utf-8")
-    (tmp_path / "meta.json").write_text(
+    run_dir.raw_diff.write_text(_RAW_DIFF, encoding="utf-8")
+    run_dir.meta.write_text(
         json.dumps(
             {
                 "title": "Bump return value",
@@ -104,7 +105,7 @@ def test_build_pending_viewer_json_emits_skeleton_with_pending_flag(tmp_path: Pa
         encoding="utf-8",
     )
 
-    data = build_pending_viewer_json(tmp_path)
+    data = build_pending_viewer_json(run_dir)
 
     assert data["pending"] is True
     assert data["pr"]["title"] == "Bump return value"
@@ -153,18 +154,18 @@ index 3333333..4444444 100644
 """
 
 
-def test_build_pending_marks_skipped_files_generated(tmp_path: Path) -> None:
+def test_build_pending_marks_skipped_files_generated(run_dir: paths.RunDir) -> None:
     """Skipped files (lock/vendored, plus config skip_globs) are pre-marked
     GENERATED in the pending page so the progress grid excludes them — the
     pipeline never dispatches them, so left "modified" their hunks would sit
     queued forever (the uv.lock-blocks-finalising bug)."""
-    (tmp_path / "raw.diff").write_text(_MIXED_DIFF, encoding="utf-8")
-    (tmp_path / "meta.json").write_text(
+    run_dir.raw_diff.write_text(_MIXED_DIFF, encoding="utf-8")
+    run_dir.meta.write_text(
         json.dumps({"title": "t", "author": {"login": "u"}, "url": "", "baseRefOid": "a", "headRefOid": "b"}),
         encoding="utf-8",
     )
 
-    data = build_pending_viewer_json(tmp_path, skip_globs=("*.txt",))
+    data = build_pending_viewer_json(run_dir, skip_globs=("*.txt",))
 
     status = {f["path"]: f["status"] for f in data["files"]}
     # Real source stays analysable; uv.lock (default glob) and notes.txt
@@ -188,11 +189,11 @@ index 0123456..89abcde 100644
 """
 
 
-def test_symbol_blocks_map_changed_symbols_to_hunks(tmp_path: Path) -> None:
+def test_symbol_blocks_map_changed_symbols_to_hunks(run_dir: paths.RunDir) -> None:
     """The deterministic Symbols axis: each changed symbol becomes a
     flat block carrying the hunk ids its live-side range overlaps."""
-    (tmp_path / "raw.diff").write_text(_SYMBOL_DIFF, encoding="utf-8")
-    (tmp_path / "meta.json").write_text(
+    run_dir.raw_diff.write_text(_SYMBOL_DIFF, encoding="utf-8")
+    run_dir.meta.write_text(
         json.dumps(
             {
                 "title": "Add bar",
@@ -204,8 +205,8 @@ def test_symbol_blocks_map_changed_symbols_to_hunks(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    base = tmp_path / "base"
-    head = tmp_path / "head"
+    base = run_dir.base
+    head = run_dir.head
     base.mkdir()
     head.mkdir()
     (base / "a.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
@@ -214,7 +215,7 @@ def test_symbol_blocks_map_changed_symbols_to_hunks(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    data = build_pending_viewer_json(tmp_path)
+    data = build_pending_viewer_json(run_dir)
 
     syms = data["symbols"]
     # foo is unchanged (same range both sides) → only bar, the added fn.
@@ -241,13 +242,13 @@ index 0123456..89abcde 100644
 """
 
 
-def test_symbol_blocks_nest_methods_under_their_class(tmp_path: Path) -> None:
+def test_symbol_blocks_nest_methods_under_their_class(run_dir: paths.RunDir) -> None:
     """Slice 5: a changed method renders under its (possibly unchanged)
     class. Adding `Foo.baz` grows `Foo`'s span (so the class is itself a
     changed node); `baz` hangs off it as a child, and the parent's
     hunk_ids is the subtree union."""
-    (tmp_path / "raw.diff").write_text(_NESTED_DIFF, encoding="utf-8")
-    (tmp_path / "meta.json").write_text(
+    run_dir.raw_diff.write_text(_NESTED_DIFF, encoding="utf-8")
+    run_dir.meta.write_text(
         json.dumps(
             {
                 "title": "Add Foo.baz",
@@ -259,8 +260,8 @@ def test_symbol_blocks_nest_methods_under_their_class(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    base = tmp_path / "base"
-    head = tmp_path / "head"
+    base = run_dir.base
+    head = run_dir.head
     base.mkdir()
     head.mkdir()
     (base / "a.py").write_text(
@@ -272,7 +273,7 @@ def test_symbol_blocks_nest_methods_under_their_class(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    data = build_pending_viewer_json(tmp_path)
+    data = build_pending_viewer_json(run_dir)
 
     syms = data["symbols"]
     # One root: the class. bar is untouched (identical span) → no pill.
@@ -293,10 +294,10 @@ def test_symbol_blocks_nest_methods_under_their_class(tmp_path: Path) -> None:
     assert "children" not in baz  # leaf carries no children key
 
 
-def test_symbol_blocks_absent_without_worktrees(tmp_path: Path) -> None:
+def test_symbol_blocks_absent_without_worktrees(run_dir: paths.RunDir) -> None:
     """No base/head worktree available ⇒ empty Symbols axis, no raise."""
-    (tmp_path / "raw.diff").write_text(_SYMBOL_DIFF, encoding="utf-8")
-    (tmp_path / "meta.json").write_text(
+    run_dir.raw_diff.write_text(_SYMBOL_DIFF, encoding="utf-8")
+    run_dir.meta.write_text(
         json.dumps(
             {
                 "title": "Add bar",
@@ -309,7 +310,7 @@ def test_symbol_blocks_absent_without_worktrees(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    data = build_pending_viewer_json(tmp_path)
+    data = build_pending_viewer_json(run_dir)
 
     assert data["symbols"] == []
 
@@ -317,12 +318,12 @@ def test_symbol_blocks_absent_without_worktrees(tmp_path: Path) -> None:
 # --- fold_symbols: per-side definition spans (slice 1) ---------------------
 
 
-def test_fold_symbols_ship_per_side_definition_spans(tmp_path: Path) -> None:
+def test_fold_symbols_ship_per_side_definition_spans(run_dir: paths.RunDir) -> None:
     """Each supported-language file carries its head/base definition spans
     as `{start_line, end_line, kind, qualified_name, depth}`, depth-first,
     with nested defs deeper than their enclosing one."""
-    (tmp_path / "raw.diff").write_text(_NESTED_DIFF, encoding="utf-8")
-    (tmp_path / "meta.json").write_text(
+    run_dir.raw_diff.write_text(_NESTED_DIFF, encoding="utf-8")
+    run_dir.meta.write_text(
         json.dumps(
             {
                 "title": "Add Foo.baz",
@@ -334,8 +335,8 @@ def test_fold_symbols_ship_per_side_definition_spans(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    base = tmp_path / "base"
-    head = tmp_path / "head"
+    base = run_dir.base
+    head = run_dir.head
     base.mkdir()
     head.mkdir()
     (base / "a.py").write_text(
@@ -347,7 +348,7 @@ def test_fold_symbols_ship_per_side_definition_spans(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    data = build_pending_viewer_json(tmp_path)
+    data = build_pending_viewer_json(run_dir)
 
     fs = data["files"][0]["fold_symbols"]
     # Head: Foo (depth 0) then its two methods (depth 1), in source order.
@@ -360,7 +361,7 @@ def test_fold_symbols_ship_per_side_definition_spans(tmp_path: Path) -> None:
     assert base_qns == [("Foo", 0), ("Foo.bar", 1)]
 
 
-def test_fold_symbols_empty_for_unsupported_language(tmp_path: Path) -> None:
+def test_fold_symbols_empty_for_unsupported_language(run_dir: paths.RunDir) -> None:
     """An unsupported-language / unparsed file carries empty span lists,
     not a missing key — the inert degradation path."""
     raw = (
@@ -369,8 +370,8 @@ def test_fold_symbols_empty_for_unsupported_language(tmp_path: Path) -> None:
         "--- a/notes.txt\n+++ b/notes.txt\n"
         "@@ -1 +1 @@\n-old\n+new\n"
     )
-    (tmp_path / "raw.diff").write_text(raw, encoding="utf-8")
-    (tmp_path / "meta.json").write_text(
+    run_dir.raw_diff.write_text(raw, encoding="utf-8")
+    run_dir.meta.write_text(
         json.dumps(
             {
                 "title": "Edit notes",
@@ -382,14 +383,14 @@ def test_fold_symbols_empty_for_unsupported_language(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    base = tmp_path / "base"
-    head = tmp_path / "head"
+    base = run_dir.base
+    head = run_dir.head
     base.mkdir()
     head.mkdir()
     (base / "notes.txt").write_text("old\n", encoding="utf-8")
     (head / "notes.txt").write_text("new\n", encoding="utf-8")
 
-    data = build_pending_viewer_json(tmp_path)
+    data = build_pending_viewer_json(run_dir)
 
     assert data["files"][0]["fold_symbols"] == {"head": [], "base": []}
 

@@ -1,6 +1,6 @@
 """Per-run token accounting, derived from the trace files.
 
-Reads `<run_dir>/trace/*.json` after a run and writes `usage.json`
+Reads the run's `trace/*.json` after a run and writes `usage.json`
 beside them. Post-processing rather than accumulation threaded through
 `run_pass` — the traces already hold every response's usage, so the
 summary is a pure function of what's on disk and can be recomputed for
@@ -25,9 +25,9 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-log = logging.getLogger(__name__)
+from .. import paths
 
-USAGE_FILENAME = "usage.json"
+log = logging.getLogger(__name__)
 
 
 def _pass_name(relative_path: str) -> str:
@@ -156,7 +156,7 @@ def summarize_trace_dir(trace_dir: Path) -> dict[str, Any]:
     # totals. The name is sanitised now, but accounting must not depend on
     # that — an unreadable layout should never read as "spent nothing".
     for path in sorted(trace_dir.rglob("*.json")):
-        if path.name == USAGE_FILENAME:
+        if path.name == paths.RunDir.USAGE_NAME:
             continue
         try:
             trace = json.loads(path.read_text(encoding="utf-8"))
@@ -193,18 +193,17 @@ def summarize_trace_dir(trace_dir: Path) -> dict[str, Any]:
     }
 
 
-def write_usage_summary(run_dir: Path) -> dict[str, Any] | None:
-    """Write `<run_dir>/usage.json` from the run's traces.
+def write_usage_summary(run_dir: paths.RunDir) -> dict[str, Any] | None:
+    """Write the run's `usage.json` from its traces.
 
     Returns the summary it wrote (so the caller can render it without
     re-reading), or `None` when the run has no trace directory — which
     is the case for tests that stub the pipeline.
     """
-    trace_dir = run_dir / "trace"
-    if not trace_dir.is_dir():
+    if not run_dir.trace.is_dir():
         return None
-    summary = summarize_trace_dir(trace_dir)
-    (run_dir / USAGE_FILENAME).write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    summary = summarize_trace_dir(run_dir.trace)
+    run_dir.usage.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     return summary
 
 
@@ -234,7 +233,6 @@ def format_summary_line(summary: dict[str, Any]) -> str:
 
 
 __all__ = [
-    "USAGE_FILENAME",
     "format_summary_line",
     "summarize_trace_dir",
     "write_usage_summary",

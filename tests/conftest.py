@@ -1,9 +1,11 @@
-"""Session-scoped fixtures for the pytest suite.
+"""Shared fixtures for the pytest suite.
 
-Ensures the viewer's TypeScript bundle has been built before any test
-that exercises the viewer runs. In normal `scr` use the `bin/scr`
-bootstrap handles this; during `pytest` we don't go through the
-bootstrap, so we have to arrange the build ourselves.
+`run_dir` hands a test an empty [[run-directory]] to fill in.
+
+`_build_viewer_js` ensures the viewer's TypeScript bundle has been
+built before any test that exercises the viewer runs. In normal `scr`
+use the `bin/scr` bootstrap handles this; during `pytest` we don't go
+through the bootstrap, so we have to arrange the build ourselves.
 
 The bundled output lives out-of-tree (alongside how `bin/scr` builds
 it) and is exposed via SCR_VIEWER_BUILD_DIR so the review server picks
@@ -19,7 +21,17 @@ from pathlib import Path
 
 import pytest
 
+from semantic_code_review import paths
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture
+def run_dir(tmp_path: Path) -> paths.RunDir:
+    """An empty run directory. Which artefacts it holds is the test's to
+    decide — `run_dir.raw_diff.write_text(...)`, `run_dir.head.mkdir()`.
+    """
+    return paths.RunDir(tmp_path).create()
 
 
 @pytest.fixture(scope="session", autouse=True)

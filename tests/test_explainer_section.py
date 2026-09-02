@@ -561,7 +561,7 @@ def test_a_submitted_figure_lands_on_the_section(diff: AnnotatedDiff, doc) -> No
     assert figure.stripped == 0
 
 
-def test_a_subsection_carries_figures_of_its_own(diff: AnnotatedDiff, doc, tmp_path) -> None:
+def test_a_subsection_carries_figures_of_its_own(diff: AnnotatedDiff, doc, run_dir) -> None:
     """The walkthrough's detail lives in its subsections, so a figure
     about one part belongs beside that part's prose — and is stripped and
     counted there on the same terms."""
@@ -580,7 +580,7 @@ def test_a_subsection_carries_figures_of_its_own(diff: AnnotatedDiff, doc, tmp_p
         ),
         ids=build_json.viewer_id_index(diff),
     )
-    written = explainer_schema.save_explainer(tmp_path, doc)
+    written = explainer_schema.save_explainer(run_dir, doc)
 
     nested = explainer_section.find_section(written, "code").subsections[0].figures[0]
     assert "hotpink" not in nested.svg
@@ -598,7 +598,7 @@ def test_a_figure_the_call_was_never_given_the_rules_for_is_dropped(diff: Annota
     assert section.figures == []
 
 
-def test_a_submitted_figure_reaches_the_persisted_document_sanitised(tmp_path) -> None:
+def test_a_submitted_figure_reaches_the_persisted_document_sanitised(run_dir) -> None:
     """The whole route in one test: the prose call submits a figure, the
     apply step lands it, `save_explainer` strips the paint the model may
     not choose and records what it took, and the next reader loads that
@@ -610,8 +610,8 @@ def test_a_submitted_figure_reaches_the_persisted_document_sanitised(tmp_path) -
     from semantic_code_review.format.sidecar import dump_sidecar
 
     diff = _diff()
-    dump_sidecar(diff, tmp_path / "augmented.scr.json")
-    explainer_schema.save_explainer(tmp_path, _doc())
+    dump_sidecar(diff, run_dir.sidecar)
+    explainer_schema.save_explainer(run_dir, _doc())
 
     args = {
         "sections": [
@@ -631,14 +631,14 @@ def test_a_submitted_figure_reaches_the_persisted_document_sanitised(tmp_path) -
     returned = asyncio.run(
         explainer_section.generate_explainer_section(
             client,
-            run_dir=tmp_path,
+            run_dir=run_dir,
             section_id="intuition",
             model="m",
             house_style=None,
         )
     )
 
-    loaded = explainer_schema.load_explainer(tmp_path, base_sha="base1234", head_sha="head5678")
+    loaded = explainer_schema.load_explainer(run_dir, base_sha="base1234", head_sha="head5678")
     assert loaded is not None
     for doc in (returned, loaded):
         section = explainer_section.find_section(doc, "intuition")
@@ -924,7 +924,7 @@ def test_the_house_style_sits_with_the_document_wide_blocks(doc) -> None:
     assert guidance.index(format_house_style("terse")) < guidance.index(EXPLAINER_BACKGROUND_GUIDANCE)
 
 
-def test_editing_the_house_style_re_runs_the_background_pass(tmp_path) -> None:
+def test_editing_the_house_style_re_runs_the_background_pass(tmp_path, run_dir) -> None:
     """Background keys on `(base_sha, guidance)` rather than on its user
     text, so it survives a moving head — the property that also made it
     immune to a prompt edit until `guidance` joined the key. The house
@@ -937,7 +937,7 @@ def test_editing_the_house_style_re_runs_the_background_pass(tmp_path) -> None:
     from semantic_code_review.cache.store import CacheStore
     from semantic_code_review.format.sidecar import dump_sidecar
 
-    dump_sidecar(_diff(), tmp_path / "augmented.scr.json")
+    dump_sidecar(_diff(), run_dir.sidecar)
     cache_root = tmp_path / "cache"
     cache = CacheStore(root=cache_root, prompt_version="test")
     args = {"sections": [{"section": "background", "body": "the system before"}]}
@@ -945,12 +945,12 @@ def test_editing_the_house_style_re_runs_the_background_pass(tmp_path) -> None:
     def run(house_style: str | None) -> None:
         # A fresh document per run: the pass flips its section to `ready`
         # and charges the budget, and neither is the input under test.
-        explainer_schema.save_explainer(tmp_path, _doc())
+        explainer_schema.save_explainer(run_dir, _doc())
         client = Client(model=TestModel(custom_output_args=args, call_tools=[]))
         asyncio.run(
             explainer_section.generate_explainer_section(
                 client,
-                run_dir=tmp_path,
+                run_dir=run_dir,
                 section_id="background",
                 model="m",
                 house_style=house_style,
@@ -971,7 +971,7 @@ def test_editing_the_house_style_re_runs_the_background_pass(tmp_path) -> None:
     assert entries() == 3
 
 
-def test_editing_the_house_style_re_runs_the_walkthrough_pass(tmp_path) -> None:
+def test_editing_the_house_style_re_runs_the_walkthrough_pass(tmp_path, run_dir) -> None:
     """The walkthrough keys on its assembled user text. On an SDK backend
     that text does not carry the guidance — the system prompt does, and
     `run_pass` folds that in too."""
@@ -982,18 +982,18 @@ def test_editing_the_house_style_re_runs_the_walkthrough_pass(tmp_path) -> None:
     from semantic_code_review.cache.store import CacheStore
     from semantic_code_review.format.sidecar import dump_sidecar
 
-    dump_sidecar(_diff(), tmp_path / "augmented.scr.json")
+    dump_sidecar(_diff(), run_dir.sidecar)
     cache_root = tmp_path / "cache"
     cache = CacheStore(root=cache_root, prompt_version="test")
     args = {"sections": [{"section": "intuition", "body": "a cursor rides the request"}]}
 
     def run(house_style: str | None) -> None:
-        explainer_schema.save_explainer(tmp_path, _doc())
+        explainer_schema.save_explainer(run_dir, _doc())
         client = Client(model=TestModel(custom_output_args=args, call_tools=[]))
         asyncio.run(
             explainer_section.generate_explainer_section(
                 client,
-                run_dir=tmp_path,
+                run_dir=run_dir,
                 section_id="intuition",
                 model="m",
                 house_style=house_style,

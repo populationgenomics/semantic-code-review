@@ -32,7 +32,6 @@ import json
 import logging
 import threading
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 from pydantic_ai import Agent
@@ -45,7 +44,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models import Model
 
-from .. import errors
+from .. import errors, paths
 from . import explainer_schema, mcp_http_host, source_cache
 from .agents import Client
 from .hunks import overview_to_prompt_json
@@ -312,7 +311,7 @@ def _explainer_context(selection: dict, repo_tools: RepoTools) -> list[str]:
     return out
 
 
-def _load_explainer(run_dir: Path, diff: Any) -> explainer_schema.ExplainerDocument | None:
+def _load_explainer(run_dir: paths.RunDir, diff: Any) -> explainer_schema.ExplainerDocument | None:
     """The run's change-explainer document, or None when there isn't one.
 
     Absent (nobody pressed the button) and stale (the SHAs moved) are
@@ -335,7 +334,7 @@ def _load_explainer(run_dir: Path, diff: Any) -> explainer_schema.ExplainerDocum
 def _prepare_turn(
     client: Client,
     *,
-    run_dir: Path,
+    run_dir: paths.RunDir,
     question: str,
     history: list | None,
     selection: Any = None,
@@ -352,7 +351,7 @@ def _prepare_turn(
     disk yet. Returns ``(agent, prompt, repo_tools)`` ready to run or
     iterate.
     """
-    sidecar = run_dir / "augmented.scr.json"
+    sidecar = run_dir.sidecar
     if not sidecar.exists():
         raise ConsoleNotReady("augmented.scr.json missing — augment not complete")
 
@@ -362,8 +361,8 @@ def _prepare_turn(
 
     diff = load_sidecar(sidecar)
     repo_tools = RepoTools(
-        head_worktree=run_dir / "head",
-        repo_git=run_dir / "repo.git",
+        head_worktree=run_dir.head,
+        repo_git=run_dir.repo_git,
         base_sha=diff.pr.base_sha,
         head_sha=diff.pr.head_sha,
         diff=diff,
@@ -509,7 +508,7 @@ async def _run_console_turn_oneshot(
 async def stream_console_turn(
     client: Client,
     *,
-    run_dir: Path,
+    run_dir: paths.RunDir,
     question: str,
     history: Any = None,
     on_delta: Callable[[str], None] | None = None,
@@ -606,7 +605,7 @@ async def stream_console_turn(
 async def run_console_turn(
     client: Client,
     *,
-    run_dir: Path,
+    run_dir: paths.RunDir,
     question: str,
     history: Any = None,
     selection: Any = None,

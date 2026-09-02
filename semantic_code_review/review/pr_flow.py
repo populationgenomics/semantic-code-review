@@ -23,9 +23,9 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
+from .. import paths
 from ..fetch import GhFetchError, materialize_github_pr_run, preflight_gh
 from .comments import CommentStore, format_markdown
 from .config import ReviewConfig
@@ -86,7 +86,7 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
         _err(f"scr pr: {e}")
         return 2
 
-    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    meta = json.loads(run_dir.meta.read_text(encoding="utf-8"))
     head_sha = meta.get("headRefOid", "")
     if not head_sha:
         _err("scr pr: meta.json is missing headRefOid; can't anchor review")
@@ -125,19 +125,19 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
     if posted is None and opts.yes:
         mapped = comments_to_github(result.comments)
         if not mapped:
-            _err(f"scr pr: no new local comments to post; comments are in {run_dir / 'comments.json'}.")
+            _err(f"scr pr: no new local comments to post; comments are in {run_dir.comments}.")
             return 0 if result.clean else 2
         try:
             posted = post_review_via_graphql(
                 opts.repo,
                 number,
                 mapped,
-                diff_text=(run_dir / "raw.diff").read_text(encoding="utf-8"),
+                diff_text=run_dir.raw_diff.read_text(encoding="utf-8"),
             )
-            CommentStore(run_dir / "comments.json").mark_posted(posted.posted_node_ids)
+            CommentStore(run_dir.comments).mark_posted(posted.posted_node_ids)
         except GhError as e:
             _err(f"scr pr: posting failed: {e}")
-            _err(f"comments are still in {run_dir / 'comments.json'} — re-run with --no-augment to retry.")
+            _err(f"comments are still in {run_dir.comments} — re-run with --no-augment to retry.")
             return 2
 
     if posted is not None:
@@ -155,7 +155,7 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
     # no comments, etc. Dump the markdown so the user / a calling script
     # has a record of what was being reviewed.
     local_comments = [c for c in result.comments if c.source == "local"]
-    sys.stdout.write(format_markdown(local_comments, run_slug=run_dir.name))
+    sys.stdout.write(format_markdown(local_comments, run_slug=run_dir.slug))
     sys.stdout.flush()
     return 0 if result.clean else 2
 
@@ -191,7 +191,7 @@ def _resolve_pr_number(repo: str) -> tuple[int | None, int | None]:
 def _build_post_callback(
     repo: str,
     number: int,
-    run_dir: Path,
+    run_dir: paths.RunDir,
 ) -> PostCallable:
     """Closure the server fires on /post-review.
 
@@ -204,14 +204,14 @@ def _build_post_callback(
     """
 
     def post(selected_ids: list[str]) -> PostResult:
-        store = CommentStore(run_dir / "comments.json")
+        store = CommentStore(run_dir.comments)
         all_comments = store.all()
         selected = set(selected_ids)
         filtered = [c for c in all_comments if c.source != "local" or c.id in selected]
         mapped = comments_to_github(filtered)
         # The raw diff is what GitHub will thread against; anchors are
         # resolved to it before anything is written.
-        raw_diff = (run_dir / "raw.diff").read_text(encoding="utf-8")
+        raw_diff = run_dir.raw_diff.read_text(encoding="utf-8")
         result = post_review_via_graphql(repo, number, mapped, diff_text=raw_diff)
         store.mark_posted(result.posted_node_ids)
         return result

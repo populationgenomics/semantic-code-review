@@ -9,7 +9,7 @@ The full pipeline is three steps:
 2. `materialize_run_metadata(resolved.spec, runs_root)` — shared
    on-disk write of raw.diff, files.txt, meta.json.
 3. `setup_github_worktrees(run_dir, resolved)` — fresh bare clone in
-   `run_dir/repo.git/`, shallow fetch of base + head SHAs, and
+   the run's `repo.git/`, shallow fetch of base + head SHAs, and
    `worktree add --detach` for each side.
 
 `materialize_github_pr_run` ties the three together for callers that
@@ -27,7 +27,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .. import git_ops
+from .. import git_ops, paths
 from ..git_ops import GhError, GhMissingError
 from .run_source import RunSpec, materialize_run_metadata
 
@@ -169,16 +169,16 @@ def resolve_github_pr(pr_url: str) -> GithubResolved:
     return GithubResolved(spec=spec, ref=ref)
 
 
-def setup_github_worktrees(run_dir: Path, resolved: GithubResolved) -> None:
-    """Create `<run_dir>/repo.git` (bare-ish), shallow-fetch the two
+def setup_github_worktrees(run_dir: paths.RunDir, resolved: GithubResolved) -> None:
+    """Create the run's `repo.git` (bare-ish), shallow-fetch the two
     SHAs into it, and add detached worktrees at `base/` and `head/`.
 
     Idempotent: re-running with the same head SHA does not re-fetch
     or re-create worktrees that already exist.
     """
-    repo_git = (run_dir / "repo.git").resolve()
-    base = (run_dir / "base").resolve()
-    head = (run_dir / "head").resolve()
+    repo_git = run_dir.repo_git.resolve()
+    base = run_dir.base.resolve()
+    head = run_dir.head.resolve()
 
     if base.exists() and head.exists() and repo_git.exists():
         return
@@ -195,10 +195,10 @@ def setup_github_worktrees(run_dir: Path, resolved: GithubResolved) -> None:
         git_ops.worktree_add(repo_git, head, resolved.spec.head_sha)
 
 
-def materialize_github_pr_run(pr_url: str, runs_root: Path) -> Path:
+def materialize_github_pr_run(pr_url: str, runs_root: Path) -> paths.RunDir:
     """High-level: resolve → materialise metadata → set up worktrees.
 
-    Returns the run-directory path. Idempotent: re-running for the
+    Returns the run directory. Idempotent: re-running for the
     same head SHA re-resolves but does not re-download artefacts that
     are already on disk.
 

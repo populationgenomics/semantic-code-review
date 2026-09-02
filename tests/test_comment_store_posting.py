@@ -10,18 +10,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from semantic_code_review import paths
 from semantic_code_review.review.comments import CommentStore
 
 
-def _store(tmp_path: Path) -> CommentStore:
-    store = CommentStore(tmp_path / "comments.json")
+def _store(run_dir: paths.RunDir) -> CommentStore:
+    store = CommentStore(run_dir.comments)
     store.upsert({"id": "c1", "file": "a.py", "side": "new", "line": 3, "body": "one"})
     store.upsert({"id": "c2", "file": "a.py", "side": "new", "line": 9, "body": "two"})
     return store
 
 
-def test_marking_posted_makes_a_comment_ingested(tmp_path: Path) -> None:
-    store = _store(tmp_path)
+def test_marking_posted_makes_a_comment_ingested(run_dir: paths.RunDir) -> None:
+    store = _store(run_dir)
 
     assert store.mark_posted({"c1": "PRRT_abc"}) == 1
 
@@ -31,12 +32,12 @@ def test_marking_posted_makes_a_comment_ingested(tmp_path: Path) -> None:
     assert by_id["c2"].source == "local"  # untouched
 
 
-def test_a_posted_comment_is_not_offered_for_posting_again(tmp_path: Path) -> None:
+def test_a_posted_comment_is_not_offered_for_posting_again(run_dir: paths.RunDir) -> None:
     """`comments_to_github` drops non-local comments, so the transition
     is what stops the re-post."""
     from semantic_code_review.review.github import comments_to_github
 
-    store = _store(tmp_path)
+    store = _store(run_dir)
     store.mark_posted({"c1": "PRRT_abc"})
 
     mapped = comments_to_github(store.all())
@@ -44,29 +45,29 @@ def test_a_posted_comment_is_not_offered_for_posting_again(tmp_path: Path) -> No
     assert [m.body for m in mapped] == ["two"]
 
 
-def test_marking_survives_a_reload(tmp_path: Path) -> None:
+def test_marking_survives_a_reload(run_dir: paths.RunDir) -> None:
     """The write-back has to reach disk — the next `scr pr` builds a new
     store over the same file."""
-    store = _store(tmp_path)
+    store = _store(run_dir)
     store.mark_posted({"c1": "PRRT_abc"})
 
-    reloaded = {c.id: c for c in CommentStore(tmp_path / "comments.json").all()}
+    reloaded = {c.id: c for c in CommentStore(run_dir.comments).all()}
 
     assert reloaded["c1"].source == "github"
     assert reloaded["c1"].node_id == "PRRT_abc"
 
 
-def test_unknown_and_already_posted_ids_are_ignored(tmp_path: Path) -> None:
+def test_unknown_and_already_posted_ids_are_ignored(run_dir: paths.RunDir) -> None:
     """A comment deleted between posting and write-back is not an error."""
-    store = _store(tmp_path)
+    store = _store(run_dir)
     store.mark_posted({"c1": "PRRT_abc"})
 
     assert store.mark_posted({"gone": "PRRT_x", "c1": "PRRT_second"}) == 0
     assert {c.id: c.node_id for c in store.all()}["c1"] == "PRRT_abc"
 
 
-def test_nothing_posted_is_a_no_op(tmp_path: Path) -> None:
-    assert _store(tmp_path).mark_posted({}) == 0
+def test_nothing_posted_is_a_no_op(run_dir: paths.RunDir) -> None:
+    assert _store(run_dir).mark_posted({}) == 0
 
 
 def test_the_post_callback_marks_what_it_posted(tmp_path: Path) -> None:
@@ -77,9 +78,8 @@ def test_the_post_callback_marks_what_it_posted(tmp_path: Path) -> None:
     from semantic_code_review.review import pr_flow
     from semantic_code_review.review.github import PostResult
 
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    (run_dir / "raw.diff").write_text("diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,3 +1,3 @@\n+x\n")
+    run_dir = paths.RunDir(tmp_path / "run").create()
+    run_dir.raw_diff.write_text("diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,3 +1,3 @@\n+x\n")
     _store(run_dir)  # seeds c1 + c2
 
     def fake_post(repo, number, mapped, **kw):
@@ -89,6 +89,6 @@ def test_the_post_callback_marks_what_it_posted(tmp_path: Path) -> None:
     with patch.object(pr_flow, "post_review_via_graphql", fake_post):
         callback(["c1", "c2"])
 
-    reloaded = {c.id: c for c in CommentStore(run_dir / "comments.json").all()}
+    reloaded = {c.id: c for c in CommentStore(run_dir.comments).all()}
     assert reloaded["c1"].source == "github"
     assert reloaded["c2"].source == "github"

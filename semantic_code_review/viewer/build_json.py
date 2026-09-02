@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .. import structural
+from .. import paths, structural
 from ..augment import skip
 from ..augment.schemas import (
     SMELL_CATALOGUE,
@@ -60,7 +60,7 @@ def build_viewer_json(
     }
 
 
-def build_pending_viewer_json(run_dir: Path, skip_globs: tuple[str, ...] = ()) -> dict[str, Any]:
+def build_pending_viewer_json(run_dir: paths.RunDir, skip_globs: tuple[str, ...] = ()) -> dict[str, Any]:
     """Build viewer JSON from raw.diff alone, before augmentation runs.
 
     Annotations are empty except for skipped files (lock/vendored/binary,
@@ -75,8 +75,8 @@ def build_pending_viewer_json(run_dir: Path, skip_globs: tuple[str, ...] = ()) -
     `skip_globs` must match what `augment_run_dir` is given (config
     `[augment].skip_globs`), or the two disagree on the skip set.
     """
-    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
-    parsed = parse_raw_diff((run_dir / "raw.diff").read_text(encoding="utf-8"))
+    meta = json.loads(run_dir.meta.read_text(encoding="utf-8"))
+    parsed = parse_raw_diff(run_dir.raw_diff.read_text(encoding="utf-8"))
     pr = PRInfo(
         pr_url=meta.get("url", ""),
         base_sha=meta.get("baseRefOid", ""),
@@ -94,8 +94,8 @@ def build_pending_viewer_json(run_dir: Path, skip_globs: tuple[str, ...] = ()) -
         pr=pr,
         files=[lift_file(pf, ann=_pending_ann(pf.path)) for pf in parsed.files],
     )
-    head_dir = run_dir / "head"
-    base_dir = run_dir / "base"
+    head_dir = run_dir.head
+    base_dir = run_dir.base
     data = build_viewer_json(
         diff,
         meta,

@@ -18,12 +18,11 @@ import asyncio
 import json
 import threading
 import time
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-from semantic_code_review import errors
+from semantic_code_review import errors, paths
 from semantic_code_review.augment import explainer_schema
 from semantic_code_review.review.comments import CommentStore
 from semantic_code_review.review.session import ReviewSession, ServerTasks
@@ -74,13 +73,13 @@ class _Harness:
     the one event that unlocks the LLM-backed operations.
     """
 
-    def __init__(self, run_dir: Path, *, viewer_json: dict | None = None, **kwargs: Any) -> None:
+    def __init__(self, run_dir: paths.RunDir, *, viewer_json: dict | None = None, **kwargs: Any) -> None:
         self.viewer_json = {"version": "1", "files": []} if viewer_json is None else viewer_json
         self.frames = _Frames()
         self.session = ReviewSession(
             run_dir=run_dir,
             viewer_json=self.viewer_json,
-            store=CommentStore(run_dir / "comments.json"),
+            store=CommentStore(run_dir.comments),
             publish=self.frames.publish,
             **kwargs,
         )
@@ -112,30 +111,30 @@ def _wait_until(predicate, *, what: str, timeout: float = 5.0) -> None:
 # --- /data.json ---------------------------------------------------------
 
 
-def test_data_json_carries_the_runtime_flags(tmp_path: Path) -> None:
+def test_data_json_carries_the_runtime_flags(run_dir: paths.RunDir) -> None:
     """`debug` mounts the raw-log drawer and `explainer` the overview-mode
     button; both ride the payload because the viewer decides on its first
     fetch, long before any pass has run."""
-    plain = _Harness(tmp_path).session.data_json()
+    plain = _Harness(run_dir).session.data_json()
     assert plain["version"] == "1"
     assert plain["debug"] is False
     assert plain["explainer"] is False
 
-    flagged = _Harness(tmp_path, debug=True, explainer_enabled=True).session.data_json()
+    flagged = _Harness(run_dir, debug=True, explainer_enabled=True).session.data_json()
     assert flagged["debug"] is True
     assert flagged["explainer"] is True
 
 
-def test_set_viewer_json_replaces_the_payload(tmp_path: Path) -> None:
-    h = _Harness(tmp_path)
+def test_set_viewer_json_replaces_the_payload(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
     h.session.set_viewer_json({"version": "1", "files": [], "marker": "ok"})
     assert h.session.data_json()["marker"] == "ok"
 
 
-def test_attach_swaps_the_diff_and_unlocks_the_tasks(tmp_path: Path) -> None:
+def test_attach_swaps_the_diff_and_unlocks_the_tasks(run_dir: paths.RunDir) -> None:
     """One event, one call: the sidecar landed, so the augmented view and
     the tasks that read it arrive together."""
-    h = _Harness(tmp_path)
+    h = _Harness(run_dir)
     assert _refused(lambda: h.session.fold_summary({})).status == 409
 
     async def task(*_a: Any) -> dict:
@@ -176,8 +175,8 @@ def _fold_viewer_json(*, status: str | None = None) -> dict:
     return {"version": "1", "files": [file]}
 
 
-def test_fold_summary_refuses_before_the_summariser_is_attached(tmp_path: Path) -> None:
-    err = _refused(lambda: _Harness(tmp_path).session.fold_summary({"file_idx": 0, "context": "right"}))
+def test_fold_summary_refuses_before_the_summariser_is_attached(run_dir: paths.RunDir) -> None:
+    err = _refused(lambda: _Harness(run_dir).session.fold_summary({"file_idx": 0, "context": "right"}))
     assert err.status == 409
     assert "augmentation" in err.body()["error"]
 
@@ -193,8 +192,8 @@ def test_fold_summary_refuses_before_the_summariser_is_attached(tmp_path: Path) 
         ({"file_idx": 0, "context": "both", "right_start": 1, "right_end": 3}, "left_start/left_end required"),
     ],
 )
-def test_fold_summary_rejects_a_malformed_address(tmp_path: Path, payload: dict, message: str) -> None:
-    h = _Harness(tmp_path)
+def test_fold_summary_rejects_a_malformed_address(run_dir: paths.RunDir, payload: dict, message: str) -> None:
+    h = _Harness(run_dir)
 
     async def unreachable(*_a: Any) -> dict:
         raise AssertionError("a malformed address must not reach the summariser")
@@ -205,11 +204,11 @@ def test_fold_summary_rejects_a_malformed_address(tmp_path: Path, payload: dict,
     assert message in err.body()["error"]
 
 
-def test_fold_summary_seeds_the_symbol_patches_and_broadcasts(tmp_path: Path) -> None:
+def test_fold_summary_seeds_the_symbol_patches_and_broadcasts(run_dir: paths.RunDir) -> None:
     """The address resolves to a server-computed region, whose symbol
     seeds the prompt; the result is patched into the viewer JSON and
     fanned out as well as returned."""
-    h = _Harness(tmp_path, viewer_json=_fold_viewer_json())
+    h = _Harness(run_dir, viewer_json=_fold_viewer_json())
     captured: dict[str, Any] = {}
 
     async def fake_task(file_idx, context, right_range, left_range, qualified_name=None, kind=None) -> dict:
@@ -248,11 +247,11 @@ def test_fold_summary_seeds_the_symbol_patches_and_broadcasts(tmp_path: Path) ->
     assert h.frames.payloads("fold-summary") == [result]
 
 
-def test_fold_summary_leaves_an_unknown_region_unseeded(tmp_path: Path) -> None:
+def test_fold_summary_leaves_an_unknown_region_unseeded(run_dir: paths.RunDir) -> None:
     """A client-only region over expanded context matches nothing the
     server computed, so the prompt goes without a symbol rather than
     with the wrong one."""
-    h = _Harness(tmp_path, viewer_json=_fold_viewer_json())
+    h = _Harness(run_dir, viewer_json=_fold_viewer_json())
     seen: dict[str, Any] = {}
 
     async def fake_task(file_idx, context, right_range, left_range, qualified_name=None, kind=None) -> dict:
@@ -265,11 +264,11 @@ def test_fold_summary_leaves_an_unknown_region_unseeded(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("status", ["generated", "binary"])
-def test_fold_summary_skips_an_unreviewed_file(tmp_path: Path, status: str) -> None:
+def test_fold_summary_skips_an_unreviewed_file(run_dir: paths.RunDir, status: str) -> None:
     """A generated / lock / binary file gets a canned summary and the
     summariser is never invoked — expanding a fold inside one must not be
     the way a lock file reaches the model."""
-    h = _Harness(tmp_path, viewer_json=_fold_viewer_json(status=status))
+    h = _Harness(run_dir, viewer_json=_fold_viewer_json(status=status))
 
     async def boom(*_a: Any) -> dict:
         raise AssertionError("fold summariser must not run for a generated file")
@@ -284,10 +283,10 @@ def test_fold_summary_skips_an_unreviewed_file(tmp_path: Path, status: str) -> N
     assert h.frames.payloads("fold-summary") == [result]
 
 
-def test_fold_summary_for_left_context_passes_the_ranges_through(tmp_path: Path) -> None:
+def test_fold_summary_for_left_context_passes_the_ranges_through(run_dir: paths.RunDir) -> None:
     """A pure-deletion fold posts {context:'left', left_start, left_end};
     the same task is called with right_range=None."""
-    h = _Harness(tmp_path)
+    h = _Harness(run_dir)
     seen: dict[str, Any] = {}
 
     async def fake_task(file_idx, context, right_range, left_range, qualified_name=None, kind=None) -> dict:
@@ -301,14 +300,14 @@ def test_fold_summary_for_left_context_passes_the_ranges_through(tmp_path: Path)
     assert result["context"] == "left" and result["left_start"] == 12
 
 
-def test_fold_summary_typed_errors_carry_their_statuses(tmp_path: Path) -> None:
+def test_fold_summary_typed_errors_carry_their_statuses(run_dir: paths.RunDir) -> None:
     """`FoldSummaryNotReady` → 409; `FoldSummaryFileIndexError` → 404."""
     from semantic_code_review.augment.fold_summary import (
         FoldSummaryFileIndexError,
         FoldSummaryNotReady,
     )
 
-    h = _Harness(tmp_path)
+    h = _Harness(run_dir)
     address = {"file_idx": 0, "context": "right", "right_start": 1, "right_end": 3}
 
     async def not_ready(*_a: Any) -> dict:
@@ -328,10 +327,10 @@ def test_fold_summary_typed_errors_carry_their_statuses(tmp_path: Path) -> None:
     assert "999" in err.body()["error"]
 
 
-def test_a_failed_fold_summary_broadcasts_nothing(tmp_path: Path) -> None:
+def test_a_failed_fold_summary_broadcasts_nothing(run_dir: paths.RunDir) -> None:
     """An unexpected failure is a bug, not an outcome: it propagates for
     the route to answer 500 with, and no tab is told a summary landed."""
-    h = _Harness(tmp_path)
+    h = _Harness(run_dir)
 
     async def boom(*_a: Any) -> dict:
         raise RuntimeError("model said no")
@@ -345,16 +344,16 @@ def test_a_failed_fold_summary_broadcasts_nothing(tmp_path: Path) -> None:
 # --- file text (rendered markdown mode) ---------------------------------
 
 
-def _file_text_harness(tmp_path: Path, files: list[dict]) -> _Harness:
-    return _Harness(tmp_path, viewer_json={"version": "1", "files": files})
+def _file_text_harness(run_dir: paths.RunDir, files: list[dict]) -> _Harness:
+    return _Harness(run_dir, viewer_json={"version": "1", "files": files})
 
 
-def test_file_text_serves_base_and_head(tmp_path: Path) -> None:
-    (tmp_path / "base").mkdir()
-    (tmp_path / "head").mkdir()
-    (tmp_path / "base" / "doc.md").write_text("# Old\n\nbase body\n")
-    (tmp_path / "head" / "doc.md").write_text("# New\n\nhead body\n")
-    h = _file_text_harness(tmp_path, [{"id": "F0", "path": "doc.md", "old_path": None, "status": "modified"}])
+def test_file_text_serves_base_and_head(run_dir: paths.RunDir) -> None:
+    run_dir.base.mkdir()
+    run_dir.head.mkdir()
+    (run_dir.base / "doc.md").write_text("# Old\n\nbase body\n")
+    (run_dir.head / "doc.md").write_text("# New\n\nhead body\n")
+    h = _file_text_harness(run_dir, [{"id": "F0", "path": "doc.md", "old_path": None, "status": "modified"}])
 
     payload = h.session.file_text(0)
 
@@ -363,11 +362,11 @@ def test_file_text_serves_base_and_head(tmp_path: Path) -> None:
     assert payload["head"] == "# New\n\nhead body\n"
 
 
-def test_file_text_added_file_has_null_base(tmp_path: Path) -> None:
+def test_file_text_added_file_has_null_base(run_dir: paths.RunDir) -> None:
     """An added file has no pre-image: base is None, head is present."""
-    (tmp_path / "head").mkdir()
-    (tmp_path / "head" / "new.md").write_text("# Added\n")
-    h = _file_text_harness(tmp_path, [{"id": "F0", "path": "new.md", "old_path": None, "status": "added"}])
+    run_dir.head.mkdir()
+    (run_dir.head / "new.md").write_text("# Added\n")
+    h = _file_text_harness(run_dir, [{"id": "F0", "path": "new.md", "old_path": None, "status": "added"}])
 
     payload = h.session.file_text(0)
 
@@ -375,12 +374,12 @@ def test_file_text_added_file_has_null_base(tmp_path: Path) -> None:
     assert payload["head"] == "# Added\n"
 
 
-def test_file_text_renamed_reads_base_from_old_path(tmp_path: Path) -> None:
-    (tmp_path / "base").mkdir()
-    (tmp_path / "head").mkdir()
-    (tmp_path / "base" / "old.md").write_text("was here\n")
-    (tmp_path / "head" / "new.md").write_text("now here\n")
-    h = _file_text_harness(tmp_path, [{"id": "F0", "path": "new.md", "old_path": "old.md", "status": "renamed"}])
+def test_file_text_renamed_reads_base_from_old_path(run_dir: paths.RunDir) -> None:
+    run_dir.base.mkdir()
+    run_dir.head.mkdir()
+    (run_dir.base / "old.md").write_text("was here\n")
+    (run_dir.head / "new.md").write_text("now here\n")
+    h = _file_text_harness(run_dir, [{"id": "F0", "path": "new.md", "old_path": "old.md", "status": "renamed"}])
 
     payload = h.session.file_text(0)
 
@@ -388,18 +387,18 @@ def test_file_text_renamed_reads_base_from_old_path(tmp_path: Path) -> None:
     assert payload["head"] == "now here\n"
 
 
-def test_file_text_out_of_range(tmp_path: Path) -> None:
-    err = _refused(lambda: _file_text_harness(tmp_path, []).session.file_text(5))
+def test_file_text_out_of_range(run_dir: paths.RunDir) -> None:
+    err = _refused(lambda: _file_text_harness(run_dir, []).session.file_text(5))
     assert err.status == 404
     assert "5" in err.body()["error"]
 
 
-def test_file_text_path_traversal_refused(tmp_path: Path) -> None:
+def test_file_text_path_traversal_refused(run_dir: paths.RunDir) -> None:
     """A traversing old_path yields None rather than escaping the worktree."""
-    (tmp_path / "secret.md").write_text("top secret\n")
-    (tmp_path / "head").mkdir()
-    (tmp_path / "head" / "doc.md").write_text("ok\n")
-    h = _file_text_harness(tmp_path, [{"id": "F0", "path": "doc.md", "old_path": "../secret.md", "status": "renamed"}])
+    (run_dir.path / "secret.md").write_text("top secret\n")
+    run_dir.head.mkdir()
+    (run_dir.head / "doc.md").write_text("ok\n")
+    h = _file_text_harness(run_dir, [{"id": "F0", "path": "doc.md", "old_path": "../secret.md", "status": "renamed"}])
 
     assert h.session.file_text(0)["base"] is None
 
@@ -411,16 +410,16 @@ def _console_end(frames: _Frames) -> dict:
     return frames.wait_for("console-done", "console-error")
 
 
-def test_console_refuses_before_the_asker_is_attached(tmp_path: Path) -> None:
+def test_console_refuses_before_the_asker_is_attached(run_dir: paths.RunDir) -> None:
     """A --no-augment review, or one still augmenting, has nothing to
     ground a conversation against."""
-    err = _refused(lambda: _Harness(tmp_path).session.console_turn({"question": "what changed?"}))
+    err = _refused(lambda: _Harness(run_dir).session.console_turn({"question": "what changed?"}))
     assert err.status == 409
     assert "console" in err.body()["error"]
 
 
-def test_console_refuses_an_empty_question(tmp_path: Path) -> None:
-    h = _Harness(tmp_path)
+def test_console_refuses_an_empty_question(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
 
     async def asker(*_a: Any) -> tuple[str, list]:
         raise AssertionError("an empty question must not start a turn")
@@ -430,11 +429,11 @@ def test_console_refuses_an_empty_question(tmp_path: Path) -> None:
     assert err.status == 400
 
 
-def test_console_streams_and_threads_history(tmp_path: Path) -> None:
+def test_console_streams_and_threads_history(run_dir: paths.RunDir) -> None:
     """A turn streams delta/tool frames tagged with the console id,
     finishes with console-done carrying the answer, and threads the
     returned history into the next turn."""
-    h = _Harness(tmp_path)
+    h = _Harness(run_dir)
     seen: list = []
 
     async def asker(question, history, on_delta, on_tool, cancel, selection=None) -> tuple[str, list]:
@@ -464,10 +463,10 @@ def test_console_streams_and_threads_history(tmp_path: Path) -> None:
     assert seen[1] == ("follow-up", ["why pagination?"], None)
 
 
-def test_console_passes_a_pinned_selection_through(tmp_path: Path) -> None:
+def test_console_passes_a_pinned_selection_through(run_dir: paths.RunDir) -> None:
     """The reviewer's pinned selection rides the turn opaquely; anything
     that isn't an object is dropped rather than handed on."""
-    h = _Harness(tmp_path)
+    h = _Harness(run_dir)
     seen: list = []
 
     async def asker(question, history, on_delta, on_tool, cancel, selection=None) -> tuple[str, list]:
@@ -484,12 +483,12 @@ def test_console_passes_a_pinned_selection_through(tmp_path: Path) -> None:
     assert seen == [{"file": "a.py"}, None]
 
 
-def test_console_cancel_discards_the_turn(tmp_path: Path) -> None:
+def test_console_cancel_discards_the_turn(run_dir: paths.RunDir) -> None:
     """Cancelling ends the turn with a cancelled console-done and leaves
     the conversation history untouched."""
     from semantic_code_review.augment.console import ConsoleCancelled
 
-    h = _Harness(tmp_path)
+    h = _Harness(run_dir)
 
     async def asker(question, history, on_delta, on_tool, cancel, selection=None) -> tuple[str, list]:
         on_delta("partial")
@@ -508,10 +507,10 @@ def test_console_cancel_discards_the_turn(tmp_path: Path) -> None:
     assert h.session.console_history is None
 
 
-def test_console_allows_one_turn_at_a_time(tmp_path: Path) -> None:
+def test_console_allows_one_turn_at_a_time(run_dir: paths.RunDir) -> None:
     from semantic_code_review.augment.console import ConsoleCancelled
 
-    h = _Harness(tmp_path)
+    h = _Harness(run_dir)
 
     async def asker(question, history, on_delta, on_tool, cancel, selection=None) -> tuple[str, list]:
         while not cancel.is_set():
@@ -531,10 +530,10 @@ def test_console_allows_one_turn_at_a_time(tmp_path: Path) -> None:
     _wait_until(lambda: not h.session.console_busy, what="the turn to release the slot")
 
 
-def test_a_failing_turn_becomes_a_console_error_frame(tmp_path: Path) -> None:
+def test_a_failing_turn_becomes_a_console_error_frame(run_dir: paths.RunDir) -> None:
     """The worker must not die with the turn: the failure streams as a
     console-error and the slot is released for a retry."""
-    h = _Harness(tmp_path)
+    h = _Harness(run_dir)
 
     async def asker(*_a: Any) -> tuple[str, list]:
         raise RuntimeError("boom")
@@ -546,12 +545,12 @@ def test_a_failing_turn_becomes_a_console_error_frame(tmp_path: Path) -> None:
     _wait_until(lambda: not h.session.console_busy, what="the turn to release the slot")
 
 
-def test_a_refusal_mid_turn_states_itself(tmp_path: Path) -> None:
+def test_a_refusal_mid_turn_states_itself(run_dir: paths.RunDir) -> None:
     """`ConsoleNotReady` is an outcome, so its message stands alone —
     only a bug gets its exception type named in the frame."""
     from semantic_code_review.augment.console import ConsoleNotReady
 
-    h = _Harness(tmp_path)
+    h = _Harness(run_dir)
 
     async def asker(*_a: Any) -> tuple[str, list]:
         raise ConsoleNotReady("augmented.scr.json missing")
@@ -562,8 +561,8 @@ def test_a_refusal_mid_turn_states_itself(tmp_path: Path) -> None:
     assert _console_end(h.frames)["error"] == "augmented.scr.json missing"
 
 
-def test_console_reset_clears_the_conversation(tmp_path: Path) -> None:
-    h = _Harness(tmp_path)
+def test_console_reset_clears_the_conversation(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
     seen: list = []
 
     async def asker(question, history, on_delta, on_tool, cancel, selection=None) -> tuple[str, list]:
@@ -620,18 +619,18 @@ def _explainer_doc(base_sha: str = "base1234", head_sha: str = "head5678") -> di
     }
 
 
-def _explainer_harness(tmp_path: Path, *, enabled: bool = True) -> _Harness:
+def _explainer_harness(run_dir: paths.RunDir, *, enabled: bool = True) -> _Harness:
     return _Harness(
-        tmp_path,
+        run_dir,
         viewer_json={"version": "1", "pr": {"base_sha": "base1234", "head_sha": "head5678"}, "files": []},
         explainer_enabled=enabled,
     )
 
 
-def test_explainer_refuses_before_the_generator_is_attached(tmp_path: Path) -> None:
+def test_explainer_refuses_before_the_generator_is_attached(run_dir: paths.RunDir) -> None:
     """Still augmenting: the refusal is transient, so it says `retry` and
     the caller re-queues rather than latching the section to `failed`."""
-    h = _explainer_harness(tmp_path)
+    h = _explainer_harness(run_dir)
     for op in (h.session.explainer_skeleton, lambda: h.session.explainer_section("code")):
         err = _refused(op)
         assert err.status == 409
@@ -639,10 +638,10 @@ def test_explainer_refuses_before_the_generator_is_attached(tmp_path: Path) -> N
         assert err.body()["retry"] is True
 
 
-def test_explainer_says_disabled_rather_than_not_ready(tmp_path: Path) -> None:
+def test_explainer_says_disabled_rather_than_not_ready(run_dir: paths.RunDir) -> None:
     """Disabled is a different answer from not-ready, and the message says
     so — otherwise the viewer tells the reviewer to wait forever."""
-    h = _explainer_harness(tmp_path, enabled=False)
+    h = _explainer_harness(run_dir, enabled=False)
     for op in (h.session.explainer_skeleton, h.session.get_explainer, lambda: h.session.explainer_section("code")):
         err = _refused(op)
         assert err.status == 409
@@ -650,20 +649,20 @@ def test_explainer_says_disabled_rather_than_not_ready(tmp_path: Path) -> None:
         assert "retry" not in err.body()
 
 
-def test_get_explainer_404s_until_one_is_generated(tmp_path: Path) -> None:
+def test_get_explainer_404s_until_one_is_generated(run_dir: paths.RunDir) -> None:
     """404 is the press-the-button state, not an error: generation is
     reviewer-initiated and an ungenerated document costs nothing."""
-    assert _refused(_explainer_harness(tmp_path).session.get_explainer).status == 404
+    assert _refused(_explainer_harness(run_dir).session.get_explainer).status == 404
 
 
-def test_explainer_skeleton_persists_broadcasts_and_serves(tmp_path: Path) -> None:
-    h = _explainer_harness(tmp_path)
+def test_explainer_skeleton_persists_broadcasts_and_serves(run_dir: paths.RunDir) -> None:
+    h = _explainer_harness(run_dir)
     calls: list[int] = []
 
     async def generator() -> dict:
         calls.append(1)
         doc = _explainer_doc()
-        (tmp_path / "explainer.json").write_text(json.dumps(doc), encoding="utf-8")
+        run_dir.explainer.write_text(json.dumps(doc), encoding="utf-8")
         return doc
 
     h.attach(explainer=generator)
@@ -678,18 +677,18 @@ def test_explainer_skeleton_persists_broadcasts_and_serves(tmp_path: Path) -> No
     assert len(calls) == 1
 
 
-def test_explainer_discards_a_document_from_another_diff(tmp_path: Path) -> None:
+def test_explainer_discards_a_document_from_another_diff(run_dir: paths.RunDir) -> None:
     """The run moved on; the prose describes code that may be gone. The
     document is dropped wholesale rather than re-anchored."""
-    (tmp_path / "explainer.json").write_text(json.dumps(_explainer_doc(head_sha="stale999")), encoding="utf-8")
-    assert _refused(_explainer_harness(tmp_path).session.get_explainer).status == 404
+    run_dir.explainer.write_text(json.dumps(_explainer_doc(head_sha="stale999")), encoding="utf-8")
+    assert _refused(_explainer_harness(run_dir).session.get_explainer).status == 404
 
 
-def test_explainer_skeleton_regenerates_over_a_corrupt_document(tmp_path: Path) -> None:
+def test_explainer_skeleton_regenerates_over_a_corrupt_document(run_dir: paths.RunDir) -> None:
     """A torn write must not wedge the button — regenerating is the
     repair. GET still reports the corruption loudly."""
-    (tmp_path / "explainer.json").write_text("{ not json", encoding="utf-8")
-    h = _explainer_harness(tmp_path)
+    run_dir.explainer.write_text("{ not json", encoding="utf-8")
+    h = _explainer_harness(run_dir)
     assert _refused(h.session.get_explainer).status == 500
 
     async def generator() -> dict:
@@ -699,10 +698,10 @@ def test_explainer_skeleton_regenerates_over_a_corrupt_document(tmp_path: Path) 
     assert h.session.explainer_skeleton()["verdict"] == "narrate"
 
 
-def test_explainer_skeleton_not_ready_is_a_409(tmp_path: Path) -> None:
+def test_explainer_skeleton_not_ready_is_a_409(run_dir: paths.RunDir) -> None:
     from semantic_code_review.augment.explainer import ExplainerNotReady
 
-    h = _explainer_harness(tmp_path)
+    h = _explainer_harness(run_dir)
 
     async def generator() -> dict:
         raise ExplainerNotReady("augmented.scr.json missing — augment not complete")
@@ -713,8 +712,8 @@ def test_explainer_skeleton_not_ready_is_a_409(tmp_path: Path) -> None:
     assert "augment not complete" in err.body()["error"]
 
 
-def test_a_failed_skeleton_releases_the_slot(tmp_path: Path) -> None:
-    h = _explainer_harness(tmp_path)
+def test_a_failed_skeleton_releases_the_slot(run_dir: paths.RunDir) -> None:
+    h = _explainer_harness(run_dir)
 
     async def generator() -> dict:
         raise RuntimeError("model said no")
@@ -726,12 +725,12 @@ def test_a_failed_skeleton_releases_the_slot(tmp_path: Path) -> None:
     assert h.frames.types() == []
 
 
-def test_explainer_runs_one_pass_at_a_time(tmp_path: Path) -> None:
+def test_explainer_runs_one_pass_at_a_time(run_dir: paths.RunDir) -> None:
     """One generation per session, skeleton and per-section alike: a
     second POST while one is in flight gets `retry` rather than a
     duplicate spend, and that is also what keeps two passes from
     interleaving their read-modify-write of explainer.json."""
-    h = _explainer_harness(tmp_path)
+    h = _explainer_harness(run_dir)
     entered = threading.Event()
     release = threading.Event()
 
@@ -757,10 +756,10 @@ def test_explainer_runs_one_pass_at_a_time(tmp_path: Path) -> None:
     assert h.session.explainer_busy is False
 
 
-def test_explainer_section_writes_and_broadcasts_the_document(tmp_path: Path) -> None:
+def test_explainer_section_writes_and_broadcasts_the_document(run_dir: paths.RunDir) -> None:
     """The id addresses a section; what comes back is the whole document,
     because a prose call may write more than one."""
-    h = _explainer_harness(tmp_path)
+    h = _explainer_harness(run_dir)
     asked: list[str] = []
 
     async def generator(section_id: str) -> dict:
@@ -777,12 +776,12 @@ def test_explainer_section_writes_and_broadcasts_the_document(tmp_path: Path) ->
     assert h.frames.payloads("explainer") == [payload]
 
 
-def test_explainer_section_reports_what_it_is_waiting_for(tmp_path: Path) -> None:
+def test_explainer_section_reports_what_it_is_waiting_for(run_dir: paths.RunDir) -> None:
     """Prose over half the intents reads as fluently as prose over all of
     them, so the reviewer is told the counts rather than handed it."""
     from semantic_code_review.augment.explainer_section import SectionNotReady
 
-    h = _explainer_harness(tmp_path)
+    h = _explainer_harness(run_dir)
 
     async def generator(section_id: str) -> dict:
         raise SectionNotReady(12, 31)
@@ -795,10 +794,10 @@ def test_explainer_section_reports_what_it_is_waiting_for(tmp_path: Path) -> Non
     assert "12 of 31" in body["error"]
 
 
-def test_explainer_section_404s_on_a_section_that_is_not_there(tmp_path: Path) -> None:
+def test_explainer_section_404s_on_a_section_that_is_not_there(run_dir: paths.RunDir) -> None:
     from semantic_code_review.augment.explainer_section import SectionNotFound
 
-    h = _explainer_harness(tmp_path)
+    h = _explainer_harness(run_dir)
 
     async def generator(section_id: str) -> dict:
         raise SectionNotFound(section_id)
@@ -809,12 +808,12 @@ def test_explainer_section_404s_on_a_section_that_is_not_there(tmp_path: Path) -
     assert err.body()["error"] == "no section 'nonesuch' in this document"
 
 
-def test_a_failed_section_is_broadcast_so_every_tab_sees_it_retryable(tmp_path: Path) -> None:
+def test_a_failed_section_is_broadcast_so_every_tab_sees_it_retryable(run_dir: paths.RunDir) -> None:
     """The pass raised, but the section is persisted `failed` — the other
     tabs must not sit on `pending` forever."""
     from semantic_code_review.augment.explainer_section import SectionFailed
 
-    h = _explainer_harness(tmp_path)
+    h = _explainer_harness(run_dir)
     failed = _explainer_doc()
     failed["sections"][0]["state"] = "failed"
 
@@ -843,21 +842,21 @@ class _FakePostResult:
         self.posted = posted
 
 
-def _posting_harness(tmp_path: Path, callback) -> _Harness:
+def _posting_harness(run_dir: paths.RunDir, callback) -> _Harness:
     return _Harness(
-        tmp_path,
+        run_dir,
         post_callback=callback,
         post_meta={"repo": "o/r", "number": 7, "head_sha": "deadbeef"},
     )
 
 
-def test_post_config_reports_a_review_that_is_not_posting(tmp_path: Path) -> None:
+def test_post_config_reports_a_review_that_is_not_posting(run_dir: paths.RunDir) -> None:
     """No callback, no modal: Done exits the way it always has."""
-    assert _Harness(tmp_path).session.post_config() == {"posting": False}
+    assert _Harness(run_dir).session.post_config() == {"posting": False}
 
 
-def test_post_config_labels_the_modal(tmp_path: Path) -> None:
-    h = _posting_harness(tmp_path, lambda _ids: _FakePostResult())
+def test_post_config_labels_the_modal(run_dir: paths.RunDir) -> None:
+    h = _posting_harness(run_dir, lambda _ids: _FakePostResult())
     assert h.session.post_config() == {
         "posting": True,
         "repo": "o/r",
@@ -866,18 +865,18 @@ def test_post_config_labels_the_modal(tmp_path: Path) -> None:
     }
 
 
-def test_post_routes_refuse_when_the_review_is_not_posting(tmp_path: Path) -> None:
-    h = _Harness(tmp_path)
+def test_post_routes_refuse_when_the_review_is_not_posting(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
     for op in (h.session.post_preview, lambda: h.session.post({"comment_ids": []})):
         err = _refused(op)
         assert err.status == 409
         assert "posting" in err.body()["error"]
 
 
-def test_post_preview_lists_the_comments_that_would_be_posted(tmp_path: Path) -> None:
+def test_post_preview_lists_the_comments_that_would_be_posted(run_dir: paths.RunDir) -> None:
     """Computed on demand: the store mutates all session, so a preview
     taken at startup would be stale by Done."""
-    h = _posting_harness(tmp_path, lambda _ids: _FakePostResult())
+    h = _posting_harness(run_dir, lambda _ids: _FakePostResult())
     h.session.store.upsert({"id": "c1", "file": "a.py", "side": "new", "line": 3, "body": "one"})
 
     assert h.session.post_preview() == [
@@ -888,9 +887,9 @@ def test_post_preview_lists_the_comments_that_would_be_posted(tmp_path: Path) ->
     assert [row["id"] for row in h.session.post_preview()] == ["c1", "c2"]
 
 
-def test_post_preview_drops_a_comment_already_upstream(tmp_path: Path) -> None:
+def test_post_preview_drops_a_comment_already_upstream(run_dir: paths.RunDir) -> None:
     """An ingested comment is already on GitHub; re-posting duplicates it."""
-    h = _posting_harness(tmp_path, lambda _ids: _FakePostResult())
+    h = _posting_harness(run_dir, lambda _ids: _FakePostResult())
     h.session.store.upsert({"id": "c1", "file": "a.py", "side": "new", "line": 3, "body": "one"})
     h.session.store.upsert({"id": "c2", "file": "a.py", "side": "new", "line": 9, "body": "two"})
     h.session.store.mark_posted({"c1": "PRRT_abc"})
@@ -898,15 +897,15 @@ def test_post_preview_drops_a_comment_already_upstream(tmp_path: Path) -> None:
     assert [row["id"] for row in h.session.post_preview()] == ["c2"]
 
 
-def test_post_rejects_a_malformed_selection(tmp_path: Path) -> None:
-    h = _posting_harness(tmp_path, lambda _ids: _FakePostResult())
+def test_post_rejects_a_malformed_selection(run_dir: paths.RunDir) -> None:
+    h = _posting_harness(run_dir, lambda _ids: _FakePostResult())
     for payload in ({}, {"comment_ids": "c1"}, {"comment_ids": ["c1", 2]}):
         err = _refused(lambda p=payload: h.session.post(p))
         assert err.status == 400
         assert "comment_ids" in err.body()["error"]
 
 
-def test_post_keeps_the_result_and_broadcasts_it(tmp_path: Path) -> None:
+def test_post_keeps_the_result_and_broadcasts_it(run_dir: paths.RunDir) -> None:
     """The CLI reads the outcome off the session after `wait_until_done`
     returns, and other open tabs learn about it over the bus."""
     selected: list[list[str]] = []
@@ -915,7 +914,7 @@ def test_post_keeps_the_result_and_broadcasts_it(tmp_path: Path) -> None:
         selected.append(ids)
         return _FakePostResult(review_id=99, review_url="https://gh/pull/7#r99", posted=2)
 
-    h = _posting_harness(tmp_path, callback)
+    h = _posting_harness(run_dir, callback)
     response = h.session.post({"comment_ids": ["c1", "c2"]})
 
     assert selected == [["c1", "c2"]]
@@ -926,14 +925,14 @@ def test_post_keeps_the_result_and_broadcasts_it(tmp_path: Path) -> None:
     assert result.review_id == 99
 
 
-def test_a_failed_post_keeps_no_result(tmp_path: Path) -> None:
+def test_a_failed_post_keeps_no_result(run_dir: paths.RunDir) -> None:
     """The route answers 500 and the modal offers a retry; nothing must
     look like it landed."""
 
     def callback(ids: list[str]) -> _FakePostResult:
         raise RuntimeError("gh: 403")
 
-    h = _posting_harness(tmp_path, callback)
+    h = _posting_harness(run_dir, callback)
     with pytest.raises(RuntimeError, match="403"):
         h.session.post({"comment_ids": ["c1"]})
 
@@ -941,7 +940,7 @@ def test_a_failed_post_keeps_no_result(tmp_path: Path) -> None:
     assert h.frames.types() == []
 
 
-def test_posting_takes_the_selected_comments_out_of_the_local_set(tmp_path: Path) -> None:
+def test_posting_takes_the_selected_comments_out_of_the_local_set(run_dir: paths.RunDir) -> None:
     """The money path end to end, minus the network: the session drives
     the real `scr pr` callback, which maps the selection, posts it, and
     marks what landed — so the next post can't send it twice.
@@ -951,11 +950,11 @@ def test_posting_takes_the_selected_comments_out_of_the_local_set(tmp_path: Path
     from semantic_code_review.review import pr_flow
     from semantic_code_review.review.github import PostResult
 
-    (tmp_path / "raw.diff").write_text(
+    run_dir.raw_diff.write_text(
         "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,3 +1,3 @@\n+x\n",
         encoding="utf-8",
     )
-    store = CommentStore(tmp_path / "comments.json")
+    store = CommentStore(run_dir.comments)
     store.upsert({"id": "c1", "file": "a.py", "side": "new", "line": 3, "body": "one"})
     store.upsert({"id": "c2", "file": "a.py", "side": "new", "line": 9, "body": "two"})
 
@@ -965,14 +964,14 @@ def test_posting_takes_the_selected_comments_out_of_the_local_set(tmp_path: Path
         posted_bodies.append([m.body for m in mapped])
         return PostResult(review_id=5, review_url="https://gh/r/5", posted=1, posted_node_ids={"c1": "TH_1"})
 
-    h = _posting_harness(tmp_path, pr_flow._build_post_callback("o/r", 7, tmp_path))
+    h = _posting_harness(run_dir, pr_flow._build_post_callback("o/r", 7, run_dir))
     with patch.object(pr_flow, "post_review_via_graphql", fake_post):
         response = h.session.post({"comment_ids": ["c1"]})
 
     # Only the selected comment was mapped and sent.
     assert posted_bodies == [["one"]]
     assert response == {"posted": 1, "review_url": "https://gh/r/5", "review_id": 5}
-    reloaded = {c.id: c for c in CommentStore(tmp_path / "comments.json").all()}
+    reloaded = {c.id: c for c in CommentStore(run_dir.comments).all()}
     assert reloaded["c1"].source == "github"
     assert reloaded["c1"].node_id == "TH_1"
     assert reloaded["c2"].source == "local"

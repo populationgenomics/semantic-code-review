@@ -43,7 +43,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .. import git_ops
+from .. import git_ops, paths
 from .run_source import RunSpec, materialize_run_metadata
 
 _RANGE_RE = re.compile(r"^(?P<a>[^.]+)\.\.\.?(?P<b>.+)$")
@@ -187,8 +187,8 @@ def resolve_local_diff(
     )
 
 
-def setup_local_worktrees(run_dir: Path, resolved: LocalResolved) -> None:
-    """Set up `run_dir/{repo.git,base,head}` from a `LocalResolved`.
+def setup_local_worktrees(run_dir: paths.RunDir, resolved: LocalResolved) -> None:
+    """Set up the run's `repo.git` / `base` / `head` from a `LocalResolved`.
 
     `repo.git` is a symlink to the cwd repo's `.git` so RepoTools can
     `git grep` / `git log` through it.
@@ -200,12 +200,12 @@ def setup_local_worktrees(run_dir: Path, resolved: LocalResolved) -> None:
     `base/` is always a detached worktree at the resolved base SHA —
     the LLM should always read pre-change code from a stable tree.
     """
-    repo_git_link = run_dir / "repo.git"
+    repo_git_link = run_dir.repo_git
     if not repo_git_link.exists():
         _symlink(repo_git_link, resolved.repo_git)
 
-    head_link = run_dir / "head"
-    base_dir = run_dir / "base"
+    head_link = run_dir.head
+    base_dir = run_dir.base
 
     if resolved.head_is_working:
         if not head_link.exists():
@@ -234,10 +234,10 @@ def materialize_local_diff_run(
     no_staged: bool = False,
     no_unstaged: bool = False,
     spec_md_path: Path | None = None,
-) -> Path:
+) -> paths.RunDir:
     """High-level: resolve → materialise metadata → set up worktrees.
 
-    Returns the run-directory path.
+    Returns the run directory.
     """
     resolved = resolve_local_diff(
         spec,

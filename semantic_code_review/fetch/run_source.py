@@ -2,13 +2,10 @@
 
 `RunSpec` is the data shape both source pipelines (local-diff,
 GitHub-PR) hand to the materialise step. `materialize_run_metadata`
-writes the on-disk artefacts that every consumer downstream of the
-[[run-directory]] convention assumes:
-
-  <run_dir>/raw.diff
-  <run_dir>/files.txt
-  <run_dir>/meta.json
-  <run_dir>/spec.md          # iff spec_md_text is set
+writes the metadata artefacts every consumer downstream of the
+[[run-directory]] convention assumes — `raw.diff`, `files.txt`,
+`meta.json`, and `spec.md` when the spec carries one — and hands back
+the `paths.RunDir` that names them.
 
 Worktree setup (`base/` and `head/`) lives per source — the mechanics
 diverge enough (fresh bare clone + remote fetch for GitHub, vs.
@@ -24,6 +21,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from .. import paths
 
 
 @dataclass(frozen=True)
@@ -43,26 +42,25 @@ class RunSpec:
     spec_md_text: str | None = None
 
 
-def materialize_run_metadata(spec: RunSpec, runs_root: Path) -> Path:
-    """Write the shared run-directory artefacts; return the run-dir path.
+def materialize_run_metadata(spec: RunSpec, runs_root: Path) -> paths.RunDir:
+    """Write the shared run-directory artefacts; return the run directory.
 
     Idempotent w.r.t. its own outputs: existing files are overwritten
     each call. Worktree setup is the caller's job (per-source).
     """
-    run_dir = runs_root / spec.slug
-    run_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = paths.RunDir(runs_root / spec.slug).create()
 
-    (run_dir / "raw.diff").write_text(spec.raw_diff, encoding="utf-8")
-    (run_dir / "files.txt").write_text(
+    run_dir.raw_diff.write_text(spec.raw_diff, encoding="utf-8")
+    run_dir.files_txt.write_text(
         "\n".join(spec.files) + ("\n" if spec.files else ""),
         encoding="utf-8",
     )
-    (run_dir / "meta.json").write_text(
+    run_dir.meta.write_text(
         json.dumps(spec.meta, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
     if spec.spec_md_text is not None:
-        (run_dir / "spec.md").write_text(spec.spec_md_text, encoding="utf-8")
+        run_dir.spec_md.write_text(spec.spec_md_text, encoding="utf-8")
 
     return run_dir
 

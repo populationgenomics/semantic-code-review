@@ -214,27 +214,27 @@ def test_picker_garbage_returns_none() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_no_augment_gives_a_fresh_run_dir_the_raw_diff(tmp_path) -> None:
+def test_no_augment_gives_a_fresh_run_dir_the_raw_diff(run_dir) -> None:
     from semantic_code_review.review.runner import ensure_augmented_diff
 
-    (tmp_path / "raw.diff").write_text("diff --git a/a.py b/a.py\n", encoding="utf-8")
-    ensure_augmented_diff(tmp_path)
-    assert (tmp_path / "augmented.diff").read_text(encoding="utf-8") == "diff --git a/a.py b/a.py\n"
+    run_dir.raw_diff.write_text("diff --git a/a.py b/a.py\n", encoding="utf-8")
+    ensure_augmented_diff(run_dir)
+    assert run_dir.augmented.read_text(encoding="utf-8") == "diff --git a/a.py b/a.py\n"
 
 
-def test_no_augment_keeps_an_augmented_diff_it_finds(tmp_path) -> None:
+def test_no_augment_keeps_an_augmented_diff_it_finds(run_dir) -> None:
     """Run dirs are keyed by head SHA, so re-running --no-augment (what a
     failed post tells the reviewer to do) reopens a dir a paid-for pass
     may already have annotated. Overwriting it would drop the annotations
     and desync the text form from augmented.scr.json."""
     from semantic_code_review.review.runner import ensure_augmented_diff
 
-    (tmp_path / "raw.diff").write_text("diff --git a/a.py b/a.py\n", encoding="utf-8")
+    run_dir.raw_diff.write_text("diff --git a/a.py b/a.py\n", encoding="utf-8")
     annotated = "#scr:overview\ndiff --git a/a.py b/a.py\n# intent: paid for once\n"
-    (tmp_path / "augmented.diff").write_text(annotated, encoding="utf-8")
+    run_dir.augmented.write_text(annotated, encoding="utf-8")
 
-    ensure_augmented_diff(tmp_path)
-    assert (tmp_path / "augmented.diff").read_text(encoding="utf-8") == annotated
+    ensure_augmented_diff(run_dir)
+    assert run_dir.augmented.read_text(encoding="utf-8") == annotated
 
 
 def test_both_entry_paths_prepare_the_run_dir_the_same_way(tmp_path) -> None:

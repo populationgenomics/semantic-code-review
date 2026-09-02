@@ -28,7 +28,7 @@ from pydantic_ai.messages import UserContent
 from pydantic_ai.models import Model
 from pydantic_ai.output import ToolOutput
 
-from .. import errors
+from .. import errors, paths
 from ..cache.store import CacheStore
 from .agents import Client
 from .pass_ import PassMeta, run_pass
@@ -84,7 +84,7 @@ def make_fold_summary_agent(model: str | Model) -> Agent[None, FoldSummarySubmis
 
 
 def extract_fold_body(
-    run_dir: Path,
+    run_dir: paths.RunDir,
     file_path: str,
     context: FoldContext,
     right_range: tuple[int, int] | None,
@@ -97,8 +97,8 @@ def extract_fold_body(
     For `both` returns a unified-diff-style body so the LLM can see
     what changed.
     """
-    head_path = run_dir / "head" / file_path
-    base_path = run_dir / "base" / file_path
+    head_path = run_dir.head / file_path
+    base_path = run_dir.base / file_path
 
     if context == "right":
         if right_range is None:
@@ -191,7 +191,7 @@ def _format_fold_prompt(
 async def summarise_fold(
     client: Client,
     *,
-    run_dir: Path,
+    run_dir: paths.RunDir,
     file_path: str,
     file_summary: str,
     overview_json: str,
@@ -287,7 +287,7 @@ class FoldSummaryFileIndexError(errors.ScrError, LookupError):
 async def apply_fold_summary_to_run(
     client: Client,
     *,
-    run_dir: Path,
+    run_dir: paths.RunDir,
     file_idx: int,
     context: FoldContext,
     right_range: tuple[int, int] | None,
@@ -310,7 +310,7 @@ async def apply_fold_summary_to_run(
     and :class:`FoldSummaryFileIndexError` if `file_idx` is out of
     range. Other exceptions (LLM failures, write errors) propagate.
     """
-    sidecar = run_dir / "augmented.scr.json"
+    sidecar = run_dir.sidecar
     if not sidecar.exists():
         raise FoldSummaryNotReady("augmented.scr.json missing — augment not complete")
 
@@ -357,7 +357,7 @@ async def apply_fold_summary_to_run(
             summary=summary,
         )
         dump_sidecar(updated_diff, sidecar)
-        (run_dir / "augmented.diff").write_text(
+        run_dir.augmented.write_text(
             emit_augmented_diff(updated_diff),
             encoding="utf-8",
         )
