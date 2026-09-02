@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .. import paths
 from ..augment.agents import Client
 from ..augment.prompts import PROMPT_VERSION
 from ..cache.store import CacheStore
@@ -59,7 +60,7 @@ class ReviewOptions:
     no_unstaged: bool = False
 
 
-def build_server_tasks(run_dir: Path, cfg: ReviewConfig) -> ServerTasks:
+def build_server_tasks(run_dir: paths.RunDir, cfg: ReviewConfig) -> ServerTasks:
     """Build the augment + fold-summary + console + explainer closures plus
     a debug-sink binder, or an all-`None` bundle when augmentation is
     skipped (the console grounds its answers in the augment sidecar, so
@@ -76,7 +77,7 @@ def build_server_tasks(run_dir: Path, cfg: ReviewConfig) -> ServerTasks:
     augment_cfg = cfg.for_augment()
     cache = None if cfg.no_cache else CacheStore(root=cfg.cache_dir, prompt_version=PROMPT_VERSION)
 
-    async def augment_task(rd: Path, publish: Callable[..., None]) -> None:
+    async def augment_task(rd: paths.RunDir, publish: Callable[..., None]) -> None:
         await augment_run_dir(
             rd,
             augment_cfg,
@@ -156,7 +157,7 @@ def run_review(opts: ReviewOptions) -> int:
     # The markdown dump is the reviewer's "new notes" feed — ingested
     # upstream comments are already on GitHub and would crowd it out.
     local_comments = [c for c in result.comments if c.source == "local"]
-    markdown = format_markdown(local_comments, run_slug=run_dir.name)
+    markdown = format_markdown(local_comments, run_slug=run_dir.slug)
     sys.stdout.write(markdown)
     sys.stdout.flush()
     return 0 if result.clean else 2
@@ -181,7 +182,7 @@ class ServeResult:
     posted: PostOutcome | None = None
 
 
-def ensure_augmented_diff(run_dir: Path) -> None:
+def ensure_augmented_diff(run_dir: paths.RunDir) -> None:
     """Give the renderer an ``augmented.diff`` to parse without spending
     an augmentation pass.
 
@@ -193,14 +194,13 @@ def ensure_augmented_diff(run_dir: Path) -> None:
     drop those annotations and desync the text form from
     ``augmented.scr.json``.
     """
-    augmented = run_dir / "augmented.diff"
-    if augmented.exists():
+    if run_dir.augmented.exists():
         return
-    augmented.write_text((run_dir / "raw.diff").read_text(encoding="utf-8"), encoding="utf-8")
+    run_dir.augmented.write_text(run_dir.raw_diff.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def serve_review(
-    run_dir: Path,
+    run_dir: paths.RunDir,
     cfg: ReviewConfig,
     tasks: ServerTasks,
     *,
@@ -276,7 +276,7 @@ def serve_review(
                 augment_error = e
                 log.exception("augmentation failed; page stays on pending view")
                 sys.stderr.write(f"scr review: augment failed: {e}\n")
-            if (run_dir / "augmented.diff").exists():
+            if run_dir.augmented.exists():
                 # The sidecar is on disk: the session can serve the
                 # augmented view and every task that needs to resolve
                 # the diff. Handed over here rather than at start() so a
@@ -303,7 +303,7 @@ def serve_review(
     finally:
         srv.stop()
 
-    store = CommentStore(run_dir / "comments.json")
+    store = CommentStore(run_dir.comments)
     return ServeResult(
         comments=store.all(),
         clean=clean,
@@ -316,7 +316,7 @@ def _build_fold_summary_task(
     client: Client | None,
     model: str,
     cache: CacheStore | None,
-    run_dir: Path,
+    run_dir: paths.RunDir,
 ) -> FoldSummaryCallable:
     """Construct the FoldSummaryCallable that ``serve_review`` installs
     onto the review server once augmentation completes. The closure
@@ -360,7 +360,7 @@ def _build_explainer_task(
     client: Client | None,
     model: str,
     cache: CacheStore | None,
-    run_dir: Path,
+    run_dir: paths.RunDir,
     house_style: str | None,
 ) -> ExplainerCallable:
     """Construct the change-explainer generator ``serve_review`` installs
@@ -389,7 +389,7 @@ def _build_explainer_task(
             model=model,
             house_style=house_style,
             cache=cache,
-            trace_dir=run_dir / "trace",
+            trace_dir=run_dir.trace,
         )
         return document_to_payload(doc)
 
@@ -401,7 +401,7 @@ def _build_explainer_section_task(
     client: Client | None,
     model: str,
     cache: CacheStore | None,
-    run_dir: Path,
+    run_dir: paths.RunDir,
     house_style: str | None,
 ) -> ExplainerSectionCallable:
     """Construct the per-section prose generator ``serve_review``
@@ -424,7 +424,7 @@ def _build_explainer_section_task(
             model=model,
             house_style=house_style,
             cache=cache,
-            trace_dir=run_dir / "trace",
+            trace_dir=run_dir.trace,
         )
         return document_to_payload(doc)
 
@@ -434,7 +434,7 @@ def _build_explainer_section_task(
 def _build_console_task(
     *,
     client: Client,
-    run_dir: Path,
+    run_dir: paths.RunDir,
 ) -> ConsoleCallable:
     """Construct the console turn driver ``serve_review`` installs once
     augmentation completes. Captures the LLM backend + run_dir so the
@@ -465,14 +465,13 @@ def _build_console_task(
     return task
 
 
-def _load_viewer_json(run_dir: Path) -> dict:
-    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
-    augmented = run_dir / "augmented.diff"
-    if not augmented.exists():
+def _load_viewer_json(run_dir: paths.RunDir) -> dict:
+    meta = json.loads(run_dir.meta.read_text(encoding="utf-8"))
+    if not run_dir.augmented.exists():
         return {"version": "1", "pr": {}, "files": []}
-    diff = parse_augmented_diff(augmented.read_text(encoding="utf-8"))
-    head_dir = run_dir / "head"
-    base_dir = run_dir / "base"
+    diff = parse_augmented_diff(run_dir.augmented.read_text(encoding="utf-8"))
+    head_dir = run_dir.head
+    base_dir = run_dir.base
     return build_viewer_json(
         diff,
         meta,

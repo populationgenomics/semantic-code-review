@@ -40,10 +40,28 @@ overridable with `--runs-root`. Contents:
   breakdown, and the per-call and (CLI backends) internal-turn
   distributions. Recomputable from the traces at any time.
 
-Each subsystem under `fetch/`, `review/`, `augment/`, and `viewer/`
-takes a `run_dir: Path` and operates inside it. The implicit contract
-is "everything I need to do my job lives under this one path". The
-act of *producing* a run directory is named: see [[run-spec]].
+The layout is owned by one type, `paths.RunDir`: the directory plus a
+named accessor for everything in it — `head`, `base`, `repo_git`,
+`raw_diff`, `files_txt`, `meta`, `spec_md`, `augmented`, `sidecar`,
+`trace`, `usage`, `comments`, `explainer`. Every subsystem under
+`fetch/`, `review/`, `augment/`, and `viewer/` takes a
+`run_dir: paths.RunDir` and operates inside it, so "everything I need
+to do my job lives under this one path" is the type rather than a
+convention, and no filename is spelled in two modules.
+
+It wraps a `Path` instead of subclassing one — a `RunDir` is the whole
+directory's contract, and must not be passable where a plain path is
+meant. `RunDir(p)` is the way in from a bare path, `.path` the way back
+out, `.slug` the directory's own name, `.create()` the mkdir. Accessors
+name files; they don't promise the files exist, since a run is filled
+in over its lifetime.
+
+It lives in `paths.py` rather than beside its producer in
+`fetch/run_source.py` because every layer reads a run while only
+`fetch/` writes one, and `paths.py` already resolves the runs root
+these directories sit under while depending on no other layer.
+
+The act of *producing* a run directory is named: see [[run-spec]].
 
 **Augmented diff**
 The output of the augment pipeline, kept on disk in two paired forms:
@@ -67,8 +85,9 @@ The shared shape both [[run-directory]] sources hand to the
 materialise step. A `RunSpec` (in `fetch/run_source.py`) carries
 `slug`, `raw_diff`, `base_sha`, `head_sha`, `files`, `meta` (PR-shaped,
 written verbatim to `meta.json`), and an optional `spec_md_text`.
-`materialize_run_metadata(spec, runs_root) → Path` writes the shared
-artefacts (`raw.diff`, `files.txt`, `meta.json`, optional `spec.md`).
+`materialize_run_metadata(spec, runs_root) → RunDir` writes the shared
+artefacts (`raw.diff`, `files.txt`, `meta.json`, optional `spec.md`)
+and hands back the [[run-directory]] naming them.
 
 Two sources today (`fetch/github.py`, `fetch/local.py`), each
 producing a `RunSpec` plus per-source extras carried on a wrapper —
@@ -76,7 +95,7 @@ producing a `RunSpec` plus per-source extras carried on a wrapper —
 `.git` location, the working-state flag, and the diagnostic mode
 (`"range"`, `"ref-working"`, etc.). The wrapper is transient: once
 materialise + per-source worktree setup are done, downstream
-consumers see only `run_dir: Path`.
+consumers see only `run_dir: paths.RunDir`.
 
 Worktree mechanics stay per-source on purpose — fresh bare clone +
 remote fetch for GitHub, `worktree add` against the cwd repo (or a

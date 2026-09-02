@@ -1,4 +1,10 @@
-"""Filesystem-path helpers shared across the CLI and runner.
+"""Filesystem paths scr owns: the config roots, the runs root, and the
+layout inside one run directory (`RunDir`).
+
+`RunDir` lives here rather than beside its producer in `fetch/` because
+every layer reads a run — `fetch/`, `augment/`, `review/`, `viewer/` —
+and this module already resolves the root those directories sit under,
+while depending on none of them.
 
 Kept tiny so it can be imported eagerly without dragging in heavy
 dependencies (anthropic SDK, jinja, etc.).
@@ -6,9 +12,11 @@ dependencies (anthropic SDK, jinja, etc.).
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import os
 from pathlib import Path
+from typing import ClassVar
 
 from . import git_ops
 
@@ -92,3 +100,113 @@ def default_runs_root() -> Path:
         identity = str(Path.cwd().resolve())
     fp = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
     return cache_root / fp
+
+
+@dataclasses.dataclass(frozen=True)
+class RunDir:
+    """The layout of one [[run-directory]] — the path plus every name in it.
+
+    Wraps a `Path` rather than subclassing it: a `RunDir` is the whole
+    directory's contract, not one path among many, and must not be
+    passable where a plain path is meant. `RunDir(p)` is the way in
+    from a bare path (the CLI and tests hold those); `.path` is the way
+    back out for the few callers that need the directory itself.
+
+    Every accessor is a name, not a promise the file exists — the run
+    is built up incrementally (metadata, then worktrees, then augment
+    output, then whatever the reviewer asks for), so each consumer
+    still checks for what it needs.
+    """
+
+    path: Path
+
+    #: `usage.json`'s bare name. Needed by the trace scan, which walks a
+    #: directory rather than resolving a run.
+    USAGE_NAME: ClassVar[str] = "usage.json"
+
+    @property
+    def slug(self) -> str:
+        """The run slug — the directory's own name under the runs root."""
+        return self.path.name
+
+    def create(self) -> RunDir:
+        """Create the directory (and parents) if absent; return self."""
+        self.path.mkdir(parents=True, exist_ok=True)
+        return self
+
+    # --- worktrees and the git dir behind them --------------------------
+
+    @property
+    def head(self) -> Path:
+        """Worktree pinned to the diff's head (a symlink to the live
+        checkout in working-state mode).
+        """
+        return self.path / "head"
+
+    @property
+    def base(self) -> Path:
+        """Worktree pinned to the diff's base."""
+        return self.path / "base"
+
+    @property
+    def repo_git(self) -> Path:
+        """The git dir the worktrees hang off — a fresh bare clone for
+        GitHub runs, a symlink to the cwd repo's `.git` for local ones.
+        """
+        return self.path / "repo.git"
+
+    # --- metadata, written by `materialize_run_metadata` ----------------
+
+    @property
+    def raw_diff(self) -> Path:
+        """The unified diff before any LLM augmentation."""
+        return self.path / "raw.diff"
+
+    @property
+    def files_txt(self) -> Path:
+        """Newline-separated list of the diff's paths."""
+        return self.path / "files.txt"
+
+    @property
+    def meta(self) -> Path:
+        """PR-shaped metadata: title, body, base/head SHAs, files, mode."""
+        return self.path / "meta.json"
+
+    @property
+    def spec_md(self) -> Path:
+        """The reviewer's spec markdown; only present when one was given."""
+        return self.path / "spec.md"
+
+    # --- augment output -------------------------------------------------
+
+    @property
+    def augmented(self) -> Path:
+        """The [[augmented-diff]] in its unified-diff form."""
+        return self.path / "augmented.diff"
+
+    @property
+    def sidecar(self) -> Path:
+        """The [[augmented-diff]] in its structural JSON form."""
+        return self.path / "augmented.scr.json"
+
+    @property
+    def trace(self) -> Path:
+        """One JSON per LLM call, plus `augment.log`."""
+        return self.path / "trace"
+
+    @property
+    def usage(self) -> Path:
+        """Token accounting for the run, derived from `trace/`."""
+        return self.path / self.USAGE_NAME
+
+    # --- reviewer-driven artefacts --------------------------------------
+
+    @property
+    def comments(self) -> Path:
+        """[[reviewer-comment]] store; also seeded from a PR's own threads."""
+        return self.path / "comments.json"
+
+    @property
+    def explainer(self) -> Path:
+        """The [[change-explainer]] document, once one has been generated."""
+        return self.path / "explainer.json"

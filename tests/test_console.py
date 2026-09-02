@@ -16,6 +16,7 @@ import pytest
 from pydantic_ai.models import Model
 from pydantic_ai.models.test import TestModel
 
+from semantic_code_review import paths
 from semantic_code_review.augment import explainer_schema
 from semantic_code_review.augment.agents import Client
 from semantic_code_review.augment.console import (
@@ -41,10 +42,11 @@ def _stub_anthropic_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "stub-for-tests")
 
 
-def _populate_run_dir(tmp_path: Path) -> Path:
+def _populate_run_dir(tmp_path: Path) -> paths.RunDir:
+    run_dir = paths.RunDir(tmp_path).create()
     diff = parse_augmented_diff(FIXTURE.read_text(encoding="utf-8"))
-    dump_sidecar(diff, tmp_path / "augmented.scr.json")
-    return tmp_path
+    dump_sidecar(diff, run_dir.sidecar)
+    return run_dir
 
 
 # --- agent factory ------------------------------------------------------
@@ -410,7 +412,7 @@ def test_format_selection_explainer_outside_any_section() -> None:
 async def test_run_console_turn_not_ready_without_sidecar(tmp_path: Path) -> None:
     client = Client(model="anthropic:claude-opus-4-7")
     with pytest.raises(ConsoleNotReady):
-        await run_console_turn(client, run_dir=tmp_path, question="what changed?")
+        await run_console_turn(client, run_dir=paths.RunDir(tmp_path), question="what changed?")
 
 
 async def test_run_console_turn_seeds_and_returns_history(

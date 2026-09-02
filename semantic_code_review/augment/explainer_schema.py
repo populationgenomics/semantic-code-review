@@ -19,17 +19,14 @@ import logging
 import os
 import re
 from collections.abc import Iterable, Iterator
-from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
-from .. import errors
+from .. import errors, paths
 from . import explainer_figures
 
 log = logging.getLogger(__name__)
-
-EXPLAINER_FILENAME = "explainer.json"
 
 #: Bump when a stored document stops being one this build renders
 #: correctly — an incompatible shape, or a change to how its contents are
@@ -251,12 +248,8 @@ class ExplainerCorrupt(errors.ScrError):
     """
 
 
-def explainer_path(run_dir: Path) -> Path:
-    return run_dir / EXPLAINER_FILENAME
-
-
 def load_explainer(
-    run_dir: Path,
+    run_dir: paths.RunDir,
     *,
     base_sha: str,
     head_sha: str,
@@ -278,7 +271,7 @@ def load_explainer(
         ExplainerCorrupt: The file exists but is not valid JSON or does
             not parse as a document.
     """
-    path = explainer_path(run_dir)
+    path = run_dir.explainer
     if not path.exists():
         return None
     try:
@@ -356,7 +349,7 @@ def _id_slug(section_id: str) -> str:
     return slug if slug and slug[0].isalpha() else f"s-{slug}"
 
 
-def save_explainer(run_dir: Path, doc: ExplainerDocument) -> ExplainerDocument:
+def save_explainer(run_dir: paths.RunDir, doc: ExplainerDocument) -> ExplainerDocument:
     """Sanitise the document's figures, write it atomically, hand it back.
 
     Returns the document as written, not the one passed in: the strip
@@ -364,7 +357,7 @@ def save_explainer(run_dir: Path, doc: ExplainerDocument) -> ExplainerDocument:
     the SSE bus that the next `GET /explainer` will serve.
     """
     clean = sanitize_figures(doc)
-    path = explainer_path(run_dir)
+    path = run_dir.explainer
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.parent.mkdir(parents=True, exist_ok=True)
     tmp.write_text(
@@ -447,7 +440,6 @@ def validate_references(
 
 __all__ = [
     "DOCUMENT_VERSION",
-    "EXPLAINER_FILENAME",
     "PROSE_PASSES",
     "SECTION_TITLES",
     "SKELETON_PASS",
@@ -459,7 +451,6 @@ __all__ = [
     "Section",
     "SkipBox",
     "Term",
-    "explainer_path",
     "figures_fixed",
     "find_section",
     "iter_sections",

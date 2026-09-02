@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
+from semantic_code_review import paths
 from semantic_code_review.augment import explainer_schema
 from semantic_code_review.augment.schemas import lift_diff
 from semantic_code_review.format.parse import parse_raw_diff
@@ -38,46 +38,46 @@ def _doc(**overrides) -> explainer_schema.ExplainerDocument:
     return explainer_schema.ExplainerDocument(**payload)
 
 
-def test_save_then_load_round_trips(tmp_path: Path) -> None:
-    explainer_schema.save_explainer(tmp_path, _doc())
-    assert explainer_schema.explainer_path(tmp_path) == tmp_path / "explainer.json"
-    loaded = explainer_schema.load_explainer(tmp_path, base_sha="aaaa1111", head_sha="bbbb2222")
+def test_save_then_load_round_trips(run_dir: paths.RunDir) -> None:
+    explainer_schema.save_explainer(run_dir, _doc())
+    assert run_dir.explainer.name == "explainer.json"
+    loaded = explainer_schema.load_explainer(run_dir, base_sha="aaaa1111", head_sha="bbbb2222")
     assert loaded is not None
     assert loaded.sections[0].map_rows[0].ref.id == "F0"
 
 
-def test_load_absent_document_is_none(tmp_path: Path) -> None:
-    assert explainer_schema.load_explainer(tmp_path, base_sha="a", head_sha="b") is None
+def test_load_absent_document_is_none(run_dir: paths.RunDir) -> None:
+    assert explainer_schema.load_explainer(run_dir, base_sha="a", head_sha="b") is None
 
 
 @pytest.mark.parametrize(
     ("base_sha", "head_sha"),
     [("aaaa1111", "cccc3333"), ("dddd4444", "bbbb2222"), ("dddd4444", "cccc3333")],
 )
-def test_load_discards_a_document_from_other_shas(tmp_path: Path, base_sha: str, head_sha: str) -> None:
+def test_load_discards_a_document_from_other_shas(run_dir: paths.RunDir, base_sha: str, head_sha: str) -> None:
     """A moving diff invalidates the document wholesale — no migration.
 
     Re-anchoring prose that describes vanished code yields a correct
     pointer to a wrong sentence (ADR 0007).
     """
-    explainer_schema.save_explainer(tmp_path, _doc())
-    assert explainer_schema.load_explainer(tmp_path, base_sha=base_sha, head_sha=head_sha) is None
+    explainer_schema.save_explainer(run_dir, _doc())
+    assert explainer_schema.load_explainer(run_dir, base_sha=base_sha, head_sha=head_sha) is None
 
 
-def test_load_discards_an_older_document_version(tmp_path: Path) -> None:
-    path = tmp_path / "explainer.json"
+def test_load_discards_an_older_document_version(run_dir: paths.RunDir) -> None:
+    path = run_dir.explainer
     payload = _doc().model_dump()
     payload["version"] = explainer_schema.DOCUMENT_VERSION - 1
     path.write_text(json.dumps(payload), encoding="utf-8")
-    assert explainer_schema.load_explainer(tmp_path, base_sha="aaaa1111", head_sha="bbbb2222") is None
+    assert explainer_schema.load_explainer(run_dir, base_sha="aaaa1111", head_sha="bbbb2222") is None
 
 
-def test_an_older_version_is_discarded_even_when_its_shape_no_longer_parses(tmp_path: Path) -> None:
+def test_an_older_version_is_discarded_even_when_its_shape_no_longer_parses(run_dir: paths.RunDir) -> None:
     """The version is checked before the models see the file. A bumped
     version means the old shape is *expected* to be unparseable, and
     reporting that as corruption would 500 the route on an ordinary
     stale document."""
-    path = tmp_path / "explainer.json"
+    path = run_dir.explainer
     path.write_text(
         json.dumps(
             {
@@ -91,7 +91,7 @@ def test_an_older_version_is_discarded_even_when_its_shape_no_longer_parses(tmp_
         ),
         encoding="utf-8",
     )
-    assert explainer_schema.load_explainer(tmp_path, base_sha="aaaa1111", head_sha="bbbb2222") is None
+    assert explainer_schema.load_explainer(run_dir, base_sha="aaaa1111", head_sha="bbbb2222") is None
 
 
 def test_the_pass_table_covers_every_prose_section_exactly_once() -> None:
@@ -110,17 +110,17 @@ def test_the_pass_table_covers_every_prose_section_exactly_once() -> None:
     "body",
     ["{not json", json.dumps({"version": explainer_schema.DOCUMENT_VERSION})],
 )
-def test_load_raises_on_a_corrupt_document(tmp_path: Path, body: str) -> None:
+def test_load_raises_on_a_corrupt_document(run_dir: paths.RunDir, body: str) -> None:
     """Corruption is loud; a stale document is not. The two are different
     outcomes and the caller has to be able to tell them apart."""
-    (tmp_path / "explainer.json").write_text(body, encoding="utf-8")
+    run_dir.explainer.write_text(body, encoding="utf-8")
     with pytest.raises(explainer_schema.ExplainerCorrupt):
-        explainer_schema.load_explainer(tmp_path, base_sha="aaaa1111", head_sha="bbbb2222")
+        explainer_schema.load_explainer(run_dir, base_sha="aaaa1111", head_sha="bbbb2222")
 
 
-def test_save_is_atomic_and_leaves_no_temp_file(tmp_path: Path) -> None:
-    explainer_schema.save_explainer(tmp_path, _doc())
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["explainer.json"]
+def test_save_is_atomic_and_leaves_no_temp_file(run_dir: paths.RunDir) -> None:
+    explainer_schema.save_explainer(run_dir, _doc())
+    assert sorted(p.name for p in run_dir.path.iterdir()) == ["explainer.json"]
 
 
 # --- Reference validation ------------------------------------------------

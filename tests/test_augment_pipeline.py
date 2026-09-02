@@ -17,6 +17,7 @@ from pydantic_ai.models import Model, ModelRequestParameters
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RequestUsage
 
+from semantic_code_review import paths
 from semantic_code_review.augment import config
 from semantic_code_review.augment.agents import Client
 from semantic_code_review.augment.pipeline import augment_run_dir
@@ -130,11 +131,10 @@ def _make_canned_backend(
     return Client(model=model), model
 
 
-def _make_run_dir(tmp_path: Path) -> Path:
-    run = tmp_path / "run"
-    run.mkdir()
+def _make_run_dir(tmp_path: Path) -> paths.RunDir:
+    run = paths.RunDir(tmp_path / "run").create()
     # Minimal raw.diff with two hunks in one file.
-    (run / "raw.diff").write_text(
+    run.raw_diff.write_text(
         "diff --git a/f.py b/f.py\n"
         "--- a/f.py\n"
         "+++ b/f.py\n"
@@ -147,7 +147,7 @@ def _make_run_dir(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     # meta.json
-    (run / "meta.json").write_text(
+    run.meta.write_text(
         json.dumps(
             {
                 "title": "Bump constants",
@@ -162,13 +162,11 @@ def _make_run_dir(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     # Head worktree (so RepoTools can instantiate even if not called)
-    head = run / "head"
-    head.mkdir()
-    (head / "f.py").write_text("x = 2\n", encoding="utf-8")
+    run.head.mkdir()
+    (run.head / "f.py").write_text("x = 2\n", encoding="utf-8")
     # Bare-ish repo.git
-    repo_git = run / "repo.git"
-    repo_git.mkdir()
-    _sh(repo_git, "git", "init", "-q")
+    run.repo_git.mkdir()
+    _sh(run.repo_git, "git", "init", "-q")
     return run
 
 
@@ -193,8 +191,8 @@ async def test_augment_produces_parseable_output(tmp_path: Path) -> None:
     )
     await augment_run_dir(run, config.AugmentConfig(model="t", concurrency=1), client=backend, cache=None)
 
-    augmented_path = run / "augmented.diff"
-    sidecar_path = run / "augmented.scr.json"
+    augmented_path = run.augmented
+    sidecar_path = run.sidecar
     assert augmented_path.exists()
     assert sidecar_path.exists()
 
@@ -220,7 +218,7 @@ async def test_hunk_prompt_carries_the_file_outline(tmp_path: Path) -> None:
     have already answered it.
     """
     run = _make_run_dir(tmp_path)
-    (run / "head" / "f.py").write_text(
+    (run.head / "f.py").write_text(
         "\n".join(
             ["x = 2", "", "def helper(n: int) -> int:", "    return n + 1", ""] + [f"# pad {i}" for i in range(20)]
         ),
@@ -383,7 +381,7 @@ async def test_augment_event_consumer_failure_does_not_break_pipeline(
         run, config.AugmentConfig(model="t", concurrency=1), client=backend, cache=None, on_event=explode
     )
     # Run still produced parseable output.
-    assert (run / "augmented.diff").exists()
+    assert run.augmented.exists()
 
 
 class _BlowsUpModel(_CannedModel):
@@ -421,7 +419,7 @@ async def test_per_hunk_trace_written_on_agent_failure(tmp_path: Path) -> None:
     # `failed`; the run still completes.
     await augment_run_dir(run, config.AugmentConfig(model="t", concurrency=1), client=backend, cache=None)
 
-    trace_dir = run / "trace"
+    trace_dir = run.trace
     hunk_traces = list(trace_dir.glob("hunk-*.json"))
     assert hunk_traces, "no hunk traces were written"
     # At least one hunk trace carries the error block we just wired in.
@@ -470,7 +468,7 @@ async def test_augment_extra_review_buckets_notes_into_matching_hunks(tmp_path: 
         client=backend,
         cache=None,
     )
-    reparsed = parse_augmented_diff((run / "augmented.diff").read_text())
+    reparsed = parse_augmented_diff(run.augmented.read_text())
     h0_notes = [(n.line, n.body) for n in reparsed.files[0].hunks[0].ann.line_notes]
     h1_notes = [(n.line, n.body) for n in reparsed.files[0].hunks[1].ann.line_notes]
     # Hunk 0 (line 1): main pass produced one note, extras added one.
@@ -511,7 +509,7 @@ async def test_augment_extra_review_drops_notes_outside_any_hunk(tmp_path: Path)
         client=backend,
         cache=None,
     )
-    reparsed = parse_augmented_diff((run / "augmented.diff").read_text())
+    reparsed = parse_augmented_diff(run.augmented.read_text())
     h0_notes = [(n.line, n.body) for n in reparsed.files[0].hunks[0].ann.line_notes]
     h1_notes = [(n.line, n.body) for n in reparsed.files[0].hunks[1].ann.line_notes]
     assert h0_notes == [(1, "kept")]
@@ -642,7 +640,7 @@ async def test_batching_sends_one_call_per_file(tmp_path: Path) -> None:
     await augment_run_dir(run, config.AugmentConfig(model="t", concurrency=8), client=backend, cache=None, batch_size=2)
 
     assert canned.calls == 2  # 1 overview + 1 batch
-    reparsed = parse_augmented_diff((run / "augmented.diff").read_text(encoding="utf-8"))
+    reparsed = parse_augmented_diff(run.augmented.read_text(encoding="utf-8"))
     assert [h.ann.intent for h in reparsed.files[0].hunks] == ["a", "b"]
 
 
@@ -675,7 +673,7 @@ async def test_hunk_missing_from_a_batch_is_retried_individually(tmp_path: Path)
     await augment_run_dir(run, config.AugmentConfig(model="t", concurrency=8), client=backend, cache=None, batch_size=2)
 
     assert canned.calls == 3  # overview + batch + one fallback
-    reparsed = parse_augmented_diff((run / "augmented.diff").read_text(encoding="utf-8"))
+    reparsed = parse_augmented_diff(run.augmented.read_text(encoding="utf-8"))
     assert [h.ann.intent for h in reparsed.files[0].hunks] == ["batched", "retried singly"]
 
 
@@ -710,8 +708,8 @@ async def test_unusable_batch_entry_costs_one_hunk_not_the_run(tmp_path: Path, m
     monkeypatch.setattr(pipeline_mod, "build_hunk_annotations", flaky)
     await augment_run_dir(run, config.AugmentConfig(model="t", concurrency=8), client=backend, cache=None, batch_size=2)
 
-    assert (run / "augmented.diff").exists()
-    reparsed = parse_augmented_diff((run / "augmented.diff").read_text(encoding="utf-8"))
+    assert run.augmented.exists()
+    reparsed = parse_augmented_diff(run.augmented.read_text(encoding="utf-8"))
     assert [h.ann.intent for h in reparsed.files[0].hunks] == ["ok", "retried singly"]
 
 
@@ -773,9 +771,9 @@ async def test_removed_symbols_reach_the_hunk_prompt(tmp_path: Path) -> None:
     from the delta we already compute for the overview seed."""
     run = _make_run_dir(tmp_path)
     # base has a function the head no longer defines
-    _sh(run / "repo.git", "git", "config", "user.email", "t@t")
-    _sh(run / "repo.git", "git", "config", "user.name", "t")
-    (run / "head" / "f.py").write_text("x = 2\n", encoding="utf-8")
+    _sh(run.repo_git, "git", "config", "user.email", "t@t")
+    _sh(run.repo_git, "git", "config", "user.name", "t")
+    (run.head / "f.py").write_text("x = 2\n", encoding="utf-8")
 
     backend, canned = _make_canned_backend(
         overview_args={"summary": "s", "themes": [], "files": [{"path": "f.py", "summary": "fs"}]},

@@ -27,7 +27,7 @@ from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.output import ToolOutput
 
-from .. import errors
+from .. import errors, paths
 from ..cache.store import CacheStore
 from ..structural import SymbolDelta
 from ..viewer.build_json import ViewerIdIndex, viewer_id_index
@@ -341,7 +341,7 @@ def _pending_section(
 async def generate_explainer_skeleton(
     client: Client,
     *,
-    run_dir: Path,
+    run_dir: paths.RunDir,
     model: str,
     house_style: str | None,
     cache: CacheStore | None = None,
@@ -351,7 +351,7 @@ async def generate_explainer_skeleton(
 
     Args:
         client: The LLM backend handle. Chooses the guidance carrier.
-        run_dir: The run directory; must already hold `augmented.scr.json`.
+        run_dir: The run directory; its sidecar must already exist.
         model: The user-facing model string, for the cache key.
         house_style: The reviewed repo's house-style note, or None. No
             default: a repo that configured none is an ordinary state,
@@ -368,7 +368,7 @@ async def generate_explainer_skeleton(
         ExplainerNotReady: The augment pass has not written a sidecar,
             so there is no overview to seed the call with.
     """
-    sidecar = run_dir / "augmented.scr.json"
+    sidecar = run_dir.sidecar
     if not sidecar.exists():
         raise ExplainerNotReady("augmented.scr.json missing — augment not complete")
 
@@ -413,7 +413,7 @@ async def generate_explainer_skeleton(
     return explainer_schema.save_explainer(run_dir, doc)
 
 
-def _symbol_delta(run_dir: Path, diff: AnnotatedDiff) -> SymbolDelta | None:
+def _symbol_delta(run_dir: paths.RunDir, diff: AnnotatedDiff) -> SymbolDelta | None:
     """The deterministic base→head structural delta, or None.
 
     Best-effort, as it is for the overview seed: a parse failure leaves
@@ -424,8 +424,8 @@ def _symbol_delta(run_dir: Path, diff: AnnotatedDiff) -> SymbolDelta | None:
 
     try:
         return RepoTools(
-            head_worktree=run_dir / "head",
-            repo_git=run_dir / "repo.git",
+            head_worktree=run_dir.head,
+            repo_git=run_dir.repo_git,
             base_sha=diff.pr.base_sha,
             head_sha=diff.pr.head_sha,
             cache=SourceCache(),

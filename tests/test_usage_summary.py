@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from semantic_code_review import paths
 from semantic_code_review.augment import pass_, usage
 
 
@@ -43,11 +44,11 @@ def _usage(inp: int = 0, out: int = 0, read: int = 0, write: int = 0) -> dict[st
     }
 
 
-def test_totals_sum_every_pass(tmp_path: Path) -> None:
+def test_totals_sum_every_pass(run_dir: paths.RunDir) -> None:
     """`input_tokens` is inclusive of both cached portions, so the total
     is input + output. Adding the cache figures back counts every cached
     token twice."""
-    trace_dir = tmp_path / "trace"
+    trace_dir = run_dir.trace
     _write(trace_dir, "overview.json", _trace(usages=[_usage(inp=100, out=50)]))
     _write(trace_dir, "hunk-a.py-1.json", _trace(usages=[_usage(inp=240, read=200, write=30)]))
     _write(trace_dir, "hunk-b.py-2.json", _trace(usages=[_usage(inp=450, read=400, write=30)]))
@@ -68,9 +69,9 @@ def test_totals_sum_every_pass(tmp_path: Path) -> None:
     assert summary["passes"]["overview"]["calls"] == 1
 
 
-def test_multi_iteration_call_counts_once_but_sums_tokens(tmp_path: Path) -> None:
+def test_multi_iteration_call_counts_once_but_sums_tokens(run_dir: paths.RunDir) -> None:
     """An SDK tool round-trip is several iterations of one call."""
-    trace_dir = tmp_path / "trace"
+    trace_dir = run_dir.trace
     _write(trace_dir, "hunk-a.py-1.json", _trace(usages=[_usage(inp=100), _usage(inp=150, out=20)]))
 
     summary = usage.summarize_trace_dir(trace_dir)
@@ -80,9 +81,9 @@ def test_multi_iteration_call_counts_once_but_sums_tokens(tmp_path: Path) -> Non
     assert summary["passes"]["hunk"]["per_call"]["median"] == 270
 
 
-def test_cache_hits_counted_separately_from_calls(tmp_path: Path) -> None:
+def test_cache_hits_counted_separately_from_calls(run_dir: paths.RunDir) -> None:
     """A cached pass spent no tokens; counting it as a call would hide that."""
-    trace_dir = tmp_path / "trace"
+    trace_dir = run_dir.trace
     _write(trace_dir, "hunk-a.py-1.json", {"cache_hit": True, "pass": "hunk", "response": {}})
     _write(trace_dir, "hunk-b.py-2.json", _trace(usages=[_usage(inp=10)]))
 
@@ -96,8 +97,8 @@ def test_cache_hits_counted_separately_from_calls(tmp_path: Path) -> None:
     }
 
 
-def test_turns_reported_only_when_the_backend_supplies_them(tmp_path: Path) -> None:
-    trace_dir = tmp_path / "trace"
+def test_turns_reported_only_when_the_backend_supplies_them(run_dir: paths.RunDir) -> None:
+    trace_dir = run_dir.trace
     _write(trace_dir, "hunk-a.py-1.json", _trace(usages=[_usage(inp=1)], turns=3))
     _write(trace_dir, "hunk-b.py-2.json", _trace(usages=[_usage(inp=1)], turns=9))
     _write(trace_dir, "overview.json", _trace(usages=[_usage(inp=1)]))
@@ -108,9 +109,9 @@ def test_turns_reported_only_when_the_backend_supplies_them(tmp_path: Path) -> N
     assert "turns" not in summary["passes"]["overview"]
 
 
-def test_failed_calls_are_counted(tmp_path: Path) -> None:
+def test_failed_calls_are_counted(run_dir: paths.RunDir) -> None:
     """#33's failure mode: tokens spent on hunks that produced nothing."""
-    trace_dir = tmp_path / "trace"
+    trace_dir = run_dir.trace
     _write(trace_dir, "hunk-a.py-1.json", _trace(usages=[_usage(inp=500)], error="UsageLimitExceeded"))
 
     summary = usage.summarize_trace_dir(trace_dir)
@@ -119,8 +120,8 @@ def test_failed_calls_are_counted(tmp_path: Path) -> None:
     assert summary["passes"]["hunk"]["input_tokens"] == 500
 
 
-def test_malformed_trace_skipped_without_losing_the_rest(tmp_path: Path) -> None:
-    trace_dir = tmp_path / "trace"
+def test_malformed_trace_skipped_without_losing_the_rest(run_dir: paths.RunDir) -> None:
+    trace_dir = run_dir.trace
     _write(trace_dir, "hunk-a.py-1.json", _trace(usages=[_usage(inp=7)]))
     (trace_dir / "hunk-broken.json").write_text("{not json", encoding="utf-8")
 
@@ -129,13 +130,13 @@ def test_malformed_trace_skipped_without_losing_the_rest(tmp_path: Path) -> None
     assert summary["totals"]["input_tokens"] == 7
 
 
-def test_nested_legacy_trace_still_counted_against_its_pass(tmp_path: Path) -> None:
+def test_nested_legacy_trace_still_counted_against_its_pass(run_dir: paths.RunDir) -> None:
     """Traces written before the filename was sanitised sit in a subdirectory.
 
     A flat scan dropped their tokens silently, which is the one thing this
     accounting exists to prevent.
     """
-    trace_dir = tmp_path / "trace"
+    trace_dir = run_dir.trace
     _write(trace_dir, "hunk-a.py-1.json", _trace(usages=[_usage(inp=10)]))
     nested = trace_dir / "hunk-README.md-_m74_10__See_`commands"
     _write(nested, "review.md`.json", _trace(usages=[_usage(inp=90)]))
@@ -146,18 +147,18 @@ def test_nested_legacy_trace_still_counted_against_its_pass(tmp_path: Path) -> N
     assert summary["passes"]["hunk"]["calls"] == 2
 
 
-def test_write_usage_summary_returns_none_without_a_trace_dir(tmp_path: Path) -> None:
-    assert usage.write_usage_summary(tmp_path) is None
-    assert not (tmp_path / usage.USAGE_FILENAME).exists()
+def test_write_usage_summary_returns_none_without_a_trace_dir(run_dir: paths.RunDir) -> None:
+    assert usage.write_usage_summary(run_dir) is None
+    assert not run_dir.usage.exists()
 
 
-def test_write_usage_summary_persists_and_returns_the_summary(tmp_path: Path) -> None:
-    _write(tmp_path / "trace", "hunk-a.py-1.json", _trace(usages=[_usage(inp=3, out=4)]))
+def test_write_usage_summary_persists_and_returns_the_summary(run_dir: paths.RunDir) -> None:
+    _write(run_dir.trace, "hunk-a.py-1.json", _trace(usages=[_usage(inp=3, out=4)]))
 
-    summary = usage.write_usage_summary(tmp_path)
+    summary = usage.write_usage_summary(run_dir)
 
     assert summary is not None
-    written = json.loads((tmp_path / usage.USAGE_FILENAME).read_text(encoding="utf-8"))
+    written = json.loads(run_dir.usage.read_text(encoding="utf-8"))
     assert written == summary
     assert written["totals"]["total_tokens"] == 7
 
@@ -298,13 +299,13 @@ def test_cli_envelope_usage_matches_the_sdk_convention() -> None:
     assert u.cache_read_tokens == 1000
 
 
-def test_per_call_uses_the_same_convention_as_the_run_total(tmp_path: Path) -> None:
+def test_per_call_uses_the_same_convention_as_the_run_total(run_dir: paths.RunDir) -> None:
     """One line prints both figures. `input_tokens` already includes the
     cached portions, so summing all four made the per-call number about
     double the total it sat next to."""
-    _write(tmp_path / "trace", "hunk-a.py-1.json", _trace(usages=[_usage(inp=10000, out=500, read=9000)]))
+    _write(run_dir.trace, "hunk-a.py-1.json", _trace(usages=[_usage(inp=10000, out=500, read=9000)]))
 
-    summary = usage.summarize_trace_dir(tmp_path / "trace")
+    summary = usage.summarize_trace_dir(run_dir.trace)
 
     assert summary["totals"]["total_tokens"] == 10500
     assert summary["passes"]["hunk"]["per_call"]["median"] == 10500

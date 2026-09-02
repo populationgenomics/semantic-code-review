@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from semantic_code_review import paths
 from semantic_code_review.augment import explainer, explainer_figures, explainer_schema, prompts
 from semantic_code_review.augment.agents import Client
 
@@ -215,44 +216,44 @@ def _doc_with_figure(svg: str) -> explainer_schema.ExplainerDocument:
     )
 
 
-def test_saving_a_document_sanitises_its_figures_and_records_the_count(tmp_path: Path) -> None:
+def test_saving_a_document_sanitises_its_figures_and_records_the_count(run_dir: paths.RunDir) -> None:
     doc = _doc_with_figure(_svg('<rect class="d-box loud" x="0" y="0" width="4" height="4" fill="hotpink"/>'))
-    written = explainer_schema.save_explainer(tmp_path, doc)
+    written = explainer_schema.save_explainer(run_dir, doc)
 
     assert "hotpink" not in written.sections[0].figures[0].svg
     assert written.sections[0].figures[0].stripped == 2
     # The caller's copy is untouched; what is on disk is what was returned.
     assert "hotpink" in doc.sections[0].figures[0].svg
-    loaded = explainer_schema.load_explainer(tmp_path, base_sha="aaaa1111", head_sha="bbbb2222")
+    loaded = explainer_schema.load_explainer(run_dir, base_sha="aaaa1111", head_sha="bbbb2222")
     assert loaded is not None
     assert loaded.sections[0].figures[0].svg == written.sections[0].figures[0].svg
 
 
-def test_a_strip_count_survives_the_documents_next_write(tmp_path: Path) -> None:
+def test_a_strip_count_survives_the_documents_next_write(run_dir: paths.RunDir) -> None:
     """Every prose call rewrites the whole document, so a figure the
     first one wrote is sanitised again by the second — which finds
     nothing left to remove. Recording that as zero would lose the count
     the reader is shown."""
     doc = _doc_with_figure(_svg('<rect class="d-box loud" x="0" y="0" width="4" height="4" fill="hotpink"/>'))
-    first = explainer_schema.save_explainer(tmp_path, doc)
-    second = explainer_schema.save_explainer(tmp_path, first)
+    first = explainer_schema.save_explainer(run_dir, doc)
+    second = explainer_schema.save_explainer(run_dir, first)
 
     assert second.sections[0].figures[0].stripped == first.sections[0].figures[0].stripped == 2
 
 
-def test_re_sanitising_a_figure_leaves_its_ids_where_they_were(tmp_path: Path) -> None:
+def test_re_sanitising_a_figure_leaves_its_ids_where_they_were(run_dir: paths.RunDir) -> None:
     """The prefix is applied once, not once per write: an id that grew
     on every save would be a different id in the next document."""
     doc = _doc_with_figure(_svg(_MARKER))
-    first = explainer_schema.save_explainer(tmp_path, doc)
-    second = explainer_schema.save_explainer(tmp_path, first)
+    first = explainer_schema.save_explainer(run_dir, doc)
+    second = explainer_schema.save_explainer(run_dir, first)
 
     assert 'id="intuition-0-arrow"' in first.sections[0].figures[0].svg
     assert second.sections[0].figures[0].svg == first.sections[0].figures[0].svg
 
 
-def test_a_figure_that_loses_everything_is_kept_not_dropped(tmp_path: Path) -> None:
-    written = explainer_schema.save_explainer(tmp_path, _doc_with_figure("<svg><rect>"))
+def test_a_figure_that_loses_everything_is_kept_not_dropped(run_dir: paths.RunDir) -> None:
+    written = explainer_schema.save_explainer(run_dir, _doc_with_figure("<svg><rect>"))
     figure = written.sections[0].figures[0]
     assert figure.svg == ""
     assert figure.stripped == 1
@@ -260,7 +261,7 @@ def test_a_figure_that_loses_everything_is_kept_not_dropped(tmp_path: Path) -> N
     assert figure.caption == "how a read resolves"
 
 
-def test_subsection_figures_are_sanitised_too(tmp_path: Path) -> None:
+def test_subsection_figures_are_sanitised_too(run_dir: paths.RunDir) -> None:
     doc = _doc_with_figure(_svg('<rect class="d-box" x="0" y="0" width="4" height="4"/>'))
     doc.sections[0].subsections = [
         explainer_schema.Section(
@@ -271,13 +272,13 @@ def test_subsection_figures_are_sanitised_too(tmp_path: Path) -> None:
             figures=[explainer_schema.Figure(svg=_svg('<rect fill="red" x="0" y="0" width="1" height="1"/>'), alt="a")],
         )
     ]
-    written = explainer_schema.save_explainer(tmp_path, doc)
+    written = explainer_schema.save_explainer(run_dir, doc)
     nested = written.sections[0].subsections[0].figures[0]
     assert "red" not in nested.svg
     assert nested.stripped == 1
 
 
-def test_a_model_chosen_subsection_id_still_yields_a_usable_id_prefix(tmp_path: Path) -> None:
+def test_a_model_chosen_subsection_id_still_yields_a_usable_id_prefix(run_dir: paths.RunDir) -> None:
     doc = _doc_with_figure(_svg('<rect class="d-box" x="0" y="0" width="1" height="1"/>'))
     doc.sections[0].subsections = [
         explainer_schema.Section(
@@ -288,7 +289,7 @@ def test_a_model_chosen_subsection_id_still_yields_a_usable_id_prefix(tmp_path: 
             figures=[explainer_schema.Figure(svg=_svg('<defs><marker id="a" viewBox="0 0 1 1"/></defs>'), alt="a")],
         )
     ]
-    written = explainer_schema.save_explainer(tmp_path, doc)
+    written = explainer_schema.save_explainer(run_dir, doc)
     assert 'id="s-4-the-proto-0-a"' in written.sections[0].subsections[0].figures[0].svg
 
 

@@ -260,15 +260,15 @@ def test_not_warranted_is_an_answer_not_an_empty_document(diff: AnnotatedDiff) -
     assert doc.sections[0].state == "ready"
 
 
-def test_a_skeleton_document_round_trips_through_disk(tmp_path, diff: AnnotatedDiff) -> None:
+def test_a_skeleton_document_round_trips_through_disk(run_dir, diff: AnnotatedDiff) -> None:
     doc = explainer.build_skeleton_document(
         _submission(),
         base_sha="base1234",
         head_sha="head5678",
         ids=build_json.viewer_id_index(diff),
     )
-    explainer_schema.save_explainer(tmp_path, doc)
-    loaded = explainer_schema.load_explainer(tmp_path, base_sha="base1234", head_sha="head5678")
+    explainer_schema.save_explainer(run_dir, doc)
+    loaded = explainer_schema.load_explainer(run_dir, base_sha="base1234", head_sha="head5678")
     assert loaded == doc
     assert explainer.document_to_payload(doc)["sections"][0]["map_rows"][0]["ref"]["kind"] == "file"
 
@@ -297,7 +297,9 @@ def test_the_house_style_block_says_the_built_in_rules_win() -> None:
 
 
 @pytest.mark.parametrize("subprocess_backend", [False, True])
-def test_editing_the_house_style_re_runs_the_skeleton(diff: AnnotatedDiff, tmp_path, subprocess_backend: bool) -> None:
+def test_editing_the_house_style_re_runs_the_skeleton(
+    diff: AnnotatedDiff, tmp_path, run_dir, subprocess_backend: bool
+) -> None:
     """The note is in the skeleton's cache key on both carriers.
 
     `run_pass` folds the *system* text into the key, and on a subprocess
@@ -314,7 +316,7 @@ def test_editing_the_house_style_re_runs_the_skeleton(diff: AnnotatedDiff, tmp_p
     from semantic_code_review.cache.store import CacheStore
     from semantic_code_review.format.sidecar import dump_sidecar
 
-    dump_sidecar(diff, tmp_path / "augmented.scr.json")
+    dump_sidecar(diff, run_dir.sidecar)
     cache_root = tmp_path / "cache"
     cache = CacheStore(root=cache_root, prompt_version="test")
     args = {"verdict": "narrate", "verdict_note": "a cursor threaded from the proto."}
@@ -327,7 +329,7 @@ def test_editing_the_house_style_re_runs_the_skeleton(diff: AnnotatedDiff, tmp_p
         asyncio.run(
             explainer.generate_explainer_skeleton(
                 client,
-                run_dir=tmp_path,
+                run_dir=run_dir,
                 model="m",
                 house_style=house_style,
                 cache=cache,

@@ -24,15 +24,16 @@ from pathlib import Path
 
 import pytest
 
+from semantic_code_review import paths
 from semantic_code_review.review.comments import Comment, format_markdown
 from semantic_code_review.review.server import ReviewServer
 from semantic_code_review.review.session import ServerTasks
 
 
 @pytest.fixture
-def server(tmp_path: Path):
+def server(run_dir: paths.RunDir):
     srv = ReviewServer(
-        run_dir=tmp_path,
+        run_dir=run_dir,
         viewer_json={"version": "1", "files": []},
     )
     srv.start()
@@ -145,7 +146,7 @@ def test_get_data_json(server) -> None:
     assert body["debug"] is False
 
 
-def test_post_comment_upserts_and_persists(server, tmp_path: Path) -> None:
+def test_post_comment_upserts_and_persists(server, run_dir: paths.RunDir) -> None:
     code, body = _request(
         server.url() + "/comments",
         "POST",
@@ -160,7 +161,7 @@ def test_post_comment_upserts_and_persists(server, tmp_path: Path) -> None:
     assert code == 200
     assert body["id"] == "c1"
     # File on disk
-    comments_path = tmp_path / "comments.json"
+    comments_path = run_dir.comments
     assert comments_path.exists()
     data = json.loads(comments_path.read_text())
     assert data["comments"][0]["body"] == "hmm"
@@ -195,13 +196,13 @@ def test_post_invalid_comment_400(server) -> None:
         assert e.code == 400
 
 
-def test_post_cannot_overwrite_ingested_comment(server, tmp_path: Path) -> None:
+def test_post_cannot_overwrite_ingested_comment(server, run_dir: paths.RunDir) -> None:
     """Ingested PR comments (source != local) are read-only — the server
     rejects an upsert that targets one with 403 rather than letting the
     body get rewritten in place."""
     # Seed comments.json with an ingested comment, then re-create the
     # server so it loads from the file we just wrote.
-    (tmp_path / "comments.json").write_text(
+    run_dir.comments.write_text(
         json.dumps(
             {
                 "comments": [
@@ -221,7 +222,7 @@ def test_post_cannot_overwrite_ingested_comment(server, tmp_path: Path) -> None:
         )
     )
     server.stop()
-    srv2 = ReviewServer(run_dir=tmp_path, viewer_json={"version": "1", "files": []})
+    srv2 = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []})
     srv2.start()
     try:
         try:
@@ -241,14 +242,14 @@ def test_post_cannot_overwrite_ingested_comment(server, tmp_path: Path) -> None:
         else:
             raise AssertionError("expected 403 for overwrite of ingested comment")
         # On disk the body is unchanged.
-        data = json.loads((tmp_path / "comments.json").read_text())
+        data = json.loads(run_dir.comments.read_text())
         assert data["comments"][0]["body"] == "upstream"
     finally:
         srv2.stop()
 
 
-def test_delete_cannot_remove_ingested_comment(server, tmp_path: Path) -> None:
-    (tmp_path / "comments.json").write_text(
+def test_delete_cannot_remove_ingested_comment(server, run_dir: paths.RunDir) -> None:
+    run_dir.comments.write_text(
         json.dumps(
             {
                 "comments": [
@@ -268,7 +269,7 @@ def test_delete_cannot_remove_ingested_comment(server, tmp_path: Path) -> None:
         )
     )
     server.stop()
-    srv2 = ReviewServer(run_dir=tmp_path, viewer_json={"version": "1", "files": []})
+    srv2 = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []})
     srv2.start()
     try:
         conn = HTTPConnection("127.0.0.1", int(srv2.url().rsplit(":", 1)[1]), timeout=5)
@@ -276,13 +277,13 @@ def test_delete_cannot_remove_ingested_comment(server, tmp_path: Path) -> None:
         r = conn.getresponse()
         assert r.status == 403
         # Still on disk.
-        data = json.loads((tmp_path / "comments.json").read_text())
+        data = json.loads(run_dir.comments.read_text())
         assert len(data["comments"]) == 1
     finally:
         srv2.stop()
 
 
-def test_post_resets_source_to_local_on_new_comment(server, tmp_path: Path) -> None:
+def test_post_resets_source_to_local_on_new_comment(server, run_dir: paths.RunDir) -> None:
     """A new comment claiming source=github on the wire is still stored
     as local — provenance can only be set by the ingest path, not by a
     client POST."""
@@ -303,7 +304,7 @@ def test_post_resets_source_to_local_on_new_comment(server, tmp_path: Path) -> N
     assert body["source"] == "local"
 
 
-def test_delete_comment(server, tmp_path: Path) -> None:
+def test_delete_comment(server, run_dir: paths.RunDir) -> None:
     _request(
         server.url() + "/comments",
         "POST",
@@ -321,7 +322,7 @@ def test_delete_comment(server, tmp_path: Path) -> None:
     r = conn.getresponse()
     assert r.status == 200
     assert json.load(r)["ok"] is True
-    data = json.loads((tmp_path / "comments.json").read_text())
+    data = json.loads(run_dir.comments.read_text())
     assert data["comments"] == []
 
 
@@ -660,7 +661,7 @@ def test_a_console_turn_is_accepted_not_awaited(server) -> None:
     assert started.wait(timeout=5)
 
 
-def test_the_house_style_reaches_both_explainer_generators(tmp_path: Path, monkeypatch) -> None:
+def test_the_house_style_reaches_both_explainer_generators(run_dir: paths.RunDir, monkeypatch) -> None:
     """The house style reaches the document and nothing else, so its only
     guard is that the layer holding it hands both generators the same
     value. Dropping it changes no shape and fails no other test."""
@@ -677,7 +678,7 @@ def test_the_house_style_reaches_both_explainer_generators(tmp_path: Path, monke
 
     monkeypatch.setattr(runner, "_build_explainer_task", _spy("skeleton"))
     monkeypatch.setattr(runner, "_build_explainer_section_task", _spy("section"))
-    runner.build_server_tasks(tmp_path, _task_config(augment=True, explainer_prompt="name the dataset"))
+    runner.build_server_tasks(run_dir, _task_config(augment=True, explainer_prompt="name the dataset"))
     assert seen == {"skeleton": "name the dataset", "section": "name the dataset"}
 
 
@@ -695,9 +696,9 @@ index 0123456..89abcde 100644
 """
 
 
-def _populate_minimal_run_dir(run_dir: Path) -> None:
-    (run_dir / "raw.diff").write_text(_RAW_DIFF_FOR_RUN, encoding="utf-8")
-    (run_dir / "meta.json").write_text(
+def _populate_minimal_run_dir(run_dir: paths.RunDir) -> None:
+    run_dir.raw_diff.write_text(_RAW_DIFF_FOR_RUN, encoding="utf-8")
+    run_dir.meta.write_text(
         json.dumps(
             {
                 "title": "Bump",
@@ -711,7 +712,7 @@ def _populate_minimal_run_dir(run_dir: Path) -> None:
     )
 
 
-def test_serve_review_serves_pending_then_streams_and_finalises(tmp_path: Path) -> None:
+def test_serve_review_serves_pending_then_streams_and_finalises(run_dir: paths.RunDir) -> None:
     """End-to-end: serve_review starts the server with pending
     viewer JSON, runs the augment closure (which can publish streaming
     events via the supplied publish callable), then swaps /data.json
@@ -720,7 +721,7 @@ def test_serve_review_serves_pending_then_streams_and_finalises(tmp_path: Path) 
     from semantic_code_review.review.config import ReviewConfig
     from semantic_code_review.review.runner import serve_review
 
-    _populate_minimal_run_dir(tmp_path)
+    _populate_minimal_run_dir(run_dir)
 
     augment_started = threading.Event()
     augment_release = threading.Event()
@@ -742,7 +743,7 @@ def test_serve_review_serves_pending_then_streams_and_finalises(tmp_path: Path) 
         # final on-disk output. The page would react by patching the
         # hunk slot; here we just confirm the callable was wired in.
         publish("hunk", {"file_idx": 0, "hunk_idx": 0, "ok": True, "block": {"id": "H0_0"}})
-        (rd / "augmented.diff").write_text(_RAW_DIFF_FOR_RUN, encoding="utf-8")
+        rd.augmented.write_text(_RAW_DIFF_FOR_RUN, encoding="utf-8")
         augment_finished.set()
 
     result_box: dict = {}
@@ -753,7 +754,7 @@ def test_serve_review_serves_pending_then_streams_and_finalises(tmp_path: Path) 
             url_ready.set()
 
         result_box["r"] = serve_review(
-            tmp_path,
+            run_dir,
             ReviewConfig(port=0, timeout=10, open_browser=False),
             ServerTasks(augment=fake_augment),
             on_ready=_on_ready,
@@ -795,17 +796,17 @@ def test_serve_review_serves_pending_then_streams_and_finalises(tmp_path: Path) 
     assert "r" in result_box
 
 
-def test_serve_review_reports_the_idle_shutdown(tmp_path: Path, capsys) -> None:
+def test_serve_review_reports_the_idle_shutdown(run_dir: paths.RunDir, capsys) -> None:
     """Both CLI entry points come through serve_review, so the idle
     shutdown names itself here — once, before either prints comments."""
     from semantic_code_review.review.config import ReviewConfig
     from semantic_code_review.review.runner import serve_review
 
-    _populate_minimal_run_dir(tmp_path)
-    (tmp_path / "augmented.diff").write_text(_RAW_DIFF_FOR_RUN, encoding="utf-8")
+    _populate_minimal_run_dir(run_dir)
+    run_dir.augmented.write_text(_RAW_DIFF_FOR_RUN, encoding="utf-8")
 
     result = serve_review(
-        tmp_path,
+        run_dir,
         ReviewConfig(port=0, timeout=1, open_browser=False),
         ServerTasks(),
     )
@@ -858,10 +859,10 @@ def _task_config(*, augment: bool, debug: bool = False, explainer_prompt: str | 
     )
 
 
-def test_build_server_tasks_wires_console_when_augmenting(tmp_path: Path) -> None:
+def test_build_server_tasks_wires_console_when_augmenting(run_dir: paths.RunDir) -> None:
     from semantic_code_review.review.runner import build_server_tasks
 
-    tasks = build_server_tasks(tmp_path, _task_config(augment=True))
+    tasks = build_server_tasks(run_dir, _task_config(augment=True))
     assert tasks.augment is not None
     assert tasks.fold_summary is not None
     assert tasks.console is not None  # the console callback the server installs
@@ -870,20 +871,20 @@ def test_build_server_tasks_wires_console_when_augmenting(tmp_path: Path) -> Non
     assert tasks.bind_debug_sink is None
 
 
-def test_build_server_tasks_binds_debug_sink_when_debug(tmp_path: Path) -> None:
+def test_build_server_tasks_binds_debug_sink_when_debug(run_dir: paths.RunDir) -> None:
     from semantic_code_review.review.runner import build_server_tasks
 
-    tasks = build_server_tasks(tmp_path, _task_config(augment=True, debug=True))
+    tasks = build_server_tasks(run_dir, _task_config(augment=True, debug=True))
     assert tasks.bind_debug_sink is not None
 
 
-def test_build_server_tasks_omits_the_explainer_when_it_is_disabled(tmp_path: Path) -> None:
+def test_build_server_tasks_omits_the_explainer_when_it_is_disabled(run_dir: paths.RunDir) -> None:
     import dataclasses
 
     from semantic_code_review.review.runner import build_server_tasks
 
     cfg = dataclasses.replace(_task_config(augment=True), explainer=False)
-    tasks = build_server_tasks(tmp_path, cfg)
+    tasks = build_server_tasks(run_dir, cfg)
     # Everything else still wires; only the explainer drops out, so the
     # server reports the feature disabled rather than "not ready yet".
     assert tasks.console is not None
@@ -891,7 +892,7 @@ def test_build_server_tasks_omits_the_explainer_when_it_is_disabled(tmp_path: Pa
     assert tasks.explainer_section is None
 
 
-def test_build_server_tasks_wires_both_explainer_generators(tmp_path: Path) -> None:
+def test_build_server_tasks_wires_both_explainer_generators(run_dir: paths.RunDir) -> None:
     """The skeleton and the per-section pass go together.
 
     `scr pr` shipped with only the skeleton wired: the Map rendered, and
@@ -901,12 +902,12 @@ def test_build_server_tasks_wires_both_explainer_generators(tmp_path: Path) -> N
     """
     from semantic_code_review.review.runner import build_server_tasks
 
-    tasks = build_server_tasks(tmp_path, _task_config(augment=True))
+    tasks = build_server_tasks(run_dir, _task_config(augment=True))
     assert tasks.explainer is not None
     assert tasks.explainer_section is not None
 
 
-def test_a_disabled_explainer_gets_no_house_style_either(tmp_path: Path) -> None:
+def test_a_disabled_explainer_gets_no_house_style_either(run_dir: paths.RunDir) -> None:
     """`explainer = false` means no document, so nothing to style. Both
     generators go unwired together, as they already do."""
     import dataclasses
@@ -917,12 +918,12 @@ def test_a_disabled_explainer_gets_no_house_style_either(tmp_path: Path) -> None
         _task_config(augment=True, explainer_prompt="name the dataset"),
         explainer=False,
     )
-    tasks = build_server_tasks(tmp_path, cfg)
+    tasks = build_server_tasks(run_dir, cfg)
     assert tasks.explainer is None
     assert tasks.explainer_section is None
 
 
-def test_build_server_tasks_returns_an_empty_bundle_without_augment(tmp_path: Path) -> None:
+def test_build_server_tasks_returns_an_empty_bundle_without_augment(run_dir: paths.RunDir) -> None:
     from semantic_code_review.review.runner import build_server_tasks
 
-    assert build_server_tasks(tmp_path, _task_config(augment=False)) == ServerTasks()
+    assert build_server_tasks(run_dir, _task_config(augment=False)) == ServerTasks()

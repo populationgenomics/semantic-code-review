@@ -56,7 +56,7 @@ from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.output import ToolOutput
 
-from .. import errors
+from .. import errors, paths
 from ..cache.store import CacheStore
 from ..viewer.build_json import ViewerIdIndex, viewer_id_index
 from . import explainer_schema, mcp_http_host, source_cache
@@ -815,7 +815,7 @@ def _recording_tool(fn: Any, recorder: _ReadRecorder) -> Any:
 async def generate_explainer_section(
     client: Client,
     *,
-    run_dir: Path,
+    run_dir: paths.RunDir,
     section_id: str,
     model: str,
     house_style: str | None,
@@ -831,8 +831,8 @@ async def generate_explainer_section(
 
     Args:
         client: The LLM backend handle. Chooses the guidance carrier.
-        run_dir: The run directory; must hold `augmented.scr.json` and a
-            document for the run's current `(base_sha, head_sha)`.
+        run_dir: The run directory; must hold a sidecar and a document
+            for the run's current `(base_sha, head_sha)`.
         section_id: A fillable section id (`background`, `intuition`,
             `code`).
         model: The user-facing model string, for the cache key.
@@ -973,7 +973,7 @@ class _Spend:
 async def _run_prose_pass(
     client: Client,
     *,
-    run_dir: Path,
+    run_dir: paths.RunDir,
     diff: AnnotatedDiff,
     pass_id: str,
     base_sha: str,
@@ -1036,8 +1036,8 @@ async def _run_prose_pass(
 
     recorder = _ReadRecorder()
     repo_tools = RepoTools(
-        head_worktree=run_dir / "head",
-        repo_git=run_dir / "repo.git",
+        head_worktree=run_dir.head,
+        repo_git=run_dir.repo_git,
         base_sha=diff.pr.base_sha,
         head_sha=diff.pr.head_sha,
         cache=source_cache.SourceCache(),
@@ -1084,14 +1084,14 @@ async def _run_prose_pass(
     return payload, [str(p) for p in payload.get(_SOURCES_KEY, [])]
 
 
-def _load(run_dir: Path) -> tuple[AnnotatedDiff, explainer_schema.ExplainerDocument]:
+def _load(run_dir: paths.RunDir) -> tuple[AnnotatedDiff, explainer_schema.ExplainerDocument]:
     """The run's annotated diff and its current document.
 
     Raises:
         ExplainerNotReady: Either is missing. A section cannot be filled
             before the skeleton has said what the sections are.
     """
-    sidecar = run_dir / "augmented.scr.json"
+    sidecar = run_dir.sidecar
     if not sidecar.exists():
         raise ExplainerNotReady("augmented.scr.json missing — augment not complete")
 

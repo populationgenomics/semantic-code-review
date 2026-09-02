@@ -34,7 +34,7 @@ import threading
 from collections.abc import Callable, Coroutine
 from typing import Any, Protocol
 
-from .. import errors
+from .. import errors, paths
 from . import comments
 
 log = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ log = logging.getLogger(__name__)
 #: server's SSE channel; pass it through to `augment_run_dir(on_event=)`
 #: so the pipeline can stream overview / per-hunk events to the page.
 AugmentCallable = Callable[
-    [pathlib.Path, Callable[[str, dict], None]],
+    [paths.RunDir, Callable[[str, dict], None]],
     Coroutine[Any, Any, None],
 ]
 
@@ -345,7 +345,7 @@ class ReviewSession:
     def __init__(
         self,
         *,
-        run_dir: pathlib.Path,
+        run_dir: paths.RunDir,
         viewer_json: dict[str, Any],
         store: comments.CommentStore,
         publish: EventPublisher,
@@ -517,8 +517,8 @@ class ReviewSession:
         return {
             "file_idx": file_idx,
             "path": path,
-            "base": _read_worktree_file(self.run_dir / "base", base_rel),
-            "head": _read_worktree_file(self.run_dir / "head", path),
+            "base": _read_worktree_file(self.run_dir.base, base_rel),
+            "head": _read_worktree_file(self.run_dir.head, path),
         }
 
     # --- change explainer (ADR 0007) ------------------------------------

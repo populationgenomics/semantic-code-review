@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+from semantic_code_review import paths
 from semantic_code_review.fetch import PRRef
 from semantic_code_review.fetch.github_comments import (
     decorate_with_head_anchors,
@@ -161,13 +162,13 @@ def test_unparseable_json_raises_gherror() -> None:
             fetch_pr_review_comments(_ref())
 
 
-def test_write_comments_file_matches_store_layout(tmp_path: Path) -> None:
+def test_write_comments_file_matches_store_layout(run_dir: paths.RunDir) -> None:
     cs = [
         Comment(id="gh-2", file="b.py", side="new", line=1, body="b", source="github", author="a"),
         Comment(id="gh-1", file="a.py", side="new", line=2, body="a", source="github", author="a"),
     ]
-    write_comments_file(tmp_path / "comments.json", cs)
-    data = json.loads((tmp_path / "comments.json").read_text())
+    write_comments_file(run_dir.comments, cs)
+    data = json.loads(run_dir.comments.read_text())
     # Sorted by (file, line, created_at) — a.py before b.py.
     assert [c["id"] for c in data["comments"]] == ["gh-1", "gh-2"]
     # All ingested fields round-trip.
@@ -175,34 +176,33 @@ def test_write_comments_file_matches_store_layout(tmp_path: Path) -> None:
     assert data["comments"][0]["author"] == "a"
 
 
-def test_materialize_skips_when_comments_file_exists(tmp_path: Path) -> None:
+def test_materialize_skips_when_comments_file_exists(run_dir: paths.RunDir) -> None:
     """Second-run idempotency: a pre-existing comments.json (e.g.
     session-local reviewer notes) is left alone."""
-    target = tmp_path / "comments.json"
-    target.write_text(json.dumps({"comments": []}))
+    run_dir.comments.write_text(json.dumps({"comments": []}))
     # gh shouldn't even be called.
     with patch("semantic_code_review.git_ops.subprocess.run") as run_mock:
-        n = materialize_pr_comments(tmp_path, _ref())
+        n = materialize_pr_comments(run_dir, _ref())
     assert n == 0
     assert run_mock.call_count == 0
 
 
-def test_materialize_soft_fails_on_gh_error(tmp_path: Path) -> None:
+def test_materialize_soft_fails_on_gh_error(run_dir: paths.RunDir) -> None:
     fake = _fake_gh_run(stderr="boom", returncode=1)
     with patch("semantic_code_review.git_ops.subprocess.run", side_effect=fake):
-        n = materialize_pr_comments(tmp_path, _ref())
+        n = materialize_pr_comments(run_dir, _ref())
     assert n == 0
     # File NOT created — failure left the run dir untouched so a later
     # retry (e.g. a re-materialise) has a clean shot.
-    assert not (tmp_path / "comments.json").exists()
+    assert not run_dir.comments.exists()
 
 
-def test_materialize_writes_comments_json(tmp_path: Path) -> None:
+def test_materialize_writes_comments_json(run_dir: paths.RunDir) -> None:
     fake = _fake_gh_run(stdout=json.dumps(_SAMPLE))
     with patch("semantic_code_review.git_ops.subprocess.run", side_effect=fake):
-        n = materialize_pr_comments(tmp_path, _ref())
+        n = materialize_pr_comments(run_dir, _ref())
     assert n == 2
-    data = json.loads((tmp_path / "comments.json").read_text())
+    data = json.loads(run_dir.comments.read_text())
     ids = {c["id"] for c in data["comments"]}
     assert ids == {"gh-11", "gh-12"}
 

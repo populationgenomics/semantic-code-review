@@ -35,7 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, ClassVar
 
-from .. import errors
+from .. import errors, paths
 from .comments import CommentStore
 from .session import PostCallable, ReviewSession, ServerTasks
 
@@ -548,7 +548,7 @@ class ReviewServer:
     def __init__(
         self,
         *,
-        run_dir: Path,
+        run_dir: paths.RunDir,
         viewer_json: dict[str, Any],
         host: str = "127.0.0.1",
         port: int = 0,
@@ -568,7 +568,7 @@ class ReviewServer:
         self.session = ReviewSession(
             run_dir=run_dir,
             viewer_json=viewer_json,
-            store=CommentStore(run_dir / "comments.json"),
+            store=CommentStore(run_dir.comments),
             publish=publish,
             debug=debug,
             explainer_enabled=explainer,
