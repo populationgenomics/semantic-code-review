@@ -34,11 +34,16 @@ overridable with `--runs-root`. Contents:
   Discarded on load if its `(base_sha, head_sha)` no longer match the
   run's.
 - `trace/` — one JSON per LLM call (prompt, response, usage), plus
-  `augment.log`.
+  `augment.log`. Every LLM call in the run writes one, live-session
+  surfaces included: a fold summary, an explainer section and a console
+  turn each land here as they happen.
 - `usage.json` — token accounting for the run, derived from `trace/`
   by `augment/usage.py` after the passes finish: totals, a per-pass
   breakdown, and the per-call and (CLI backends) internal-turn
-  distributions. Recomputable from the traces at any time.
+  distributions. Written once, so it is a snapshot of the run up to
+  that point — the live-session traces arrive after it. Recomputable
+  from the traces at any time, which is what makes them, not this file,
+  the ledger.
 
 The layout is owned by one type, `paths.RunDir`: the directory plus a
 named accessor for everything in it — `head`, `base`, `repo_git`,
@@ -369,10 +374,13 @@ backend owns credential resolution and constructs the `Client` that
 the augment pipeline drives.
 
 **Client**
-The handle the augment pipeline drives. Wraps either a pydantic-ai
-model id string (for SDK backends) or a `pydantic_ai.models.Model`
-instance (for CLI subprocess backends). Constructed by
-`Backend.resolve(model=...)`. Defined in `augment/agents.py`.
+The handle the augment pipeline and the review console drive. Wraps
+either a pydantic-ai model id string (for SDK backends) or a
+`pydantic_ai.models.Model` instance (for CLI subprocess backends).
+Constructed by `Backend.resolve(model=...)`. Defined in
+`augment/agents.py`. Its `request_limit` bounds every agent loop driven
+against it — an augment pass and a console turn alike, via
+`augment/recording.py`, which also writes each one's trace.
 
 **CLI driver**
 A concrete `pydantic_ai.Model` subclass we author to wrap a specific

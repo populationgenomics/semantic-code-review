@@ -7,7 +7,12 @@ summary is a pure function of what's on disk and can be recomputed for
 an old run.
 
 Pass identity comes from the trace filename, which each pass owns:
-`overview.json`, `hunk-*.json`, `fold-*.json`, `extra-review.json`.
+`overview.json`, `hunk-*.json`, `fold-*.json`, `extra-review.json`,
+`explainer-*.json`, `console-*.json`.
+
+The live-session surfaces (fold summaries, the explainer, the console)
+write traces after `usage.json` has been written, so the file is a
+snapshot of the run so far; re-summarising the directory picks them up.
 
 The reported unit is the *call*, not the token: per-call cost is
 dominated by a fixed per-spawn floor (system prompt, tool definitions,
@@ -38,7 +43,7 @@ def _pass_name(relative_path: str) -> str:
     attributes to its pass instead of falling through to `other`.
     """
     head = relative_path.split("/", 1)[0].removesuffix(".json")
-    for prefix in ("hunk", "fold", "extra-review", "overview", "explainer"):
+    for prefix in ("hunk", "fold", "extra-review", "overview", "explainer", "console"):
         if head == prefix or head.startswith(f"{prefix}-"):
             return prefix
     return "other"
