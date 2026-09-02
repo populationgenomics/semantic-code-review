@@ -79,7 +79,6 @@ async def augment_run_dir(
     client: Client | None,
     cache: CacheStore | None,
     on_event: OnEvent | None = None,
-    skip_context: bool = False,
     batch_size: int = 1,
 ) -> Path:
     """Augment a fetch run directory. Returns the augmented.diff path.
@@ -92,7 +91,6 @@ async def augment_run_dir(
         cache: Disk cache for pass results, or None for no caching.
         on_event: Streaming progress consumer, wired to the review
             server's SSE channel by `serve_review`.
-        skip_context: Withhold the per-hunk repo tools from the model.
         batch_size: >1 annotates up to that many hunks of one file per
             call. Batching exists because on the claude-cli backend
             nothing in the user prompt is cached, so a file's summary and
@@ -167,9 +165,8 @@ async def augment_run_dir(
     parse_cache = source_cache.SourceCache()
 
     # Deterministic structural symbol delta (ADR 0001 Slice 3). Computed
-    # from our own tree-sitter parse of base vs head — independent of
-    # `skip_context`, which only gates the LLM's per-hunk tool access, not
-    # this in-process seed. Best-effort: a failure leaves the overview
+    # from our own tree-sitter parse of base vs head rather than through
+    # the LLM's tool access. Best-effort: a failure leaves the overview
     # unseeded (today's behaviour) rather than aborting the run.
     symbol_delta = None
     try:
@@ -203,16 +200,12 @@ async def augment_run_dir(
         raise
 
     # --- Per-hunk pass -------------------------------------------------
-    repo_tools = (
-        RepoTools(
-            head_worktree=run_dir / "head",
-            repo_git=run_dir / "repo.git",
-            base_sha=diff.pr.base_sha,
-            head_sha=diff.pr.head_sha,
-            cache=parse_cache,
-        )
-        if not skip_context
-        else None
+    repo_tools = RepoTools(
+        head_worktree=run_dir / "head",
+        repo_git=run_dir / "repo.git",
+        base_sha=diff.pr.base_sha,
+        head_sha=diff.pr.head_sha,
+        cache=parse_cache,
     )
 
     # CLI subprocess backends reach the tools through one warm HTTP MCP
@@ -220,7 +213,7 @@ async def augment_run_dir(
     # down with the client below — instead of cold-starting a stdio child
     # per hunk. SDK backends get `deps=repo_tools` directly via `Agent.run`.
     mcp_host: mcp_http_host.McpHttpHost | None = None
-    if repo_tools is not None and client.is_subprocess_backend:
+    if client.is_subprocess_backend:
         mcp_host = mcp_http_host.McpHttpHost(repo_tools)
         mcp_host.start()
         client.set_mcp_endpoint(mcp_host.mcp_config())
@@ -262,10 +255,9 @@ async def augment_run_dir(
         # prompt prefix. Empty for unsupported languages and for files
         # with no head side (pure deletions).
         file_outlines: dict[int, str] = {}
-        if repo_tools is not None:
-            for fi, _hi in queued:
-                if fi not in file_outlines:
-                    file_outlines[fi] = repo_tools.outline_seed(diff.files[fi].path)
+        for fi, _hi in queued:
+            if fi not in file_outlines:
+                file_outlines[fi] = repo_tools.outline_seed(diff.files[fi].path)
         # Symbols this change deletes, per file. Every tool searches the
         # head worktree, so without this a hunk that removes code sends
         # the model hunting for symbols that are gone — it cannot tell an
@@ -461,7 +453,7 @@ async def _augment_one_batch(
     client: Client,
     diff: AnnotatedDiff,
     overview_json: str,
-    repo_tools: RepoTools | None,
+    repo_tools: RepoTools,
     model: str,
     cache: CacheStore | None,
     trace_dir: Path,
@@ -489,12 +481,6 @@ async def _augment_one_batch(
     async with sem:
         for _fi, hi in batch:
             _safe_emit(on_event, "hunk-start", {"file_idx": fi, "hunk_idx": hi})
-        rt = repo_tools or RepoTools(
-            head_worktree=Path("/dev/null"),
-            repo_git=Path("/dev/null"),
-            base_sha="",
-            head_sha="",
-        )
         try:
             submit = await run_batch_pass(
                 client,
@@ -502,7 +488,7 @@ async def _augment_one_batch(
                 hunks=hunks,
                 overview_json=overview_json,
                 file_summary=file_summary,
-                repo_tools=rt,
+                repo_tools=repo_tools,
                 model=model,
                 file_outline=file_outline,
                 removed_symbols=removed_symbols,
@@ -594,7 +580,7 @@ async def _augment_one_hunk(
     fi: int,
     hi: int,
     overview_json: str,
-    repo_tools: RepoTools | None,
+    repo_tools: RepoTools,
     model: str,
     cache: CacheStore | None,
     trace_dir: Path,
@@ -614,22 +600,13 @@ async def _augment_one_hunk(
         # lighting up as in-flight at dispatch.
         _safe_emit(on_event, "hunk-start", {"file_idx": fi, "hunk_idx": hi})
         try:
-            if repo_tools is None:
-                rt = RepoTools(
-                    head_worktree=Path("/dev/null"),
-                    repo_git=Path("/dev/null"),
-                    base_sha="",
-                    head_sha="",
-                )
-            else:
-                rt = repo_tools
             submit = await run_hunk_pass(
                 client,
                 fp=fp,
                 hunk=hunk,
                 overview_json=overview_json,
                 file_summary=file_summary,
-                repo_tools=rt,
+                repo_tools=repo_tools,
                 model=model,
                 file_outline=file_outline,
                 removed_symbols=removed_symbols,

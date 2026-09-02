@@ -78,8 +78,8 @@ Items 1 and 2 have since shipped.
     anyway — currently that loop happens outside the viewer.
 
 12. **Lazy on-expand annotation for generated / deprioritised files.**
-    Generalises the binary `--skip-context` / generated-globs filter:
-    rather than skip annotation outright, materialise it only when the
+    Generalises the binary generated-globs filter: rather than skip
+    annotation outright, materialise it only when the
     reviewer actually expands the file's block. Weaker than the others —
     annotations *are* the product, so skipping by default fights the
     UX — but worth keeping on the list.

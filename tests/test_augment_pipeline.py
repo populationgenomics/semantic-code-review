@@ -260,25 +260,6 @@ async def test_overview_prompt_has_no_hunk_seeds(tmp_path: Path) -> None:
     assert "# File outline" not in overview_prompt
 
 
-async def test_hunk_prompt_omits_seeds_when_context_is_skipped(tmp_path: Path) -> None:
-    """`--skip-context` means no worktree grounding — including the seeds."""
-    run = _make_run_dir(tmp_path)
-    backend, canned = _make_canned_backend(
-        overview_args={"summary": "s", "themes": [], "files": [{"path": "f.py", "summary": "fs"}]},
-        hunk_args_list=[
-            {"intent": "a", "confidence": 90, "smells": []},
-            {"intent": "b", "confidence": 90, "smells": []},
-        ],
-    )
-    await augment_run_dir(
-        run, config.AugmentConfig(model="t", concurrency=1), client=backend, cache=None, skip_context=True
-    )
-
-    for tool, text in canned.prompts:
-        if tool == "submit_annotations":
-            assert "# File outline" not in text
-
-
 class _RecordingSubprocModel(_CannedModel):
     """Canned model that records the MCP endpoint the driver would be given."""
 
