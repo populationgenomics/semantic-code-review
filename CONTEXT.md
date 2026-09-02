@@ -431,37 +431,65 @@ This is the single internal currency the structural consumers read:
 the `RepoTools.outline` / `symbol_at` tools, the diff-wide delta, the
 overview-prompt seed, and the sidebar Symbols axis.
 It is deliberately *not* reconciled with the LLM-derived
-`Overview.symbols_*` / `FileSymbols` — those answer "why did this
-change" (semantic, fallible); `Symbol` answers "where is the code and
-what does it literally declare" (structural, exact). The two coexist as
-separate layers by design (ADR 0001).
+per-file `FileSymbols` — that answers "why did this change" (semantic,
+fallible); `Symbol` answers "where is the code and what does it
+literally declare" (structural, exact). The two coexist as separate
+layers by design (ADR 0001). The PR-level `Overview.symbols_*` used to
+be the other half of that pairing and is gone: it was the model
+transcribing the [[SymbolDelta]] out of its own prompt, 89% of the
+overview pass's output, read by nothing.
 
 **SymbolDelta**
 The deterministic base→head structural delta — `{added, removed,
-modified}` lists of flat `ChangedSymbol`s, defined in
+modified, moved}` lists of flat `ChangedSymbol`s, defined in
 `structural/diff.py`. Computed by a `qualified_name` set-diff over the
 flattened base and head `Symbol` forests (`diff_file` per file, `merge`
-diff-wide): added = head-only name, removed = base-only, **modified =
-same name on both sides with a differing range** (a same-span body edit
-is not flagged — the range is the signal; finer "what changed" meaning
-stays the LLM's). Each `ChangedSymbol` carries its `path` and the span
-on its live side (head for added/modified, base for removed). Computed
-by `RepoTools.compute_symbol_delta()`, which reads base via `git show`
-and head from the worktree for every changed file in a supported
-language; `changed_symbols()` is its JSON wrapper for the LLM tool
-surface.
+diff-wide), refined by comparing the two sides' **span text**:
+
+- `added` / `removed` — the name exists on one side only.
+- `modified` — the text differs. `reason` is `ChangeReason.SIGNATURE`
+  when the declared header moved (an API change) or `BODY` when only the
+  implementation did.
+- `moved` — the text is byte-identical in a new position. Its own bucket
+  rather than a reason, because it is the bulk of the delta and says
+  nothing about the change: `added + removed + modified` is "what
+  changed" with nothing to filter. Measured on cpg-infrastructure#373,
+  244 of 262 same-name-both-sides symbols were moves.
+
+Text is the comparison, not the span: a body edit that adds and removes
+the same number of lines preserves `end - start`, and an in-place edit
+preserves the span outright — both would read as no-change under a range
+or length test. `merge` also collapses **cross-file** moves diff-wide: a
+qualified name `removed` at one path and `added` at another with
+identical text becomes one `moved` entry carrying `from_path`. Identity
+is required, not similarity — `qualified_name` is unique only within a
+file — so a symbol that both moved and changed stays two entries.
+`ChangedSymbol.body_sha` is the comparison key `merge` needs across
+files; it is excluded from every serialisation.
+
+Each `ChangedSymbol` carries its `path` and the span on its live side
+(head for added/modified/moved, base for removed). Computed by
+`RepoTools.compute_symbol_delta()`, which reads base via `git show` and
+head from the worktree for every changed file in a supported language;
+`changed_symbols()` is its JSON wrapper for the LLM tool surface.
 
 **Overview seed**
-Before the overview pass, the pipeline computes the `SymbolDelta` and
+Before the overview pass, the pipeline computes the [[SymbolDelta]] and
 passes it to `format_overview_prompt`, which appends a `# Symbols
 changed (deterministic …)` section listing each changed symbol by kind
-and `qualified_name`. The overview system prompt instructs the model to
-populate `Overview.symbols_*` from that section verbatim — turning the
-symbol fields from inference into a deterministic seed (ADR 0001 Slice
-3). The seed is our own tree-sitter parse rather than LLM tool access,
-and best-effort (a failure leaves the overview unseeded). When the delta is empty — every changed file is in
-an unsupported language — no section is appended and the prompt is
-byte-identical to the pre-seed form.
+and `qualified_name`, tagging a `modified` entry with its reason. It is
+context, not an order: the model uses it to ground `summary` / `themes`
+/ `groups` and reports none of it back. Asking for it back was 89% of
+the pass's output tokens and a pure transcription of the prompt (ADR
+0001, amended). The `moved` bucket is omitted — byte-identical code that
+shifted lines is prompt weight with no signal. The explainer skeleton's
+`_format_symbol_section` renders the same shape for the same reasons.
+
+The seed is our own tree-sitter parse rather than LLM tool access, and
+best-effort (a failure leaves the overview unseeded). When every
+rendered bucket is empty — e.g. every changed file is in an unsupported
+language — no section is appended and the prompt is byte-identical to
+the pre-seed form.
 
 **Symbols axis**
 The third sidebar grouping axis (after Themes and Files), built
@@ -472,7 +500,11 @@ parses each changed file's base/head worktree, takes the per-file
 The changed symbols are then nested by `qualified_name` into a forest of
 `GroupBlock` nodes (id `SY<i>`, class ▸ method): a changed method hangs
 off its enclosing class, and an unchanged ancestor is synthesized as a
-context node from the live forest. A parent's `hunk_ids` is its subtree
+context node from the live forest. A `moved` symbol is context too — its
+text is byte-identical across the revisions, so it earns no pill of its
+own and renders only when a changed descendant keeps it alive. A
+`modified` pill's rationale names its reason ("function signature
+changed in …"). A parent's `hunk_ids` is its subtree
 union (clicking it filters to every changed descendant) and the count is
 the distinct hunks beneath it; a leaf carries only its own. Any node
 whose whole subtree touches no hunk yields no block. The viewer's

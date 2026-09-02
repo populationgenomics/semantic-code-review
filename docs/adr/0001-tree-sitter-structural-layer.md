@@ -40,6 +40,21 @@ to help.
   it starts from truth rather than re-deriving `symbols_*`). Seeding is
   per-language; unsupported languages fall back to today's behaviour.
 
+  Amended: the seed stays; the model's echo of it goes. Seeding was
+  specified as "populate `symbols_*` from this list verbatim", which
+  made the model transcribe its own prompt. Measured on
+  cpg-infrastructure#373, the overview pass was 58% of the run and
+  generation-bound at 16,066 output tokens, 89% of its structured output
+  was `symbols_modified`, and the 262 entries were set-identical to a
+  freshly recomputed `SymbolDelta` — nothing invented, nothing dropped.
+  Nothing read the result: stance C means the viewer builds its Symbols
+  axis from the delta, and `Overview.symbols_*` reached no consumer.
+  The three fields are retired from the schema, the prompt, the SSE
+  payload, the viewer JSON and `augmented.diff`. The prompt section
+  stays as grounding for `summary` / `themes` / `groups` — input is
+  cheap where output is not — and now says so instead of ordering a
+  transcription.
+
 ### Parsing
 
 - **Engine:** `tree-sitter` core + curated, individually
@@ -54,6 +69,26 @@ to help.
   `RepoTools.read_file_at` → `git show <sha>:<path>`). Added / removed /
   modified are derived by `qualified_name` set-diff (modified = same
   qualified name present on both sides with a differing range).
+
+  Amended: the range was the wrong signal and `modified` gains a reason.
+  Range-inequality made `modified` 93% noise — 244 of 262 entries on the
+  measured diff had shifted only because lines above them moved, and it
+  missed an in-place edit that left the span unmoved. The comparison is
+  now the span *text*, and the result splits four ways: `added`,
+  `removed`, `modified` (text differs; `reason` is `signature` when the
+  declared header moved, else `body`), and `moved` (text identical, new
+  position). `moved` is a bucket rather than a reason so that
+  `added + removed + modified` is "what changed" with no filtering.
+  Line count cannot substitute for text: a body edit that adds and
+  removes equally preserves the span length, and on the measured diff
+  that hid one of the six real API changes.
+
+  `merge` additionally resolves cross-file moves diff-wide: a qualified
+  name `removed` at one path and `added` at another *with identical
+  text* collapses to one `moved` entry carrying `from_path`. Identity,
+  not similarity — `qualified_name` is unique only within a file, and a
+  symbol that both moved and changed stays two entries rather than
+  becoming an inference this layer does not make.
 - **Extraction:** tree-sitter **`tags.scm` tag queries** (the
   established convention; vendor a curated query where a grammar ships
   none) → a normalized `Symbol{kind, name, qualified_name, range,
@@ -106,7 +141,8 @@ LLM-derived layer is unaffected. No hard failure, no empty UI noise.
 ## Consequences
 
 - The model can no longer hallucinate the symbol delta on supported
-  languages — it is handed the truth and verifies against it.
+  languages — it is handed the truth and verifies against it, and (per
+  the amendment above) is no longer asked to repeat it back.
 - The pinned-dependency surface grows by one wheel per language; each is
   auditable in `requirements.lock`.
 - Two "symbol" notions coexist by design (LLM-semantic, tree-sitter-
