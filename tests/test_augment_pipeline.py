@@ -815,7 +815,7 @@ def test_trace_name_keeps_its_pass_prefix() -> None:
     from semantic_code_review.augment.trace_adapter import trace_filename
     from semantic_code_review.augment.usage import _pass_name
 
-    for prefix in ("hunk", "fold", "overview", "extra-review"):
+    for prefix in ("hunk", "fold", "overview", "extra-review", "explainer", "console"):
         assert _pass_name(trace_filename(prefix, "a/b.py", "tag")) == prefix
 
 

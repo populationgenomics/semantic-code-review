@@ -4,22 +4,29 @@ The LLM is driven by pydantic-ai's `TestModel` so nothing touches a real
 API — these confirm the free-form agent has no submit tool, the
 console-only `hunk(id)` accessor resolves against a bound diff, the seed
 carries the bounded context, and `run_console_turn` round-trips history.
+
+The accounting tests are the guard on the console's share of the run's
+quota: a turn that leaves no trace is a turn `usage.json` reports as
+free, which is how the console's spend went missing in the first place.
 """
 
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 from typing import ClassVar, Self
 
 import pytest
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.models import Model
 from pydantic_ai.models.test import TestModel
 
 from semantic_code_review import paths
-from semantic_code_review.augment import explainer_schema
+from semantic_code_review.augment import explainer_schema, usage
 from semantic_code_review.augment.agents import Client
 from semantic_code_review.augment.console import (
+    CONSOLE_SYSTEM,
     ConsoleCancelled,
     ConsoleNotReady,
     _format_selection,
@@ -771,3 +778,163 @@ async def test_stream_console_turn_cli_backend_honours_cancel(
             question="why?",
             cancel=cancel,
         )
+
+
+# --- accounting ---------------------------------------------------------
+
+
+def _console_traces(run_dir: paths.RunDir) -> list[Path]:
+    return sorted(run_dir.trace.glob("console-*.json"))
+
+
+def _one_trace(run_dir: paths.RunDir) -> dict:
+    traces = _console_traces(run_dir)
+    assert len(traces) == 1, [t.name for t in traces]
+    return json.loads(traces[0].read_text(encoding="utf-8"))
+
+
+async def test_console_turn_records_a_trace_the_usage_summary_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A turn's spend lands in `trace/`, bucketed as its own pass — on a
+    CLI backend it comes off the same subscription quota as the review."""
+    run_dir = _populate_run_dir(tmp_path)
+    client = Client(model="anthropic:claude-opus-4-7")
+    _patch_test_model(monkeypatch, output_text="grounded answer", call_tools=[])
+
+    await run_console_turn(client, run_dir=run_dir, question="why pagination?")
+
+    trace = _one_trace(run_dir)
+    assert trace["system"] == CONSOLE_SYSTEM
+    assert "hunk" in trace["tools"]
+    assert trace["submit_tool"] == ""  # free-form: no structured-output sink
+    assert trace["iterations"]
+
+    summary = usage.summarize_trace_dir(run_dir.trace)
+    assert summary["passes"]["console"]["calls"] == 1
+    assert summary["totals"]["calls"] == 1
+    assert summary["totals"]["total_tokens"] > 0
+
+
+async def test_each_console_turn_records_its_own_trace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two turns are two calls: a second turn must not overwrite the
+    first's trace, which would under-report the run by a whole turn."""
+    run_dir = _populate_run_dir(tmp_path)
+    client = Client(model="anthropic:claude-opus-4-7")
+    _patch_test_model(monkeypatch, output_text="answer", call_tools=[])
+
+    _answer, history = await run_console_turn(client, run_dir=run_dir, question="same question")
+    await run_console_turn(client, run_dir=run_dir, question="same question", history=history)
+
+    assert len(_console_traces(run_dir)) == 2
+    assert usage.summarize_trace_dir(run_dir.trace)["passes"]["console"]["calls"] == 2
+
+
+async def test_console_turn_is_bounded_by_the_request_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The backend's ceiling bounds the conversation's tool loop too, and
+    the requests it spent reaching the ceiling are still accounted."""
+    run_dir = _populate_run_dir(tmp_path)
+    client = Client(model="anthropic:claude-opus-4-7", request_limit=1)
+    # A tool call on the first request, so the loop wants a second one.
+    _patch_test_model(monkeypatch, output_text="never reached", call_tools=["hunk"])
+
+    with pytest.raises(UsageLimitExceeded):
+        await run_console_turn(client, run_dir=run_dir, question="what calls this?")
+
+    trace = _one_trace(run_dir)
+    assert trace["turn_budget"] == {"cap": 1, "used": 1}
+    assert trace["error"]["type"] == "UsageLimitExceeded"
+    assert usage.summarize_trace_dir(run_dir.trace)["passes"]["console"]["failed"] == 1
+
+
+async def test_a_cancelled_turn_records_what_it_spent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelling abandons the answer, not the bill: the requests made
+    before the flag tripped are already spent and stay accounted."""
+    run_dir = _populate_run_dir(tmp_path)
+    client = Client(model="anthropic:claude-opus-4-7")
+    _patch_test_model(monkeypatch, output_text="partial", call_tools=["hunk"])
+
+    cancel = threading.Event()
+    with pytest.raises(ConsoleCancelled):
+        # Trip the flag once the first request has come back and its tool
+        # call fires — mid-turn, with a request already paid for.
+        await stream_console_turn(
+            client,
+            run_dir=run_dir,
+            question="why?",
+            on_tool=lambda _label: cancel.set(),
+            cancel=cancel,
+        )
+
+    trace = _one_trace(run_dir)
+    assert trace["error"]["type"] == "ConsoleCancelled"
+    assert usage.summarize_trace_dir(run_dir.trace)["totals"]["total_tokens"] > 0
+
+
+async def test_a_turn_cancelled_before_its_first_request_records_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pre-tripped cancel spends nothing, and a trace for it would
+    report a call that never happened."""
+    run_dir = _populate_run_dir(tmp_path)
+    client = Client(model="anthropic:claude-opus-4-7")
+    _patch_test_model(monkeypatch, output_text="unused", call_tools=[])
+
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(ConsoleCancelled):
+        await stream_console_turn(client, run_dir=run_dir, question="why?", cancel=cancel)
+
+    assert _console_traces(run_dir) == []
+
+
+async def test_cli_console_turn_records_a_trace(tmp_path: Path) -> None:
+    """The non-streaming CLI path records through the same envelope — it
+    is the backend whose quota the console competes for."""
+    run_dir = _populate_run_dir(tmp_path)
+    client = Client(model=_RecordingCLIModel(), is_subprocess_backend=True)
+
+    await stream_console_turn(client, run_dir=run_dir, question="why pagination?")
+
+    trace = _one_trace(run_dir)
+    assert trace["system"] == CONSOLE_SYSTEM
+    assert len(trace["iterations"]) == 1
+    assert usage.summarize_trace_dir(run_dir.trace)["passes"]["console"]["calls"] == 1
+
+
+async def test_recording_leaves_the_streamed_frames_untouched(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The callbacks behind `console-tool` / `console-delta` fire in the
+    same order and carry the same payloads as before the turn was
+    recorded — the frontend contract is the sequence, not just the text."""
+    run_dir = _populate_run_dir(tmp_path)
+    client = Client(model="anthropic:claude-opus-4-7")
+    _patch_test_model(monkeypatch, output_text="streamed answer", call_tools=["hunk"])
+
+    events: list[tuple[str, str]] = []
+    answer, _history = await stream_console_turn(
+        client,
+        run_dir=run_dir,
+        question="why pagination?",
+        on_delta=lambda text: events.append(("delta", text)),
+        on_tool=lambda label: events.append(("tool", label)),
+    )
+
+    kinds = [kind for kind, _ in events]
+    assert kinds[0] == "tool"  # the tool call is announced before the answer
+    assert set(kinds[1:]) == {"delta"}
+    assert events[0][1].startswith("hunk")
+    assert "".join(text for kind, text in events if kind == "delta") == answer == "streamed answer"
