@@ -281,7 +281,7 @@ def test_symbol_blocks_nest_methods_under_their_class(run_dir: paths.RunDir) -> 
     foo = syms[0]
     assert foo["id"] == "SY0"
     assert foo["title"] == "Foo"
-    assert "modified" in foo["rationale"]
+    assert foo["rationale"] == "class body changed in a.py"
     assert foo["hunk_ids"] == ["H0_0"]  # subtree union
     # baz nests under Foo as the only child.
     children = foo["children"]
@@ -292,6 +292,51 @@ def test_symbol_blocks_nest_methods_under_their_class(run_dir: paths.RunDir) -> 
     assert "added" in baz["rationale"]
     assert baz["hunk_ids"] == ["H0_0"]
     assert "children" not in baz  # leaf carries no children key
+
+
+_MOVED_DIFF = """diff --git a/a.py b/a.py
+index 0123456..89abcde 100644
+--- a/a.py
++++ b/a.py
+@@ -1,3 +1,5 @@
++HEADER = 1
++
+ def keep():
+     return 1
+ def other():
+"""
+
+
+def test_a_moved_only_symbol_is_context_not_a_pill(run_dir: paths.RunDir) -> None:
+    """Byte-identical code that shifted lines is not a change, so it earns
+    no pill of its own — the same treatment an unchanged ancestor gets.
+    Without this the axis is mostly noise: on a measured 6-file diff, 244
+    of 262 same-name-both-sides symbols had only shifted."""
+    run_dir.raw_diff.write_text(_MOVED_DIFF, encoding="utf-8")
+    run_dir.meta.write_text(
+        json.dumps(
+            {
+                "title": "Add a header constant",
+                "author": {"login": "t"},
+                "url": "",
+                "baseRefOid": "aaa",
+                "headRefOid": "bbb",
+            }
+        ),
+        encoding="utf-8",
+    )
+    base = run_dir.base
+    head = run_dir.head
+    base.mkdir()
+    head.mkdir()
+    body = "def keep():\n    return 1\ndef other():\n    return 2\n"
+    (base / "a.py").write_text(body, encoding="utf-8")
+    (head / "a.py").write_text("HEADER = 1\n\n" + body, encoding="utf-8")
+
+    data = build_pending_viewer_json(run_dir)
+
+    # `keep` and `other` both shifted two lines down; only HEADER is new.
+    assert [b["title"] for b in data["symbols"]] == ["HEADER"]
 
 
 def test_symbol_blocks_absent_without_worktrees(run_dir: paths.RunDir) -> None:

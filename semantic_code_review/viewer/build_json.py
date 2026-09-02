@@ -166,9 +166,11 @@ class _SymNode:
     """A node in the per-file changed-symbol tree (slice 5 nesting).
 
     Directly-changed symbols carry a `status`; ancestors synthesized only
-    to give a changed descendant its context have `status=None`. `name`
-    is the short segment (the title shown in the tree); `hunk_ids` is the
-    distinct subtree union, filled bottom-up by `_rollup`.
+    to give a changed descendant its context have `status=None`, as does a
+    symbol that merely moved. `reason` refines a `modified` status into
+    `signature` or `body`. `name` is the short segment (the title shown in
+    the tree); `hunk_ids` is the distinct subtree union, filled bottom-up
+    by `_rollup`.
     """
 
     qn: str
@@ -176,6 +178,7 @@ class _SymNode:
     name: str = ""
     kind: str = ""
     status: str | None = None
+    reason: str | None = None
     start_line: int = 0
     own_hunks: list[str] = field(default_factory=list)
     children: list[str] = field(default_factory=list)
@@ -184,15 +187,19 @@ class _SymNode:
 
 @dataclass
 class _FileSymbols:
-    """The parsed base/head `Symbol` forests for one file.
+    """The parsed base/head `Symbol` forests for one file, and their source.
 
     Both lists are empty for an unsupported language or an unavailable
     worktree — the same graceful-degradation guard the changed-symbol
-    delta uses, so a file with no parse simply carries no spans.
+    delta uses, so a file with no parse simply carries no spans. The
+    sources ride along because `structural.diff_file` compares span text
+    to tell a moved definition from an edited one.
     """
 
     base: list[structural.Symbol] = field(default_factory=list)
     head: list[structural.Symbol] = field(default_factory=list)
+    base_src: str | None = None
+    head_src: str | None = None
 
 
 def _file_symbols(
@@ -209,6 +216,8 @@ def _file_symbols(
     return _FileSymbols(
         base=structural.outline_symbols(base_src, lang) if base_src is not None else [],
         head=structural.outline_symbols(head_src, lang) if head_src is not None else [],
+        base_src=base_src,
+        head_src=head_src,
     )
 
 
@@ -264,13 +273,19 @@ def _symbol_blocks(
     its enclosing class even when the class itself is unchanged — those
     ancestors are synthesized as context nodes from the live forest.
 
+    A `moved` symbol is context, not a change: its text is byte-identical
+    across the revisions, so it renders only when a changed descendant
+    keeps it alive, exactly like an unchanged ancestor. Without that the
+    axis is mostly noise — on a measured 6-file diff, 245 of 262
+    same-name-both-sides symbols had shifted only because lines above
+    them moved.
+
     A parent's `hunk_ids` is the union of its subtree's hunks (clicking it
     filters to every changed descendant); a leaf carries only its own.
-    Any node whose whole subtree touches no hunk — e.g. a symbol that only
-    shifted because lines moved above it, with no changed children —
-    yields no block, so every pill filters to at least one hunk. Absent
-    entirely when neither worktree is available or the language is
-    unsupported — those files carry empty `file_syms` and are skipped.
+    Any node whose whole subtree touches no hunk yields no block, so every
+    pill filters to at least one hunk. Absent entirely when neither
+    worktree is available or the language is unsupported — those files
+    carry empty `file_syms` and are skipped.
     """
     out: list[dict[str, Any]] = []
     counter = [0]
@@ -278,7 +293,7 @@ def _symbol_blocks(
         base_syms, head_syms = syms.base, syms.head
         if not base_syms and not head_syms:
             continue
-        delta = structural.diff_file(f.path, base_syms, head_syms)
+        delta = structural.diff_file(f.path, base_syms, head_syms, base_src=syms.base_src, head_src=syms.head_src)
         head_spans = [
             (h.parsed.new_start, h.parsed.new_start + h.parsed.new_count - 1, f"H{fi}_{hi}")
             for hi, h in enumerate(f.hunks)
@@ -301,7 +316,8 @@ def _symbol_tree_blocks(
     counter: list[int],
 ) -> list[dict[str, Any]]:
     """Build one file's nested changed-symbol blocks (see `_symbol_blocks`)."""
-    # Live side is head for added/modified, base for removed.
+    # Live side is head for added/modified, base for removed. `delta.moved`
+    # is deliberately absent: byte-identical code is context, not a change.
     changed: dict[str, tuple[str, structural.ChangedSymbol, list[str]]] = {}
     for status, spans, syms in (
         ("added", head_spans, delta.added),
@@ -331,6 +347,7 @@ def _symbol_tree_blocks(
     for qn, (status, cs, hids) in changed.items():
         node = ensure(qn)
         node.status, node.kind, node.name = status, cs.kind, cs.name
+        node.reason = cs.reason.value if cs.reason is not None else None
         node.start_line, node.own_hunks = cs.range.start_line, hids
 
     # Fill metadata for synthesized ancestors from the live forests so the
@@ -366,9 +383,7 @@ def _symbol_tree_blocks(
         node = nodes[qn]
         if not node.hunk_ids:  # nothing in this subtree touches a hunk
             return None
-        rationale = (
-            f"{node.status} {node.kind} in {path}" if node.status is not None else f"{node.kind} (unchanged) in {path}"
-        )
+        rationale = _symbol_rationale(node, path)
         block: dict[str, Any] = {
             "id": f"SY{counter[0]}",
             "title": node.name,
@@ -382,6 +397,15 @@ def _symbol_tree_blocks(
         return block
 
     return [b for r in roots if (b := emit(r)) is not None]
+
+
+def _symbol_rationale(node: _SymNode, path: str) -> str:
+    """One line of context under a Symbols-axis pill."""
+    if node.status is None:
+        return f"{node.kind} (unchanged) in {path}"
+    if node.reason is not None:
+        return f"{node.kind} {node.reason} changed in {path}"
+    return f"{node.status} {node.kind} in {path}"
 
 
 def _hunk_sort_key(hid: str) -> tuple[int, int]:
@@ -430,9 +454,6 @@ def _pr_block(diff: AnnotatedDiff, meta: dict[str, Any]) -> dict[str, Any]:
         "url": meta.get("url", ""),
         "summary": ov.summary if ov else "",
         "themes": ov.themes if ov else [],
-        "symbols_added": [s.model_dump() for s in (ov.symbols_added if ov else [])],
-        "symbols_modified": [s.model_dump() for s in (ov.symbols_modified if ov else [])],
-        "symbols_removed": [s.model_dump() for s in (ov.symbols_removed if ov else [])],
         "callgraph_edges": [e.model_dump(by_alias=True) for e in (ov.callgraph_edges if ov else [])],
     }
 

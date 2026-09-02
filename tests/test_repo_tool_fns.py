@@ -236,7 +236,7 @@ def test_changed_symbols_skips_untouched_file(diff_repo: RepoTools) -> None:
 
 def test_changed_symbols_empty_when_base_equals_head(repo: RepoTools) -> None:
     delta = json.loads(mcp_dispatch(repo, "changed_symbols", {}))
-    assert delta == {"added": [], "removed": [], "modified": []}
+    assert delta == {"added": [], "removed": [], "modified": [], "moved": []}
 
 
 def test_changed_symbols_takes_no_query_args() -> None:

@@ -28,6 +28,27 @@ def test_fixture_lint_passes() -> None:
     assert result.ok, result.errors
 
 
+def test_preamble_tolerates_retired_symbol_inventories() -> None:
+    """A run directory written before the LLM symbol echo was retired
+    still carries `symbols_added` / `symbols_modified` / `symbols_removed`
+    in `scr-overview`. `_build_overview` reads named keys, so the retired
+    ones are skipped rather than rejected; re-emitting drops them."""
+    from semantic_code_review.augment.schemas import Overview
+
+    text = FIXTURE.read_text(encoding="utf-8")
+    stale = text.replace(
+        '#scr>   "summary": "Introduces pagination on /users; callers updated.",',
+        '#scr>   "summary": "Introduces pagination on /users; callers updated.",\n'
+        '#scr>   "symbols_added": [{"path": "src/users.py", "kind": "function", "name": "paginate"}],\n'
+        '#scr>   "symbols_modified": [],\n'
+        '#scr>   "symbols_removed": [],',
+    )
+    diff = parse_augmented_diff(stale)
+    assert isinstance(diff.overview, Overview)
+    assert diff.overview.summary.startswith("Introduces pagination")
+    assert emit_augmented_diff(diff) == text
+
+
 def test_fixture_has_expected_structure() -> None:
     from semantic_code_review.augment.schemas import Overview
 
@@ -113,7 +134,6 @@ def test_handwritten_annotated_diff_round_trips() -> None:
         HunkAnnotations,
         LineNote,
         Overview,
-        OverviewSymbol,
         ParsedHunk,
         PRInfo,
         Ref,
@@ -130,7 +150,6 @@ def test_handwritten_annotated_diff_round_trips() -> None:
         ),
         overview=Overview(
             summary="Round-trip fixture.",
-            symbols_added=[OverviewSymbol(path="m.py", kind="function", name="f")],
             themes=["round-trip"],
         ),
         files=[

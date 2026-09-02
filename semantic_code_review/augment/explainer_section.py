@@ -874,7 +874,7 @@ async def generate_explainer_section(
         diff,
         doc,
         targets,
-        overview_json=overview_to_prompt_json(diff, include_symbols=False),
+        overview_json=overview_to_prompt_json(diff),
     )
     if user_prefix:
         user_text = f"{user_prefix}\n\n{user_text}"

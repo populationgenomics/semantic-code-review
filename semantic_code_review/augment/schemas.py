@@ -137,12 +137,6 @@ class FileSymbols(BaseModel):
     removed: list[str] = Field(default_factory=list)
 
 
-class OverviewSymbol(BaseModel):
-    path: str
-    kind: str
-    name: str
-
-
 class OverviewEdge(BaseModel):
     src: str = Field(alias="from")
     dst: str = Field(alias="to")
@@ -179,9 +173,6 @@ class OverviewGroup(BaseModel):
 
 class Overview(BaseModel):
     summary: str = ""
-    symbols_added: list[OverviewSymbol] = Field(default_factory=list)
-    symbols_modified: list[OverviewSymbol] = Field(default_factory=list)
-    symbols_removed: list[OverviewSymbol] = Field(default_factory=list)
     callgraph_edges: list[OverviewEdge] = Field(default_factory=list)
     themes: list[str] = Field(default_factory=list)
     groups: list[OverviewGroup] = Field(default_factory=list)
@@ -344,9 +335,6 @@ class OverviewSubmission(BaseModel):
     """Wire format of `submit_overview`. Consumed by `apply_overview_to_diff`."""
 
     summary: str = Field(description="1-3 sentence summary of the PR's intent.")
-    symbols_added: list[OverviewSymbol] = Field(default_factory=list)
-    symbols_modified: list[OverviewSymbol] = Field(default_factory=list)
-    symbols_removed: list[OverviewSymbol] = Field(default_factory=list)
     callgraph_edges: list[OverviewEdge] = Field(
         default_factory=list,
         description="Introduced or modified calls (best-effort — omit if unsure).",

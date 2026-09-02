@@ -5,21 +5,6 @@
 #scr: scr-model: claude-opus-4-7 2026-04-22
 #scr: scr-overview: {
 #scr>   "summary": "Introduces pagination on /users; callers updated.",
-#scr>   "symbols_added": [
-#scr>     {
-#scr>       "path": "src/users.py",
-#scr>       "kind": "function",
-#scr>       "name": "paginate"
-#scr>     }
-#scr>   ],
-#scr>   "symbols_modified": [
-#scr>     {
-#scr>       "path": "src/users.py",
-#scr>       "kind": "function",
-#scr>       "name": "list_users"
-#scr>     }
-#scr>   ],
-#scr>   "symbols_removed": [],
 #scr>   "callgraph_edges": [
 #scr>     {
 #scr>       "from": "src/users.py:list_users",

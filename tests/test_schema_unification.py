@@ -18,22 +18,15 @@ from semantic_code_review.augment.schemas import (
 
 
 def test_overview_submission_dump_has_keys_apply_overview_reads() -> None:
-    """`apply_overview_to_diff` reads keys: summary, symbols_added,
-    symbols_modified, symbols_removed, callgraph_edges, themes, files,
-    groups. The model's dump must produce those same keys."""
+    """`apply_overview_to_diff` reads keys: summary, callgraph_edges,
+    themes, files, groups. The model's dump must produce those same keys
+    — and must not carry the retired symbol inventories, which the
+    deterministic `SymbolDelta` owns (ADR 0001)."""
     sub = OverviewSubmission(summary="hi", files=[])
     dump = sub.model_dump(by_alias=True)
-    expected = {
-        "summary",
-        "symbols_added",
-        "symbols_modified",
-        "symbols_removed",
-        "callgraph_edges",
-        "themes",
-        "files",
-        "groups",
-    }
+    expected = {"summary", "callgraph_edges", "themes", "files", "groups"}
     assert expected <= dump.keys()
+    assert not {"symbols_added", "symbols_modified", "symbols_removed"} & dump.keys()
 
 
 def test_hunk_annotations_dump_has_keys_apply_hunk_reads() -> None:

@@ -41,8 +41,9 @@ HTTP server with a back-channel:
   a shipped grammar.
 - **Deterministic overview seed.** The overview pass is seeded with the
   base→head `SymbolDelta` (`augment/overview.py` `_format_symbol_seed`),
-  so `symbols_added` / `symbols_modified` come from the parse rather than
-  the LLM guessing.
+  so the symbol inventory comes from the parse rather than the LLM
+  guessing — and the model no longer restates it, which is what its
+  `symbols_*` fields were (ADR 0001, amended).
 
 Grammars ship as three individual packages — `tree-sitter-python`,
 `tree-sitter-javascript`, `tree-sitter-typescript`. Other languages

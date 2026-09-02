@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 
 from semantic_code_review.structural import (
+    ChangeReason,
     Symbol,
+    SymbolDelta,
     diff_file,
     enclosing_symbol,
     language_for_path,
@@ -193,45 +195,121 @@ class C:
 """
 
 
+def _delta(base: str = _BASE, head: str = _HEAD, path: str = "m.py") -> SymbolDelta:
+    return diff_file(
+        path,
+        outline_symbols(base, "python"),
+        outline_symbols(head, "python"),
+        base_src=base,
+        head_src=head,
+    )
+
+
 def test_diff_added_removed_by_qualified_name() -> None:
-    delta = diff_file("m.py", outline_symbols(_BASE, "python"), outline_symbols(_HEAD, "python"))
+    delta = _delta()
     assert [c.qualified_name for c in delta.added] == ["added"]
     assert [c.qualified_name for c in delta.removed] == ["gone"]
 
 
-def test_diff_modified_is_differing_range() -> None:
-    delta = diff_file("m.py", outline_symbols(_BASE, "python"), outline_symbols(_HEAD, "python"))
-    # C.m gained a comment line → its range differs → modified. C's range
-    # also shifts. `keep` and `X` are byte-identical on both sides.
-    qns = {c.qualified_name for c in delta.modified}
-    assert "C.m" in qns
-    assert "keep" not in qns and "X" not in qns
+def test_diff_modified_is_a_real_code_change() -> None:
+    delta = _delta()
+    # C.m gained a comment line → its text differs → modified. C's text
+    # differs too (its child grew). `keep` and `X` are byte-identical.
+    assert {c.qualified_name for c in delta.modified} == {"C", "C.m"}
 
 
 def test_diff_carries_path_and_live_side_range() -> None:
-    delta = diff_file("m.py", outline_symbols(_BASE, "python"), outline_symbols(_HEAD, "python"))
-    added = delta.added[0]
+    added = _delta().added[0]
     assert added.path == "m.py"
     assert added.kind == "function" and added.signature == "def added()"
 
 
+def test_modified_reason_is_signature_when_the_declaration_moves() -> None:
+    base = "def f(a):\n    return a\n"
+    head = "def f(a, *, b=1):\n    return a\n"
+    assert [(c.qualified_name, c.reason) for c in _delta(base, head).modified] == [("f", ChangeReason.SIGNATURE)]
+
+
+def test_modified_reason_is_body_when_only_the_implementation_moves() -> None:
+    base = "def f(a):\n    return a\n"
+    head = "def f(a):\n    return a\n    # trailing\n"
+    assert [(c.qualified_name, c.reason) for c in _delta(base, head).modified] == [("f", ChangeReason.BODY)]
+
+
+def test_a_pure_line_shift_is_moved_not_modified() -> None:
+    base = "def f():\n    return 1\n"
+    head = "X = 0\n\n\ndef f():\n    return 1\n"
+    delta = _delta(base, head)
+    assert not delta.modified
+    assert [(c.qualified_name, c.from_path) for c in delta.moved] == [("f", None)]
+
+
+def test_a_line_count_neutral_body_edit_under_a_shift_is_body_not_moved() -> None:
+    """Span *length* cannot tell these apart — the text can.
+
+    `f` shifts down two lines and edits one line in place, so
+    `end - start` is identical on both sides. Measured on a real diff, a
+    length comparison misfiled one of six genuine API changes this way.
+    """
+    base = "def f():\n    return 1\n"
+    head = "X = 0\n\ndef f():\n    return 2\n"
+    delta = _delta(base, head)
+    assert not delta.moved
+    assert [(c.qualified_name, c.reason) for c in delta.modified] == [("f", ChangeReason.BODY)]
+
+
 def test_diff_added_file_is_all_added() -> None:
-    delta = diff_file("new.py", [], outline_symbols(_HEAD, "python"))
-    assert not delta.removed and not delta.modified
+    delta = diff_file("new.py", [], outline_symbols(_HEAD, "python"), base_src=None, head_src=_HEAD)
+    assert not delta.removed and not delta.modified and not delta.moved
     assert {c.qualified_name for c in delta.added} >= {"X", "keep", "added", "C", "C.m"}
 
 
 def test_diff_deleted_file_is_all_removed() -> None:
-    delta = diff_file("old.py", outline_symbols(_BASE, "python"), [])
-    assert not delta.added and not delta.modified
+    delta = diff_file("old.py", outline_symbols(_BASE, "python"), [], base_src=_BASE, head_src=None)
+    assert not delta.added and not delta.modified and not delta.moved
     assert "gone" in {c.qualified_name for c in delta.removed}
 
 
 def test_merge_concatenates_per_file_deltas() -> None:
-    d1 = diff_file("a.py", [], outline_symbols("def a():\n    pass\n", "python"))
-    d2 = diff_file("b.py", [], outline_symbols("def b():\n    pass\n", "python"))
+    d1 = _delta("", "def a():\n    pass\n", path="a.py")
+    d2 = _delta("", "def b():\n    pass\n", path="b.py")
     merged = merge([d1, d2])
     assert {(c.path, c.qualified_name) for c in merged.added} == {("a.py", "a"), ("b.py", "b")}
+
+
+def test_body_sha_stays_out_of_the_wire_format() -> None:
+    """It is an internal comparison key, not part of the `Symbol` currency."""
+    dumped = json.loads(_delta().model_dump_json())
+    assert all("body_sha" not in c for bucket in dumped.values() for c in bucket)
+
+
+# --- cross-file moves (resolved diff-wide, in `merge`) ---------------------
+
+_FN = "def helper(x: int) -> int:\n    return x + 1\n"
+
+
+def test_merge_collapses_a_cross_file_move() -> None:
+    merged = merge([_delta(_FN, "", path="old.py"), _delta("", _FN, path="new.py")])
+    assert not merged.added and not merged.removed
+    assert [(c.path, c.from_path, c.qualified_name) for c in merged.moved] == [("new.py", "old.py", "helper")]
+
+
+def test_merge_leaves_a_moved_and_edited_symbol_as_two_events() -> None:
+    """Only byte-identical code is a move by construction. Pairing an
+    edited definition with a same-named removal would be an inference,
+    which this layer does not make (ADR 0001).
+    """
+    merged = merge([_delta(_FN, "", path="old.py"), _delta("", _FN.replace("x + 1", "x + 2"), path="new.py")])
+    assert not merged.moved
+    assert [c.path for c in merged.added] == ["new.py"]
+    assert [c.path for c in merged.removed] == ["old.py"]
+
+
+def test_merge_does_not_link_same_named_symbols_with_different_bodies() -> None:
+    gone = _delta("def helper():\n    return 1\n", "", path="a.py")
+    arrived = _delta("", "def helper():\n    return 2\n", path="b.py")
+    merged = merge([gone, arrived])
+    assert not merged.moved and len(merged.added) == 1 and len(merged.removed) == 1
 
 
 # --- TypeScript / TSX / JavaScript (Slice 6) -------------------------------
@@ -315,10 +393,14 @@ def test_js_outline_has_no_signature() -> None:
     assert box_method.qualified_name == "Box.open" and box_method.signature is None
 
 
+_TS_BASE = "function keep(): void {}\nfunction gone(): void {}\n"
+_TS_HEAD = "function keep(): void {}\nfunction added(): void {}\n"
+
+
 def test_ts_changed_symbols_diff() -> None:
-    base = outline_symbols("function keep(): void {}\nfunction gone(): void {}\n", "typescript")
-    head = outline_symbols("function keep(): void {}\nfunction added(): void {}\n", "typescript")
-    delta = diff_file("m.ts", base, head)
+    base = outline_symbols(_TS_BASE, "typescript")
+    head = outline_symbols(_TS_HEAD, "typescript")
+    delta = diff_file("m.ts", base, head, base_src=_TS_BASE, head_src=_TS_HEAD)
     assert [c.qualified_name for c in delta.added] == ["added"]
     assert [c.qualified_name for c in delta.removed] == ["gone"]
 
