@@ -29,9 +29,9 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import pathlib
 import threading
 from collections.abc import Callable, Coroutine
-from pathlib import Path
 from typing import Any, Protocol
 
 from .. import errors
@@ -45,7 +45,7 @@ log = logging.getLogger(__name__)
 #: server's SSE channel; pass it through to `augment_run_dir(on_event=)`
 #: so the pipeline can stream overview / per-hunk events to the page.
 AugmentCallable = Callable[
-    [Path, Callable[[str, dict], None]],
+    [pathlib.Path, Callable[[str, dict], None]],
     Coroutine[Any, Any, None],
 ]
 
@@ -311,7 +311,7 @@ _GENERATED_FOLD_SUMMARY = "Generated / lock file — not summarised."
 _FILE_TEXT_CAP_BYTES = 2_000_000
 
 
-def _read_worktree_file(worktree: Path, rel: str) -> str | None:
+def _read_worktree_file(worktree: pathlib.Path, rel: str) -> str | None:
     """Read a file from a base/head worktree; None when absent, too
     large, or unreadable.
 
@@ -319,7 +319,7 @@ def _read_worktree_file(worktree: Path, rel: str) -> str | None:
     a filesystem read, so the path-traversal guard stays even though the
     input is already trusted.
     """
-    if not rel or ".." in Path(rel).parts:
+    if not rel or ".." in pathlib.Path(rel).parts:
         return None
     path = worktree / rel
     try:
@@ -345,7 +345,7 @@ class ReviewSession:
     def __init__(
         self,
         *,
-        run_dir: Path,
+        run_dir: pathlib.Path,
         viewer_json: dict[str, Any],
         store: comments.CommentStore,
         publish: EventPublisher,

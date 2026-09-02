@@ -15,12 +15,17 @@ from __future__ import annotations
 
 import dataclasses
 
+#: The model a config falls back to. One definition, because a caller
+#: that omits the model must not get a different answer depending on
+#: which layer it built its config in.
+DEFAULT_MODEL = "claude-opus-4-7"
+
 
 @dataclasses.dataclass(frozen=True)
 class AugmentConfig:
     """Inputs to `augment_run_dir` that are pure configuration."""
 
-    model: str = "claude-opus-4-7"
+    model: str = DEFAULT_MODEL
     concurrency: int = 8
     #: File globs to skip in the LLM passes (config `[augment].skip_globs`).
     skip_globs: tuple[str, ...] = ()

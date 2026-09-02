@@ -264,11 +264,12 @@ def test_fold_summary_leaves_an_unknown_region_unseeded(tmp_path: Path) -> None:
     assert seen == {"qualified_name": None, "kind": None}
 
 
-def test_fold_summary_skips_a_generated_file(tmp_path: Path) -> None:
+@pytest.mark.parametrize("status", ["generated", "binary"])
+def test_fold_summary_skips_an_unreviewed_file(tmp_path: Path, status: str) -> None:
     """A generated / lock / binary file gets a canned summary and the
     summariser is never invoked — expanding a fold inside one must not be
     the way a lock file reaches the model."""
-    h = _Harness(tmp_path, viewer_json=_fold_viewer_json(status="generated"))
+    h = _Harness(tmp_path, viewer_json=_fold_viewer_json(status=status))
 
     async def boom(*_a: Any) -> dict:
         raise AssertionError("fold summariser must not run for a generated file")

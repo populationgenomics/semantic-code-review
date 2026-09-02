@@ -29,7 +29,7 @@ class ReviewConfig:
 
     runs_root: pathlib.Path = dataclasses.field(default_factory=paths.default_runs_root)
     augment: bool = True
-    model: str = "claude-opus-4-7"
+    model: str = augment_config.DEFAULT_MODEL
     concurrency: int = 8
     no_cache: bool = False
     cache_dir: pathlib.Path | None = None
