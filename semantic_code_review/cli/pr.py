@@ -55,7 +55,7 @@ def pr(
             "Path to a markdown/text file with an extra review prompt. "
             "Runs as a single PR-level LLM call alongside the main "
             "comprehension pass; line-anchored notes merge into the "
-            "matching hunk's line_notes. Overrides [augment].extra_prompt."
+            "matching hunk's spans. Overrides [augment].extra_prompt."
         ),
     ),
     explainer_prompt: Path = typer.Option(
