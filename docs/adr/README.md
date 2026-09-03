@@ -12,3 +12,4 @@ edit: a later ADR can mark an earlier one `Superseded by NNNN`.
 - [0005 — Thinking on the augment passes, and the output mode it forces](0005-thinking-on-the-augment-passes.md)
 - [0006 — One visibility model](0006-one-visibility-model.md) — in flight, PR #11
 - [0007 — Change explainer](0007-change-explainer.md)
+- [0008 — Hide by the diff, fold by the structure, label by meaning](0008-hide-by-the-diff-fold-by-the-structure-label-by-meaning.md) — proposed
