@@ -365,6 +365,22 @@ def test_removed_section_rides_with_the_file_context_in_both_forms() -> None:
         assert "# Removed from this file" in prompt
 
 
+def test_both_system_prompts_ask_for_boundary_ids_and_never_a_coordinate() -> None:
+    """The model emits no coordinate for a span (ADR 0008): the prompt names
+    the `b<n>` gutter, says spans nest and need not cover, and no longer
+    explains inclusive ends or a range to stay inside."""
+    from semantic_code_review.augment.prompts import HUNK_BATCH_SYSTEM, HUNK_SYSTEM
+
+    for prompt in (HUNK_SYSTEM, HUNK_BATCH_SYSTEM):
+        assert "`spans`" in prompt
+        assert "BOUNDARY IDS" in prompt
+        assert "may nest" in prompt
+        assert "need not cover" in prompt
+        assert "single-line callout" in prompt
+        for retired in ("new_start", "new_count", "line_notes", "segments", "+first..+last"):
+            assert retired not in prompt
+
+
 def test_both_system_prompts_explain_head_versus_base_search() -> None:
     """The rephrase loop came from not knowing empty was the real answer."""
     from semantic_code_review.augment.prompts import HUNK_BATCH_SYSTEM, HUNK_SYSTEM
