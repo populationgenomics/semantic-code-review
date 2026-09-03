@@ -23,15 +23,17 @@ in `/data.json`.
 
 - `head_lines`, `_load_head_lines` and `_HEAD_LINES_CAP` go from
   `build_json.py` and `types.d.ts`.
-- A file over 5,000 lines becomes expandable past the diff's context. A
-  deleted file becomes expandable at all: its content is on the base side.
+- A file over 5,000 lines, and a `generated` or `binary` file, becomes
+  expandable past the diff's context. `/file-text`'s own 2 MB per-side cap
+  goes with the bundle's. (A deleted file needs no disclosure — its diff is
+  every base line as a deletion.)
 - `/data.json` loses the full text of every file it carried.
 - The fetched text is cached per file and shared with rendered mode's cache;
   one round trip per file per session, whichever mode asks first.
 
 **Gate:** the invariant is testable — every line of both sides of every file
-in a fixture is reachable through a chip, including a deleted file and a file
-over the old cap.
+in a fixture is reachable, through a chip or through the hunk itself,
+including a deleted file, a generated file, and a file over the old cap.
 
 ## Slice 2 — Positioning follows the diff, scored by the structure
 

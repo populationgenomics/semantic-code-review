@@ -145,12 +145,14 @@ that its edges are chosen from positions that exist rather than typed.
   go. The `segments` fold rung goes; the depth ladder replaces it.
 - Comment anchors are `(file, side, line)` and are unaffected by any of this;
   positioning reorders rows within a hunk but not the lines they carry.
-- Disclosure today is an eager `head_lines` bundle in `/data.json`, capped at
-  5,000 lines and head-side only: a larger file cannot be expanded past the
-  diff's context, and a deleted file cannot be expanded at all. Both violate
-  the invariant. The lazy `/file-text` route rendered mode already uses serves
-  both sides with no cap; region expansion moves onto it, the bundle and its
-  cap go, and `/data.json` shrinks by the full text of every file it carried.
+- Disclosure today is an eager `head_lines` bundle in `/data.json`, absent
+  for any file over 5,000 lines and for any file whose role is `generated` or
+  `binary` — in one real 33-file run, 14 files had no expandable context, 10
+  of them for role rather than size. The lazy `/file-text` route rendered
+  mode already uses serves both sides, but carried its own 2 MB per-side cap.
+  Region expansion moves onto that route, both caps and the role gate go, and
+  `/data.json` drops the file text it carried. A deleted file is not a case:
+  its diff is every base line as a deletion, so nothing in it is hidden.
 - Spans that cross hunks need a pass that sees more than one hunk. The
   per-file batch pass exists and is disabled (`batch_size`, parked); this ADR
   does not decide which pass owns segmentation, only that the anchors are
