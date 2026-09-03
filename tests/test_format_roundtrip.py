@@ -67,11 +67,10 @@ def test_fixture_has_expected_structure() -> None:
     assert h.parsed.old_start == 1 and h.parsed.old_count == 2
     assert h.parsed.new_start == 1 and h.parsed.new_count == 7
     assert h.ann.confidence == 85
-    assert len(h.ann.segments) == 2
-    assert h.ann.segments[0].new_start == 1 and h.ann.segments[0].new_count == 3
-    assert h.ann.segments[0].smells[0].tag == "string-sql"
-    assert h.ann.segments[1].new_start == 5 and h.ann.segments[1].new_count == 3
-    assert len(h.ann.line_notes) == 1 and h.ann.line_notes[0].line == 5
+    # Two multi-line spans and one single-line callout nested in the second.
+    assert [(s.start, s.end) for s in h.ann.spans] == [(1, 3), (5, 7), (5, 5)]
+    assert h.ann.spans[0].smells[0].tag == "string-sql"
+    assert h.ann.spans[2].intent.startswith("size=50")
     assert len(h.ann.refs) == 2
 
 
@@ -107,6 +106,40 @@ def test_sidecar_round_trip(tmp_path: Path) -> None:
     assert reloaded.model_dump() == diff.model_dump()
 
 
+def test_older_sidecar_with_segments_and_line_notes_loads_as_spans(tmp_path: Path) -> None:
+    """A sidecar written before slice 4 carries `segments` and `line_notes`
+    on each hunk. It loads with them as spans, matches the text form's
+    parse of the same run, and dumps in the new shape."""
+    diff = parse_augmented_diff(FIXTURE.read_text(encoding="utf-8"))
+    data = json.loads(diff.model_dump_json())
+    ann = data["files"][0]["hunks"][0]["ann"]
+    ann.pop("spans")
+    ann["segments"] = [
+        {
+            "new_start": 1,
+            "new_count": 3,
+            "intent": "New paginate() helper that builds the LIMIT/OFFSET suffix.",
+            "smells": [{"tag": "string-sql", "note": "SQL is still interpolated, not parameterized."}],
+            "context": "",
+            "refs": [],
+        },
+        {
+            "new_start": 5,
+            "new_count": 3,
+            "intent": "list_users gains keyword args with safe defaults; existing callers continue to work.",
+            "smells": [],
+            "context": "",
+            "refs": [],
+        },
+    ]
+    ann["line_notes"] = [{"line": 5, "body": "size=50 is an implicit API contract; worth documenting."}]
+    path = tmp_path / "old.scr.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    loaded = load_sidecar(path)
+    assert loaded.model_dump() == diff.model_dump()
+    assert "segments" not in loaded.model_dump_json()
+
+
 def test_lint_reports_sidecar_mismatch(tmp_path: Path) -> None:
     text = FIXTURE.read_text(encoding="utf-8")
     diff = parse_augmented_diff(text)
@@ -128,16 +161,15 @@ def test_handwritten_annotated_diff_round_trips() -> None:
         AnnotatedDiff,
         AnnotatedFile,
         AnnotatedHunk,
+        AnnotationSpan,
         FileAnnotations,
         FileRole,
         FileSymbols,
         HunkAnnotations,
-        LineNote,
         Overview,
         ParsedHunk,
         PRInfo,
         Ref,
-        Segment,
         Smell,
     )
 
@@ -180,8 +212,10 @@ def test_handwritten_annotated_diff_round_trips() -> None:
                             smells=[Smell(tag="missing-test", note="no test yet")],
                             context="No callers yet.",
                             refs=[Ref(path="m.py", line=2, reason="defines f")],
-                            line_notes=[LineNote(line=2, body="entry point")],
-                            segments=[Segment(new_start=1, new_count=2, intent="def + body")],
+                            spans=[
+                                AnnotationSpan(start=1, end=2, intent="def + body"),
+                                AnnotationSpan(start=2, end=2, intent="entry point"),
+                            ],
                         ),
                     ),
                 ],

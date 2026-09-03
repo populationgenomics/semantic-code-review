@@ -77,15 +77,47 @@ class Ref(BaseModel):
     reason: str = ""
 
 
-class LineNote(BaseModel):
-    line: int
-    body: str
+class AnnotationSpan(BaseModel):
+    """A labelled range of a hunk's post-image lines (ADR 0008).
 
+    `start`..`end` are inclusive 1-indexed post-image line numbers; a
+    single-line callout has `start == end`. Spans nest and are under no
+    obligation to cover or partition the hunk. Two spans either nest or
+    are disjoint — a partial overlap is rejected by the validator and the
+    parser. The model never writes these numbers: it names boundary ids
+    (`SpanSubmission`) and `augment.hunks.build_hunk_annotations`
+    resolves them.
+    """
 
-class Segment(BaseModel):
-    new_start: int
-    new_count: int
+    start: int
+    end: int
     intent: str = ""
+    smells: list[Smell] = Field(default_factory=list)
+    context: str = ""
+    refs: list[Ref] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _ordered(self) -> AnnotationSpan:
+        if self.end < self.start:
+            raise ValueError(f"span end +{self.end} before start +{self.start}")
+        return self
+
+
+class SpanSubmission(BaseModel):
+    """One span as the model emits it: boundary ids, never line numbers.
+
+    `start` / `end` name entries of the hunk's boundary list — the `b<n>`
+    gutter in the prompt — and are resolved to post-image lines by the
+    validator. An id outside the list has no line to resolve to, so a
+    span cannot leave the hunk or land in pre-image coordinates.
+    """
+
+    start: str = Field(description="Boundary id from the hunk's `b<n>` gutter where the span starts, e.g. `b4`.")
+    end: str | None = Field(
+        default=None,
+        description="Boundary id where the span ends (inclusive). Omit for a single-line callout.",
+    )
+    intent: str = Field(default="", description="What this range does, or the note for a single-line callout.")
     smells: list[Smell] = Field(default_factory=list)
     context: str = ""
     refs: list[Ref] = Field(default_factory=list)
@@ -244,20 +276,20 @@ class ParsedDiff(BaseModel):
 class HunkSubmission(BaseModel):
     """What the per-hunk pass asks the model for.
 
-    Split from `HunkAnnotations`, the carried form, so the output schema
-    holds only fields the model is meant to fill: a storage field put
-    into the grammar costs every hunk for a field the prompt told the
-    model to leave empty (ADR 0005).
+    The submission shape, not the storage shape (ADR 0005): `spans`
+    carry boundary ids here and resolved lines on `HunkAnnotations`, and
+    the output grammar holds only fields the model is meant to fill.
     """
 
     intent: str = Field(description="1-2 sentences of MOTIVE, not mechanics.")
-    segments: list[Segment] = Field(
+    spans: list[SpanSubmission] = Field(
         default_factory=list,
         description=(
-            "Split the hunk into semantically distinct edits when present "
-            "(e.g. a refactor plus an unrelated fix). Each segment carries "
-            "post-image new_start/new_count and its own intent. Omit if "
-            "the hunk is single-intent."
+            "Labelled ranges of the hunk, each bounded by boundary ids from the "
+            "`b<n>` gutter. One per semantically distinct edit when the hunk has "
+            "several; a single-line callout for a note too specific for `intent`. "
+            "Spans may nest and need not cover the hunk; they must not partially "
+            "overlap. Omit when the hunk is single-intent with nothing line-specific to say."
         ),
     )
     smells: list[Smell] = Field(default_factory=list)
@@ -267,27 +299,61 @@ class HunkSubmission(BaseModel):
     )
     refs: list[Ref] = Field(default_factory=list)
     confidence: int | None = Field(default=None, ge=0, le=100)
-    line_notes: list[LineNote] = Field(default_factory=list)
 
 
-class HunkAnnotations(HunkSubmission):
+class HunkAnnotations(BaseModel):
     """The per-hunk annotation block carried on `AnnotatedHunk.ann`.
 
-    Shape-identical to `HunkSubmission` today; the two stay distinct so
-    storage can grow a field without it entering the output grammar.
-    Fold summaries, once here, live on the file
+    `HunkSubmission` with its spans resolved to post-image lines. Kept
+    distinct so storage can grow a field without it entering the output
+    grammar. Fold summaries live on the file
     (`FileAnnotations.fold_descriptions`): a region is a stretch of the
     file, not of a hunk.
     """
+
+    intent: str
+    spans: list[AnnotationSpan] = Field(default_factory=list)
+    smells: list[Smell] = Field(default_factory=list)
+    context: str = ""
+    refs: list[Ref] = Field(default_factory=list)
+    confidence: int | None = Field(default=None, ge=0, le=100)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lift_segments_and_line_notes(cls, data: object) -> object:
+        """Read a sidecar written before segments and line notes became spans.
+
+        A `segments[]` entry (`new_start`/`new_count`) becomes a span over
+        its range; a `line_notes[]` entry (`line`/`body`) a single-line span
+        whose intent is the note. Lifted spans follow any `spans` already
+        present, segments before notes — the order the old text form
+        emitted them. The input is not mutated.
+        """
+        if not isinstance(data, dict) or not ("segments" in data or "line_notes" in data):
+            return data
+        data = dict(data)
+        spans = list(data.get("spans") or [])
+        for seg in data.pop("segments", None) or []:
+            start = int(seg["new_start"])
+            spans.append(
+                {
+                    **{k: v for k, v in seg.items() if k not in ("new_start", "new_count")},
+                    "start": start,
+                    "end": start + int(seg["new_count"]) - 1,
+                }
+            )
+        for note in data.pop("line_notes", None) or []:
+            spans.append({"start": int(note["line"]), "end": int(note["line"]), "intent": note.get("body", "")})
+        return {**data, "spans": spans}
 
 
 class BatchHunkAnnotations(HunkSubmission):
     """One hunk's annotations inside a batched `submit_annotations` call.
 
     `hunk_index` is the hunk's 0-based position **within the file**, the
-    same numbering the prompt labels each `# Hunk` block with. Line
-    coordinates elsewhere in the payload stay post-image, exactly as in
-    the single-hunk form — batching changes only which hunks share a
+    same numbering the prompt labels each `# Hunk` block with. Boundary
+    ids are numbered across the whole batch, so a span's ids also say
+    which hunk it belongs to — batching changes only which hunks share a
     call, never how a hunk is addressed.
     """
 

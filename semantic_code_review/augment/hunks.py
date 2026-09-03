@@ -1,14 +1,15 @@
-"""Per-hunk pass: intent + segments + smells + context + refs.
+"""Per-hunk pass: intent + spans + smells + context + refs.
 
 Fused into a single call per hunk for v1. The system prompt frames the
-job as comprehension-first; smells are secondary.
+job as comprehension-first; smells are secondary. Spans are addressed by
+boundary ids (`boundaries`), never by line numbers the model computes.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -20,16 +21,16 @@ from ..augment.schemas import (
     AnnotatedDiff,
     AnnotatedFile,
     AnnotatedHunk,
+    AnnotationSpan,
     HunkAnnotations,
-    LineNote,
     Overview,
     ParsedHunk,
     Ref,
-    Segment,
     Smell,
 )
 from ..cache.store import CacheStore
 from ..format import linenos
+from . import boundaries
 from .agents import Client, make_batch_agent, make_hunk_agent
 from .pass_ import PassMeta, run_pass
 from .prompts import HUNK_BATCH_SYSTEM, HUNK_SYSTEM
@@ -189,28 +190,31 @@ def _capped(entries: list[str]) -> list[str]:
     return [*entries[:_REMOVED_SEED_MAX], f"... and {dropped} more (list truncated)"]
 
 
-def _hunk_block(label: str, hunk: AnnotatedHunk) -> str:
-    """One `# Hunk` prompt block: label, post-image range, numbered body.
+def _hunk_block(label: str, hunk: AnnotatedHunk, bounds: boundaries.Boundaries) -> str:
+    """One `# Hunk` prompt block: label, boundary summary, numbered body.
 
-    The range line states the hunk's first and last post-image line
-    outright. Left to derive the bound from the `@@` header, the model
-    lands on `new_start + new_count` — one past the last line — so its
-    final segment overshoots the hunk and gets clamped or dropped.
+    The body's left gutter carries the boundary ids (`b<n>`) beside the
+    post-image line numbers; the summary line names the ids' range and
+    the definitions the hunk touches as id pairs, so "this whole
+    function" is a pair the model copies rather than reads off the
+    gutter. A deletion-only hunk has no post-image lines and no
+    boundaries, and the block says so.
     """
     parsed = hunk.parsed
-    if parsed.new_count <= 0:
-        span = "post-image lines: none — this hunk only deletes, so emit no `segments`."
+    if not bounds.lines:
+        summary = "post-image lines: none — this hunk only deletes, so it has no boundaries; emit no `spans`."
     else:
-        last = parsed.new_start + parsed.new_count - 1
-        span = (
-            f"post-image lines: +{parsed.new_start}..+{last} inclusive — the first line is "
-            f"+{parsed.new_start}, the LAST line is +{last}. Every `segments[]` entry must lie "
-            f"inside that range (`new_start` >= {parsed.new_start}, "
-            f"`new_start + new_count - 1` <= {last}) and must not overlap another: a segment "
-            f"starts one line AFTER the previous segment's last line."
+        first, last = bounds.id_for(bounds.lines[0]), bounds.id_for(bounds.lines[-1])
+        summary = (
+            f"boundaries: {first}..{last} (left gutter); a span is a pair of these ids, or one id for a single line."
         )
-    numbered = linenos.number_for_prompt(f"{parsed.header}\n{parsed.body}")
-    return f"{label}\n{span}\n{numbered}"
+        if bounds.structure:
+            summary += "\nstructure: " + "; ".join(bounds.structure)
+    body = parsed.body[:-1] if parsed.body.endswith("\n") else parsed.body
+    # Without the strip, the body's final newline reads as one more context
+    # line, numbered `new_start + new_count` — a line the hunk does not have.
+    numbered = linenos.number_for_prompt(f"{parsed.header}\n{body}", bounds.gutter())
+    return f"{label}\n{summary}\n{numbered}"
 
 
 def format_hunk_prompt(
@@ -220,6 +224,8 @@ def format_hunk_prompt(
     file_summary: str,
     file_outline: str = "",
     removed_symbols: str = "",
+    *,
+    bounds: boundaries.Boundaries,
 ) -> list[UserContent]:
     """Assemble the user-prompt blocks for one hunk call.
 
@@ -237,13 +243,16 @@ def format_hunk_prompt(
     than emitted as an empty section: an unsupported language genuinely
     has no outline, and a header-only section reads as "there is nothing
     here".
+
+    `bounds` is the hunk's boundary list; the same object resolves the
+    returned spans in `build_hunk_annotations`.
     """
     file_block = f"# File summary\n{file_summary}"
     if file_outline:
         file_block += f"\n\n# File outline (deterministic — tree-sitter, head side)\n{file_outline}"
     if removed_symbols:
         file_block += f"\n\n{removed_symbols}"
-    hunk_text = f"# File\npath: {fp.path}\nlang: {fp.ann.lang or ''}\n\n{_hunk_block('# Hunk', hunk)}"
+    hunk_text = f"# File\npath: {fp.path}\nlang: {fp.ann.lang or ''}\n\n{_hunk_block('# Hunk', hunk, bounds)}"
     return [
         f"# PR overview\n{overview_json}",
         CachePoint(),
@@ -283,18 +292,25 @@ async def run_hunk_pass(
     file_summary: str,
     repo_tools: RepoTools,
     model: str,
+    bounds: boundaries.Boundaries,
     file_outline: str = "",
     removed_symbols: str = "",
     cache: CacheStore | None = None,
     trace_dir: Path | None = None,
 ) -> dict[str, Any]:
+    """Annotate one hunk. `bounds` is what `build_hunk_annotations` resolves the payload with."""
     payload = await run_pass(
         _HUNK,
         client=client,
         agent=make_hunk_agent(client.model, native_output=client.native_output),
-        user_content=format_hunk_prompt(fp, hunk, overview_json, file_summary, file_outline, removed_symbols),
+        user_content=format_hunk_prompt(
+            fp, hunk, overview_json, file_summary, file_outline, removed_symbols, bounds=bounds
+        ),
         system=HUNK_SYSTEM,
         model=model,
+        # The boundary list is in the key: a cached payload's ids resolve
+        # against the list it was written for, and the list depends on the
+        # head file's structure as well as the hunk's text.
         cache_inputs=(
             overview_json,
             file_summary,
@@ -303,6 +319,7 @@ async def run_hunk_pass(
             hunk.parsed.body,
             file_outline,
             removed_symbols,
+            _boundary_cache_input(bounds),
         ),
         deps=repo_tools,
         model_settings=_hunk_model_settings(client),
@@ -332,12 +349,18 @@ def format_batch_system(overview_json: str) -> str:
     return f"{HUNK_BATCH_SYSTEM}\n\n# PR overview\n{overview_json}"
 
 
+def _boundary_cache_input(bounds: boundaries.Boundaries) -> str:
+    return json.dumps([bounds.first_id, list(bounds.lines), list(bounds.structure)])
+
+
 def format_batch_prompt(
     fp: AnnotatedFile,
     hunks: Sequence[tuple[int, AnnotatedHunk]],
     file_summary: str,
     file_outline: str = "",
     removed_symbols: str = "",
+    *,
+    bounds: Mapping[int, boundaries.Boundaries],
 ) -> list[UserContent]:
     """User-prompt blocks for a batched call: file context, then each hunk.
 
@@ -349,7 +372,9 @@ def format_batch_prompt(
 
     The `# Hunk <index>` label is the address the model echoes back as
     `hunk_index`, so it must be the hunk's position within its file — the
-    same numbering the overview pass cites in `groups[].members`.
+    same numbering the overview pass cites in `groups[].members`. `bounds`
+    is keyed the same way (`boundaries.for_batch`), numbered continuously
+    across the batch so an id names one line in the whole call.
     """
     file_block = f"# File\npath: {fp.path}\nlang: {fp.ann.lang or ''}"
     if file_summary:
@@ -360,7 +385,7 @@ def format_batch_prompt(
         file_block += f"\n\n{removed_symbols}"
     blocks = [file_block]
     for index, hunk in hunks:
-        blocks.append(_hunk_block(f"# Hunk {index}", hunk))
+        blocks.append(_hunk_block(f"# Hunk {index}", hunk, bounds[index]))
     return ["\n\n".join(blocks)]
 
 
@@ -380,6 +405,7 @@ async def run_batch_pass(
     file_summary: str,
     repo_tools: RepoTools,
     model: str,
+    bounds: Mapping[int, boundaries.Boundaries],
     file_outline: str = "",
     removed_symbols: str = "",
     cache: CacheStore | None = None,
@@ -388,7 +414,8 @@ async def run_batch_pass(
     """Annotate several hunks of one file in a single call.
 
     Returns the raw `BatchAnnotations`-shaped payload; the caller splits
-    it with `split_batch_annotations` and re-requests whatever is missing.
+    it with `split_batch_annotations`, resolves each entry against
+    `bounds[hunk_index]`, and re-requests whatever is missing.
     """
     system = format_batch_system(overview_json)
     indices = [i for i, _ in hunks]
@@ -396,7 +423,7 @@ async def run_batch_pass(
         _HUNK,
         client=client,
         agent=make_batch_agent(client.model, system, native_output=client.native_output),
-        user_content=format_batch_prompt(fp, hunks, file_summary, file_outline, removed_symbols),
+        user_content=format_batch_prompt(fp, hunks, file_summary, file_outline, removed_symbols, bounds=bounds),
         system=system,
         model=model,
         cache_inputs=(
@@ -407,6 +434,7 @@ async def run_batch_pass(
             removed_symbols,
             *(h.parsed.header for _, h in hunks),
             *(h.parsed.body for _, h in hunks),
+            *(_boundary_cache_input(bounds[i]) for i in indices),
         ),
         deps=repo_tools,
         model_settings=_hunk_model_settings(client),
@@ -459,119 +487,112 @@ def split_batch_annotations(
     return by_index, missing
 
 
-def _clamped_segment_range(parsed: ParsedHunk, start: int, count: int, *, last_end: int) -> tuple[int, int] | None:
-    """Fit one model-supplied segment range to the hunk, or reject it.
+def _resolve_span(
+    parsed: ParsedHunk,
+    raw: dict[str, Any],
+    bounds: boundaries.Boundaries,
+) -> AnnotationSpan | None:
+    """One submitted span with its boundary ids resolved, or None to drop it.
 
-    Returns the inclusive `(start, end)` to keep, or `None` to drop.
-
-    The model routinely miscounts a boundary by one — it treats
-    `new_start + new_count` as the hunk's last post-image line, and starts
-    a segment on the line the previous one ended. Those ranges name the
-    right code and the wrong edge, so they are clamped rather than
-    discarded; the downstream `parse_augmented_diff` rejects an
-    out-of-hunk or overlapping segment outright, so the clamp is also what
-    keeps the emitted sidecar parseable.
-
-    A range is only dropped when the clamp has nothing to work with: an
-    empty or inverted `count`, a start outside the hunk altogether (the
-    model has emitted pre-image line numbers), or a start already covered
-    by the previous segment.
+    A span is dropped when an id is not in the hunk's boundary list — the
+    model named a boundary it was never given — or when the pair is
+    inverted. Neither is a coordinate the validator could repair: an
+    unknown id has no line, and an inverted pair says nothing about which
+    end was meant.
     """
-    end = start + count - 1
-    hunk_end = parsed.new_start + parsed.new_count - 1
-    if count <= 0 or start < parsed.new_start or start > hunk_end:
+    start_id = raw.get("start")
+    end_id = raw.get("end") or start_id
+    if not isinstance(start_id, str) or not isinstance(end_id, str):
+        log.warning("hunk %s: span with malformed boundary ids %r — dropped", parsed.header, raw)
+        return None
+    start, end = bounds.line_for(start_id), bounds.line_for(end_id)
+    if start is None or end is None:
+        unknown = start_id if start is None else end_id
         log.warning(
-            "hunk %s: segment +%d..+%d outside range +%d..+%d — dropped",
-            parsed.header,
-            start,
-            end,
-            parsed.new_start,
-            hunk_end,
+            "hunk %s: span %s..%s names unknown boundary %s — dropped", parsed.header, start_id, end_id, unknown
         )
         return None
-    clamped_start = max(start, last_end + 1)
-    clamped_end = min(end, hunk_end)
-    if clamped_end < clamped_start:
+    if end < start:
         log.warning(
-            "hunk %s: segment +%d..+%d covered by previous (ends +%d) — dropped",
-            parsed.header,
-            start,
-            end,
-            last_end,
+            "hunk %s: span %s..%s (+%d..+%d) is inverted — dropped", parsed.header, start_id, end_id, start, end
         )
         return None
-    if (clamped_start, clamped_end) != (start, end):
-        log.debug(
-            "hunk %s: segment +%d..+%d clamped to +%d..+%d (range +%d..+%d, previous ends +%d)",
-            parsed.header,
-            start,
-            end,
-            clamped_start,
-            clamped_end,
-            parsed.new_start,
-            hunk_end,
-            last_end,
-        )
-    return clamped_start, clamped_end
+    return AnnotationSpan(
+        start=start,
+        end=end,
+        intent=raw.get("intent", "") or "",
+        smells=[_smell(s) for s in raw.get("smells") or []],
+        context=raw.get("context", "") or "",
+        refs=[Ref(**_ref(r)) for r in raw.get("refs") or []],
+    )
 
 
-def build_hunk_annotations(parsed: ParsedHunk, submit_args: dict[str, Any]) -> HunkAnnotations:
+def nest_spans(spans: Sequence[AnnotationSpan], *, header: str = "") -> list[AnnotationSpan]:
+    """Order `spans` outermost-first and drop any that partially overlap.
+
+    Two spans either nest or are disjoint; the viewer renders them as a
+    tree. A span that starts inside another and ends past it is the model
+    labelling incoherently rather than misplacing an edge — it is dropped
+    with a warning, keeping the enclosing one. Two spans over the same
+    range are both kept: two notes on one line are two observations.
+    Sorted by `(start, -end)`, so an enclosing span precedes what it
+    encloses; the sort is stable, so same-range spans keep their order.
+    """
+    kept: list[AnnotationSpan] = []
+    open_spans: list[AnnotationSpan] = []  # ancestors of the current position
+    for span in sorted(spans, key=lambda s: (s.start, -s.end)):
+        while open_spans and open_spans[-1].end < span.start:
+            open_spans.pop()
+        if open_spans and span.end > open_spans[-1].end:
+            log.warning(
+                "hunk %s: span +%d..+%d partially overlaps +%d..+%d — dropped",
+                header,
+                span.start,
+                span.end,
+                open_spans[-1].start,
+                open_spans[-1].end,
+            )
+            continue
+        kept.append(span)
+        open_spans.append(span)
+    return kept
+
+
+def build_hunk_annotations(
+    parsed: ParsedHunk,
+    submit_args: dict[str, Any],
+    bounds: boundaries.Boundaries,
+) -> HunkAnnotations:
     """Validate a submit_annotations payload against `parsed` and return
     a `HunkAnnotations` record.
 
-    Segment ranges are clamped into the hunk's post-image range and past
-    the previous kept segment, and dropped only when nothing survives the
-    clamp — see `_clamped_segment_range`. Fold summaries are not read:
-    they are the file's (`FileAnnotations.fold_descriptions`), filled by
-    the fold-summary pass, never asked of the model.
+    Each span's boundary ids are resolved to post-image lines through
+    `bounds` — the list the prompt carried — and the spans are ordered
+    outermost-first with partial overlaps dropped (`nest_spans`). Fold
+    summaries are not read: they are the file's
+    (`FileAnnotations.fold_descriptions`), filled by the fold-summary
+    pass, never asked of the model.
     """
-    segments: list[Segment] = []
-    last_end = parsed.new_start - 1
-    for seg in submit_args.get("segments") or []:
-        try:
-            start = int(seg["new_start"])
-            count = int(seg["new_count"])
-        except (KeyError, TypeError, ValueError):
-            log.warning("hunk %s: malformed segment %r — dropped", parsed.header, seg)
-            continue
-        kept = _clamped_segment_range(parsed, start, count, last_end=last_end)
-        if kept is None:
-            continue
-        start, end = kept
-        segments.append(
-            Segment(
-                new_start=start,
-                new_count=end - start + 1,
-                intent=seg.get("intent", "") or "",
-                smells=[_smell(s) for s in seg.get("smells") or []],
-                context=seg.get("context", "") or "",
-                refs=[Ref(**_ref(r)) for r in seg.get("refs") or []],
-            )
-        )
-        last_end = end
-
-    line_notes = [
-        LineNote(**ln) for ln in submit_args.get("line_notes") or [] if _line_in_hunk(int(ln["line"]), parsed)
+    resolved = [
+        span for raw in submit_args.get("spans") or [] if (span := _resolve_span(parsed, raw, bounds)) is not None
     ]
-
     return HunkAnnotations(
         intent=submit_args.get("intent", "") or "",
+        spans=nest_spans(resolved, header=parsed.header),
         context=submit_args.get("context", "") or "",
         confidence=submit_args.get("confidence"),
         smells=[_smell(s) for s in submit_args.get("smells") or []],
         refs=[Ref(**_ref(r)) for r in submit_args.get("refs") or []],
-        line_notes=line_notes,
-        segments=segments,
     )
 
 
-def apply_hunk_annotations(hunk: AnnotatedHunk, submit_args: dict[str, Any]) -> AnnotatedHunk:
+def apply_hunk_annotations(
+    hunk: AnnotatedHunk,
+    submit_args: dict[str, Any],
+    bounds: boundaries.Boundaries,
+) -> AnnotatedHunk:
     """Return a new AnnotatedHunk with `ann` set from `submit_args`."""
-    return hunk.model_copy(update={"ann": build_hunk_annotations(hunk.parsed, submit_args)})
-
-
-def _line_in_hunk(line: int, parsed: ParsedHunk) -> bool:
-    return parsed.new_start <= line <= parsed.new_start + parsed.new_count - 1
+    return hunk.model_copy(update={"ann": build_hunk_annotations(hunk.parsed, submit_args, bounds)})
 
 
 def _smell(d: dict[str, Any]) -> Smell:

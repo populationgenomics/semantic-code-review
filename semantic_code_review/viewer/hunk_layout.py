@@ -30,7 +30,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from ..augment.schemas import AnnotatedHunk, ParsedHunk, Segment
+from ..augment.schemas import AnnotatedHunk, AnnotationSpan, ParsedHunk
 
 _RowKind = Literal["ctx", "ins", "del", "pair"]
 
@@ -447,7 +447,7 @@ def layout_hunk_rows(
 
 
 def build_hunk_viewer_block(h: AnnotatedHunk, file_idx: int, hunk_idx: int, rows: Sequence[Row]) -> dict[str, Any]:
-    """Build one hunk's viewer-JSON block: rows, segments, counts.
+    """Build one hunk's viewer-JSON block: rows, spans, counts.
 
     `rows` is `layout_hunk_rows(h.parsed, ...)`, taken as an argument so the
     caller can hand the same rows to the file's fold-region computation.
@@ -472,19 +472,34 @@ def build_hunk_viewer_block(h: AnnotatedHunk, file_idx: int, hunk_idx: int, rows
         "confidence": ann.confidence,
         "context": ann.context,
         "refs": [r.model_dump() for r in ann.refs],
-        "line_notes": [ln.model_dump() for ln in ann.line_notes],
-        "segments": [_segment_block(s, hunk_id, si) for si, s in enumerate(ann.segments)],
+        "spans": span_blocks(ann.spans, hunk_id),
         "rows": [r.to_dict() for r in rows],
     }
 
 
-def _segment_block(s: Segment, parent_id: str, si: int) -> dict[str, Any]:
-    return {
-        "id": f"{parent_id}_S{si}",
-        "new_start": s.new_start,
-        "new_count": s.new_count,
-        "intent": s.intent,
-        "smells": [sm.model_dump() for sm in s.smells],
-        "context": s.context,
-        "refs": [r.model_dump() for r in s.refs],
-    }
+def span_blocks(spans: Sequence[AnnotationSpan], hunk_id: str) -> list[dict[str, Any]]:
+    """The hunk's spans for the wire, in stored order (outermost first).
+
+    Flat: nesting is containment, which the viewer reads off the ranges
+    as it does for fold regions. A span's id is its hunk and range,
+    `H0_3:span:12-18`, so it survives a re-render and a re-augmentation
+    that keeps the range; a second span over the same range takes an
+    ordinal suffix, `H0_3:span:12-18:2`.
+    """
+    seen: dict[tuple[int, int], int] = {}
+    out: list[dict[str, Any]] = []
+    for s in spans:
+        n = seen[(s.start, s.end)] = seen.get((s.start, s.end), 0) + 1
+        span_id = f"{hunk_id}:span:{s.start}-{s.end}" + (f":{n}" if n > 1 else "")
+        out.append(
+            {
+                "id": span_id,
+                "start": s.start,
+                "end": s.end,
+                "intent": s.intent,
+                "smells": [sm.model_dump() for sm in s.smells],
+                "context": s.context,
+                "refs": [r.model_dump() for r in s.refs],
+            }
+        )
+    return out

@@ -66,11 +66,15 @@ def test_viewer_json_files_and_hunks() -> None:
     assert h["id"] == "H0_0"
     assert h["intent"].startswith("Pagination")
     assert h["confidence"] == 85
-    assert len(h["segments"]) == 2
-    assert h["segments"][0]["id"] == "H0_0_S0"
-    assert h["segments"][0]["new_start"] == 1 and h["segments"][0]["new_count"] == 3
-    assert h["segments"][0]["smells"][0]["tag"] == "string-sql"
-    assert h["segments"][1]["new_start"] == 5 and h["segments"][1]["new_count"] == 3
+    # Spans ride flat, outermost first; nesting is containment, read off the
+    # ranges. Ids name the hunk and the range.
+    assert [(s["id"], s["start"], s["end"]) for s in h["spans"]] == [
+        ("H0_0:span:1-3", 1, 3),
+        ("H0_0:span:5-7", 5, 7),
+        ("H0_0:span:5-5", 5, 5),
+    ]
+    assert h["spans"][0]["smells"][0]["tag"] == "string-sql"
+    assert "segments" not in h and "line_notes" not in h
 
     # rows carry the side-by-side structure: two pairs + five ins rows
     # (hunk replaces 2 old lines with 7 new, so 2 are paired and 5 are inserts).

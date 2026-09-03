@@ -50,11 +50,10 @@ diff --git a/src/users.py b/src/users.py
 #scr>   }
 #scr> ]
 #scr: scr-hunk-confidence: 85
-#scr: scr-segment-begin: +1..+3
-#scr: scr-segment-intent: New paginate() helper that builds the LIMIT/OFFSET suffix.
-#scr: scr-segment-smell: string-sql "SQL is still interpolated, not parameterized."
-#scr: scr-segment-end
-#scr: scr-segment-begin: +5..+7
-#scr: scr-segment-intent: list_users gains keyword args with safe defaults; existing callers continue to work.
-#scr: scr-segment-end
-#scr: scr-line: +5 "size=50 is an implicit API contract; worth documenting."
+#scr: scr-span-begin: +1..+3
+#scr: scr-span-intent: New paginate() helper that builds the LIMIT/OFFSET suffix.
+#scr: scr-span-smell: string-sql "SQL is still interpolated, not parameterized."
+#scr: scr-span-end
+#scr: scr-span: +5..+7 "list_users gains keyword args with safe defaults; existing callers continue to
+#scr>   work."
+#scr: scr-span: +5..+5 "size=50 is an implicit API contract; worth documenting."

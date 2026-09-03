@@ -302,7 +302,7 @@ def _side_regions(
     for d in defs:
         covered.update(range(d.start, d.end + 1))
     out = [d for d in defs if d.end > d.start]
-    for start, end in _indent_regions(lines):
+    for start, end in indent_regions(lines):
         if any(line in covered for line in range(start, end + 1)):
             continue
         opener = lines[start - 1]
@@ -321,7 +321,7 @@ def _definitions(symbols: Sequence[structural.Symbol]) -> Iterator[_SideRegion]:
         yield from _definitions(s.children)
 
 
-def _indent_regions(lines: Sequence[str]) -> list[tuple[int, int]]:
+def indent_regions(lines: Sequence[str]) -> list[tuple[int, int]]:
     """`(start_line, end_line)` of every indentation stanza, 1-indexed.
 
     A stanza opens at a non-blank line whose next non-blank line is

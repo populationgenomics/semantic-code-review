@@ -13,11 +13,15 @@ or "added logic but no tests".
 So the extra pass runs *once per PR*, after the overview + per-hunk
 passes have completed. The model sees the user's prompt as the
 system message, the PR overview JSON, and the raw unified diff. It
-returns a flat list of ``(file, line, body)`` line-anchored notes;
-the pipeline buckets each one into the matching hunk's ``line_notes``
-so the viewer renders them alongside main-pass annotations. The
-reviewer can promote any of them to a PR comment via the existing
-"Add as comment" affordance.
+returns a flat list of ``(file, line, body)`` line-anchored notes; the
+pipeline buckets each one into the matching hunk's ``spans`` as a
+single-line span, so the viewer renders them alongside main-pass
+annotations. The reviewer can promote any of them to a PR comment via
+the existing "Add as comment" affordance.
+
+This pass still emits an integer ``line``: it sees the whole diff, not a
+per-hunk boundary list, and a note outside every hunk is dropped rather
+than resolved.
 """
 
 from __future__ import annotations
@@ -34,9 +38,10 @@ from pydantic_ai.output import ToolOutput
 
 from ..cache.store import CacheStore
 from ..format import linenos
+from . import hunks as hunks_mod
 from .agents import Client
 from .pass_ import PassMeta, run_pass
-from .schemas import AnnotatedDiff, LineNote
+from .schemas import AnnotatedDiff, AnnotationSpan
 
 log = logging.getLogger(__name__)
 
@@ -128,8 +133,8 @@ def _distribute_notes_to_hunks(
     diff: AnnotatedDiff,
     notes: list[ExtraReviewNote],
 ) -> AnnotatedDiff:
-    """Bucket each ``(file, line)`` note into the matching hunk's
-    ``line_notes``. Notes whose ``file`` doesn't match any AnnotatedFile,
+    """Bucket each ``(file, line)`` note into the matching hunk's ``spans``
+    as a single-line span. Notes whose ``file`` doesn't match any AnnotatedFile,
     or whose ``line`` falls outside every hunk's post-image range, get
     dropped with a warning — the model isn't trusted to stay in bounds.
     Returns a new AnnotatedDiff; the input is not mutated.
@@ -137,7 +142,7 @@ def _distribute_notes_to_hunks(
     by_path = {fp.path: fp for fp in diff.files}
     list(diff.files)
     # Per-hunk new_notes accumulators keyed by (file_idx, hunk_idx).
-    appends: dict[tuple[int, int], list[LineNote]] = {}
+    appends: dict[tuple[int, int], list[AnnotationSpan]] = {}
 
     for n in notes:
         body = (n.body or "").strip()
@@ -158,7 +163,7 @@ def _distribute_notes_to_hunks(
             end = start + hunk.parsed.new_count - 1
             if start <= n.line <= end:
                 appends.setdefault((fi, hi), []).append(
-                    LineNote(line=n.line, body=body),
+                    AnnotationSpan(start=n.line, end=n.line, intent=body),
                 )
                 landed = True
                 break
@@ -183,7 +188,7 @@ def _distribute_notes_to_hunks(
                 continue
             h = new_hunks[hi]
             new_ann = h.ann.model_copy(
-                update={"line_notes": list(h.ann.line_notes) + to_add},
+                update={"spans": hunks_mod.nest_spans([*h.ann.spans, *to_add], header=h.parsed.header)},
             )
             new_hunks[hi] = h.model_copy(update={"ann": new_ann})
         new_files[fi] = fp.model_copy(update={"hunks": new_hunks})
@@ -202,8 +207,7 @@ async def run_pr_level_extra_review(
     trace_dir: Path | None = None,
 ) -> AnnotatedDiff:
     """Run the PR-level extra-review call and return a copy of ``diff``
-    with the resulting notes folded into the matching hunks'
-    ``line_notes``.
+    with the resulting notes folded into the matching hunks' ``spans``.
 
     Best-effort: any failure (model error, schema mismatch after
     retries, etc.) leaves ``diff`` unchanged and logs a warning. The

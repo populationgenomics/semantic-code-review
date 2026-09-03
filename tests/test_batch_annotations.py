@@ -120,6 +120,19 @@ def _hunk(index: int, body: str = "-x\n+y"):
     )
 
 
+def _bounds(*hunks):
+    """Boundary tables for a batch, keyed by hunk index as the prompt is."""
+    from semantic_code_review.augment import boundaries
+
+    return boundaries.for_batch([(i, h.parsed) for i, h in hunks])
+
+
+def _single(hunk):
+    from semantic_code_review.augment import boundaries
+
+    return boundaries.Boundaries.for_hunk(hunk.parsed)
+
+
 def test_only_run_invariant_text_is_in_the_system_prompt() -> None:
     """The system prompt caches because it is identical on every call.
 
@@ -131,7 +144,7 @@ def test_only_run_invariant_text_is_in_the_system_prompt() -> None:
 
     fp, outline = _file()
     system = format_batch_system('{"summary":"s"}')
-    user = format_batch_prompt(fp, [_hunk(0), _hunk(1)], "does things", outline)[0]
+    user = format_batch_prompt(fp, [_hunk(0), _hunk(1)], "does things", outline, bounds=_bounds(_hunk(0), _hunk(1)))[0]
 
     # Section headers, not bare substrings: the system prompt legitimately
     # *mentions* `# File outline` when telling the model where to look.
@@ -153,7 +166,9 @@ def test_batch_prompt_labels_each_hunk_with_its_file_index() -> None:
     from semantic_code_review.augment.hunks import format_batch_prompt
 
     fp, outline = _file()
-    user = format_batch_prompt(fp, [_hunk(0), _hunk(3), _hunk(7)], "s", outline)[0]
+    user = format_batch_prompt(
+        fp, [_hunk(0), _hunk(3), _hunk(7)], "s", outline, bounds=_bounds(_hunk(0), _hunk(3), _hunk(7))
+    )[0]
     assert "# Hunk 0" in user
     assert "# Hunk 3" in user
     assert "# Hunk 7" in user
@@ -177,29 +192,57 @@ def _wide_hunk(index: int, *, new_start: int, new_count: int):
 
 
 @pytest.mark.parametrize("batched", [False, True])
-def test_hunk_block_states_the_inclusive_post_image_range(batched: bool) -> None:
-    """Left to derive the bound from the `@@` header the model computes
-    `new_start + new_count`, one past the last line, and overshoots."""
+def test_hunk_block_carries_the_boundary_gutter_and_no_range_to_compute(batched: bool) -> None:
+    """The model copies `b<n>` ids; nothing in the block is a number it
+    could do arithmetic on, and no id names a line past the hunk."""
     from semantic_code_review.augment.hunks import format_batch_prompt, format_hunk_prompt
 
     fp, outline = _file()
     _, hunk = _wide_hunk(0, new_start=9, new_count=74)
     if batched:
-        text = format_batch_prompt(fp, [(0, hunk)], "s", outline)[0]
+        text = format_batch_prompt(fp, [(0, hunk)], "s", outline, bounds=_bounds((0, hunk)))[0]
     else:
-        text = str(format_hunk_prompt(fp, hunk, "{}", "s", outline)[-1])
-    assert "+9..+82" in text
-    assert "LAST line is +82" in text
-    assert "+83" not in text
+        text = str(format_hunk_prompt(fp, hunk, "{}", "s", outline, bounds=_single(hunk))[-1])
+    assert "boundaries: b1..b74" in text
+    assert "b1   9 +line 9" in text
+    assert "b74 82 +line 82" in text
+    assert "b75" not in text and "83" not in text
+    for retired in ("new_start", "new_count", "+9..+82", "LAST line"):
+        assert retired not in text
 
 
-def test_a_deletion_only_hunk_is_told_not_to_segment() -> None:
+def test_a_batch_numbers_boundaries_across_its_hunks() -> None:
+    """An id names one line in the whole call, so an entry filed under the
+    wrong `hunk_index` fails to resolve instead of landing elsewhere."""
+    from semantic_code_review.augment.hunks import format_batch_prompt
+
+    fp, outline = _file()
+    first = _wide_hunk(0, new_start=1, new_count=3)
+    second = _wide_hunk(1, new_start=20, new_count=2)
+    text = format_batch_prompt(fp, [first, second], "s", outline, bounds=_bounds(first, second))[0]
+    assert "# Hunk 0\nboundaries: b1..b3" in text
+    assert "# Hunk 1\nboundaries: b4..b5" in text
+
+
+def test_the_structure_line_names_definitions_as_boundary_pairs() -> None:
+    from semantic_code_review.augment import boundaries
+    from semantic_code_review.augment.hunks import format_hunk_prompt
+
+    fp, outline = _file()
+    _, hunk = _wide_hunk(0, new_start=9, new_count=10)
+    spans = [{"start_line": 10, "end_line": 12, "kind": "function", "qualified_name": "f", "depth": 0}]
+    bounds = boundaries.Boundaries.for_hunk(hunk.parsed, spans)
+    text = str(format_hunk_prompt(fp, hunk, "{}", "s", outline, bounds=bounds)[-1])
+    assert "structure: function f: b2..b4" in text
+
+
+def test_a_deletion_only_hunk_is_told_it_has_no_boundaries() -> None:
     from semantic_code_review.augment.hunks import format_batch_prompt
 
     fp, outline = _file()
     _, hunk = _wide_hunk(0, new_start=8, new_count=0)
-    text = format_batch_prompt(fp, [(0, hunk)], "s", outline)[0]
-    assert "emit no `segments`" in text
+    text = format_batch_prompt(fp, [(0, hunk)], "s", outline, bounds=_bounds((0, hunk)))[0]
+    assert "no boundaries; emit no `spans`" in text
 
 
 def test_batch_prompt_omits_absent_sections() -> None:
@@ -208,7 +251,7 @@ def test_batch_prompt_omits_absent_sections() -> None:
     from semantic_code_review.augment.hunks import format_batch_prompt
 
     fp, _ = _file(summary="")
-    user = format_batch_prompt(fp, [_hunk(0)], "", "")[0]
+    user = format_batch_prompt(fp, [_hunk(0)], "", "", bounds=_bounds(_hunk(0)))[0]
     assert "# File outline" not in user
     assert "# File summary" not in user
     assert "# File\npath:" in user
@@ -314,8 +357,10 @@ def test_removed_section_rides_with_the_file_context_in_both_forms() -> None:
     removed = format_removed_symbols(_delta(removed=[_removed()]), path="pkg/mod.py", base_sha="s")
     _idx, hunk = _hunk(0)
 
-    single = "".join(b for b in format_hunk_prompt(fp, hunk, "{}", "s", outline, removed) if isinstance(b, str))
-    batch = format_batch_prompt(fp, [_hunk(0)], "s", outline, removed)[0]
+    single = "".join(
+        b for b in format_hunk_prompt(fp, hunk, "{}", "s", outline, removed, bounds=_single(hunk)) if isinstance(b, str)
+    )
+    batch = format_batch_prompt(fp, [_hunk(0)], "s", outline, removed, bounds=_bounds(_hunk(0)))[0]
     for prompt in (single, batch):
         assert "# Removed from this file" in prompt
 
@@ -344,7 +389,7 @@ def test_hunk_caching_stays_within_anthropics_breakpoint_budget() -> None:
 
     fp, outline = _file()
     _idx, hunk = _hunk(0)
-    blocks = format_hunk_prompt(fp, hunk, "{}", "s", outline, "")
+    blocks = format_hunk_prompt(fp, hunk, "{}", "s", outline, "", bounds=_single(hunk))
 
     in_prompt = sum(1 for b in blocks if isinstance(b, CachePoint))
     from_settings = sum(

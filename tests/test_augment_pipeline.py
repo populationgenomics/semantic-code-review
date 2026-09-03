@@ -441,7 +441,7 @@ async def test_per_hunk_trace_written_on_agent_failure(tmp_path: Path) -> None:
 async def test_augment_extra_review_buckets_notes_into_matching_hunks(tmp_path: Path) -> None:
     """`extra_review_prompt` triggers a single PR-level extra pass; its
     flat (file, line, body) notes get bucketed back into the matching
-    hunk's line_notes on top of whatever the main pass produced."""
+    hunk's spans, as single-line spans, on top of whatever the main pass produced."""
     run = _make_run_dir(tmp_path)
     backend, canned = _make_canned_backend(
         overview_args={
@@ -449,8 +449,8 @@ async def test_augment_extra_review_buckets_notes_into_matching_hunks(tmp_path: 
             "files": [{"path": "f.py", "summary": "x and y bumped"}],
         },
         hunk_args_list=[
-            {"intent": "Bump x", "line_notes": [{"line": 1, "body": "main note"}]},
-            {"intent": "Bump y", "line_notes": []},
+            {"intent": "Bump x", "spans": [{"start": "b1", "intent": "main note"}]},
+            {"intent": "Bump y"},
         ],
         extra_args_list=[
             # One whole-PR call: notes that span both hunks.
@@ -469,8 +469,8 @@ async def test_augment_extra_review_buckets_notes_into_matching_hunks(tmp_path: 
         cache=None,
     )
     reparsed = parse_augmented_diff(run.augmented.read_text())
-    h0_notes = [(n.line, n.body) for n in reparsed.files[0].hunks[0].ann.line_notes]
-    h1_notes = [(n.line, n.body) for n in reparsed.files[0].hunks[1].ann.line_notes]
+    h0_notes = [(n.start, n.intent) for n in reparsed.files[0].hunks[0].ann.spans]
+    h1_notes = [(n.start, n.intent) for n in reparsed.files[0].hunks[1].ann.spans]
     # Hunk 0 (line 1): main pass produced one note, extras added one.
     assert h0_notes == [(1, "main note"), (1, "extra: be careful")]
     # Hunk 1 (line 10): main produced none, extras produced one.
@@ -488,8 +488,8 @@ async def test_augment_extra_review_drops_notes_outside_any_hunk(tmp_path: Path)
     backend, _ = _make_canned_backend(
         overview_args={"summary": "", "files": [{"path": "f.py", "summary": ""}]},
         hunk_args_list=[
-            {"intent": "Bump x", "line_notes": []},
-            {"intent": "Bump y", "line_notes": []},
+            {"intent": "Bump x"},
+            {"intent": "Bump y"},
         ],
         extra_args_list=[
             {
@@ -510,8 +510,8 @@ async def test_augment_extra_review_drops_notes_outside_any_hunk(tmp_path: Path)
         cache=None,
     )
     reparsed = parse_augmented_diff(run.augmented.read_text())
-    h0_notes = [(n.line, n.body) for n in reparsed.files[0].hunks[0].ann.line_notes]
-    h1_notes = [(n.line, n.body) for n in reparsed.files[0].hunks[1].ann.line_notes]
+    h0_notes = [(n.start, n.intent) for n in reparsed.files[0].hunks[0].ann.spans]
+    h1_notes = [(n.start, n.intent) for n in reparsed.files[0].hunks[1].ann.spans]
     assert h0_notes == [(1, "kept")]
     assert h1_notes == []
 
@@ -539,8 +539,8 @@ async def test_augment_extra_review_re_emits_sse_for_touched_hunks(tmp_path: Pat
     backend, _ = _make_canned_backend(
         overview_args={"summary": "", "files": [{"path": "f.py", "summary": ""}]},
         hunk_args_list=[
-            {"intent": "Bump x", "line_notes": []},
-            {"intent": "Bump y", "line_notes": []},
+            {"intent": "Bump x"},
+            {"intent": "Bump y"},
         ],
         extra_args_list=[
             # Notes land in hunk 0 only; hunk 1 should NOT re-emit.
@@ -566,8 +566,9 @@ async def test_augment_extra_review_re_emits_sse_for_touched_hunks(tmp_path: Pat
     assert len(h0_events) == 2
     # Hunk 1: just the initial completion; extras didn't touch it.
     assert len(h1_events) == 1
-    # The re-emitted block carries the new line_note in its body.
-    assert h0_events[-1]["block"]["line_notes"] == [{"line": 1, "body": "look here"}]
+    # The re-emitted block carries the new note as a single-line span.
+    block_spans = h0_events[-1]["block"]["spans"]
+    assert [(s["start"], s["end"], s["intent"]) for s in block_spans] == [(1, 1, "look here")]
 
 
 def test_should_skip_defaults_and_extra_globs() -> None:
@@ -699,11 +700,11 @@ async def test_unusable_batch_entry_costs_one_hunk_not_the_run(tmp_path: Path, m
     real = pipeline_mod.build_hunk_annotations
     calls = {"n": 0}
 
-    def flaky(parsed, args):
+    def flaky(parsed, args, bounds):
         calls["n"] += 1
         if calls["n"] == 2:  # the second hunk of the batch
             raise ValueError("malformed annotation payload")
-        return real(parsed, args)
+        return real(parsed, args, bounds)
 
     monkeypatch.setattr(pipeline_mod, "build_hunk_annotations", flaky)
     await augment_run_dir(run, config.AugmentConfig(model="t", concurrency=8), client=backend, cache=None, batch_size=2)
