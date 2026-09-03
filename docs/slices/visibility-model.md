@@ -64,9 +64,9 @@ derived from file content, not from the rendered row array. Nothing
 visible changes; the record simply stops moving when context is
 revealed.
 
-Inherits `_HEAD_LINES_CAP` (5,000 lines) and head-side-only content
-until Slice 6 — so it fixes #10 for most files and not for the largest,
-which must be stated in the code rather than discovered.
+The file content this derives from is `/file-text`'s (ADR 0008 Slice 1
+removed the `head_lines` bundle), so detection is asynchronous from the
+start — Slice 6's note on why that is safe applies here.
 
 **Done when:** detecting twice under different reveal states yields
 identical spans; #10's repro (reveal, fold, fold file, unfold file)
@@ -100,9 +100,11 @@ produces a gutter discontinuity.
 
 ## Slice 6 — `/file-text` as the content source
 
-Replace eager `head_lines` in `data.json` with the lazy route rendered
-markdown already uses. Removes the 5,000-line cap and the head-side-only
-limit, and shrinks the payload by the full text of every file.
+*Gap expansion landed as ADR 0008 Slice 1:* regions fetch `/file-text`
+through the cache rendered mode uses (`file_text.ts`), `head_lines` and
+its 5,000-line cap are gone, and `data.json` carries no file text. What
+remains here is the `CodeFold` half, which waits on that ADR's Slice 3
+(fold regions computed over the whole file, on the wire).
 
 Detection becomes asynchronous. That is safe because a persisted
 `HiddenSpan` is self-describing — restoring it needs no detection, only

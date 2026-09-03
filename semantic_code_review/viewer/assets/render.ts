@@ -26,6 +26,7 @@ import { Console } from "./console";
 import { Explainer } from "./explainer";
 import { ExplainerPanel, type PanelHost } from "./explainer_panel";
 import { FileRows } from "./file_rows";
+import { FileTextCache, type FileText } from "./file_text";
 import { Folds } from "./folds";
 import { Progress } from "./progress";
 import { Rendered, type PaneState } from "./rendered";
@@ -604,18 +605,17 @@ function _renderFileBody(
   body: HTMLElement, f: FileBlock, liveIds: Set<string> | null, scope: PaneScope,
 ): void {
   const isLive = (h: HunkBlock): boolean => liveIds === null || liveIds.has(h.id);
-  const total = f.head_lines ? f.head_lines.length : null;
   let curNew = 1;
   let curOld = 1;
   let emittedLive = false;
 
-  const flush = (endNew: number | null, position: "top" | "between" | "bottom"): void => {
+  const flush = (newEnd: number | null, position: "top" | "between" | "bottom"): void => {
     const demoted = f.hunks.filter(
-      (h) => !isLive(h) && h.new_start >= curNew && (endNew === null || h.new_start <= endNew),
+      (h) => !isLive(h) && h.new_start >= curNew && (newEnd === null || h.new_start <= newEnd),
     );
-    const { rows, marks } = _regionRows(f, curNew, endNew, curOld, demoted);
-    if (rows.length === 0) return;
-    body.appendChild(_renderRegionChip(f, { position, rows, marks }));
+    const region: DiffRegion = { position, newStart: curNew, oldStart: curOld, newEnd, demoted };
+    if (_regionCount(region) === 0) return;
+    body.appendChild(_renderRegionChip(f, region));
   };
 
   // Just after a sidebar pill click, reveal the focused hunks' code
@@ -628,7 +628,7 @@ function _renderFileBody(
     curNew = h.new_start + h.new_count;
     curOld = h.old_start + h.old_count;
   }
-  flush(total, "bottom");
+  flush(f.head_line_count, "bottom");
 }
 
 function _renderFileHeader(f: FileBlock, folded: boolean, scope: PaneScope): HTMLElement {
@@ -695,75 +695,145 @@ function _renderFileOverview(f: FileBlock): HTMLElement | null {
 // view a region holds only unchanged context between hunks; under a
 // filter it also swallows the demoted (non-live) hunks, so their changes
 // render inline when expanded.
+//
+// A region is laid out from the hunks' coordinates alone — its span and
+// its row count need no text — and reads its unchanged lines from the
+// file's full source (FileTextCache) when its chip is clicked. The diff
+// carries hunks and their context; the rest of the file is fetched the
+// first time a reviewer asks for any of it, whatever the file's size.
 
 interface DiffRegion {
   position: "top" | "between" | "bottom";
-  rows: RowBlock[];
-  marks: (_RowMarks | undefined)[];
+  /** The region's first line, per side. The two advance together over
+   *  unchanged context; a demoted hunk resets them to its own end. */
+  newStart: number;
+  oldStart: number;
+  /** Last post-image line of the trailing context, inclusive. Null when
+   *  the post-image's length is unknown (no head): nothing trails the
+   *  last demoted hunk. */
+  newEnd: number | null;
+  /** Non-live hunks folded into the region, in file order. */
+  demoted: HunkBlock[];
 }
 
-/** The row stream for a region: unchanged context (from head_lines)
- *  interleaved with the demoted hunks' own rows, in file order. `newEnd`
- *  bounds the trailing context; null (no head_lines) skips context
- *  entirely, leaving just the hunk rows. */
-function _regionRows(
-  f: FileBlock, newStart: number, newEnd: number | null, oldStart: number, hunks: HunkBlock[],
-): { rows: RowBlock[]; marks: (_RowMarks | undefined)[] } {
-  const rows: RowBlock[] = [];
-  const marks: (_RowMarks | undefined)[] = [];
-  const hl = f.head_lines;
-  let cn = newStart;
-  let co = oldStart;
+/** Visit a region's row stream in file order — unchanged context one
+ *  (old, new) line pair at a time, demoted hunks as themselves. The one
+ *  walk behind both the chip's count and the expansion's rows, so the
+ *  two agree. */
+function _walkRegion(
+  region: DiffRegion, ctx: (oldLine: number, newLine: number) => void, hunk: (h: HunkBlock) => void,
+): void {
+  let cn = region.newStart;
+  let co = region.oldStart;
   const ctxTo = (upTo: number): void => {
-    if (!hl) return;
-    while (cn < upTo) {
-      const t = hl[cn - 1] ?? "";
-      rows.push({ kind: "ctx", old_line: co, new_line: cn, old_text: t, new_text: t });
-      marks.push(undefined);
-      co++; cn++;
-    }
+    while (cn < upTo) { ctx(co, cn); co++; cn++; }
   };
-  for (const h of hunks) {
+  for (const h of region.demoted) {
     ctxTo(h.new_start);
-    const hm = _blockMarks(h.rows || []);
-    const hr = h.rows || [];
-    for (let i = 0; i < hr.length; i++) { rows.push(hr[i]); marks.push(hm[i]); }
+    hunk(h);
     cn = h.new_start + h.new_count;
     co = h.old_start + h.old_count;
   }
-  if (hl && newEnd !== null) ctxTo(newEnd + 1);
+  if (region.newEnd !== null) ctxTo(region.newEnd + 1);
+}
+
+function _regionCount(region: DiffRegion): number {
+  let n = 0;
+  _walkRegion(region, () => { n++; }, (h) => { n += (h.rows || []).length; });
+  return n;
+}
+
+/** The row stream for a region, its unchanged context read from the
+ *  post-image. Unchanged lines are identical on both sides, so the head
+ *  text serves every file that has one; a file with none (deleted) has
+ *  nothing unchanged to disclose — its diff already carries every base
+ *  line as a `del` row — so a region needing text the file lacks is an
+ *  error, not a reason to read the other side.
+ *
+ *  Throws when the text is missing or shorter than the region: a
+ *  dirty-tree review's head is the live checkout, and a file edited
+ *  under the review may no longer reach the lines the diff recorded. */
+function _regionRows(
+  f: FileBlock, region: DiffRegion, text: FileText,
+): { rows: RowBlock[]; marks: (_RowMarks | undefined)[] } {
+  if (text.head === null) throw new Error(`${f.path}: no post-image text to expand`);
+  const lines = FileTextCache.splitLines(text.head);
+  const rows: RowBlock[] = [];
+  const marks: (_RowMarks | undefined)[] = [];
+  _walkRegion(region, (co, cn) => {
+    if (cn > lines.length) {
+      throw new Error(`${f.path}: line ${cn} is past the end of the file (${lines.length} lines)`);
+    }
+    const t = lines[cn - 1];
+    rows.push({ kind: "ctx", old_line: co, new_line: cn, old_text: t, new_text: t });
+    marks.push(undefined);
+  }, (h) => {
+    const hr = h.rows || [];
+    const hm = _blockMarks(hr);
+    for (let i = 0; i < hr.length; i++) { rows.push(hr[i]); marks.push(hm[i]); }
+  });
   return { rows, marks };
 }
 
+/** The chip standing in for a region. A click expands it in place; when
+ *  the file's text is not yet cached the chip fetches it first, showing
+ *  the wait, and on failure says so and takes the click again. The
+ *  fetch is the chip's, never the render pass's. */
 function _renderRegionChip(f: FileBlock, region: DiffRegion): HTMLElement {
   const chip = _el("div", "gap-chip");
-  const count = region.rows.length;
+  const count = _regionCount(region);
   const icon = region.position === "top" ? "⬆" : region.position === "bottom" ? "⬇" : "⋯";
   const word = count === 1 ? "line" : "lines";
   const label = region.position === "top" ? `expand ${count} ${word} above`
               : region.position === "bottom" ? `expand ${count} ${word} below`
               : `expand ${count} hidden ${word}`;
-  chip.innerHTML = `<span class="gap-icon">${icon}</span><span class="gap-label">${label}</span>`;
+  const labelEl = _el("span", "gap-label", label);
+  chip.appendChild(_el("span", "gap-icon", icon));
+  chip.appendChild(labelEl);
+  const fail = (e: unknown): void => {
+    chip.classList.remove("loading");
+    chip.classList.add("failed");
+    const why = e instanceof Error ? e.message : String(e);
+    labelEl.textContent = `${label} — could not load: ${why} (click to retry)`;
+  };
+  const expand = (text: FileText): void => {
+    let expansion: HTMLElement;
+    try {
+      expansion = _renderRegionExpansion(f, region, text);
+    } catch (e) {
+      fail(e);
+      return;
+    }
+    chip.replaceWith(expansion);
+    _refreshFileFolds(expansion, f);
+  };
   chip.addEventListener("click", () => {
-    chip.replaceWith(_renderRegionExpansion(f, region));
-    _refreshFileFolds(f);
+    if (chip.classList.contains("loading")) return;
+    const cached = FileTextCache.cached(f.id);
+    if (cached) { expand(cached); return; }
+    chip.classList.remove("failed");
+    chip.classList.add("loading");
+    labelEl.textContent = `${label} — loading…`;
+    FileTextCache.load(f).then(expand, fail);
   });
   return chip;
 }
 
-function _renderRegionExpansion(f: FileBlock, region: DiffRegion): HTMLElement {
+function _renderRegionExpansion(f: FileBlock, region: DiffRegion, text: FileText): HTMLElement {
+  const { rows, marks } = _regionRows(f, region, text);
   const container = _el("div", "gap-expansion");
   const collapse = _el("button", "gap-collapse", "× collapse");
   collapse.title = "Hide these lines again";
   collapse.addEventListener("click", () => {
-    container.replaceWith(_renderRegionChip(f, region));
-    _refreshFileFolds(f);
+    const chip = _renderRegionChip(f, region);
+    container.replaceWith(chip);
+    _refreshFileFolds(chip, f);
   });
   container.appendChild(collapse);
-  const { diff, oldEls, newEls } = _renderDiffRows(f, region.rows, region.marks);
+  const { diff, oldEls, newEls } = _renderDiffRows(f, rows, marks);
   // The file-level fold walker (folds.ts) recovers the row stream + DOM
   // elements from the container.
-  FileRows.record(container, { rows: region.rows, oldEls, newEls });
+  FileRows.record(container, { rows, oldEls, newEls });
   container.appendChild(diff);
   return container;
 }
@@ -817,10 +887,12 @@ function _liveSide(rows: RowBlock[]): "old" | "new" | null {
   return null;
 }
 
-function _refreshFileFolds(f: FileBlock): void {
-  const fileEl = document.querySelector(
-    '.file[data-id="' + _cssEscape(f.id) + '"]',
-  ) as HTMLElement | null;
+/** Re-run the file-level fold pass over the `.file` enclosing `el` —
+ *  that pane's copy of the file, so a region expanded in the explainer's
+ *  panel never re-folds the diff pane's. A no-op for a node a repaint
+ *  has since detached. */
+function _refreshFileFolds(el: HTMLElement, f: FileBlock): void {
+  const fileEl = el.closest(".file") as HTMLElement | null;
   if (fileEl) Folds.attachFileFolds(fileEl, f);
 }
 

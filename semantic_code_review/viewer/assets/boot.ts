@@ -12,12 +12,12 @@ import { Console } from "./console";
 import { DataStore, type FoldRegionAddress } from "./data_store";
 import { DebugDrawer } from "./debug_drawer";
 import { Explainer } from "./explainer";
+import { FileTextCache } from "./file_text";
 import { Folds } from "./folds";
 import { LayoutDividers } from "./layout_dividers";
 import { PostModal } from "./post_modal";
 import { Progress } from "./progress";
 import { Render } from "./render";
-import { Rendered } from "./rendered";
 import { Sidebar } from "./sidebar";
 import { Sse } from "./sse";
 
@@ -67,10 +67,8 @@ async function boot(): Promise<void> {
     // (ephemeral focus-reveal) — driven from render.ts.
     onFilterChange: () => Render.applyFilterChange(),
   });
-  // lazy /file-text backing for the md toggle. Which files are flipped
-  // and where a control repaints belong to the calling pane (render.ts's
-  // PaneScope), so this only hands over the endpoint.
-  Rendered.init(SESSION_ENDPOINT);
+  // The lazy /file-text cache only needs the endpoint.
+  FileTextCache.init(SESSION_ENDPOINT);
   // The change explainer only mounts when the server says the feature
   // is on for this review; a --no-augment run has no backend to run it.
   if (DATA.explainer) {

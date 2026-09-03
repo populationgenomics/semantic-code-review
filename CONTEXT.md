@@ -231,6 +231,20 @@ other hunk *demotes*, folded together with its surrounding context into
 one region whose expansion shows those changes inline with no header. A
 file no live hunk touches is dropped from the render.
 
+Disclosure is lazy and uncapped (ADR 0008): everything in the file is
+reachable through a chip, whatever its size. A region is laid out from
+the hunks' coordinates alone — its span, its row count and the chip's
+label need no text; the region below the last hunk is bounded by
+`FileBlock.head_line_count`. The unchanged lines come from the file's
+full source, fetched from `/file-text` through the [[rendered-mode]]
+source cache (`file_text.ts`) the first time any chip in the file is
+clicked; the chip shows the wait, and a failed fetch (or text that does
+not reach the region) is said on the chip and retried on the next click
+rather than expanding to blank rows. Regions read the post-image only:
+unchanged lines are identical on both sides, and a file with no
+post-image (deleted) has nothing unchanged to disclose — its diff
+already carries every base line. `/data.json` carries no file text.
+
 Distinct from [[fold-region]]: a fold region is an indent-based collapse
 *within* a rendered hunk (chevrons + the fold-summary pass); a
 collapsible region is the between-/around-hunk expand chip that stands in
@@ -277,6 +291,13 @@ it carries transient runtime flags (e.g. `pending` while the
 augment pass is still streaming) that have no place on the
 persisted sidecar.
 
+It carries no file text. The diff's rows are the only source lines in
+it; the rest of a file is served by `/file-text` on demand (both sides,
+no size cap) to [[rendered-mode]] and to [[collapsible-region]]
+expansion alike. A `FileBlock` carries `head_line_count` — the
+post-image's length, null for a file with none — so the region below
+the last hunk can be laid out without the text.
+
 The TS side has no single owner for the in-memory tree today —
 `boot.ts` fetches it and mutates it in response to SSE events,
 while every other module reads from the same global reference. A
@@ -319,10 +340,12 @@ have their own and a control repaints only the pane it sits in. Two
 consequences: a `.md` reference opens in the panel on the text diff
 even when the diff pane has it flipped, and flipping it there leaves
 the diff as the reviewer left it (the rule `PaneScope.overrides`
-already states). The **source cache** stays module-global in
-`rendered.ts`: base+head text is pane-independent and costs a
+already states). The **source cache** is module-global in
+`file_text.ts` (`FileTextCache`), a leaf both `render.ts` and
+`rendered.ts` import: base+head text is pane-independent and costs a
 `/file-text` round trip, so a second pane flipping the same file reads
-it back rather than refetching.
+it back rather than refetching, and two askers during one flight share
+the request.
 
 Fully built (ADR 0004 slices 1–4 plus follow-ups). Two-pane base→head
 render with block-level delta and run folding — `_plan` in `rendered.ts`

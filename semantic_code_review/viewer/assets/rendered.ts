@@ -3,8 +3,9 @@
 // renderer (render.ts) untouched.
 //
 // Slice 2: two-pane, block-level delta. Flipping a `.md` file fetches
-// its full base+head source from /file-text (lazily, cached per file),
-// parses both sides to top-level blocks, classifies each block from the
+// its full base+head source from /file-text (lazily, through the cache
+// file_text.ts shares with the text diff's collapsible regions), parses
+// both sides to top-level blocks, classifies each block from the
 // existing line diff, and lays the aligned block-pairs out as max-height
 // grid rows: base rendered left, head rendered right, changed base
 // blocks tinted red / changed head blocks green. No cross-side
@@ -26,23 +27,17 @@
 // carries its source line via the markdown-it token map, so a comment on
 // a block round-trips unchanged (comments.ts owns the editor/store).
 //
-// This module owns rendered-mode state and the async fetch; render.ts
-// consults isMarkdown / isOn and delegates the body to renderBody. The
+// This module owns rendered-mode view state; render.ts consults
+// isMarkdown / isOn and delegates the body to renderBody. The
 // view state lives in a `PaneState` the caller hands in — render.ts keeps
 // one per pane on its `PaneScope` — and every control repaints through a
 // callback rather than importing render.ts, keeping the dependency
 // one-way (render.ts → rendered.ts).
 
 import { Comments } from "./comments";
+import { FileTextCache } from "./file_text";
 import { Markdown, type HeadingInfo, type RenderedBlock } from "./markdown";
 import { blockDiff, wrapRanges } from "./text_highlight";
-
-interface FileText {
-  file_idx: number;
-  path: string;
-  base: string | null;
-  head: string | null;
-}
 
 // Rendered-mode fold ladder (ADR 0004 slice 3). `runs` (the default)
 // collapses contiguous runs of unchanged blocks; `sections` also
@@ -64,10 +59,6 @@ const _FOLD_LADDER: ReadonlyArray<{ level: MdFoldLevel; label: string; title: st
 // block chip costs more attention than it saves.
 const _BLEED = 1;
 const _MIN_RUN = 3;
-
-// Prefixed onto the /file-text fetch; the same session-endpoint boot.ts
-// resolves for the other back-channel routes. Empty string = same origin.
-let _endpoint = "";
 
 // Rendered mode's *view* state for one pane. The change explainer's
 // detail panel (ADR 0007) renders a file beside the document while the
@@ -103,17 +94,6 @@ function newPaneState(): PaneState {
     reveal: Object.create(null),
     sectionOpen: Object.create(null),
   };
-}
-
-// Lazy per-file source cache, keyed by file id. Deliberately *not* in
-// PaneState: the base+head text is pane-independent and costs a /file-text
-// round trip, which is the whole point of fetching it lazily — a second
-// pane flipping the same file reads it back. Only view state splits by
-// pane. Never invalidated (the base/head worktrees are pinned for the run).
-const _cache: Record<string, FileText> = Object.create(null);
-
-function init(endpoint: string): void {
-  _endpoint = endpoint;
 }
 
 function foldLevel(st: PaneState, fileId: string): MdFoldLevel {
@@ -155,30 +135,14 @@ async function toggle(st: PaneState, f: FileBlock, repaint: () => void): Promise
     repaint();
     return;
   }
-  if (!_cache[f.id]) {
-    try {
-      _cache[f.id] = await _fetchText(f);
-    } catch (e) {
-      console.warn("rendered-mode: /file-text fetch failed, staying in text mode", e);
-      return;
-    }
+  try {
+    await FileTextCache.load(f);
+  } catch (e) {
+    console.warn("rendered-mode: /file-text fetch failed, staying in text mode", e);
+    return;
   }
   st.on.add(f.id);
   repaint();
-}
-
-async function _fetchText(f: FileBlock): Promise<FileText> {
-  const idx = _fileIdx(f);
-  const r = await fetch(`${_endpoint}/file-text?file_idx=${idx}`, { cache: "no-store" });
-  if (!r.ok) throw new Error(`GET /file-text -> ${r.status}`);
-  return (await r.json()) as FileText;
-}
-
-/** Recover the file index from the "F<idx>" id build_json assigns. */
-function _fileIdx(f: FileBlock): number {
-  const n = Number.parseInt(f.id.replace(/^F/, ""), 10);
-  if (Number.isNaN(n)) throw new Error(`unexpected file id ${f.id}`);
-  return n;
 }
 
 /** Render the file's rendered-mode body into `body`, reading and writing
@@ -188,7 +152,7 @@ function _fileIdx(f: FileBlock): number {
 function renderBody(
   st: PaneState, body: HTMLElement, f: FileBlock, repaint: () => void,
 ): void {
-  const text = _cache[f.id];
+  const text = FileTextCache.cached(f.id);
   const base = text ? text.base : null;
   const head = text ? text.head : null;
   const container = _el("div", "rendered-md");
@@ -707,7 +671,7 @@ function _el(tag: string, cls: string, text?: string): HTMLElement {
 }
 
 export const Rendered = {
-  init, newPaneState, isMarkdown, isOn, toggle, renderBody, foldLevel, setFoldLevel,
+  newPaneState, isMarkdown, isOn, toggle, renderBody, foldLevel, setFoldLevel,
 };
 
 // Exposed for unit tests (tests/js/rendered.test.ts): the pure fold

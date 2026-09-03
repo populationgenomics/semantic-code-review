@@ -4,6 +4,7 @@
 // state a `PaneState` carries.
 
 import { describe, test, expect, vi, beforeEach } from "vitest";
+import { FileTextCache } from "../../semantic_code_review/viewer/assets/file_text";
 import {
   Rendered, _plan, _outline, _diffLines, _classify, _align,
   type BlockPair, type PlanItem, type PaneState,
@@ -26,7 +27,7 @@ function mockFileText(body: { base: string | null; head: string | null }): void 
 }
 
 beforeEach(() => {
-  Rendered.init("");
+  FileTextCache.init("");
   st = Rendered.newPaneState();
 });
 

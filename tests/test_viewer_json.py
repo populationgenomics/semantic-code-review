@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from semantic_code_review import paths
 from semantic_code_review.format.parse import parse_augmented_diff
+from semantic_code_review.viewer import build_json
 from semantic_code_review.viewer.build_json import (
     build_pending_viewer_json,
     build_viewer_json,
@@ -518,3 +521,101 @@ def test_lang_from_path_covers_common_extensions() -> None:
     # Unknown / extensionless ⇒ empty (viewer renders plain text).
     assert _lang_from_path("LICENSE") == ""
     assert _lang_from_path("data.parquet") == ""
+
+
+# --- lazy disclosure (ADR 0008 slice 1) --------------------------------------
+# /data.json carries no file text: a region between hunks fetches it from
+# /file-text when expanded. What it does carry is the post-image's line
+# count, which bounds the region below the last hunk.
+
+
+_DISCLOSURE_DIFF = """diff --git a/big.py b/big.py
+index 0123456..89abcde 100644
+--- a/big.py
++++ b/big.py
+@@ -99,3 +99,3 @@
+ line 99
+-line 100
++LINE 100
+ line 101
+diff --git a/gone.py b/gone.py
+deleted file mode 100644
+index 1111111..0000000
+--- a/gone.py
++++ /dev/null
+@@ -1,2 +0,0 @@
+-one
+-two
+diff --git a/uv.lock b/uv.lock
+index 3333333..4444444 100644
+--- a/uv.lock
++++ b/uv.lock
+@@ -1,1 +1,1 @@
+-version = "0.1"
++version = "0.2"
+"""
+
+
+def _disclosure_run(run_dir: paths.RunDir, *, worktrees: bool) -> dict:
+    run_dir.raw_diff.write_text(_DISCLOSURE_DIFF, encoding="utf-8")
+    run_dir.meta.write_text(
+        json.dumps({"title": "t", "author": {"login": "u"}, "url": "", "baseRefOid": "a", "headRefOid": "b"}),
+        encoding="utf-8",
+    )
+    if worktrees:
+        run_dir.base.mkdir()
+        run_dir.head.mkdir()
+        big = "".join(f"line {n}\n" for n in range(1, 6001))
+        (run_dir.base / "big.py").write_text(big, encoding="utf-8")
+        (run_dir.head / "big.py").write_text(big.replace("line 100\n", "LINE 100\n"), encoding="utf-8")
+        (run_dir.base / "gone.py").write_text("one\ntwo\n", encoding="utf-8")
+        (run_dir.base / "uv.lock").write_text('version = "0.1"\n', encoding="utf-8")
+        (run_dir.head / "uv.lock").write_text('version = "0.2"', encoding="utf-8")  # no final newline
+    return build_pending_viewer_json(run_dir)
+
+
+def test_viewer_json_carries_no_file_text(run_dir: paths.RunDir) -> None:
+    """The payload is the diff plus metadata; the rest of a file is the
+    lazy route's. A 6,000-line file adds nothing beyond its hunk."""
+    data = _disclosure_run(run_dir, worktrees=True)
+
+    for f in data["files"]:
+        assert "head_lines" not in f
+    big = next(f for f in data["files"] if f["path"] == "big.py")
+    assert "line 5000" not in json.dumps(big)
+    assert len(json.dumps(big)) < 5_000
+
+
+def test_head_line_count_is_the_post_image_length_for_every_role(run_dir: paths.RunDir) -> None:
+    """Counted for every file with a post-image — over the old bundle cap,
+    and skipped (generated) files alike — and null for a deleted file.
+    A missing final newline does not add a line."""
+    data = _disclosure_run(run_dir, worktrees=True)
+
+    counts = {f["path"]: f["head_line_count"] for f in data["files"]}
+    status = {f["path"]: f["status"] for f in data["files"]}
+    assert counts == {"big.py": 6000, "gone.py": None, "uv.lock": 1}
+    assert status["uv.lock"] == "generated"
+
+
+def test_head_line_count_is_null_without_a_worktree(run_dir: paths.RunDir) -> None:
+    data = _disclosure_run(run_dir, worktrees=False)
+
+    assert {f["head_line_count"] for f in data["files"]} == {None}
+
+
+@pytest.mark.parametrize(
+    ("text", "count"),
+    [
+        (None, None),
+        ("", 0),
+        ("\n", 1),
+        ("a", 1),
+        ("a\n", 1),
+        ("a\nb", 2),
+        ("a\nb\n", 2),
+        ("a\n\nb\n", 3),
+    ],
+)
+def test_line_count_numbers_lines_as_the_diff_does(text: str | None, count: int | None) -> None:
+    assert build_json._line_count(text) == count
