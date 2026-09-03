@@ -108,7 +108,7 @@ single-line span is the inline row note at `off`. A deletion-only hunk
 has no boundaries and so no spans. The `segments` rung is unchanged
 (slice 5).
 
-## Slice 5 — The ladder becomes `definitions`
+## Slice 5 — The ladder becomes `definitions` ✅ done
 
 `segments` stops being a fold rung. The ladder is `files | hunks |
 definitions | off`: the middle rung folds every definition-level node a hunk
@@ -119,7 +119,18 @@ whole-hunk segment go.
 **Gate:** key `3` and the URL hash select `definitions`; nothing is
 synthesised; every hunk renders at that level.
 
-## Slice 6 — Focus is the one reveal that unfolds
+Landed as: an open hunk's body below `off` is a **label tree**
+(`render._labelTree`) — the definitions the hunk touches (named
+`fold_regions` holding a changed row of the hunk) and its spans, nested
+by containment over the hunk's row indices. A definition row is `kind
+name` plus its text: the fold summary, else the intent of a span of
+exactly its extent (absorbed), else its opener line when the hunk
+carries it. No row is fetched for a label. The body's state is one
+override, `H<f>_<h>:body`, in place of per-span overrides; clicking any
+label row opens the code. `fold=segments` in an old hash reads as
+`definitions`. Nothing in Python named the level.
+
+## Slice 6 — Focus is the one reveal that unfolds ✅ done
 
 A reveal puts content on screen at the current depth. A *focus* — the
 symbol-pill click — reveals and unfolds its span to `off`, ephemerally.
@@ -128,3 +139,14 @@ and no other reveal path inherits it.
 
 **Gate:** expanding a chip does not change fold depth; clicking a pill shows
 code; touching the slider clears the focus.
+
+Landed as: `RenderState.focus`, the set of hunk ids the gesture asked
+for (null when none), read through `PaneScope.focus` — the panel's is
+null. Two gestures set it: a sidebar pill click (the pill's hunks; "show
+all" clears it) and the explainer panel's "Open in diff" (`focusRef`: the
+hunk, or every hunk of a file reference — a focus, since the reader has
+already seen the reference at level in the panel). A focused hunk
+renders open to code with its file open, so a pill click at `files`
+shows the code too. The slider and entering overview mode clear it; boot
+with a filter restored from localStorage sets nothing. `revealHunk` /
+`revealFile` and their stored overrides are gone.

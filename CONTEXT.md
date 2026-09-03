@@ -277,11 +277,14 @@ therefore no boundaries and no spans. In a batched prompt ids are
 numbered continuously across the hunks. The extra-review pass still
 buckets its integer `(file, line)` notes into single-line spans.
 
-In the viewer, at fold level `segments` a hunk's body is a `seg-list`:
-one summary row per top-level span with nested spans indented beneath
-it (a span-less hunk shows one synthetic whole-hunk row); toggling any
-row drops back to the raw diff, where single-line spans attach as inline
-notes on their row. On disk, `scr-span: +a..+b "intent"` is an
+In the viewer a span is a label. Below fold level `off`, an open hunk's
+body is its label tree (see [[fold-level]]): each span is a row —
+range, intent, smells — nested by containment under the definition that
+holds it, or under the hunk header when no definition does; a span of
+exactly a definition's extent is that definition's label text instead
+of a row. At `off` the code shows and a single-line span attaches as an
+inline note on its row; a multi-line span has no inline form. Clicking
+any label row opens the hunk's code. On disk, `scr-span: +a..+b "intent"` is an
 intent-only span and `scr-span-begin` … `scr-span-end` a block with
 smells/context/refs; the retired `scr-segment-*` / `scr-line` directives
 and a sidecar's `segments` / `line_notes` still load, as spans.
@@ -301,7 +304,7 @@ diff.
 Which hunks are live is set by the active sidebar filter (the pill's
 `activeHunkIds`): with no filter every hunk is live and regions hold only
 unchanged context (the between-hunk expand gaps). With a filter, only the
-pill's hunks are live (their code revealed — see [[fold-level]]) — every
+pill's hunks are live (and, the click being a focus, open to their code — see [[fold-level]]) — every
 other hunk *demotes*, folded together with its surrounding context into
 one region whose expansion shows those changes inline with no header. A
 file no live hunk touches is dropped from the render.
@@ -328,29 +331,53 @@ puts rows on screen, fold shows them at less detail (ADR 0008).
 
 **Fold level**
 The viewer's global collapse depth (`RenderState.fold`, driven by the
-fold slider / keys 1–4): `files` → `hunks` → `segments` → `off`, each a
-shallower fold. Code (raw diff rows) shows only at `off`; `segments`
-shows each [[hunk]]'s [[annotation-span]] summaries (a span-less hunk folds as
-one synthetic whole-hunk span, so every hunk behaves uniformly);
-`hunks` shows hunk headers; `files` shows file headers.
+fold slider / keys 1–4): `files` → `hunks` → `definitions` → `off`, each
+a shallower fold over the structure (ADR 0008). `files` shows file
+headers; `hunks` shows hunk headers; `definitions` opens every hunk to
+its **label tree**; only `off` shows code (raw diff rows).
+
+The label tree (`render._labelTree`) is the body of an open hunk below
+`off`: every definition the hunk touches — a named
+`FileBlock.fold_regions` entry holding one of the hunk's changed rows;
+a region reached only by context rows is not touched — and every
+[[annotation-span]], nested by containment over the hunk's row indices
+(the one coordinate a deleted definition and a post-image span share).
+A folded definition is one row: `kind qualified_name`, then its text —
+the `FoldDescription` summary if one exists, else the intent of a span
+of exactly its extent (absorbed, not repeated as a child), else its
+opener line when the hunk carries it, else nothing. Nothing is fetched
+for a label; the undisclosed part of a definition stays undisclosed. A
+hunk touching no definition is one region — its spans sit under its
+header. Nothing is synthesised: a hunk with neither definitions nor
+spans has an empty tree. Clicking any row opens the hunk's code.
 
 Per-item exceptions live in `RenderState.overrides` — a reviewer
-expanding/collapsing one file/hunk/span; an override wins over the
-level default. Picking a level (`_setGlobalFold`) is authoritative: it
-clears every override, folding the whole tree to that depth, including a
-filter's focused hunks. Picking one from inside overview mode also leaves
-the mode into the diff at that level — the document is not shown at a
-level, so reaching for the zoom while reading it is a request for the
-ladder.
+expanding/collapsing one file (`F0`), hunk (`H0_1`, header open or
+closed) or hunk body (`H0_1:body`, label tree or code); an override wins
+over the level default. Picking a level (`_setGlobalFold`) is
+authoritative: it clears every override, folding the whole tree to that
+depth, including a filter's focused hunks. Picking one from inside
+overview mode also leaves the mode into the diff at that level — the
+document is not shown at a level, so reaching for the zoom while reading
+it is a request for the ladder. The URL hash carries the level and the
+overrides; `fold=segments` in a link written before ADR 0008 is read as
+`definitions`.
 
-Focus reveal (`RenderState.focusReveal`) is a separate *ephemeral* bit,
-not an override: set when a sidebar pill is clicked
-(`Render.applyFilterChange`), cleared the moment the slider is touched.
-While set, the filter's live hunks render open (code shown) regardless of
-level — so clicking a symbol shows its code — but because it isn't a
-stored override it never leaks an expanded hunk back into the unfiltered
-view. Fold toggles flip the actually-visible state, so one click collapses
-a focus-revealed hunk rather than no-op'ing against the level default.
+A reveal — an expand chip, a filter restored at boot — puts rows on
+screen at the current depth and does not unfold (ADR 0008). The one
+exception is a **focus** (`RenderState.focus`, the set of hunk ids the
+gesture asked for, or null): a sidebar pill click
+(`Render.applyFilterChange`, the pill's `hunk_ids`) and the explainer
+panel's "Open in diff" (`Render.focusRef`: the hunk, or every hunk of a
+file reference) are requests to see that code, so a focused hunk renders
+open to its code and its file open, whatever the level. It is a property
+of the gesture, not an override: the slider and entering overview mode
+clear it, "show all" replaces it with nothing, it never reaches the URL
+hash, and it cannot leak an expanded hunk into the unfiltered view. Fold
+toggles flip the actually-visible state, so one header click collapses a
+focused hunk rather than no-op'ing against the level default. The
+overview-mode detail panel has no focus; `openReference` seeds the
+panel's own overrides per reference instead.
 
 **Viewer data**
 The in-memory runtime data structure served as `/data.json` by the
@@ -668,7 +695,8 @@ untouched. Inside the mode a reference opens the file it addresses in a
 detail panel beside the document, with its own pane state — text-mode
 folds and [[rendered-mode]]'s alike — so checking a claim costs no mode
 switch and moves nothing in the diff; the panel's
-"Open in diff" is the way out to the full ladder. The viewer opens in
+"Open in diff" is the way out, a focus on the reference in the full
+ladder (see [[fold-level]]). The viewer opens in
 the mode when a document already exists, since showing one that is
 written spends nothing; with none it opens on the diff, because entering
 the mode is what buys the skeleton. A `mode=` in the URL hash outranks

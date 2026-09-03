@@ -2,8 +2,8 @@
 //
 // Owns the layout pass that turns DATA into the on-page DOM: PR
 // panel, file blocks, hunk headers, the side-by-side row grid, gap
-// chips for unchanged context, span summaries at the segments level, refs, smell
-// pills. Carries the fold state too (STATE.fold / overrides /
+// chips for unchanged context, label trees at the definitions level, refs,
+// smell pills. Carries the fold state too (STATE.fold / overrides /
 // renderedDiffs cache) because all of that exists to feed the
 // renderer, and binds the user inputs that drive it (fold-slider
 // buttons, keyboard 1-4, hash sync).
@@ -35,7 +35,11 @@ import { blockDiff, matchRanges, wrapRanges, type CharRange } from "./text_highl
 
 // --- Module state --------------------------------------------------------
 
-type FoldMode = "files" | "hunks" | "segments" | "off";
+// The collapse ladder (ADR 0008): `definitions` folds every definition a
+// hunk touches to a labelled row, with the spans inside it nested beneath;
+// only `off` shows code.
+type FoldMode = "files" | "hunks" | "definitions" | "off";
+const _FOLD_MODES: readonly FoldMode[] = ["files", "hunks", "definitions", "off"];
 
 // Which renderer owns the main pane. Orthogonal to FoldMode, not a
 // fifth value of it (ADR 0007): overview mode hides nothing, it
@@ -49,11 +53,13 @@ interface RenderState {
   overrides: Record<string, boolean>;
   renderedDiffs: Record<string, HTMLElement>;
   rendered: PaneState;
-  // Ephemeral: reveal the focused hunks' code (set when a sidebar pill is
-  // clicked, cleared the moment the fold-level slider is touched). Kept
-  // out of `overrides` on purpose — a stored per-hunk override would leak
-  // an expanded hunk into the unfiltered view once the filter clears.
-  focusReveal: boolean;
+  /** The focus: the hunks the last focus gesture asked to see — a sidebar
+   *  pill click, or the explainer's "Open in diff" — or null. A focused
+   *  hunk renders open to its code, and its file open, whatever the
+   *  level (ADR 0008: the one reveal that unfolds). Ephemeral: the slider
+   *  and entering overview mode clear it; it is never an override, so it
+   *  neither reaches the URL hash nor outlives the gesture. */
+  focus: ReadonlySet<string> | null;
 }
 
 let _data: ViewerData = { version: "1", pr: {} as PRBlock, smells_catalogue: {}, files: [], groups: [], symbols: [] };
@@ -82,7 +88,7 @@ const _state: RenderState = {
   overrides: Object.create(null),
   renderedDiffs: Object.create(null),
   rendered: Rendered.newPaneState(),
-  focusReveal: true,
+  focus: null,
 };
 
 // What a render pass reads its per-item state from, and where a fold
@@ -101,6 +107,9 @@ interface PaneScope {
    *  panel: a reference addresses a file whether or not the filter the
    *  reviewer left in the diff covers it. */
   filtered: boolean;
+  /** The hunks a focus gesture opened (`RenderState.focus`), or null.
+   *  The panel has none: `openReference` seeds its overrides instead. */
+  focus: ReadonlySet<string> | null;
   /** Rendered mode's view state (ADR 0004) for this pane: which `.md`
    *  files are flipped, and their fold level / reveals. Per-pane for the
    *  same reason `overrides` is. */
@@ -116,6 +125,7 @@ function _diffScope(): PaneScope {
     overrides: _state.overrides,
     cache: _state.renderedDiffs,
     filtered: true,
+    focus: _state.focus,
     rendered: _state.rendered,
     repaint: render,
   };
@@ -127,9 +137,14 @@ const _panelScope: PaneScope = {
   overrides: Object.create(null),
   cache: null,
   filtered: false,
+  focus: null,
   rendered: Rendered.newPaneState(),
   repaint: () => ExplainerPanel.repaint(),
 };
+
+function _isFocused(scope: PaneScope, hunkId: string): boolean {
+  return scope.focus !== null && scope.focus.has(hunkId);
+}
 
 // --- Public API ----------------------------------------------------------
 
@@ -147,11 +162,11 @@ function renderInit(data: ViewerData): void {
   _state.overrides = Object.create(null);
   _state.renderedDiffs = Object.create(null);
   _state.rendered = Rendered.newPaneState();
+  // A filter restored from localStorage is not a gesture: the diff opens
+  // at its level, filtered, with nothing focused.
+  _state.focus = null;
   _wireInputs();
   _restoreHash();
-  // As pressing the button clears it: the reveal belongs to a filter
-  // the reviewer is not looking at while the pane is the document.
-  _state.focusReveal = _state.mode === "diff";
   render();
   // Being in the mode is what queues the sections a document left
   // pending, however the mode was reached — the alternative is a
@@ -257,8 +272,7 @@ function repaintHunkHeader(hunkId: string): void {
   const h = f && f.hunks && f.hunks[hi];
   if (!h) return;
   const scope = _diffScope();
-  const folded = _isFolded(scope, h.id, _defaultHunkFolded());
-  const fresh = _renderHunkHeader(h, folded, f, scope);
+  const fresh = _renderHunkHeader(h, _hunkFolded(scope, h), f, scope);
   oldHdr.replaceWith(fresh);
 }
 
@@ -272,7 +286,28 @@ function clearRenderedDiffCache(hunkId: string): void {
 
 function _defaultFileFolded(): boolean    { return _state.fold === "files"; }
 function _defaultHunkFolded(): boolean    { return _state.fold === "files" || _state.fold === "hunks"; }
-function _defaultSpanFolded(): boolean    { return _state.fold !== "off"; }
+/** An open hunk's body is the label tree until `off`, which shows code. */
+function _defaultBodyFolded(): boolean    { return _state.fold !== "off"; }
+
+/** The override id for a hunk's body — labels vs. code — distinct from
+ *  the hunk's own (header open vs. closed). */
+function _bodyId(hunkId: string): string { return `${hunkId}:body`; }
+
+/** A hunk's visible fold states. A focus opens the hunk and its body to
+ *  code below the level's defaults; an explicit override the reviewer set
+ *  still wins over both. */
+function _hunkFolded(scope: PaneScope, h: HunkBlock): boolean {
+  return _isFolded(scope, h.id, _isFocused(scope, h.id) ? false : _defaultHunkFolded());
+}
+function _hunkBodyFolded(scope: PaneScope, h: HunkBlock): boolean {
+  return _isFolded(scope, _bodyId(h.id), _isFocused(scope, h.id) ? false : _defaultBodyFolded());
+}
+/** A file opens for a focused hunk in it: the code asked for must be on
+ *  screen at `files` too. */
+function _fileFolded(scope: PaneScope, f: FileBlock): boolean {
+  const focused = f.hunks.some((h) => _isFocused(scope, h.id));
+  return _isFolded(scope, f.id, focused ? false : _defaultFileFolded());
+}
 
 function _isFolded(scope: PaneScope, id: string, fallback: boolean): boolean {
   return Object.prototype.hasOwnProperty.call(scope.overrides, id)
@@ -295,9 +330,9 @@ function _toggleFold(scope: PaneScope, id: string, currentDefault: boolean): voi
 function _setGlobalFold(fold: FoldMode): void {
   _state.fold = fold;
   _state.overrides = Object.create(null);
-  // The slider is authoritative: fold every hunk (focused or not) to this
-  // level, so focus-reveal stops forcing the focused hunks open.
-  _state.focusReveal = false;
+  // The slider is authoritative: every hunk, focused or not, folds to
+  // this level.
+  _state.focus = null;
   if (_state.mode === "overview") {
     setMode("diff");
     return;
@@ -332,10 +367,10 @@ function setMode(mode: ViewMode): void {
   if (mode === "overview" && !_explainerEnabled) return;
   if (_state.mode === mode) return;
   _state.mode = mode;
-  // Entering the mode clears focus-reveal, as touching the collapse
-  // slider already does: the reveal belongs to a filter the reviewer is
-  // stepping away from, and it must not survive the round trip.
-  if (mode === "overview") _state.focusReveal = false;
+  // Entering the mode clears the focus, as the slider does: it belongs
+  // to a gesture the reviewer is stepping away from, and must not
+  // survive the round trip.
+  if (mode === "overview") _state.focus = null;
   render();
 }
 
@@ -343,42 +378,16 @@ function mode(): ViewMode {
   return _state.mode;
 }
 
-/** Leave overview mode and bring `fileId` into view at whatever
- *  collapse level the reviewer left the diff on. Deliberately not a
- *  fold change: the Map answers "read this next", not "expand this".
- *
- *  The document's own references no longer land here — they open beside
- *  it (`openReference`). This is what the panel's "Open in diff" runs,
- *  for the reader who wants the whole ladder around the file. */
-function revealFile(fileId: string): void {
+/** Focus `hunkIds` in the diff: leave overview mode if in it, render them
+ *  open to their code with their files open, and scroll to the first.
+ *  The one reveal that unfolds (ADR 0008). Ephemeral — the slider folds
+ *  them back to level, and nothing is written to the overrides or the
+ *  hash. */
+function _focus(hunkIds: Iterable<string>, scrollTo: string): void {
   setMode("diff");
-  const el = document.querySelector('.file[data-id="' + _cssEscape(fileId) + '"]');
-  if (el) el.scrollIntoView({ block: "start" });
-}
-
-/** Leave overview mode and open `hunkId`.
- *
- *  Unlike `revealFile`, this unfolds: a hunk reference in the prose is
- *  the claim "read this hunk", and landing on a folded header would
- *  make the reviewer press again to see what the sentence was about.
- *  The unfold is a `user`-owned override, so the collapse level is
- *  untouched. */
-function revealHunk(hunkId: string): void {
-  setMode("diff");
-  const parts = hunkId.replace("H", "").split("_");
-  const file = _data.files && _data.files[Number(parts[0])];
-  if (file) _state.overrides[file.id] = false;
-  _state.overrides[hunkId] = false;
-  // Unfolding the hunk is not enough to show code. At the `hunks` level
-  // an open hunk still renders its segment *summaries* — the ladder's
-  // whole point — so a reference that landed here would arrive at a
-  // paraphrase of the thing it was citing. Open the spans too: a
-  // reference is a claim about specific lines, and the lines are what
-  // the reviewer came to check.
-  const hunk = file && (file.hunks || []).find((h) => h.id === hunkId);
-  if (hunk) for (const s of _hunkSpans(hunk)) _state.overrides[s.id] = false;
+  _state.focus = new Set(hunkIds);
   render();
-  const el = document.querySelector('.hunk[data-id="' + _cssEscape(hunkId) + '"]');
+  const el = document.querySelector('[data-id="' + _cssEscape(scrollTo) + '"]');
   if (el) el.scrollIntoView({ block: "start" });
 }
 
@@ -392,10 +401,14 @@ function _fileOfRef(ref: ExplainerRef): FileBlock {
   return file;
 }
 
-/** Leave the mode and land on the reference in the diff. */
-function _revealRef(ref: ExplainerRef): void {
-  if (ref.kind === "file") revealFile(ref.id);
-  else revealHunk(ref.id);
+/** "Open in diff" on a reference is a focus: the reader has seen it at
+ *  the collapse level in the panel and is asking for the lines. A hunk
+ *  reference focuses that hunk; a file reference focuses the file's
+ *  hunks, as the Files-axis pill does. */
+function focusRef(ref: ExplainerRef): void {
+  const file = _fileOfRef(ref);
+  if (ref.kind === "file") _focus(file.hunks.map((h) => h.id), file.id);
+  else _focus([ref.id], ref.id);
 }
 
 // What the detail panel asks of the renderer. Injected rather than
@@ -409,7 +422,7 @@ const _PANEL_HOST: PanelHost = {
     if (el === null) throw new Error(`reference ${ref.id} rendered nothing`);
     return el;
   },
-  openInDiff: _revealRef,
+  openInDiff: focusRef,
 };
 
 /** A reference in the document was clicked.
@@ -421,7 +434,7 @@ const _PANEL_HOST: PanelHost = {
  *  — it is the jump the panel's "Open in diff" also runs. */
 function openReference(ref: ExplainerRef): void {
   if (_state.mode !== "overview") {
-    _revealRef(ref);
+    focusRef(ref);
     return;
   }
   const file = _fileOfRef(ref);
@@ -429,23 +442,23 @@ function openReference(ref: ExplainerRef): void {
   // The file itself always opens: a panel showing a folded header shows
   // nothing. Under it the collapse level still holds, except for the
   // hunk a hunk reference names — that reference is the claim "read
-  // these lines", so its spans open too, as `revealHunk` does in the
-  // diff.
+  // these lines", so its body opens to code too, as a focus does
+  // in the diff.
   overrides[file.id] = false;
   if (ref.kind === "hunk") {
     overrides[ref.id] = false;
-    const hunk = (file.hunks || []).find((h) => h.id === ref.id);
-    if (hunk) for (const s of _hunkSpans(hunk)) overrides[s.id] = false;
+    overrides[_bodyId(ref.id)] = false;
   }
   _panelScope.overrides = overrides;
   ExplainerPanel.open(ref);
 }
 
-/** A sidebar filter changed. Reveal the newly focused hunks' code (an
- *  ephemeral state, distinct from a stored fold override) and re-render.
- *  Boot wires this to the sidebar's onFilterChange. */
+/** A sidebar pill was clicked. The pill's hunks become the focus — the
+ *  filter narrows the diff to them, and the click is the request to see
+ *  their code; "show all" (no pill) clears it. Boot wires this to the
+ *  sidebar's onFilterChange. */
 function applyFilterChange(): void {
-  _state.focusReveal = true;
+  _state.focus = Sidebar.activeHunkIds();
   render();
 }
 
@@ -571,7 +584,7 @@ function _renderFile(f: FileBlock, scope: PaneScope): HTMLElement | null {
   const div = _el("div", "file");
   if (liveIds !== null) div.classList.add("filtered");
   div.dataset.id = f.id;
-  const folded = _isFolded(scope, f.id, _defaultFileFolded());
+  const folded = _fileFolded(scope, f);
   div.classList.toggle("folded", folded);
   div.appendChild(_renderFileHeader(f, folded, scope));
   if (!folded) {
@@ -618,12 +631,9 @@ function _renderFileBody(
     body.appendChild(_renderRegionChip(f, region));
   };
 
-  // Just after a sidebar pill click, reveal the focused hunks' code
-  // (ephemeral); the fold-level slider clears the flag and takes over.
-  const reveal = liveIds !== null && _state.focusReveal;
   for (const h of f.hunks.filter(isLive)) {
     flush(h.new_start - 1, emittedLive ? "between" : "top");
-    body.appendChild(_renderHunk(h, f, scope, reveal));
+    body.appendChild(_renderHunk(h, f, scope));
     emittedLive = true;
     curNew = h.new_start + h.new_count;
     curOld = h.old_start + h.old_count;
@@ -898,25 +908,14 @@ function _refreshFileFolds(el: HTMLElement, f: FileBlock): void {
 
 // --- Hunk + diff body ---------------------------------------------------
 
-function _renderHunk(h: HunkBlock, f: FileBlock, scope: PaneScope, reveal = false): HTMLElement {
+function _renderHunk(h: HunkBlock, f: FileBlock, scope: PaneScope): HTMLElement {
   const div = _el("div", "hunk");
   div.dataset.id = h.id;
-  // reveal (focus) forces the hunk fully open — code, not summaries — but
-  // an explicit fold override the reviewer set still wins.
-  const folded = _isFolded(scope, h.id, reveal ? false : _defaultHunkFolded());
+  const folded = _hunkFolded(scope, h);
   div.classList.toggle("folded", folded);
   div.appendChild(_renderHunkHeader(h, folded, f, scope));
   if (!folded) {
-    // The collapse ladder shows span summaries (never raw code) until
-    // `off` or a reveal. A hunk with no spans folds as one synthetic
-    // span covering it, so every hunk behaves uniformly at this level.
-    const spans = _hunkSpans(h);
-    const anyOpen = spans.some((s) => _isFolded(scope, s.id, _defaultSpanFolded()) === false);
-    if (!reveal && _defaultSpanFolded() && !anyOpen) {
-      div.appendChild(_renderSpanList(_spanTree(spans), f, scope));
-    } else {
-      div.appendChild(_renderHunkDiff(h, f, scope));
-    }
+    div.appendChild(_hunkBodyFolded(scope, h) ? _renderHunkLabels(h, f, scope) : _renderHunkDiff(h, f, scope));
     if (h.context) {
       const c = _el("div", "context-note");
       c.innerHTML = `<strong>context:</strong> ${_esc(h.context)}`;
@@ -954,46 +953,6 @@ function _buildRefLink(ref: Ref): HTMLElement {
   a.textContent = `${ref.path}:${ref.line}`;
   a.title = ref.reason || "";
   return a;
-}
-
-/** The spans a hunk's body shows as at the segments fold level: its own
- *  if it has any, else one synthetic span covering the whole hunk so a
- *  span-less hunk still folds to a single summary (never raw code). */
-function _hunkSpans(h: HunkBlock): AnnotationSpan[] {
-  if (h.spans && h.spans.length > 0) return h.spans;
-  return [{
-    id: `${h.id}_whole`,
-    start: h.new_start,
-    end: h.new_start + Math.max(h.new_count, 1) - 1,
-    intent: h.intent || "",
-    smells: h.smells || [],
-    context: h.context || "",
-    refs: h.refs || [],
-  }];
-}
-
-interface SpanNode { span: AnnotationSpan; children: SpanNode[]; }
-
-/** Nest a flat span list by containment. The wire order is outermost
- *  first (`(start, -end)`), so a span is a child of the nearest open
- *  span that still covers it; an identical range is a sibling, not a
- *  child — two notes on one line are two observations. */
-function _spanTree(spans: AnnotationSpan[]): SpanNode[] {
-  const roots: SpanNode[] = [];
-  const open: SpanNode[] = [];
-  for (const span of spans) {
-    const node: SpanNode = { span, children: [] };
-    while (open.length) {
-      const top = open[open.length - 1].span;
-      const covers = top.start <= span.start && span.end <= top.end
-        && !(top.start === span.start && top.end === span.end);
-      if (covers) break;
-      open.pop();
-    }
-    (open.length ? open[open.length - 1].children : roots).push(node);
-    open.push(node);
-  }
-  return roots;
 }
 
 function _renderHunkHeader(
@@ -1035,43 +994,163 @@ function _renderHunkHeader(
   hdr.addEventListener("click", (e) => {
     e.stopPropagation();
     // Flip the visible state — `folded` is the actual current state
-    // (respecting reveal + overrides), not just the level default.
+    // (respecting focus + overrides), not just the level default.
     _toggleFold(scope, h.id, folded);
   });
   return hdr;
 }
 
-/** The hunk body at the segments fold level: one summary row per span,
- *  a span's nested spans indented beneath it. */
-function _renderSpanList(nodes: SpanNode[], f: FileBlock, scope: PaneScope): HTMLElement {
-  const list = _el("div", "seg-list");
-  for (const node of nodes) list.appendChild(_renderSpanFolded(node, f, scope));
-  return list;
+// --- The label tree: an open hunk's body below `off` --------------------
+//
+// Every definition the hunk touches (a `FileBlock.fold_regions` entry with
+// a name whose range holds a changed row) and every annotation span,
+// nested by containment over the hunk's rows and rendered as labelled
+// rows. Row indices are the one coordinate both kinds share: a deleted
+// definition has only pre-image lines, a span only post-image ones. A
+// hunk touching no definition is one region — its spans sit under the
+// hunk header. Nothing is synthesised for a hunk with neither.
+
+type LabelNode =
+  | { kind: "definition"; region: FoldRegion; label: AnnotationSpan | null; first: number; last: number; children: LabelNode[] }
+  | { kind: "span"; span: AnnotationSpan; first: number; last: number; children: LabelNode[] };
+
+/** Row-index extent, inclusive, of the rows `hit` selects; null when none. */
+function _rowExtent(rows: RowBlock[], hit: (r: RowBlock) => boolean): { first: number; last: number } | null {
+  let first = -1;
+  let last = -1;
+  for (let i = 0; i < rows.length; i++) {
+    if (!hit(rows[i])) continue;
+    if (first < 0) first = i;
+    last = i;
+  }
+  return first < 0 ? null : { first, last };
 }
 
-function _renderSpanFolded(node: SpanNode, f: FileBlock, scope: PaneScope): HTMLElement {
-  const s = node.span;
-  const div = _el("div", "segment");
-  div.dataset.id = s.id;
-  div.appendChild(_chev(true));
-  const range = s.start === s.end ? `+${s.start}` : `+${s.start}..+${s.end}`;
-  div.appendChild(_el("span", "segment-range", range));
-  div.appendChild(_el("span", s.intent ? "segment-intent" : "segment-intent empty", s.intent || "(no intent)"));
-  for (const sm of s.smells || []) div.appendChild(_smellPill(sm, {
-    smellId: `${s.id}:smell:${sm.tag}`,
-    file: f.path, side: "new", line: s.start,
+/** The definitions a hunk touches: named regions holding one of its
+ *  changed rows. A region reached only by the hunk's context rows is the
+ *  neighbour the diff brushed past, not something the hunk changed. */
+function _touchedDefinitions(h: HunkBlock, f: FileBlock): LabelNode[] {
+  const rows = h.rows || [];
+  const out: LabelNode[] = [];
+  for (const region of f.fold_regions || []) {
+    if (region.qualified_name === null) continue;
+    if (!rows.some((r) => r.kind !== "ctx" && Folds.rowInRegion(r, region))) continue;
+    const extent = _rowExtent(rows, (r) => Folds.rowInRegion(r, region));
+    if (extent === null) continue;
+    out.push({ kind: "definition", region, label: null, ...extent, children: [] });
+  }
+  return out;
+}
+
+/** Nest definitions and spans by containment. Sorted outermost first —
+ *  `(first, -last)`, a definition before a span of the same extent — so a
+ *  node is a child of the nearest open node that still covers it. Two
+ *  spans of one extent are siblings (two notes on one line are two
+ *  observations); a span of exactly a definition's extent becomes that
+ *  definition's label when the fold-summary pass has not written one,
+ *  and stays a child when it has, so neither label is lost. A span with
+ *  no row in the hunk — an older sidecar's coordinates — is warned about
+ *  and left out. */
+function _labelTree(h: HunkBlock, f: FileBlock): LabelNode[] {
+  const rows = h.rows || [];
+  const nodes: LabelNode[] = _touchedDefinitions(h, f);
+  for (const span of h.spans || []) {
+    const extent = _rowExtent(rows, (r) => r.new_line != null && span.start <= r.new_line && r.new_line <= span.end);
+    if (extent === null) {
+      console.warn(`${h.id}: span ${span.id} covers no row of the hunk; not shown in the label tree`);
+      continue;
+    }
+    nodes.push({ kind: "span", span, ...extent, children: [] });
+  }
+  nodes.sort((a, b) => a.first - b.first || b.last - a.last
+    || (a.kind === b.kind ? 0 : a.kind === "definition" ? -1 : 1));
+  const roots: LabelNode[] = [];
+  const open: LabelNode[] = [];
+  for (const node of nodes) {
+    while (open.length) {
+      const top = open[open.length - 1];
+      const same = top.first === node.first && top.last === node.last;
+      const covers = top.first <= node.first && node.last <= top.last
+        && !(same && top.kind === "span" && node.kind === "span");
+      if (covers) break;
+      open.pop();
+    }
+    const parent = open.length ? open[open.length - 1] : null;
+    if (parent && parent.kind === "definition" && node.kind === "span" && parent.label === null
+        && !parent.region.summary && parent.first === node.first && parent.last === node.last) {
+      parent.label = node.span;
+      continue;
+    }
+    (parent ? parent.children : roots).push(node);
+    open.push(node);
+  }
+  return roots;
+}
+
+/** The text a folded definition shows beside its name: the fold-summary
+ *  pass's summary, else the intent of the span that labels it, else its
+ *  opener line when the hunk carries it. A definition whose opener the
+ *  diff never reached shows its name alone; no row is fetched for a
+ *  label. */
+function _definitionText(node: Extract<LabelNode, { kind: "definition" }>, rows: RowBlock[]): string {
+  const { region, label } = node;
+  if (region.summary) return region.summary;
+  if (label && label.intent) return label.intent;
+  const opener = rows.find((r) => r.new_line != null && r.new_line === region.right_start)
+    || rows.find((r) => r.old_line != null && r.old_line === region.left_start);
+  if (!opener) return "";
+  return (opener.new_line != null ? opener.new_text : opener.old_text).trim();
+}
+
+function _renderHunkLabels(h: HunkBlock, f: FileBlock, scope: PaneScope): HTMLElement {
+  const tree = _el("div", "label-tree");
+  const rows = h.rows || [];
+  for (const node of _labelTree(h, f)) tree.appendChild(_renderLabelNode(node, h, f, rows, scope));
+  return tree;
+}
+
+/** One labelled row, its children indented beneath. Any row opens the
+ *  hunk's code: a label is a paraphrase, and the click asks for the
+ *  lines. */
+function _renderLabelNode(
+  node: LabelNode, h: HunkBlock, f: FileBlock, rows: RowBlock[], scope: PaneScope,
+): HTMLElement {
+  const row = _el("div", `label-row label-${node.kind}`);
+  row.appendChild(_chev(true));
+  let smells: Smell[];
+  let smellOwner: string;
+  let smellLine: number;
+  if (node.kind === "definition") {
+    const { region } = node;
+    row.dataset.def = region.qualified_name || "";
+    const kind = region.kind ? `${region.kind} ` : "";
+    row.appendChild(_el("span", "label-def", `${kind}${region.qualified_name}`));
+    const text = _definitionText(node, rows);
+    row.appendChild(_el("span", text ? "label-text" : "label-text empty", text));
+    smells = node.label ? node.label.smells || [] : [];
+    smellOwner = node.label ? node.label.id : "";
+    smellLine = node.label ? node.label.start : (region.right_start ?? h.new_start);
+  } else {
+    const s = node.span;
+    row.dataset.id = s.id;
+    row.appendChild(_el("span", "label-range", s.start === s.end ? `+${s.start}` : `+${s.start}..+${s.end}`));
+    row.appendChild(_el("span", s.intent ? "label-text" : "label-text empty", s.intent || "(no intent)"));
+    smells = s.smells || [];
+    smellOwner = s.id;
+    smellLine = s.start;
+  }
+  for (const sm of smells) row.appendChild(_smellPill(sm, {
+    smellId: `${smellOwner}:smell:${sm.tag}`, file: f.path, side: "new", line: smellLine,
   }));
-  div.addEventListener("click", (e) => {
+  row.addEventListener("click", (e) => {
     e.stopPropagation();
-    // A rendered summary is always in the folded state; clicking opens it
-    // (which, in step b, reveals the whole hunk's code).
-    _toggleFold(scope, s.id, true);
+    _toggleFold(scope, _bodyId(h.id), true);
   });
-  if (!node.children.length) return div;
-  const wrap = _el("div", "span-node");
-  wrap.appendChild(div);
-  const children = _el("div", "span-children");
-  for (const child of node.children) children.appendChild(_renderSpanFolded(child, f, scope));
+  if (!node.children.length) return row;
+  const wrap = _el("div", "label-node");
+  wrap.appendChild(row);
+  const children = _el("div", "label-children");
+  for (const child of node.children) children.appendChild(_renderLabelNode(child, h, f, rows, scope));
   wrap.appendChild(children);
   return wrap;
 }
@@ -1091,8 +1170,8 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLE
 }
 
 /** With the code shown, a single-line span is a note on its row — the
- *  same span the seg-list showed as a summary row. Multi-line spans have
- *  no inline form at this level. */
+ *  same span the label tree showed as a row. Multi-line spans have no
+ *  inline form at this level. */
 function _attachSpanNotes(
   rowElsOld: HTMLElement[], rowElsNew: HTMLElement[],
   rows: RowBlock[], spans: AnnotationSpan[],
@@ -1379,8 +1458,11 @@ function _restoreHash(): void {
   if (!h) return;
   for (const kv of h.split("&")) {
     const [k, v] = kv.split("=");
-    if (k === "fold" && ["files", "hunks", "segments", "off"].includes(v)) {
-      _state.fold = v as FoldMode;
+    if (k === "fold") {
+      // `segments` was the middle rung's name before ADR 0008; a link
+      // that carries it lands on the rung that replaced it.
+      const level = v === "segments" ? "definitions" : v;
+      if ((_FOLD_MODES as readonly string[]).includes(level)) _state.fold = level as FoldMode;
     } else if (k === "mode") {
       _state.mode = v === "overview" && _explainerEnabled ? "overview" : "diff";
     } else if (k && v != null) {
@@ -1397,7 +1479,7 @@ function _onKeydown(e: KeyboardEvent): void {
   switch (e.key) {
     case "1": _setGlobalFold("files"); e.preventDefault(); break;
     case "2": _setGlobalFold("hunks"); e.preventDefault(); break;
-    case "3": _setGlobalFold("segments"); e.preventDefault(); break;
+    case "3": _setGlobalFold("definitions"); e.preventDefault(); break;
     case "4": _setGlobalFold("off"); e.preventDefault(); break;
     case "?": _toggleHelp(); e.preventDefault(); break;
     case "Escape": _onEscape(); break;
@@ -1485,8 +1567,7 @@ export const Render = {
   mode,
   setMode,
   openReference,
-  revealFile,
-  revealHunk,
+  focusRef,
   markExplainerReady,
   applyFilterChange,
   renderHunkReplace,

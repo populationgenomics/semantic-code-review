@@ -27,11 +27,11 @@ Two more affordances inside that viewer:
   swaps the line-grid for a two-pane base→head *rendered* view (GFM,
   math, mermaid), block-level delta and folding, so you can judge
   whether the finished prose reads well rather than only which lines
-  moved. The text diff stays authoritative for hunks, segments, and
+  moved. The text diff stays authoritative for hunks, spans, and
   commenting.
 
 For a screenshot tour of the viewer — the sidebar axes, the fold ladder,
-segments, comments, and the review console — see
+definitions, comments, and the review console — see
 [docs/walkthrough.md](docs/walkthrough.md).
 
 ## Usage as a Claude Code plugin

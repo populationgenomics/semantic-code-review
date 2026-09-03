@@ -63,8 +63,8 @@ async function boot(): Promise<void> {
     // Focusing a Symbols-axis pill search-highlights that symbol's name
     // across every diff line; any other pill (or none) clears it.
     onActivePillChange: (symbolName) => Render.setSymbolSearch(symbolName),
-    // A filter change re-renders and reveals the focused hunks' code
-    // (ephemeral focus-reveal) — driven from render.ts.
+    // A pill click is a focus: the pill's hunks render open to their code
+    // until the slider is touched (ADR 0008) — render.ts owns the state.
     onFilterChange: () => Render.applyFilterChange(),
   });
   // The lazy /file-text cache only needs the endpoint.

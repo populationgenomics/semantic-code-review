@@ -304,7 +304,7 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 .chevron.open { transform: rotate(90deg); }
 .file-header:hover .chevron,
 .hunk-header:hover .chevron,
-.segment:hover .chevron { color: var(--fg); }
+.label-row:hover .chevron { color: var(--fg); }
 .file-path {
   font-family: var(--mono); font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
@@ -641,26 +641,28 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   font-size: 13px; color: var(--accent); cursor: help;
 }
 
-/* --- Segments ------------------------------------------------------------- */
-/* Each folded segment is an inline row (chevron + range + intent), not a
- * filled/bordered box — the chevron carries the "click to expand"
- * affordance and a subtle hover fill echoes it. */
-.seg-list { padding: 6px 12px; }
-.segment {
+/* --- Label tree ----------------------------------------------------------- */
+/* An open hunk's body below `off`: the definitions it touches and its
+ * annotation spans, nested. Each label is an inline row (chevron + name or
+ * range + text), not a filled/bordered box — the chevron carries the
+ * "click to expand" affordance and a subtle hover fill echoes it. */
+.label-tree { padding: 6px 12px; }
+.label-row {
   margin: 1px 0; padding: 3px 6px; border-radius: 4px;
   display: flex; gap: 10px; align-items: flex-start; cursor: pointer;
 }
-.segment:hover { background: var(--bg-alt); }
-.segment .chevron { margin-top: 1px; }
-.segment-range {
+.label-row:hover { background: var(--bg-alt); }
+.label-row .chevron { margin-top: 1px; }
+.label-range {
   font-family: var(--mono); color: var(--fg-dim); font-size: 12px; min-width: 90px;
   flex-shrink: 0;
 }
-.segment-intent { flex: 1; font-size: 13px; }
-.segment-intent.empty { color: var(--fg-dim); font-style: italic; }
-/* A span's nested spans sit indented beneath its row, with a hairline
- * on the left carrying the containment. */
-.span-children {
+.label-def { font-family: var(--mono); font-size: 12px; font-weight: 600; flex-shrink: 0; }
+.label-text { flex: 1; font-size: 13px; }
+.label-text.empty { color: var(--fg-dim); font-style: italic; }
+/* A node's children sit indented beneath its row, with a hairline on the
+ * left carrying the containment. */
+.label-children {
   margin-left: 22px; padding-left: 8px;
   border-left: 1px solid var(--border);
 }
@@ -1725,7 +1727,7 @@ body { padding-bottom: 30px; }
 .explainer-detail-body .file-summary,
 .explainer-detail-body .file-overview,
 .explainer-detail-body .hunk-intent,
-.explainer-detail-body .segment-intent,
+.explainer-detail-body .label-text,
 .explainer-detail-body .context-note,
 .explainer-detail-body .refs { max-width: 64ch; }
 
