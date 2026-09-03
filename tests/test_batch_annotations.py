@@ -160,6 +160,48 @@ def test_batch_prompt_labels_each_hunk_with_its_file_index() -> None:
     assert user.count("# Hunk ") == 3
 
 
+def _wide_hunk(index: int, *, new_start: int, new_count: int):
+    from semantic_code_review.augment.schemas import AnnotatedHunk, HunkAnnotations, ParsedHunk
+
+    return index, AnnotatedHunk(
+        parsed=ParsedHunk(
+            header=f"@@ -{new_start - 1},0 +{new_start},{new_count} @@",
+            body="".join(f"+line {n}\n" for n in range(new_start, new_start + new_count)),
+            old_start=new_start - 1,
+            old_count=0,
+            new_start=new_start,
+            new_count=new_count,
+        ),
+        ann=HunkAnnotations(intent=""),
+    )
+
+
+@pytest.mark.parametrize("batched", [False, True])
+def test_hunk_block_states_the_inclusive_post_image_range(batched: bool) -> None:
+    """Left to derive the bound from the `@@` header the model computes
+    `new_start + new_count`, one past the last line, and overshoots."""
+    from semantic_code_review.augment.hunks import format_batch_prompt, format_hunk_prompt
+
+    fp, outline = _file()
+    _, hunk = _wide_hunk(0, new_start=9, new_count=74)
+    if batched:
+        text = format_batch_prompt(fp, [(0, hunk)], "s", outline)[0]
+    else:
+        text = str(format_hunk_prompt(fp, hunk, "{}", "s", outline)[-1])
+    assert "+9..+82" in text
+    assert "LAST line is +82" in text
+    assert "+83" not in text
+
+
+def test_a_deletion_only_hunk_is_told_not_to_segment() -> None:
+    from semantic_code_review.augment.hunks import format_batch_prompt
+
+    fp, outline = _file()
+    _, hunk = _wide_hunk(0, new_start=8, new_count=0)
+    text = format_batch_prompt(fp, [(0, hunk)], "s", outline)[0]
+    assert "emit no `segments`" in text
+
+
 def test_batch_prompt_omits_absent_sections() -> None:
     """An unsupported language has no outline; a bare heading reads as
     'there is nothing here' rather than 'this was not computed'."""
