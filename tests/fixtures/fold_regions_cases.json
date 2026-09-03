@@ -1,280 +1,295 @@
 [
   {
-    "name": "changed method under unchanged class",
-    "rows": [
+    "name": "changed method under an unchanged class",
+    "path": "a.py",
+    "head": "class Foo:\n    def bar(self):\n        if x:\n            return 2\n        return 0\n\n    def qux(self):\n        return 9\n",
+    "base": "class Foo:\n    def bar(self):\n        if x:\n            return 1\n        return 0\n\n    def qux(self):\n        return 9\n",
+    "hunks": [
       {
-        "kind": "ctx",
-        "old_line": 1,
-        "new_line": 1,
-        "old_text": "class Foo:",
-        "new_text": "class Foo:"
-      },
-      {
-        "kind": "ctx",
-        "old_line": 2,
-        "new_line": 2,
-        "old_text": "    def bar(self):",
-        "new_text": "    def bar(self):"
-      },
-      {
-        "kind": "ctx",
-        "old_line": 3,
-        "new_line": 3,
-        "old_text": "        if x:",
-        "new_text": "        if x:"
-      },
-      {
-        "kind": "pair",
-        "old_line": 4,
-        "new_line": 4,
-        "old_text": "            return 1",
-        "new_text": "            return 2"
-      },
-      {
-        "kind": "ctx",
-        "old_line": 5,
-        "new_line": 5,
-        "old_text": "        return 0",
-        "new_text": "        return 0"
-      }
-    ],
-    "head_spans": [
-      {
-        "start_line": 1,
-        "end_line": 5,
-        "kind": "class",
-        "qualified_name": "Foo",
-        "depth": 0
-      },
-      {
-        "start_line": 2,
-        "end_line": 5,
-        "kind": "function",
-        "qualified_name": "Foo.bar",
-        "depth": 1
-      }
-    ],
-    "base_spans": [
-      {
-        "start_line": 1,
-        "end_line": 5,
-        "kind": "class",
-        "qualified_name": "Foo",
-        "depth": 0
-      },
-      {
-        "start_line": 2,
-        "end_line": 5,
-        "kind": "function",
-        "qualified_name": "Foo.bar",
-        "depth": 1
+        "header": "@@ -1,5 +1,5 @@",
+        "old_start": 1,
+        "old_count": 5,
+        "new_start": 1,
+        "new_count": 5,
+        "body": " class Foo:\n     def bar(self):\n         if x:\n-            return 1\n+            return 2\n         return 0\n"
       }
     ],
     "expected": [
       {
-        "header_idx": 0,
-        "body_start_idx": 1,
-        "body_end_idx": 4,
         "context": "both",
         "right_start": 1,
-        "right_end": 5,
+        "right_end": 8,
         "left_start": 1,
-        "left_end": 5,
+        "left_end": 8,
+        "has_changes": true,
         "qualified_name": "Foo",
         "kind": "class"
       },
       {
-        "header_idx": 1,
-        "body_start_idx": 2,
-        "body_end_idx": 4,
         "context": "both",
         "right_start": 2,
         "right_end": 5,
         "left_start": 2,
         "left_end": 5,
+        "has_changes": true,
         "qualified_name": "Foo.bar",
+        "kind": "function"
+      },
+      {
+        "context": "right",
+        "right_start": 7,
+        "right_end": 8,
+        "left_start": null,
+        "left_end": null,
+        "has_changes": false,
+        "qualified_name": "Foo.qux",
         "kind": "function"
       }
     ]
   },
   {
     "name": "pure deletion of a function",
-    "rows": [
+    "path": "a.py",
+    "head": "def keep():\n    return 0\n",
+    "base": "def keep():\n    return 0\n\n\ndef gone():\n    return 1\n    return 2\n",
+    "hunks": [
       {
-        "kind": "del",
-        "old_line": 10,
-        "new_line": null,
-        "old_text": "def gone():",
-        "new_text": ""
-      },
-      {
-        "kind": "del",
-        "old_line": 11,
-        "new_line": null,
-        "old_text": "    return 1",
-        "new_text": ""
-      },
-      {
-        "kind": "del",
-        "old_line": 12,
-        "new_line": null,
-        "old_text": "    return 2",
-        "new_text": ""
-      }
-    ],
-    "head_spans": [],
-    "base_spans": [
-      {
-        "start_line": 10,
-        "end_line": 12,
-        "kind": "function",
-        "qualified_name": "gone",
-        "depth": 0
+        "header": "@@ -1,7 +1,2 @@",
+        "old_start": 1,
+        "old_count": 7,
+        "new_start": 1,
+        "new_count": 2,
+        "body": " def keep():\n     return 0\n-\n-\n-def gone():\n-    return 1\n-    return 2\n"
       }
     ],
     "expected": [
       {
-        "header_idx": 0,
-        "body_start_idx": 1,
-        "body_end_idx": 2,
+        "context": "right",
+        "right_start": 1,
+        "right_end": 2,
+        "left_start": null,
+        "left_end": null,
+        "has_changes": false,
+        "qualified_name": "keep",
+        "kind": "function"
+      },
+      {
         "context": "left",
         "right_start": null,
         "right_end": null,
-        "left_start": 10,
-        "left_end": 12,
+        "left_start": 5,
+        "left_end": 7,
+        "has_changes": true,
         "qualified_name": "gone",
         "kind": "function"
       }
     ]
   },
   {
-    "name": "module-level fallback plus a function",
-    "rows": [
+    "name": "added function has no base range",
+    "path": "a.py",
+    "head": "def keep():\n    return 0\n\n\ndef added():\n    return 1\n",
+    "base": "def keep():\n    return 0\n",
+    "hunks": [
       {
-        "kind": "ctx",
-        "old_line": 1,
-        "new_line": 1,
-        "old_text": "import os",
-        "new_text": "import os"
-      },
-      {
-        "kind": "ctx",
-        "old_line": 2,
-        "new_line": 2,
-        "old_text": "x = (",
-        "new_text": "x = ("
-      },
-      {
-        "kind": "ins",
-        "old_line": null,
-        "new_line": 3,
-        "old_text": "",
-        "new_text": "    1,"
-      },
-      {
-        "kind": "ctx",
-        "old_line": 3,
-        "new_line": 4,
-        "old_text": ")",
-        "new_text": ")"
-      },
-      {
-        "kind": "ctx",
-        "old_line": 4,
-        "new_line": 5,
-        "old_text": "def f():",
-        "new_text": "def f():"
-      },
-      {
-        "kind": "pair",
-        "old_line": 5,
-        "new_line": 6,
-        "old_text": "    return x",
-        "new_text": "    return y"
-      }
-    ],
-    "head_spans": [
-      {
-        "start_line": 5,
-        "end_line": 6,
-        "kind": "function",
-        "qualified_name": "f",
-        "depth": 0
-      }
-    ],
-    "base_spans": [
-      {
-        "start_line": 4,
-        "end_line": 5,
-        "kind": "function",
-        "qualified_name": "f",
-        "depth": 0
+        "header": "@@ -1,2 +1,6 @@",
+        "old_start": 1,
+        "old_count": 2,
+        "new_start": 1,
+        "new_count": 6,
+        "body": " def keep():\n     return 0\n+\n+\n+def added():\n+    return 1\n"
       }
     ],
     "expected": [
       {
-        "header_idx": 1,
-        "body_start_idx": 2,
-        "body_end_idx": 2,
+        "context": "right",
+        "right_start": 1,
+        "right_end": 2,
+        "left_start": null,
+        "left_end": null,
+        "has_changes": false,
+        "qualified_name": "keep",
+        "kind": "function"
+      },
+      {
+        "context": "right",
+        "right_start": 5,
+        "right_end": 6,
+        "left_start": null,
+        "left_end": null,
+        "has_changes": true,
+        "qualified_name": "added",
+        "kind": "function"
+      }
+    ]
+  },
+  {
+    "name": "module-level import stanza folds by indentation beside a definition",
+    "path": "a.py",
+    "head": "import os\nfrom m import (\n    a,\n    b,\n)\n\n\ndef f():\n    return y\n",
+    "base": "import os\nfrom m import (\n    a,\n)\n\n\ndef f():\n    return x\n",
+    "hunks": [
+      {
+        "header": "@@ -1,8 +1,9 @@",
+        "old_start": 1,
+        "old_count": 8,
+        "new_start": 1,
+        "new_count": 9,
+        "body": " import os\n from m import (\n     a,\n+    b,\n )\n\n\n def f():\n-    return x\n+    return y\n"
+      }
+    ],
+    "expected": [
+      {
         "context": "both",
         "right_start": 2,
-        "right_end": 3,
+        "right_end": 4,
         "left_start": 2,
-        "left_end": 2,
+        "left_end": 3,
+        "has_changes": true,
         "qualified_name": null,
         "kind": null
       },
       {
-        "header_idx": 4,
-        "body_start_idx": 5,
-        "body_end_idx": 5,
         "context": "both",
-        "right_start": 5,
-        "right_end": 6,
-        "left_start": 4,
-        "left_end": 5,
+        "right_start": 8,
+        "right_end": 9,
+        "left_start": 7,
+        "left_end": 8,
+        "has_changes": true,
         "qualified_name": "f",
         "kind": "function"
       }
     ]
   },
   {
-    "name": "no spans degrades to indentation",
-    "rows": [
+    "name": "renamed function pairs by its header row",
+    "path": "a.py",
+    "head": "def new():\n    return 1\n",
+    "base": "def old():\n    return 1\n",
+    "hunks": [
       {
-        "kind": "ctx",
-        "old_line": 1,
-        "new_line": 1,
-        "old_text": "def foo():",
-        "new_text": "def foo():"
-      },
-      {
-        "kind": "ctx",
-        "old_line": 2,
-        "new_line": 2,
-        "old_text": "    x = 1",
-        "new_text": "    x = 1"
-      },
-      {
-        "kind": "pair",
-        "old_line": 3,
-        "new_line": 3,
-        "old_text": "    y = 2",
-        "new_text": "    y = 3"
+        "header": "@@ -1,2 +1,2 @@",
+        "old_start": 1,
+        "old_count": 2,
+        "new_start": 1,
+        "new_count": 2,
+        "body": "-def old():\n+def new():\n     return 1\n"
       }
     ],
-    "head_spans": [],
-    "base_spans": [],
     "expected": [
       {
-        "header_idx": 0,
-        "body_start_idx": 1,
-        "body_end_idx": 2,
         "context": "both",
         "right_start": 1,
-        "right_end": 3,
+        "right_end": 2,
         "left_start": 1,
+        "left_end": 2,
+        "has_changes": true,
+        "qualified_name": "new",
+        "kind": "function"
+      }
+    ]
+  },
+  {
+    "name": "no grammar degrades to indentation on every level",
+    "path": "conf.yaml",
+    "head": "top:\n  mid:\n    leaf: 2\n  other: 2\nflat: 3\n",
+    "base": "top:\n  mid:\n    leaf: 1\n  other: 2\nflat: 3\n",
+    "hunks": [
+      {
+        "header": "@@ -1,5 +1,5 @@",
+        "old_start": 1,
+        "old_count": 5,
+        "new_start": 1,
+        "new_count": 5,
+        "body": " top:\n   mid:\n-    leaf: 1\n+    leaf: 2\n   other: 2\n flat: 3\n"
+      }
+    ],
+    "expected": [
+      {
+        "context": "both",
+        "right_start": 1,
+        "right_end": 4,
+        "left_start": 1,
+        "left_end": 4,
+        "has_changes": true,
+        "qualified_name": null,
+        "kind": null
+      },
+      {
+        "context": "both",
+        "right_start": 2,
+        "right_end": 3,
+        "left_start": 2,
         "left_end": 3,
+        "has_changes": true,
+        "qualified_name": null,
+        "kind": null
+      }
+    ]
+  },
+  {
+    "name": "typescript: interface, method, arrow const and a describe block",
+    "path": "w.ts",
+    "head": "interface Opts {\n  a: number;\n  b: string;\n}\n\nclass Widget {\n  render(o: Opts): string {\n    return `${o.a}`;\n  }\n}\n\nconst helper = (n: number): number => {\n  return n + 1;\n};\n\ndescribe(\"w\", () => {\n  test(\"x\", () => {\n    expect(1).toBe(1);\n  });\n});\n",
+    "base": "interface Opts {\n  a: number;\n  b: string;\n}\n\nclass Widget {\n  render(o: Opts): string {\n    return `${o.b}`;\n  }\n}\n\nconst helper = (n: number): number => {\n  return n + 1;\n};\n\ndescribe(\"w\", () => {\n  test(\"x\", () => {\n    expect(1).toBe(1);\n  });\n});\n",
+    "hunks": [
+      {
+        "header": "@@ -6,5 +6,5 @@",
+        "old_start": 6,
+        "old_count": 5,
+        "new_start": 6,
+        "new_count": 5,
+        "body": " class Widget {\n   render(o: Opts): string {\n-    return `${o.b}`;\n+    return `${o.a}`;\n   }\n }\n"
+      }
+    ],
+    "expected": [
+      {
+        "context": "right",
+        "right_start": 1,
+        "right_end": 4,
+        "left_start": null,
+        "left_end": null,
+        "has_changes": false,
+        "qualified_name": "Opts",
+        "kind": "interface"
+      },
+      {
+        "context": "both",
+        "right_start": 6,
+        "right_end": 10,
+        "left_start": 6,
+        "left_end": 10,
+        "has_changes": true,
+        "qualified_name": "Widget",
+        "kind": "class"
+      },
+      {
+        "context": "both",
+        "right_start": 7,
+        "right_end": 9,
+        "left_start": 7,
+        "left_end": 9,
+        "has_changes": true,
+        "qualified_name": "Widget.render",
+        "kind": "method"
+      },
+      {
+        "context": "right",
+        "right_start": 12,
+        "right_end": 14,
+        "left_start": null,
+        "left_end": null,
+        "has_changes": false,
+        "qualified_name": "helper",
+        "kind": "function"
+      },
+      {
+        "context": "right",
+        "right_start": 16,
+        "right_end": 19,
+        "left_start": null,
+        "left_end": null,
+        "has_changes": false,
         "qualified_name": null,
         "kind": null
       }

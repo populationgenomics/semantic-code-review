@@ -429,10 +429,9 @@ class ReviewSession:
         if self._file_status(address.file_idx) in ("generated", "binary"):
             return self._land_fold_summary(address, address.as_payload(summary=_GENERATED_FOLD_SUMMARY))
 
-        # Seed the prompt with the symbol the region snapped to. The
-        # server-computed regions carry the definition's qualified_name /
-        # kind (null for indentation-fallback ones); a client-only region
-        # over expanded context matches nothing and leaves it unseeded.
+        # Seed the prompt with the definition the region is. Regions carry
+        # the definition's qualified_name / kind (null for an indentation
+        # stanza); an address naming no region leaves the prompt unseeded.
         region = self._find_fold_region(address)
         qualified_name = region.get("qualified_name") if region is not None else None
         kind = region.get("kind") if region is not None else None
@@ -459,19 +458,13 @@ class ReviewSession:
         return result
 
     def _find_fold_region(self, address: FoldAddress) -> dict[str, Any] | None:
-        """The addressed region in the viewer JSON, or None.
-
-        Regions are addressed at the file level but still hang off
-        individual hunks in the per-hunk `fold_regions` block, so the
-        search walks every hunk in the file.
-        """
+        """The addressed region in the file's `fold_regions`, or None."""
         file = self._file_block(address.file_idx)
         if file is None:
             return None
-        for hunk in file.get("hunks") or []:
-            for region in hunk.get("fold_regions") or []:
-                if address.matches(region):
-                    return region
+        for region in file.get("fold_regions") or []:
+            if address.matches(region):
+                return region
         return None
 
     def _file_block(self, file_idx: int) -> dict[str, Any] | None:

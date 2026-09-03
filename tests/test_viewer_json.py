@@ -8,7 +8,15 @@ from pathlib import Path
 import pytest
 
 from semantic_code_review import paths
-from semantic_code_review.format.parse import parse_augmented_diff
+from semantic_code_review.augment.schemas import (
+    AnnotatedDiff,
+    FileAnnotations,
+    FileRole,
+    FoldDescription,
+    PRInfo,
+    lift_file,
+)
+from semantic_code_review.format.parse import parse_augmented_diff, parse_raw_diff
 from semantic_code_review.viewer import build_json
 from semantic_code_review.viewer.build_json import (
     build_pending_viewer_json,
@@ -363,34 +371,25 @@ def test_symbol_blocks_absent_without_worktrees(run_dir: paths.RunDir) -> None:
     assert data["symbols"] == []
 
 
-# --- fold_symbols: per-side definition spans (slice 1) ---------------------
+# --- fold_regions: whole-file, both sides, on the FileBlock ------------------
 
 
-def test_fold_symbols_ship_per_side_definition_spans(run_dir: paths.RunDir) -> None:
-    """Each supported-language file carries its head/base definition spans
-    as `{start_line, end_line, kind, qualified_name, depth}`, depth-first,
-    with nested defs deeper than their enclosing one."""
+def _meta(title: str) -> str:
+    return json.dumps({"title": title, "author": {"login": "t"}, "url": "", "baseRefOid": "aaa", "headRefOid": "bbb"})
+
+
+def test_fold_regions_cover_the_whole_file_on_the_file_block(run_dir: paths.RunDir) -> None:
+    """Regions are the file's definitions from both parses, addressed by
+    line range, on `FileBlock.fold_regions`; a hunk carries none. `Foo.bar`
+    is outside the hunk's changed lines but inside the diff's context; it
+    folds as unchanged. No per-side span lists ride along."""
     run_dir.raw_diff.write_text(_NESTED_DIFF, encoding="utf-8")
-    run_dir.meta.write_text(
-        json.dumps(
-            {
-                "title": "Add Foo.baz",
-                "author": {"login": "t"},
-                "url": "",
-                "baseRefOid": "aaa",
-                "headRefOid": "bbb",
-            }
-        ),
-        encoding="utf-8",
-    )
+    run_dir.meta.write_text(_meta("Add Foo.baz"), encoding="utf-8")
     base = run_dir.base
     head = run_dir.head
     base.mkdir()
     head.mkdir()
-    (base / "a.py").write_text(
-        "class Foo:\n    def bar(self):\n        return 1\n",
-        encoding="utf-8",
-    )
+    (base / "a.py").write_text("class Foo:\n    def bar(self):\n        return 1\n", encoding="utf-8")
     (head / "a.py").write_text(
         "class Foo:\n    def bar(self):\n        return 1\n\n    def baz(self):\n        return 2\n",
         encoding="utf-8",
@@ -398,49 +397,137 @@ def test_fold_symbols_ship_per_side_definition_spans(run_dir: paths.RunDir) -> N
 
     data = build_pending_viewer_json(run_dir)
 
-    fs = data["files"][0]["fold_symbols"]
-    # Head: Foo (depth 0) then its two methods (depth 1), in source order.
-    head_qns = [(s["qualified_name"], s["depth"]) for s in fs["head"]]
-    assert head_qns == [("Foo", 0), ("Foo.bar", 1), ("Foo.baz", 1)]
-    foo = fs["head"][0]
-    assert foo["kind"] == "class" and foo["start_line"] == 1 and foo["end_line"] == 6
-    # Base lacks baz.
-    base_qns = [(s["qualified_name"], s["depth"]) for s in fs["base"]]
-    assert base_qns == [("Foo", 0), ("Foo.bar", 1)]
+    f = data["files"][0]
+    assert "fold_symbols" not in f
+    assert "fold_regions" not in f["hunks"][0]
+    regions = f["fold_regions"]
+    assert [(r["qualified_name"], r["kind"], r["context"], r["right_start"], r["right_end"]) for r in regions] == [
+        ("Foo", "class", "both", 1, 6),
+        ("Foo.bar", "function", "right", 2, 3),
+        ("Foo.baz", "function", "right", 5, 6),
+    ]
+    foo, bar, baz = f["fold_regions"]
+    assert (foo["left_start"], foo["left_end"], foo["has_changes"]) == (1, 3, True)
+    assert (bar["left_start"], bar["has_changes"]) == (None, False)
+    assert baz["has_changes"] and baz["summary"] == ""
 
 
-def test_fold_symbols_empty_for_unsupported_language(run_dir: paths.RunDir) -> None:
-    """An unsupported-language / unparsed file carries empty span lists,
-    not a missing key — the inert degradation path."""
+def test_fold_regions_exist_for_lines_outside_every_hunk(run_dir: paths.RunDir) -> None:
+    """A hunk at the bottom of the file does not bound folding: the
+    functions above it, which the diff never carried, are regions too, so
+    they fold the moment a chip discloses them."""
     raw = (
-        "diff --git a/notes.txt b/notes.txt\n"
+        "diff --git a/a.py b/a.py\n"
         "index 0123456..89abcde 100644\n"
-        "--- a/notes.txt\n+++ b/notes.txt\n"
-        "@@ -1 +1 @@\n-old\n+new\n"
+        "--- a/a.py\n+++ b/a.py\n"
+        "@@ -9,2 +9,2 @@\n def c():\n-    return 0\n+    return 3\n"
     )
     run_dir.raw_diff.write_text(raw, encoding="utf-8")
-    run_dir.meta.write_text(
-        json.dumps(
-            {
-                "title": "Edit notes",
-                "author": {"login": "t"},
-                "url": "",
-                "baseRefOid": "aaa",
-                "headRefOid": "bbb",
-            }
-        ),
-        encoding="utf-8",
-    )
-    base = run_dir.base
-    head = run_dir.head
-    base.mkdir()
-    head.mkdir()
-    (base / "notes.txt").write_text("old\n", encoding="utf-8")
-    (head / "notes.txt").write_text("new\n", encoding="utf-8")
+    run_dir.meta.write_text(_meta("Fix c"), encoding="utf-8")
+    run_dir.base.mkdir()
+    run_dir.head.mkdir()
+    head = "def a():\n    return 1\n\n\ndef b():\n    return 2\n\n\ndef c():\n    return 3\n"
+    (run_dir.head / "a.py").write_text(head, encoding="utf-8")
+    (run_dir.base / "a.py").write_text(head.replace("return 3", "return 0"), encoding="utf-8")
 
     data = build_pending_viewer_json(run_dir)
 
-    assert data["files"][0]["fold_symbols"] == {"head": [], "base": []}
+    regions = data["files"][0]["fold_regions"]
+    assert [(r["qualified_name"], r["right_start"], r["right_end"], r["has_changes"]) for r in regions] == [
+        ("a", 1, 2, False),
+        ("b", 5, 6, False),
+        ("c", 9, 10, True),
+    ]
+
+
+def test_fold_regions_fall_back_to_indentation_without_a_grammar(run_dir: paths.RunDir) -> None:
+    raw = (
+        "diff --git a/conf.yaml b/conf.yaml\n"
+        "index 0123456..89abcde 100644\n"
+        "--- a/conf.yaml\n+++ b/conf.yaml\n"
+        "@@ -3 +3 @@\n-    leaf: 1\n+    leaf: 2\n"
+    )
+    run_dir.raw_diff.write_text(raw, encoding="utf-8")
+    run_dir.meta.write_text(_meta("Edit conf"), encoding="utf-8")
+    run_dir.base.mkdir()
+    run_dir.head.mkdir()
+    (run_dir.base / "conf.yaml").write_text("top:\n  mid:\n    leaf: 1\n  other: 2\nflat: 3\n", encoding="utf-8")
+    (run_dir.head / "conf.yaml").write_text("top:\n  mid:\n    leaf: 2\n  other: 2\nflat: 3\n", encoding="utf-8")
+
+    data = build_pending_viewer_json(run_dir)
+
+    regions = data["files"][0]["fold_regions"]
+    assert [(r["context"], r["right_start"], r["right_end"], r["qualified_name"]) for r in regions] == [
+        ("both", 1, 4, None),
+        ("both", 2, 3, None),
+    ]
+
+
+def test_fold_summary_lands_on_a_region_a_positioned_run_opens(run_dir: paths.RunDir) -> None:
+    """The differ draws the new function's run mid-body of `old_fn`;
+    `position_runs` slides it to the `def`. The region's address is the
+    AST's line range either way, so a summary persisted at it lands."""
+    raw = (
+        "diff --git a/a.py b/a.py\n"
+        "index 0123456..89abcde 100644\n"
+        "--- a/a.py\n+++ b/a.py\n"
+        "@@ -1,6 +1,10 @@\n"
+        " def old_fn():\n     setup()\n+    return cleanup()\n+\n+def new_fn():\n+    other()\n"
+        "     return cleanup()\n \n def third():\n     pass\n"
+    )
+    run_dir.raw_diff.write_text(raw, encoding="utf-8")
+    run_dir.meta.write_text(_meta("Add new_fn"), encoding="utf-8")
+    run_dir.base.mkdir()
+    run_dir.head.mkdir()
+    old_fn = "def old_fn():\n    setup()\n    return cleanup()\n\n"
+    new_fn = "def new_fn():\n    other()\n    return cleanup()\n\n"
+    third = "def third():\n    pass\n"
+    (run_dir.head / "a.py").write_text(old_fn + new_fn + third, encoding="utf-8")
+    (run_dir.base / "a.py").write_text(old_fn + third, encoding="utf-8")
+    diff = parse_raw_diff(run_dir.raw_diff.read_text(encoding="utf-8"))
+    annotated = AnnotatedDiff(
+        pr=PRInfo(pr_url="", base_sha="aaa", head_sha="bbb"),
+        files=[
+            lift_file(
+                diff.files[0],
+                ann=FileAnnotations(
+                    fold_descriptions=[
+                        FoldDescription(context="right", right_start=5, right_end=7, summary="adds new_fn"),
+                    ]
+                ),
+            )
+        ],
+    )
+
+    data = build_viewer_json(annotated, {}, head_dir=run_dir.head, base_dir=run_dir.base)
+
+    f = data["files"][0]
+    kinds = [r["kind"] for r in f["hunks"][0]["rows"]]
+    assert kinds == ["ctx", "ctx", "ctx", "ctx", "ins", "ins", "ins", "ins", "ctx", "ctx"]  # the run moved
+    by_name = {r["qualified_name"]: r for r in f["fold_regions"]}
+    assert by_name["new_fn"]["summary"] == "adds new_fn"
+    assert by_name["old_fn"]["has_changes"] is False
+
+
+def test_binary_file_has_no_fold_regions(run_dir: paths.RunDir) -> None:
+    run_dir.raw_diff.write_text(
+        "diff --git a/img.bin b/img.bin\nindex 0123456..89abcde 100644\nBinary files a/img.bin and b/img.bin differ\n",
+        encoding="utf-8",
+    )
+    run_dir.meta.write_text(_meta("Binary"), encoding="utf-8")
+    run_dir.base.mkdir()
+    run_dir.head.mkdir()
+    (run_dir.head / "img.bin").write_bytes(b"\x00\x01\n  \x02\n")
+    (run_dir.base / "img.bin").write_bytes(b"\x00\n")
+    diff = parse_raw_diff(run_dir.raw_diff.read_text(encoding="utf-8"))
+    annotated = AnnotatedDiff(
+        pr=PRInfo(pr_url="", base_sha="aaa", head_sha="bbb"),
+        files=[lift_file(diff.files[0], ann=FileAnnotations(role=FileRole.BINARY))],
+    )
+
+    data = build_viewer_json(annotated, {}, head_dir=run_dir.head, base_dir=run_dir.base)
+
+    assert data["files"][0]["fold_regions"] == []
 
 
 # --- syntax-highlighting language map --------------------------------------
@@ -617,5 +704,6 @@ def test_head_line_count_is_null_without_a_worktree(run_dir: paths.RunDir) -> No
         ("a\n\nb\n", 3),
     ],
 )
-def test_line_count_numbers_lines_as_the_diff_does(text: str | None, count: int | None) -> None:
-    assert build_json._line_count(text) == count
+def test_split_lines_numbers_lines_as_the_diff_does(text: str | None, count: int | None) -> None:
+    lines = build_json._split_lines(text)
+    assert (None if lines is None else len(lines)) == count

@@ -27,7 +27,7 @@ from ..augment.schemas import (
     lift_file,
 )
 from ..format.parse import parse_raw_diff
-from .hunk_layout import build_hunk_viewer_block
+from . import fold_regions, hunk_layout
 
 
 def build_viewer_json(
@@ -37,8 +37,8 @@ def build_viewer_json(
     base_dir: Path | None = None,
 ) -> dict[str, Any]:
     # Parse the head/base Symbol trees once per file and share them: the
-    # Symbols axis reads the base→head delta, each FileBlock ships the
-    # flattened per-side fold spans.
+    # Symbols axis reads the base→head delta, each FileBlock's rows are
+    # positioned and its fold regions computed against them.
     file_syms = [_file_symbols(f, base_dir, head_dir) for f in diff.files]
     return {
         "version": "1",
@@ -192,7 +192,7 @@ class _FileSymbols:
     delta uses, so a file with no parse simply carries no spans. The
     sources ride along because `structural.diff_file` compares span text
     to tell a moved definition from an edited one, and the file block
-    counts the post-image's lines.
+    counts the post-image's lines and folds both sides.
     """
 
     base: list[structural.Symbol] = field(default_factory=list)
@@ -224,8 +224,7 @@ def _fold_spans(symbols: list[structural.Symbol], depth: int = 0) -> list[dict[s
     """Flatten a `Symbol` forest to per-definition line spans, depth-first.
 
     Each entry is `{start_line, end_line, kind, qualified_name, depth}` —
-    the minimal currency the fold detectors need to snap regions to
-    definition boundaries (symbol-aware-folds slice 1). Source order is
+    what `hunk_layout.position_runs` scores seams against. Source order is
     preserved; `depth` is the nesting level (0 for top-level defs).
     """
     out: list[dict[str, Any]] = []
@@ -250,9 +249,8 @@ def file_fold_spans(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Flattened per-side definition spans for one file, as `(head, base)`.
 
-    The currency `build_hunk_viewer_block` needs to snap folds to symbol
-    boundaries. Empty lists degrade an unsupported language / unavailable
-    worktree, same as `fold_symbols`.
+    What `layout_hunk_rows` positions runs against. Empty lists for an
+    unsupported language / unavailable worktree.
     """
     syms = _file_symbols(f, base_dir, head_dir)
     return _fold_spans(syms.head), _fold_spans(syms.base)
@@ -460,13 +458,12 @@ def _pr_block(diff: AnnotatedDiff, meta: dict[str, Any]) -> dict[str, Any]:
 def _file_block(f: AnnotatedFile, idx: int, syms: _FileSymbols) -> dict[str, Any]:
     head_spans = _fold_spans(syms.head)
     base_spans = _fold_spans(syms.base)
-    hunks = [
-        build_hunk_viewer_block(h, idx, hi, head_spans, base_spans, f.ann.fold_descriptions)
-        for hi, h in enumerate(f.hunks)
-    ]
+    rows = [hunk_layout.layout_hunk_rows(h.parsed, head_spans, base_spans) for h in f.hunks]
+    hunks = [hunk_layout.build_hunk_viewer_block(h, idx, hi, rows[hi]) for hi, h in enumerate(f.hunks)]
     adds = sum(h["adds"] for h in hunks)
     dels = sum(h["dels"] for h in hunks)
     ann = f.ann
+    head_lines = _split_lines(syms.head_src)
     return {
         "id": f"F{idx}",
         "path": f.path,
@@ -477,24 +474,54 @@ def _file_block(f: AnnotatedFile, idx: int, syms: _FileSymbols) -> dict[str, Any
         "dels": dels,
         "summary": ann.summary,
         "symbols": ann.symbols.model_dump() if ann.symbols else {"added": [], "modified": [], "removed": []},
-        "fold_symbols": {"head": _fold_spans(syms.head), "base": _fold_spans(syms.base)},
-        "head_line_count": _line_count(syms.head_src),
+        "fold_regions": _fold_region_blocks(f, syms, rows, head_lines),
+        "head_line_count": None if head_lines is None else len(head_lines),
         "hunks": hunks,
     }
 
 
-def _line_count(text: str | None) -> int | None:
-    """Lines in `text` as the diff numbers them, or None for no file.
+def _fold_region_blocks(
+    f: AnnotatedFile,
+    syms: _FileSymbols,
+    rows: list[list[hunk_layout.Row]],
+    head_lines: list[str] | None,
+) -> list[dict[str, Any]]:
+    """The file's whole-file fold regions, each carrying its persisted
+    summary (`FileAnnotations.fold_descriptions`) or "".
 
-    A trailing newline closes the last line rather than opening an empty
-    one; the viewer's `FileTextCache.splitLines` agrees, so a line
-    number the count admits indexes the fetched text.
+    A binary file's text is not structure; it gets none.
+    """
+    if f.ann.role is FileRole.BINARY:
+        return []
+    regions = fold_regions.compute_fold_regions(
+        [(h.parsed, r) for h, r in zip(f.hunks, rows, strict=True)],
+        head_lines,
+        _split_lines(syms.base_src),
+        syms.head,
+        syms.base,
+        has_grammar=structural.language_for_path(f.path) is not None,
+        path=f.path,
+    )
+    summaries = {
+        (fd.context, fd.right_start, fd.right_end, fd.left_start, fd.left_end): fd.summary
+        for fd in f.ann.fold_descriptions
+    }
+    return [r.to_dict(summary=summaries.get(r.key, "")) for r in regions]
+
+
+def _split_lines(text: str | None) -> list[str] | None:
+    r"""`text` as the lines the diff numbers (line n is index n - 1), or
+    None for no file. Splits on "\n" only, as tree-sitter counts rows and
+    the viewer's `FileTextCache.splitLines` splits; a trailing newline
+    closes the last line rather than opening an empty one, so a line
+    number `len()` admits indexes the fetched text.
     """
     if text is None:
         return None
-    if not text:
-        return 0
-    return text.count("\n") + (0 if text.endswith("\n") else 1)
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
 
 
 # Maps a file extension to a highlight.js language *registered in the

@@ -152,23 +152,19 @@ def _fold_viewer_json(*, status: str | None = None) -> dict:
     file: dict[str, Any] = {
         "id": "F0",
         "path": "src/x.py",
-        "hunks": [
+        "fold_regions": [
             {
-                "id": "H0_0",
-                "fold_regions": [
-                    {
-                        "context": "right",
-                        "right_start": 1,
-                        "right_end": 3,
-                        "left_start": 0,
-                        "left_end": 0,
-                        "qualified_name": "Foo.bar",
-                        "kind": "function",
-                        "summary": "",
-                    }
-                ],
+                "context": "right",
+                "right_start": 1,
+                "right_end": 3,
+                "left_start": None,
+                "left_end": None,
+                "qualified_name": "Foo.bar",
+                "kind": "function",
+                "summary": "",
             }
         ],
+        "hunks": [{"id": "H0_0"}],
     }
     if status is not None:
         file["status"] = status
@@ -242,15 +238,14 @@ def test_fold_summary_seeds_the_symbol_patches_and_broadcasts(run_dir: paths.Run
         "qualified_name": "Foo.bar",
         "kind": "function",
     }
-    served = h.session.data_json()["files"][0]["hunks"][0]["fold_regions"][0]
+    served = h.session.data_json()["files"][0]["fold_regions"][0]
     assert served["summary"].startswith("wraps the body")
     assert h.frames.payloads("fold-summary") == [result]
 
 
 def test_fold_summary_leaves_an_unknown_region_unseeded(run_dir: paths.RunDir) -> None:
-    """A client-only region over expanded context matches nothing the
-    server computed, so the prompt goes without a symbol rather than
-    with the wrong one."""
+    """An address naming no region the server computed gets a prompt
+    without a symbol rather than with the wrong one."""
     h = _Harness(run_dir, viewer_json=_fold_viewer_json())
     seen: dict[str, Any] = {}
 
@@ -278,7 +273,7 @@ def test_fold_summary_skips_an_unreviewed_file(run_dir: paths.RunDir, status: st
 
     assert "not summarised" in result["summary"]
     # The canned note is patched in and broadcast like a real one.
-    served = h.session.data_json()["files"][0]["hunks"][0]["fold_regions"][0]
+    served = h.session.data_json()["files"][0]["fold_regions"][0]
     assert served["summary"] == result["summary"]
     assert h.frames.payloads("fold-summary") == [result]
 

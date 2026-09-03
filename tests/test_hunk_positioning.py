@@ -13,7 +13,7 @@ import pytest
 
 from semantic_code_review.augment.schemas import ParsedHunk
 from semantic_code_review.viewer import hunk_layout
-from semantic_code_review.viewer.hunk_layout import _Row, build_rows, position_runs, slide_range
+from semantic_code_review.viewer.hunk_layout import Row, build_rows, position_runs, slide_range
 
 _CASES_PATH = pathlib.Path(__file__).parent / "fixtures" / "run_positioning_cases.json"
 _CASES = json.loads(_CASES_PATH.read_text(encoding="utf-8"))
@@ -35,12 +35,12 @@ def _hunk(body: str, *, old_start: int = 1, new_start: int = 1) -> ParsedHunk:
     )
 
 
-def _side_map(rows: list[_Row], side: str) -> dict[int, str]:
+def _side_map(rows: list[Row], side: str) -> dict[int, str]:
     attr_line, attr_text = f"{side}_line", f"{side}_text"
     return {getattr(r, attr_line): getattr(r, attr_text) for r in rows if getattr(r, attr_line) is not None}
 
 
-def _runs(rows: list[_Row]) -> list[tuple[str, int, list[str]]]:
+def _runs(rows: list[Row]) -> list[tuple[str, int, list[str]]]:
     """`(kind, start_idx, texts)` for every run of solo ins / del rows."""
     out: list[tuple[str, int, list[str]]] = []
     i = 0
@@ -58,7 +58,7 @@ def _runs(rows: list[_Row]) -> list[tuple[str, int, list[str]]]:
     return out
 
 
-def _assert_invariants(before: list[_Row], after: list[_Row]) -> None:
+def _assert_invariants(before: list[Row], after: list[Row]) -> None:
     """What positioning may never change: the text at every (side, line),
     and how many rows of each kind the hunk has."""
     for side in ("old", "new"):
@@ -317,7 +317,10 @@ def test_run_may_slide_into_the_context_before_the_next_run() -> None:
 def test_viewer_block_rows_are_positioned() -> None:
     from semantic_code_review.augment.schemas import AnnotatedHunk
 
-    block = hunk_layout.build_hunk_viewer_block(AnnotatedHunk(parsed=_hunk(_MID_BODY)), 0, 0)
+    parsed = _hunk(_MID_BODY)
+    block = hunk_layout.build_hunk_viewer_block(
+        AnnotatedHunk(parsed=parsed), 0, 0, hunk_layout.layout_hunk_rows(parsed)
+    )
     kinds = [r["kind"] for r in block["rows"]]
     assert kinds == ["ctx", "ctx", "ctx", "ctx", "ins", "ins", "ins", "ins", "ctx"]
     assert block["adds"] == 4 and block["dels"] == 0

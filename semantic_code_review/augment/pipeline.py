@@ -21,8 +21,8 @@ from ..cache.store import CacheStore
 from ..format.emit import emit_augmented_diff
 from ..format.parse import parse_raw_diff
 from ..format.sidecar import dump_sidecar
+from ..viewer import hunk_layout
 from ..viewer.build_json import file_fold_spans
-from ..viewer.hunk_layout import build_hunk_viewer_block
 from . import config, mcp_http_host, skip, source_cache, usage
 from .agents import Client
 from .hunks import (
@@ -68,6 +68,15 @@ def _safe_emit(on_event: OnEvent | None, event_type: str, payload: dict[str, Any
         on_event(event_type, payload)
     except Exception:
         log.exception("on_event consumer raised for %s; continuing", event_type)
+
+
+def _hunk_block(h: AnnotatedHunk, fi: int, hi: int, fold_spans: tuple[list, list]) -> dict[str, Any]:
+    """The viewer block for a per-hunk SSE event, rows positioned against
+    the file's `(head, base)` definition spans as the full build positions
+    them.
+    """
+    rows = hunk_layout.layout_hunk_rows(h.parsed, fold_spans[0], fold_spans[1])
+    return hunk_layout.build_hunk_viewer_block(h, fi, hi, rows)
 
 
 log = logging.getLogger(__name__)
@@ -217,9 +226,8 @@ async def augment_run_dir(
     overview_json = overview_to_prompt_json(diff)
 
     # Per-file definition spans, parsed once from the worktrees, so the
-    # per-hunk SSE re-emits below carry symbol-aware `fold_regions`
-    # addresses in lockstep with the full-page build and the viewer's
-    # client-side detector. Empty lists where a worktree is absent.
+    # per-hunk SSE re-emits below position their rows exactly as the
+    # full-page build does. Empty lists where a worktree is absent.
     head_dir = run_dir.head
     base_dir = run_dir.base
     file_spans: dict[int, tuple[list, list]] = {
@@ -365,13 +373,7 @@ async def augment_run_dir(
                         continue
                     if len(hunk.ann.line_notes) == len(old_fp.hunks[hi].ann.line_notes):
                         continue
-                    block = build_hunk_viewer_block(
-                        hunk,
-                        fi,
-                        hi,
-                        *file_spans.get(fi, ([], [])),
-                        fp.ann.fold_descriptions,
-                    )
+                    block = _hunk_block(hunk, fi, hi, file_spans.get(fi, ([], [])))
                     _safe_emit(
                         on_event,
                         "hunk",
@@ -516,9 +518,7 @@ async def _augment_one_batch(
                 spans = file_spans.get(fi, ([], []))
                 try:
                     ann = build_hunk_annotations(hunk.parsed, by_index[hi])
-                    block = build_hunk_viewer_block(
-                        AnnotatedHunk(parsed=hunk.parsed, ann=ann), fi, hi, spans[0], spans[1], fp.ann.fold_descriptions
-                    )
+                    block = _hunk_block(AnnotatedHunk(parsed=hunk.parsed, ann=ann), fi, hi, spans)
                 except _BUG_ERRORS:
                     raise
                 except Exception as e:  # noqa: BLE001 — one hunk degrades to a single call
@@ -622,14 +622,7 @@ async def _augment_one_hunk(
                 len(ann.segments),
                 len(ann.line_notes),
             )
-            block = build_hunk_viewer_block(
-                AnnotatedHunk(parsed=hunk.parsed, ann=ann),
-                fi,
-                hi,
-                fold_spans[0],
-                fold_spans[1],
-                fp.ann.fold_descriptions,
-            )
+            block = _hunk_block(AnnotatedHunk(parsed=hunk.parsed, ann=ann), fi, hi, fold_spans)
             _safe_emit(
                 on_event,
                 "hunk",
