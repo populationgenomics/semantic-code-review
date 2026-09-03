@@ -304,7 +304,7 @@ diff.
 Which hunks are live is set by the active sidebar filter (the pill's
 `activeHunkIds`): with no filter every hunk is live and regions hold only
 unchanged context (the between-hunk expand gaps). With a filter, only the
-pill's hunks are live (their code revealed — see [[fold-level]]) — every
+pill's hunks are live (and, the click being a focus, open to their code — see [[fold-level]]) — every
 other hunk *demotes*, folded together with its surrounding context into
 one region whose expansion shows those changes inline with no header. A
 file no live hunk touches is dropped from the render.
@@ -363,14 +363,21 @@ it is a request for the ladder. The URL hash carries the level and the
 overrides; `fold=segments` in a link written before ADR 0008 is read as
 `definitions`.
 
-Focus reveal (`RenderState.focusReveal`) is a separate *ephemeral* bit,
-not an override: set when a sidebar pill is clicked
-(`Render.applyFilterChange`), cleared the moment the slider is touched.
-While set, the filter's live hunks render open (code shown) regardless of
-level — so clicking a symbol shows its code — but because it isn't a
-stored override it never leaks an expanded hunk back into the unfiltered
-view. Fold toggles flip the actually-visible state, so one click collapses
-a focus-revealed hunk rather than no-op'ing against the level default.
+A reveal — an expand chip, a filter restored at boot — puts rows on
+screen at the current depth and does not unfold (ADR 0008). The one
+exception is a **focus** (`RenderState.focus`, the set of hunk ids the
+gesture asked for, or null): a sidebar pill click
+(`Render.applyFilterChange`, the pill's `hunk_ids`) and the explainer
+panel's "Open in diff" (`Render.focusRef`: the hunk, or every hunk of a
+file reference) are requests to see that code, so a focused hunk renders
+open to its code and its file open, whatever the level. It is a property
+of the gesture, not an override: the slider and entering overview mode
+clear it, "show all" replaces it with nothing, it never reaches the URL
+hash, and it cannot leak an expanded hunk into the unfiltered view. Fold
+toggles flip the actually-visible state, so one header click collapses a
+focused hunk rather than no-op'ing against the level default. The
+overview-mode detail panel has no focus; `openReference` seeds the
+panel's own overrides per reference instead.
 
 **Viewer data**
 The in-memory runtime data structure served as `/data.json` by the
@@ -688,7 +695,8 @@ untouched. Inside the mode a reference opens the file it addresses in a
 detail panel beside the document, with its own pane state — text-mode
 folds and [[rendered-mode]]'s alike — so checking a claim costs no mode
 switch and moves nothing in the diff; the panel's
-"Open in diff" is the way out to the full ladder. The viewer opens in
+"Open in diff" is the way out, a focus on the reference in the full
+ladder (see [[fold-level]]). The viewer opens in
 the mode when a document already exists, since showing one that is
 written spends nothing; with none it opens on the diff, because entering
 the mode is what buys the skeleton. A `mode=` in the URL hash outranks

@@ -1,6 +1,6 @@
 # ADR 0008 — Hide by the diff, fold by the structure, label by meaning
 
-- Status: Accepted — slices 1–2 landed, 3 in progress; the open questions are decided below (2026-09-03)
+- Status: Accepted (implemented)
 - Date: 2026-09-03
 
 ## Context

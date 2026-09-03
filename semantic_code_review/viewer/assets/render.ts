@@ -53,11 +53,13 @@ interface RenderState {
   overrides: Record<string, boolean>;
   renderedDiffs: Record<string, HTMLElement>;
   rendered: PaneState;
-  // Ephemeral: reveal the focused hunks' code (set when a sidebar pill is
-  // clicked, cleared the moment the fold-level slider is touched). Kept
-  // out of `overrides` on purpose — a stored per-hunk override would leak
-  // an expanded hunk into the unfiltered view once the filter clears.
-  focusReveal: boolean;
+  /** The focus: the hunks the last focus gesture asked to see — a sidebar
+   *  pill click, or the explainer's "Open in diff" — or null. A focused
+   *  hunk renders open to its code, and its file open, whatever the
+   *  level (ADR 0008: the one reveal that unfolds). Ephemeral: the slider
+   *  and entering overview mode clear it; it is never an override, so it
+   *  neither reaches the URL hash nor outlives the gesture. */
+  focus: ReadonlySet<string> | null;
 }
 
 let _data: ViewerData = { version: "1", pr: {} as PRBlock, smells_catalogue: {}, files: [], groups: [], symbols: [] };
@@ -86,7 +88,7 @@ const _state: RenderState = {
   overrides: Object.create(null),
   renderedDiffs: Object.create(null),
   rendered: Rendered.newPaneState(),
-  focusReveal: true,
+  focus: null,
 };
 
 // What a render pass reads its per-item state from, and where a fold
@@ -105,6 +107,9 @@ interface PaneScope {
    *  panel: a reference addresses a file whether or not the filter the
    *  reviewer left in the diff covers it. */
   filtered: boolean;
+  /** The hunks a focus gesture opened (`RenderState.focus`), or null.
+   *  The panel has none: `openReference` seeds its overrides instead. */
+  focus: ReadonlySet<string> | null;
   /** Rendered mode's view state (ADR 0004) for this pane: which `.md`
    *  files are flipped, and their fold level / reveals. Per-pane for the
    *  same reason `overrides` is. */
@@ -120,6 +125,7 @@ function _diffScope(): PaneScope {
     overrides: _state.overrides,
     cache: _state.renderedDiffs,
     filtered: true,
+    focus: _state.focus,
     rendered: _state.rendered,
     repaint: render,
   };
@@ -131,9 +137,14 @@ const _panelScope: PaneScope = {
   overrides: Object.create(null),
   cache: null,
   filtered: false,
+  focus: null,
   rendered: Rendered.newPaneState(),
   repaint: () => ExplainerPanel.repaint(),
 };
+
+function _isFocused(scope: PaneScope, hunkId: string): boolean {
+  return scope.focus !== null && scope.focus.has(hunkId);
+}
 
 // --- Public API ----------------------------------------------------------
 
@@ -151,11 +162,11 @@ function renderInit(data: ViewerData): void {
   _state.overrides = Object.create(null);
   _state.renderedDiffs = Object.create(null);
   _state.rendered = Rendered.newPaneState();
+  // A filter restored from localStorage is not a gesture: the diff opens
+  // at its level, filtered, with nothing focused.
+  _state.focus = null;
   _wireInputs();
   _restoreHash();
-  // As pressing the button clears it: the reveal belongs to a filter
-  // the reviewer is not looking at while the pane is the document.
-  _state.focusReveal = _state.mode === "diff";
   render();
   // Being in the mode is what queues the sections a document left
   // pending, however the mode was reached — the alternative is a
@@ -261,8 +272,7 @@ function repaintHunkHeader(hunkId: string): void {
   const h = f && f.hunks && f.hunks[hi];
   if (!h) return;
   const scope = _diffScope();
-  const folded = _isFolded(scope, h.id, _defaultHunkFolded());
-  const fresh = _renderHunkHeader(h, folded, f, scope);
+  const fresh = _renderHunkHeader(h, _hunkFolded(scope, h), f, scope);
   oldHdr.replaceWith(fresh);
 }
 
@@ -282,6 +292,22 @@ function _defaultBodyFolded(): boolean    { return _state.fold !== "off"; }
 /** The override id for a hunk's body — labels vs. code — distinct from
  *  the hunk's own (header open vs. closed). */
 function _bodyId(hunkId: string): string { return `${hunkId}:body`; }
+
+/** A hunk's visible fold states. A focus opens the hunk and its body to
+ *  code below the level's defaults; an explicit override the reviewer set
+ *  still wins over both. */
+function _hunkFolded(scope: PaneScope, h: HunkBlock): boolean {
+  return _isFolded(scope, h.id, _isFocused(scope, h.id) ? false : _defaultHunkFolded());
+}
+function _hunkBodyFolded(scope: PaneScope, h: HunkBlock): boolean {
+  return _isFolded(scope, _bodyId(h.id), _isFocused(scope, h.id) ? false : _defaultBodyFolded());
+}
+/** A file opens for a focused hunk in it: the code asked for must be on
+ *  screen at `files` too. */
+function _fileFolded(scope: PaneScope, f: FileBlock): boolean {
+  const focused = f.hunks.some((h) => _isFocused(scope, h.id));
+  return _isFolded(scope, f.id, focused ? false : _defaultFileFolded());
+}
 
 function _isFolded(scope: PaneScope, id: string, fallback: boolean): boolean {
   return Object.prototype.hasOwnProperty.call(scope.overrides, id)
@@ -304,9 +330,9 @@ function _toggleFold(scope: PaneScope, id: string, currentDefault: boolean): voi
 function _setGlobalFold(fold: FoldMode): void {
   _state.fold = fold;
   _state.overrides = Object.create(null);
-  // The slider is authoritative: fold every hunk (focused or not) to this
-  // level, so focus-reveal stops forcing the focused hunks open.
-  _state.focusReveal = false;
+  // The slider is authoritative: every hunk, focused or not, folds to
+  // this level.
+  _state.focus = null;
   if (_state.mode === "overview") {
     setMode("diff");
     return;
@@ -341,10 +367,10 @@ function setMode(mode: ViewMode): void {
   if (mode === "overview" && !_explainerEnabled) return;
   if (_state.mode === mode) return;
   _state.mode = mode;
-  // Entering the mode clears focus-reveal, as touching the collapse
-  // slider already does: the reveal belongs to a filter the reviewer is
-  // stepping away from, and it must not survive the round trip.
-  if (mode === "overview") _state.focusReveal = false;
+  // Entering the mode clears the focus, as the slider does: it belongs
+  // to a gesture the reviewer is stepping away from, and must not
+  // survive the round trip.
+  if (mode === "overview") _state.focus = null;
   render();
 }
 
@@ -352,38 +378,16 @@ function mode(): ViewMode {
   return _state.mode;
 }
 
-/** Leave overview mode and bring `fileId` into view at whatever
- *  collapse level the reviewer left the diff on. Deliberately not a
- *  fold change: the Map answers "read this next", not "expand this".
- *
- *  The document's own references no longer land here — they open beside
- *  it (`openReference`). This is what the panel's "Open in diff" runs,
- *  for the reader who wants the whole ladder around the file. */
-function revealFile(fileId: string): void {
+/** Focus `hunkIds` in the diff: leave overview mode if in it, render them
+ *  open to their code with their files open, and scroll to the first.
+ *  The one reveal that unfolds (ADR 0008). Ephemeral — the slider folds
+ *  them back to level, and nothing is written to the overrides or the
+ *  hash. */
+function _focus(hunkIds: Iterable<string>, scrollTo: string): void {
   setMode("diff");
-  const el = document.querySelector('.file[data-id="' + _cssEscape(fileId) + '"]');
-  if (el) el.scrollIntoView({ block: "start" });
-}
-
-/** Leave overview mode and open `hunkId`.
- *
- *  Unlike `revealFile`, this unfolds: a hunk reference in the prose is
- *  the claim "read this hunk", and landing on a folded header would
- *  make the reviewer press again to see what the sentence was about.
- *  The unfold is a `user`-owned override, so the collapse level is
- *  untouched. */
-function revealHunk(hunkId: string): void {
-  setMode("diff");
-  const parts = hunkId.replace("H", "").split("_");
-  const file = _data.files && _data.files[Number(parts[0])];
-  if (file) _state.overrides[file.id] = false;
-  _state.overrides[hunkId] = false;
-  // Unfolding the hunk is not enough to show code: below `off` an open
-  // hunk renders its label tree, so a reference that landed here would
-  // arrive at a paraphrase of the lines it was citing. Open the body too.
-  _state.overrides[_bodyId(hunkId)] = false;
+  _state.focus = new Set(hunkIds);
   render();
-  const el = document.querySelector('.hunk[data-id="' + _cssEscape(hunkId) + '"]');
+  const el = document.querySelector('[data-id="' + _cssEscape(scrollTo) + '"]');
   if (el) el.scrollIntoView({ block: "start" });
 }
 
@@ -397,10 +401,14 @@ function _fileOfRef(ref: ExplainerRef): FileBlock {
   return file;
 }
 
-/** Leave the mode and land on the reference in the diff. */
-function _revealRef(ref: ExplainerRef): void {
-  if (ref.kind === "file") revealFile(ref.id);
-  else revealHunk(ref.id);
+/** "Open in diff" on a reference is a focus: the reader has seen it at
+ *  the collapse level in the panel and is asking for the lines. A hunk
+ *  reference focuses that hunk; a file reference focuses the file's
+ *  hunks, as the Files-axis pill does. */
+function focusRef(ref: ExplainerRef): void {
+  const file = _fileOfRef(ref);
+  if (ref.kind === "file") _focus(file.hunks.map((h) => h.id), file.id);
+  else _focus([ref.id], ref.id);
 }
 
 // What the detail panel asks of the renderer. Injected rather than
@@ -414,7 +422,7 @@ const _PANEL_HOST: PanelHost = {
     if (el === null) throw new Error(`reference ${ref.id} rendered nothing`);
     return el;
   },
-  openInDiff: _revealRef,
+  openInDiff: focusRef,
 };
 
 /** A reference in the document was clicked.
@@ -426,7 +434,7 @@ const _PANEL_HOST: PanelHost = {
  *  — it is the jump the panel's "Open in diff" also runs. */
 function openReference(ref: ExplainerRef): void {
   if (_state.mode !== "overview") {
-    _revealRef(ref);
+    focusRef(ref);
     return;
   }
   const file = _fileOfRef(ref);
@@ -434,7 +442,7 @@ function openReference(ref: ExplainerRef): void {
   // The file itself always opens: a panel showing a folded header shows
   // nothing. Under it the collapse level still holds, except for the
   // hunk a hunk reference names — that reference is the claim "read
-  // these lines", so its body opens to code too, as `revealHunk` does
+  // these lines", so its body opens to code too, as a focus does
   // in the diff.
   overrides[file.id] = false;
   if (ref.kind === "hunk") {
@@ -445,11 +453,12 @@ function openReference(ref: ExplainerRef): void {
   ExplainerPanel.open(ref);
 }
 
-/** A sidebar filter changed. Reveal the newly focused hunks' code (an
- *  ephemeral state, distinct from a stored fold override) and re-render.
- *  Boot wires this to the sidebar's onFilterChange. */
+/** A sidebar pill was clicked. The pill's hunks become the focus — the
+ *  filter narrows the diff to them, and the click is the request to see
+ *  their code; "show all" (no pill) clears it. Boot wires this to the
+ *  sidebar's onFilterChange. */
 function applyFilterChange(): void {
-  _state.focusReveal = true;
+  _state.focus = Sidebar.activeHunkIds();
   render();
 }
 
@@ -575,7 +584,7 @@ function _renderFile(f: FileBlock, scope: PaneScope): HTMLElement | null {
   const div = _el("div", "file");
   if (liveIds !== null) div.classList.add("filtered");
   div.dataset.id = f.id;
-  const folded = _isFolded(scope, f.id, _defaultFileFolded());
+  const folded = _fileFolded(scope, f);
   div.classList.toggle("folded", folded);
   div.appendChild(_renderFileHeader(f, folded, scope));
   if (!folded) {
@@ -622,12 +631,9 @@ function _renderFileBody(
     body.appendChild(_renderRegionChip(f, region));
   };
 
-  // Just after a sidebar pill click, reveal the focused hunks' code
-  // (ephemeral); the fold-level slider clears the flag and takes over.
-  const reveal = liveIds !== null && _state.focusReveal;
   for (const h of f.hunks.filter(isLive)) {
     flush(h.new_start - 1, emittedLive ? "between" : "top");
-    body.appendChild(_renderHunk(h, f, scope, reveal));
+    body.appendChild(_renderHunk(h, f, scope));
     emittedLive = true;
     curNew = h.new_start + h.new_count;
     curOld = h.old_start + h.old_count;
@@ -902,17 +908,14 @@ function _refreshFileFolds(el: HTMLElement, f: FileBlock): void {
 
 // --- Hunk + diff body ---------------------------------------------------
 
-function _renderHunk(h: HunkBlock, f: FileBlock, scope: PaneScope, reveal = false): HTMLElement {
+function _renderHunk(h: HunkBlock, f: FileBlock, scope: PaneScope): HTMLElement {
   const div = _el("div", "hunk");
   div.dataset.id = h.id;
-  // reveal (focus) forces the hunk fully open — code, not summaries — but
-  // an explicit fold override the reviewer set still wins.
-  const folded = _isFolded(scope, h.id, reveal ? false : _defaultHunkFolded());
+  const folded = _hunkFolded(scope, h);
   div.classList.toggle("folded", folded);
   div.appendChild(_renderHunkHeader(h, folded, f, scope));
   if (!folded) {
-    const bodyFolded = _isFolded(scope, _bodyId(h.id), reveal ? false : _defaultBodyFolded());
-    div.appendChild(bodyFolded ? _renderHunkLabels(h, f, scope) : _renderHunkDiff(h, f, scope));
+    div.appendChild(_hunkBodyFolded(scope, h) ? _renderHunkLabels(h, f, scope) : _renderHunkDiff(h, f, scope));
     if (h.context) {
       const c = _el("div", "context-note");
       c.innerHTML = `<strong>context:</strong> ${_esc(h.context)}`;
@@ -991,7 +994,7 @@ function _renderHunkHeader(
   hdr.addEventListener("click", (e) => {
     e.stopPropagation();
     // Flip the visible state — `folded` is the actual current state
-    // (respecting reveal + overrides), not just the level default.
+    // (respecting focus + overrides), not just the level default.
     _toggleFold(scope, h.id, folded);
   });
   return hdr;
@@ -1564,8 +1567,7 @@ export const Render = {
   mode,
   setMode,
   openReference,
-  revealFile,
-  revealHunk,
+  focusRef,
   markExplainerReady,
   applyFilterChange,
   renderHunkReplace,

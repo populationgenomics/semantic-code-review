@@ -1109,6 +1109,71 @@ describe("streaming events", () => {
     expect(codeRows('.hunk[data-id="H1"]')).toBe(0);
   });
 
+  // --- Focus is the one reveal that unfolds (ADR 0008 slice 6) -----------
+
+  test("expanding a chip reveals rows at the current depth and does not unfold", async () => {
+    await bootViewer(makeData({ pending: false, files: [foldFile()], symbols: [] }));
+    expect(window.location.hash).toContain("fold=hunks");
+    const chip = document.querySelector(".gap-chip") as HTMLElement;
+    queueFileText(0, "a.py", null, nineLines);
+    chip.click();
+    await tick();
+
+    // The context is on screen; the hunks stay folded to their headers,
+    // the level is unchanged and nothing was written to the hash.
+    expect(document.querySelector(".gap-expansion")).not.toBeNull();
+    expect(document.querySelectorAll(".hunk-header").length).toBe(3);
+    expect(codeRows(".hunk")).toBe(0);
+    expect(document.querySelectorAll(".hunk.folded").length).toBe(3);
+    expect(window.location.hash).toBe("#fold=hunks&mode=diff");
+  });
+
+  test("a pill click is a focus: it opens the file and the hunk's code, even at 'files'", async () => {
+    await bootViewer(makeData({
+      pending: false, files: [foldFile()],
+      symbols: [{ id: "SY0", title: "mid", rationale: "", hunk_ids: ["H1"] }],
+    }));
+    fold("files");
+    expect(document.querySelector(".file")!.classList.contains("folded")).toBe(true);
+
+    (document.querySelector('[data-axis="symbols"] .group-btn[data-pill-id="SY0"]') as HTMLElement).click();
+    expect(document.querySelector(".file")!.classList.contains("folded")).toBe(false);
+    expect(codeRows('.hunk[data-id="H1"]')).toBe(1);
+    // Ephemeral: no override reaches the hash.
+    expect(window.location.hash).toBe("#fold=files&mode=diff");
+
+    // The slider clears it: back to file headers, still filtered.
+    fold("files");
+    expect(document.querySelector(".file")!.classList.contains("folded")).toBe(true);
+    fold("hunks");
+    expect(codeRows('.hunk[data-id="H1"]')).toBe(0);
+    expect(document.querySelector('.hunk[data-id="H1"] .hunk-header')).not.toBeNull();
+    expect(document.querySelector('.hunk[data-id="H0"]')).toBeNull();
+  });
+
+  test("a filter restored at boot is not a focus: the diff opens filtered, at its level", async () => {
+    localStorage.setItem("scr-active-group:local", "symbols:SY0");
+    await bootViewer(makeData({
+      pending: false, files: [foldFile()],
+      symbols: [{ id: "SY0", title: "mid", rationale: "", hunk_ids: ["H1"] }],
+    }));
+    // Filtered — H0 and H2 are demoted — but H1 is a header, not code.
+    expect(document.querySelector('.hunk[data-id="H0"]')).toBeNull();
+    expect(document.querySelector('.hunk[data-id="H1"] .hunk-header')).not.toBeNull();
+    expect(codeRows('.hunk[data-id="H1"]')).toBe(0);
+
+    // The gesture itself still is one: the active pill toggles off, and
+    // picking it again focuses.
+    const pill = (): HTMLElement =>
+      document.querySelector('[data-axis="symbols"] .group-btn[data-pill-id="SY0"]') as HTMLElement;
+    pill().click();
+    expect(document.querySelectorAll(".hunk-header").length).toBe(3);
+    expect(codeRows(".hunk")).toBe(0);
+    pill().click();
+    expect(document.querySelector('.hunk[data-id="H0"]')).toBeNull();
+    expect(codeRows('.hunk[data-id="H1"]')).toBe(1);
+  });
+
   test("done event hides the progress strip and clears pending", async () => {
     await bootViewer(makeData());
     const es = lastEventSource();
@@ -3132,7 +3197,7 @@ describe("overview mode (ADR 0007)", () => {
       expect(panel.hidden).toBe(true);
     });
 
-    test("Open in diff leaves the mode and lands on the file", async () => {
+    test("Open in diff on a file reference is a focus on the file's hunks", async () => {
       const panel = await bootWithPanel();
       mapRow(1).click();
       (panel.querySelector(".explainer-detail-open") as HTMLElement).click();
@@ -3142,6 +3207,27 @@ describe("overview mode (ADR 0007)", () => {
       expect(document.querySelector("#app .explainer")).toBeNull();
       expect(document.querySelector("#app .explainer-detail")).toBeNull();
       expect(document.querySelector('#app .file[data-id="F1"]')).not.toBeNull();
+      // The file's hunk is open to its code; the others sit at the level
+      // (`hunks`), and nothing was stored: the hash carries no override.
+      expect(document.querySelector('#app .hunk[data-id="H1_0"] .diff')).not.toBeNull();
+      expect(document.querySelector('#app .hunk[data-id="H0_0"] .diff')).toBeNull();
+      expect(document.querySelector('#app .hunk[data-id="H0_0"]')!.classList.contains("folded")).toBe(true);
+      expect(window.location.hash).toBe("#fold=hunks&mode=diff");
+
+      // The slider folds it back to level.
+      (document.querySelector('.fold-slider button[data-fold="hunks"]') as HTMLElement).click();
+      expect(document.querySelector('#app .hunk[data-id="H1_0"] .diff')).toBeNull();
+    });
+
+    test("Open in diff on a hunk reference focuses that hunk alone", async () => {
+      const panel = await bootWithPanel();
+      hunkRef().click();
+      (panel.querySelector(".explainer-detail-open") as HTMLElement).click();
+      await new Promise<void>((r) => setTimeout(r, 0));
+
+      expect(window.location.hash).toBe("#fold=hunks&mode=diff");
+      expect(document.querySelector('#app .hunk[data-id="H0_0"] .diff')).not.toBeNull();
+      expect(document.querySelector('#app .hunk[data-id="H1_0"] .diff')).toBeNull();
     });
 
     test("a section write repaints the document under a panel that stays", async () => {
