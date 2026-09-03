@@ -1,36 +1,24 @@
-// Indent-based fold detection + on-demand fold-summary requests.
+// Fold-region chrome: chevrons, collapse, and on-demand fold-summary
+// requests, over the regions the server computed.
 //
-// The viewer's fold story is unified per-file (not per-stretch):
-// `attachFileFolds(fileEl, file)` walks every visible row in the
-// file body in DOM order — across hunks and adjacent expanded
-// context blocks — runs an indent-based fold detector over the
-// unified sequence, and attaches one chevron per region. Folds
-// whose body spans a hunk boundary collapse the right rows in
-// every container because each row carries its own DOM refs.
+// What folds is decided once, in Python, over the whole file
+// (viewer/fold_regions.py) and shipped as `FileBlock.fold_regions`,
+// each region addressed by line range per side. Nothing here derives a
+// region: `attachFileFolds(fileEl, file)` walks the rows this pane has
+// rendered for the file — hunks and expanded context alike, in DOM
+// order — and, for each region with two or more of its rows on screen,
+// hangs a chevron on the first and folds the rest under it. A region
+// whose opener the diff never carried still folds from whichever of its
+// rows is showing; a region with one row showing has nothing to fold.
 //
-// First time the reviewer collapses a region whose summary is
-// empty, this module fires `POST /fold-summary` against the live
-// review server. The response writes back into the region object
-// (mutating DATA in place); the server's `fold-summary` SSE event
-// is handled by `applyFoldSummary` in boot.ts.
+// First time the reviewer collapses a region whose summary is empty,
+// this module fires `POST /fold-summary` against the live review
+// server. The response writes back into the region object (mutating
+// DATA in place); the server's `fold-summary` SSE event is handled by
+// `applyFoldSummary` in boot.ts.
 //
 import { Annotations, type AnnotationHandle } from "./annotations";
 import { FileRows, type RowWithEls } from "./file_rows";
-
-interface DetectedRegion {
-  header_idx: number;
-  body_start_idx: number;
-  body_end_idx: number;
-  context: FoldContext;
-  right_start: number | null;
-  right_end: number | null;
-  left_start: number | null;
-  left_end: number | null;
-  // Identity of the definition the region snapped to; null for an
-  // indentation-fallback region.
-  qualified_name: string | null;
-  kind: string | null;
-}
 
 interface AttachedFold {
   marker: SVGElement;
@@ -45,12 +33,35 @@ interface FoldRequestAddress {
   left_end?: number;
 }
 
-interface FoldFileState {
+interface FoldChrome {
   handles: AnnotationHandle[];
   chevrons: SVGElement[];
 }
 
-const _FILE_FOLD_STATE: Record<string, FoldFileState> = Object.create(null);
+/** A rendered row with the container (`.diff` / `.gap-expansion`) that
+ *  holds it. */
+interface FileRow extends RowWithEls {
+  container: HTMLElement;
+}
+
+/** Where a region sits among the rows this pane rendered: the chevron
+ *  row and the rows that fold under it. Indices into the collected row
+ *  list, inclusive. */
+interface PlacedRegion {
+  region: FoldRegion;
+  headerIdx: number;
+  bodyEndIdx: number;
+}
+
+// The chrome attached inside each row container, so a re-attach removes
+// it first. Keyed by the container rather than the file id: a container
+// belongs to one pane (a node cannot be in two trees), so the explainer
+// panel's copy of a file and the diff pane's never tear down each
+// other's chevrons; and the diff pane reuses a hunk's `.diff` across
+// repaints while rebuilding the `.file` around it, so the chrome those
+// cached rows carry is found by the node that carries it. Entries vanish
+// with the container.
+const _CONTAINER_FOLD_CHROME = new WeakMap<HTMLElement, FoldChrome>();
 
 function _sessionEndpoint(): string {
   // Read at call time, not module init — the meta tag may be
@@ -95,8 +106,8 @@ function _isRowContentEmpty(rowEl: HTMLElement | undefined | null): boolean {
 
 // --- File-level walker --------------------------------------------------
 
-function _teardownFileFolds(fileId: string): void {
-  const s = _FILE_FOLD_STATE[fileId];
+function _teardownContainerFolds(container: HTMLElement): void {
+  const s = _CONTAINER_FOLD_CHROME.get(container);
   if (!s) return;
   for (const h of s.handles) {
     try { h.remove(); } catch (_) { /* ignore */ }
@@ -104,17 +115,27 @@ function _teardownFileFolds(fileId: string): void {
   for (const c of s.chevrons) {
     try { c.remove(); } catch (_) { /* ignore */ }
   }
-  delete _FILE_FOLD_STATE[fileId];
+  _CONTAINER_FOLD_CHROME.delete(container);
+}
+
+function _recordChrome(container: HTMLElement, attached: AttachedFold): void {
+  let s = _CONTAINER_FOLD_CHROME.get(container);
+  if (!s) {
+    s = { handles: [], chevrons: [] };
+    _CONTAINER_FOLD_CHROME.set(container, s);
+  }
+  if (attached.foldHandle) s.handles.push(attached.foldHandle);
+  s.chevrons.push(attached.marker);
 }
 
 // Walk the file body's .diff / .gap-expansion containers in DOM order,
 // pull each one's row stream out of `FileRows` (recorded by render.ts
-// at construction time), and flatten into one indexable list so folds
+// at construction time), and flatten into one indexable list so a fold
 // can straddle hunks and adjacent gap-context.
-function _collectFileRows(fileEl: HTMLElement): RowWithEls[] {
+function _collectFileRows(fileEl: HTMLElement): FileRow[] {
   const body = fileEl.querySelector(".file-body");
   if (!body) return [];
-  const out: RowWithEls[] = [];
+  const out: FileRow[] = [];
   for (const child of Array.from(body.children) as HTMLElement[]) {
     const cls = child.classList;
     let source: HTMLElement | null = null;
@@ -129,236 +150,49 @@ function _collectFileRows(fileEl: HTMLElement): RowWithEls[] {
     for (let i = 0; i < entry.rows.length; i++) {
       out.push({
         ...entry.rows[i],
-        oldEl: entry.oldEls[i], newEl: entry.newEls[i],
+        oldEl: entry.oldEls[i], newEl: entry.newEls[i], container: source,
       });
     }
   }
   return out;
 }
 
-function _findExistingFoldRecord(
-  file: FileBlock, det: DetectedRegion,
-): FoldRegion | null {
-  const rs = det.right_start || 0, re_ = det.right_end || 0;
-  const ls = det.left_start || 0, le = det.left_end || 0;
-  for (const h of file.hunks || []) {
-    for (const r of h.fold_regions || []) {
-      if (
-        (r.context || "right") === det.context
-        && (r.right_start || 0) === rs && (r.right_end || 0) === re_
-        && (r.left_start || 0) === ls && (r.left_end || 0) === le
-      ) {
-        return r;
-      }
+// --- Placing regions on rendered rows ------------------------------------
+
+function _inRange(line: number | null | undefined, start: number | null, end: number | null): boolean {
+  return line != null && start != null && end != null && line >= start && line <= end;
+}
+
+function _rowInRegion(row: RowBlock, region: FoldRegion): boolean {
+  return _inRange(row.new_line, region.right_start, region.right_end)
+    || _inRange(row.old_line, region.left_start, region.left_end);
+}
+
+// Which rendered rows each region covers: the chevron sits on the first
+// row inside the region's ranges, and everything through the last such
+// row folds under it — including any row between them that is on
+// neither range (a deletion interleaved with unchanged lines). A region
+// with fewer than two rows on screen has nothing to fold and is skipped.
+// Two regions that land on the same row (a class and the method a hunk
+// sits inside, neither opener rendered) keep the tighter one — on a tie,
+// the later, since the server lists an enclosing region before the
+// regions it encloses. It names what the rows are.
+function _placeRegions(rows: RowWithEls[], regions: FoldRegion[]): PlacedRegion[] {
+  const byHeader = new Map<number, PlacedRegion>();
+  for (const region of regions) {
+    let headerIdx = -1;
+    let bodyEndIdx = -1;
+    for (let i = 0; i < rows.length; i++) {
+      if (!_rowInRegion(rows[i], region)) continue;
+      if (headerIdx < 0) headerIdx = i;
+      bodyEndIdx = i;
     }
+    if (headerIdx < 0 || bodyEndIdx === headerIdx) continue;
+    const prior = byHeader.get(headerIdx);
+    if (prior && prior.bodyEndIdx < bodyEndIdx) continue;
+    byHeader.set(headerIdx, { region, headerIdx, bodyEndIdx });
   }
-  return null;
-}
-
-function _upsertFoldRegion(
-  file: FileBlock, det: DetectedRegion, rows: RowWithEls[],
-): FoldRegion {
-  // The local POST handler and the SSE updater both mutate the
-  // region object's `summary` field — they need to point at the
-  // same reference. Find a matching persistent record if one
-  // exists, refresh its detected fields, and return it. Otherwise
-  // create a new one and stash it on the file's first hunk so the
-  // next render picks it up.
-  const hasChanges = _anyChangesInRange(rows, det.header_idx, det.body_end_idx);
-  const existing = _findExistingFoldRecord(file, det);
-  if (existing) {
-    existing.header_idx = det.header_idx;
-    existing.body_start_idx = det.body_start_idx;
-    existing.body_end_idx = det.body_end_idx;
-    existing.has_changes = hasChanges;
-    existing.qualified_name = det.qualified_name;
-    existing.kind = det.kind;
-    return existing;
-  }
-  const candidate: FoldRegion = {
-    header_idx: det.header_idx,
-    body_start_idx: det.body_start_idx,
-    body_end_idx: det.body_end_idx,
-    context: det.context,
-    right_start: det.right_start, right_end: det.right_end,
-    left_start: det.left_start, left_end: det.left_end,
-    has_changes: hasChanges,
-    qualified_name: det.qualified_name, kind: det.kind,
-    summary: "",
-  };
-  if (file.hunks && file.hunks.length > 0) {
-    const h0 = file.hunks[0];
-    if (!h0.fold_regions) h0.fold_regions = [];
-    h0.fold_regions.push(candidate);
-  }
-  return candidate;
-}
-
-function _anyChangesInRange(
-  rows: RowWithEls[], start: number, end: number,
-): boolean {
-  for (let i = start; i <= end; i++) {
-    const k = rows[i].kind;
-    if (k === "ins" || k === "del" || k === "pair") return true;
-  }
-  return false;
-}
-
-// --- Indent-based detection --------------------------------------------
-
-function _rowIndent(row: RowBlock): number {
-  const text = row.kind === "del" ? row.old_text : row.new_text;
-  if (!text || !text.trim()) return -1;
-  let ind = 0;
-  for (const ch of text) {
-    if (ch === " ") ind += 1;
-    else if (ch === "\t") ind += 4;
-    else break;
-  }
-  return ind;
-}
-
-function _indentRawRegions(rows: RowWithEls[]): Array<[number, number]> {
-  const indents = rows.map(_rowIndent);
-  const nextNonBlank = (i: number): number | null => {
-    for (let j = i + 1; j < indents.length; j++) {
-      if (indents[j] !== -1) return indents[j];
-    }
-    return null;
-  };
-  const raw: Array<[number, number]> = [];
-  const stack: Array<[number, number]> = [];
-  for (let i = 0; i < indents.length; i++) {
-    const ind = indents[i];
-    if (ind === -1) continue;
-    while (stack.length && stack[stack.length - 1][0] >= ind) {
-      const top = stack.pop()!;
-      raw.push([top[1], i - 1]);
-    }
-    const ni = nextNonBlank(i);
-    if (ni !== null && ni > ind) stack.push([ind, i]);
-  }
-  while (stack.length) {
-    const top = stack.pop()!;
-    raw.push([top[1], indents.length - 1]);
-  }
-  return raw;
-}
-
-// Definition spans enclosing a row, outermost-first: the row maps by
-// line number into one side's tree — new_line into head spans (ctx /
-// pair / ins rows), else old_line into base spans (del-only rows).
-function _rowSymbols(
-  row: RowWithEls, headSpans: FoldSymbolSpan[], baseSpans: FoldSymbolSpan[],
-): FoldSymbolSpan[] {
-  let line: number | null;
-  let spans: FoldSymbolSpan[];
-  if (row.new_line != null) { line = row.new_line; spans = headSpans; }
-  else if (row.old_line != null) { line = row.old_line; spans = baseSpans; }
-  else return [];
-  return spans
-    .filter((s) => s.start_line <= line! && line! <= s.end_line)
-    .sort((a, b) => a.depth - b.depth);
-}
-
-// `(headerIdx, bodyEndIdx, qualifiedName, kind)` snapped to definition
-// spans, plus the set of row indices inside any definition. Every
-// definition with >=1 present row becomes a region from its first to its
-// last present row carrying that definition's identity; nested defs nest
-// because a row carries its whole enclosing chain.
-type RawRegion = [number, number, string | null, string | null];
-
-function _symbolRawRegions(
-  rows: RowWithEls[], headSpans: FoldSymbolSpan[], baseSpans: FoldSymbolSpan[],
-): { raw: RawRegion[]; covered: Set<number> } {
-  const runs = new Map<string, [number, number]>();
-  const kinds = new Map<string, string>();
-  const order: string[] = [];
-  const covered = new Set<number>();
-  for (let i = 0; i < rows.length; i++) {
-    for (const s of _rowSymbols(rows[i], headSpans, baseSpans)) {
-      covered.add(i);
-      const run = runs.get(s.qualified_name);
-      if (run === undefined) {
-        runs.set(s.qualified_name, [i, i]);
-        kinds.set(s.qualified_name, s.kind);
-        order.push(s.qualified_name);
-      } else {
-        run[1] = i;
-      }
-    }
-  }
-  const raw: RawRegion[] = order.map((qn) => {
-    const run = runs.get(qn)!;
-    return [run[0], run[1], qn, kinds.get(qn)!];
-  });
-  return { raw, covered };
-}
-
-function _computeFoldRegions(
-  rows: RowWithEls[],
-  headSpans: FoldSymbolSpan[] = [],
-  baseSpans: FoldSymbolSpan[] = [],
-): DetectedRegion[] {
-  // Uniform shape: [headerIdx, bodyEndIdx, qualifiedName|null, kind|null].
-  // Indentation regions carry no symbol.
-  let raw: RawRegion[];
-  if (headSpans.length || baseSpans.length) {
-    const sym = _symbolRawRegions(rows, headSpans, baseSpans);
-    // Keep an indentation region only where no row it spans is already
-    // covered by a definition — the snapped region owns that stretch.
-    raw = sym.raw.concat(
-      _indentRawRegions(rows)
-        .filter(([h, e]) => {
-          for (let j = h; j <= e; j++) if (sym.covered.has(j)) return false;
-          return true;
-        })
-        .map(([h, e]): RawRegion => [h, e, null, null]),
-    );
-  } else {
-    raw = _indentRawRegions(rows).map(([h, e]): RawRegion => [h, e, null, null]);
-  }
-  raw.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  const regions: DetectedRegion[] = [];
-  for (const [header_idx, body_end, qualified_name, kind] of raw) {
-    const body_start = header_idx + 1;
-    if (body_start > body_end) continue;
-    const right_start = _firstLine(rows, header_idx, body_end, "new_line");
-    const right_end = _lastLine(rows, header_idx, body_end, "new_line");
-    const left_start = _firstLine(rows, header_idx, body_end, "old_line");
-    const left_end = _lastLine(rows, header_idx, body_end, "old_line");
-    const hasChanges = _anyChangesInRange(rows, header_idx, body_end);
-    let context: FoldContext;
-    if (right_start != null && left_start != null && hasChanges) context = "both";
-    else if (right_start != null) context = "right";
-    else context = "left";
-    regions.push({
-      header_idx, body_start_idx: body_start, body_end_idx: body_end,
-      context, right_start, right_end, left_start, left_end,
-      qualified_name, kind,
-    });
-  }
-  return regions;
-}
-
-function _firstLine(
-  rows: RowWithEls[], start: number, end: number, attr: "new_line" | "old_line",
-): number | null {
-  for (let j = start; j <= end; j++) {
-    const v = rows[j][attr];
-    if (v != null) return v;
-  }
-  return null;
-}
-
-function _lastLine(
-  rows: RowWithEls[], start: number, end: number, attr: "new_line" | "old_line",
-): number | null {
-  for (let j = end; j >= start; j--) {
-    const v = rows[j][attr];
-    if (v != null) return v;
-  }
-  return null;
+  return Array.from(byHeader.values()).sort((a, b) => a.headerIdx - b.headerIdx);
 }
 
 // --- Attach + click ----------------------------------------------------
@@ -387,8 +221,8 @@ function _foldAddress(region: FoldRegion): FoldRequestAddress | null {
 }
 
 // Prefix the collapsed placeholder with the region's symbol identity,
-// e.g. "function Foo.bar — ". Empty for an indentation-fallback region
-// (no symbol), which keeps today's unlabelled placeholder.
+// e.g. "function Foo.bar — ". Empty for an indentation stanza (no
+// symbol), which keeps the unlabelled placeholder.
 function _foldLabel(region: FoldRegion): string {
   if (!region.qualified_name) return "";
   const kind = region.kind ? `${region.kind} ` : "";
@@ -454,15 +288,39 @@ function _setFoldBoxContent(
   foldHandle.resize();
 }
 
-function _attachOneFold(
-  rows: RowWithEls[], region: FoldRegion, fileIdx: number,
-): AttachedFold | null {
-  const bodyStart = region.body_start_idx;
-  const bodyEnd = region.body_end_idx;
-  if (bodyStart > bodyEnd) return null;
+// A fold's state lives in its rows: collapsed when every body row is
+// hidden. Re-attaching after a gap expands or a summary lands rebuilds
+// the chevron in the state the rows are already in, so it never pops a
+// fold open or shows an open chevron over hidden rows.
+function _isCollapsed(rows: RowWithEls[], bodyStart: number, bodyEnd: number): boolean {
+  for (let i = bodyStart; i <= bodyEnd; i++) {
+    const r = rows[i];
+    if (!r) continue;
+    if ((r.oldEl && r.oldEl.style.display !== "none")
+        || (r.newEl && r.newEl.style.display !== "none")) {
+      return false;
+    }
+  }
+  return true;
+}
 
-  const headerRow = rows[region.header_idx];
-  if (!headerRow) return null;
+function _showRows(rows: RowWithEls[], start: number, end: number, show: boolean): void {
+  for (let i = start; i <= end; i++) {
+    const r = rows[i];
+    if (!r) continue;
+    if (r.oldEl) r.oldEl.style.display = show ? "" : "none";
+    if (r.newEl) r.newEl.style.display = show ? "" : "none";
+  }
+}
+
+function _attachOneFold(
+  rows: RowWithEls[], placed: PlacedRegion, fileIdx: number,
+): AttachedFold | null {
+  const { region } = placed;
+  const bodyStart = placed.headerIdx + 1;
+  const bodyEnd = placed.bodyEndIdx;
+
+  const headerRow = rows[placed.headerIdx];
   const headerOld = headerRow.oldEl;
   const headerNew = headerRow.newEl;
   if (!headerOld && !headerNew) return null;
@@ -472,7 +330,9 @@ function _attachOneFold(
   const anchor = side === "new" ? headerNew : headerOld;
   const shadow = side === "new" ? headerOld : headerNew;
 
-  const marker = _chev(false, "fold-chev");
+  const collapsed = _isCollapsed(rows, bodyStart, bodyEnd);
+  if (!collapsed) _showRows(rows, bodyStart, bodyEnd, true);   // a partly hidden body reads as open
+  const marker = _chev(collapsed, "fold-chev");
   marker.setAttribute("role", "button");
   marker.setAttribute("tabindex", "0");
 
@@ -496,19 +356,15 @@ function _attachOneFold(
       if (box) box.classList.add("missing");
       if (pending && box) box.classList.add("pending");
     }
-    foldHandle.element.style.display = "none";
-    if (foldHandle.placeholder) foldHandle.placeholder.style.display = "none";
+    foldHandle.element.style.display = collapsed ? "" : "none";
+    if (foldHandle.placeholder) foldHandle.placeholder.style.display = collapsed ? "" : "none";
+    if (collapsed) foldHandle.resize();
   }
 
   marker.addEventListener("click", (e) => {
     e.stopPropagation();
     const nowOpen = marker.classList.toggle("open");
-    for (let i = bodyStart; i <= bodyEnd; i++) {
-      const r = rows[i];
-      if (!r) continue;
-      if (r.oldEl) r.oldEl.style.display = nowOpen ? "" : "none";
-      if (r.newEl) r.newEl.style.display = nowOpen ? "" : "none";
-    }
+    _showRows(rows, bodyStart, bodyEnd, nowOpen);
     if (foldHandle) {
       foldHandle.element.style.display = nowOpen ? "none" : "";
       if (foldHandle.placeholder) {
@@ -529,30 +385,18 @@ function _attachOneFold(
 }
 
 function attachFileFolds(fileEl: HTMLElement, file: FileBlock): void {
-  _teardownFileFolds(file.id);
   const fileIdx = Number(file.id.replace("F", ""));
   const rows = _collectFileRows(fileEl);
-  if (rows.length === 0) return;
-  const syms = file.fold_symbols || { head: [], base: [] };
-  const detected = _computeFoldRegions(rows, syms.head, syms.base);
-  const handles: AnnotationHandle[] = [];
-  const chevrons: SVGElement[] = [];
-  for (const det of detected) {
-    const region = _upsertFoldRegion(file, det, rows);
-    const attached = _attachOneFold(rows, region, fileIdx);
-    if (!attached) continue;
-    if (attached.foldHandle) handles.push(attached.foldHandle);
-    if (attached.marker) chevrons.push(attached.marker);
+  for (const container of new Set(rows.map((r) => r.container))) {
+    _teardownContainerFolds(container);
   }
-  _FILE_FOLD_STATE[file.id] = { handles, chevrons };
+  for (const placed of _placeRegions(rows, file.fold_regions || [])) {
+    const attached = _attachOneFold(rows, placed, fileIdx);
+    if (attached) _recordChrome(rows[placed.headerIdx].container, attached);
+  }
 }
 
-// The single runtime surface. boot.ts calls attachFileFolds on
-// initial render, after every gap expand/collapse, and from
-// applyFoldSummary's cross-tab path.
+// The single runtime surface. render.ts calls attachFileFolds after a
+// file body is built and after every gap expand/collapse; boot.ts after
+// a fold summary lands from another tab.
 export const Folds = { attachFileFolds };
-
-// Exposed for the cross-language lockstep fixture (tests/js/folds.test.ts):
-// the same (rows, spans) input must yield the same regions as the Python
-// `compute_fold_regions`. Not used by the runtime bundle.
-export { _computeFoldRegions };

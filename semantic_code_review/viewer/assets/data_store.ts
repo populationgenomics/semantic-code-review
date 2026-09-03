@@ -30,11 +30,6 @@ export interface FoldRegionAddress {
 
 export interface ResolvedFoldRegion {
   file: FileBlock;
-  /** Index into `file.hunks` of the hunk whose `fold_regions` list
-   *  carries the addressed region. Regions are addressed at the file
-   *  level but persisted on individual hunks (today, the first hunk
-   *  of the file — see CONTEXT.md `Fold region`). */
-  hostHunkIdx: number;
   region: FoldRegion;
 }
 
@@ -99,18 +94,13 @@ export const DataStore = {
 
   // --- Fold regions --------------------------------------------------
 
-  /** Look up the fold region at `addr`, walking every hunk in the
-   *  addressed file. Returns null if no matching region exists. */
+  /** Look up the fold region at `addr` in the addressed file's
+   *  `fold_regions`. Returns null if no matching region exists. */
   findFoldRegion(data: ViewerData, addr: FoldRegionAddress): ResolvedFoldRegion | null {
     const f = data.files && data.files[addr.file_idx];
     if (!f) return null;
-    for (let hi = 0; hi < (f.hunks || []).length; hi++) {
-      const h = f.hunks[hi];
-      for (const r of h.fold_regions || []) {
-        if (_foldKeyMatches(r, addr)) {
-          return { file: f, hostHunkIdx: hi, region: r };
-        }
-      }
+    for (const r of f.fold_regions || []) {
+      if (_foldKeyMatches(r, addr)) return { file: f, region: r };
     }
     return null;
   },

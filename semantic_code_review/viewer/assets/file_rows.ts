@@ -1,12 +1,12 @@
-// Typed handle from the renderer to the fold-detector for the per-file
-// row stream.
+// Typed handle from the renderer to the fold chrome (folds.ts) for the
+// per-file row stream.
 //
-// Why this module exists. The fold detector (folds.ts) needs to walk
-// every row in a file — across hunks, across expanded gap-context — in
-// DOM order, with access to both the `RowBlock` records and the
-// per-side DOM elements those rows materialised into. The renderer
-// (render.ts) is the only place that has all three pieces at the
-// moment of construction.
+// Why this module exists. folds.ts places the server's regions on the
+// rows a pane has rendered: it walks every row in a file — across hunks,
+// across expanded gap-context — in DOM order, with access to both the
+// `RowBlock` records and the per-side DOM elements those rows
+// materialised into. The renderer (render.ts) is the only place that has
+// all three pieces at the moment of construction.
 //
 // The previous shape stashed three optional properties (`_scrRows`,
 // `_scrRowElsOld`, `_scrRowElsNew`) directly on the `.diff` /
@@ -18,7 +18,7 @@
 //
 // This module owns the contract instead. `record` is called by the
 // renderer for every `.diff` / `.gap-expansion` it builds; `get` is
-// called by the fold detector for each candidate container as it walks
+// called by folds.ts for each candidate container as it walks
 // `.file-body`. Storage is a `WeakMap` keyed by container reference,
 // so entries vanish when a container is replaced (collapsed back to a
 // chip, re-rendered after an SSE hunk replace, etc.).

@@ -211,7 +211,7 @@ function render(): void {
 }
 
 /** Replace one hunk's DOM in place. Drops the renderedDiffs cache
- *  entry first so attachLineNotes / fold detection re-run against
+ *  entry first so attachLineNotes / fold placement re-run against
  *  the (possibly different) row set. Called from the SSE patchers
  *  in viewer.js when a `hunk` event arrives.
  *

@@ -58,7 +58,7 @@ its content-neutral slide range.
 slidable run renders byte-identically to before; no hunk loses an
 opener-first rendering.
 
-## Slice 3 — Fold regions from the AST, once, on the wire
+## Slice 3 — Fold regions from the AST, once, on the wire ✅ done
 
 `compute_fold_regions` takes its boundaries from tree-sitter (function, class,
 block) with the indent detector as fallback for languages without a grammar,
@@ -72,6 +72,12 @@ Resolves candidate 5 of the architecture review.
 
 **Gate:** the TS has no fold-region detector; the Python one is the only
 implementation; regions exist for lines the diff never carried.
+
+Landed as: `viewer/fold_regions.py` (the one implementation), regions
+on `FileBlock.fold_regions` in `/data.json` (`HunkBlock.fold_regions`
+and `FileBlock.fold_symbols` gone), `FoldDescription` lifted to
+`FileAnnotations`, `folds.ts` chrome only with its chrome registry
+keyed by row container rather than file id.
 
 ## Slice 4 — Annotation spans
 
