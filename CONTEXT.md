@@ -319,10 +319,12 @@ have their own and a control repaints only the pane it sits in. Two
 consequences: a `.md` reference opens in the panel on the text diff
 even when the diff pane has it flipped, and flipping it there leaves
 the diff as the reviewer left it (the rule `PaneScope.overrides`
-already states). The **source cache** stays module-global in
-`rendered.ts`: base+head text is pane-independent and costs a
+already states). The **source cache** is module-global in
+`file_text.ts` (`FileTextCache`), a leaf both `render.ts` and
+`rendered.ts` import: base+head text is pane-independent and costs a
 `/file-text` round trip, so a second pane flipping the same file reads
-it back rather than refetching.
+it back rather than refetching, and two askers during one flight share
+the request.
 
 Fully built (ADR 0004 slices 1–4 plus follow-ups). Two-pane base→head
 render with block-level delta and run folding — `_plan` in `rendered.ts`
