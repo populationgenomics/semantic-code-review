@@ -182,6 +182,39 @@ lists of hunks. The augment pipeline runs the per-hunk LLM pass once
 per hunk (`HunkAnnotations`); the [[viewer-data]] addresses each
 hunk by a stable id of the form `"H<file_idx>_<hunk_idx>"`.
 
+The hunk's *content* — which lines are context, inserted, deleted —
+is the differ's. The *order* its rows render in is not inherited from
+the diff text: see [[positioning]].
+
+**Positioning**
+Where, within a [[hunk]], a run of inserted (or deleted) lines is drawn
+(ADR 0008). A run of `n` lines whose text repeats the context beside
+it can sit at any position in that repeat and render the identical
+file — it can move up `k` lines exactly when each of the `k` lines
+above it equals the line `n` further on, and down by the mirror rule.
+The differ picks one such position; `hunk_layout.position_runs` picks
+the best and re-orders the rows, so row order within a hunk is chosen,
+not inherited.
+
+Candidates are scored by their two seams — above the run's first line
+and below its last — each: the line below the seam opens a definition
+(2) > either side is blank (1) > anything else (0), summed. A
+definition's opener is the leading edge of its `fold_symbols` span:
+the `start_line` extended upward over attached decorator and comment
+lines, so a decorated method's edge is its decorator, not its `def`.
+Without spans (no grammar, no worktree) an opener is a line whose next
+non-blank line is deeper-indented. Ties go to the smallest displacement
+— the differ's position stands unless a better one exists — then
+upward. Runs move only through `ctx` rows and only within the hunk;
+runs of one row stay put.
+
+Invariant: for every row, `(side, line) → text` is unchanged, and so is
+the count of each row kind. Only which rows are `ctx` and which are
+`ins`/`del` changes, so [[reviewer-comment]] anchors are unaffected.
+[[fold-region]] addresses are computed from the positioned rows and can
+differ from those of the unpositioned hunk — a region whose lines are
+all inserted is `right`-only rather than `both`.
+
 **Fold region**
 A collapsible region within a [[hunk]] in the viewer. Addressed by
 `(file_idx, context, right_range, left_range)`:
