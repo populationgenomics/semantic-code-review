@@ -179,8 +179,12 @@ A contiguous range of changed lines in a diff, with its `@@` header
 plus old/new start+count. Both on-disk forms — the
 [[augmented-diff]] text and its sidecar — model files as ordered
 lists of hunks. The augment pipeline runs the per-hunk LLM pass once
-per hunk (`HunkAnnotations`); the [[viewer-data]] addresses each
-hunk by a stable id of the form `"H<file_idx>_<hunk_idx>"`.
+per hunk (`HunkAnnotations`: intent, smells, context, refs, confidence,
+and the hunk's [[annotation-span]]s); the [[viewer-data]] addresses
+each hunk by a stable id of the form `"H<file_idx>_<hunk_idx>"`. The
+pass's prompt carries the hunk numbered two ways: post-image line
+numbers, which same-file `refs` copy, and boundary ids, which spans
+copy — the model computes neither.
 
 The hunk's *content* — which lines are context, inserted, deleted —
 is the differ's. The *order* its rows render in is not inherited from
@@ -250,26 +254,47 @@ sidecar as a `FoldDescription` on the file (`FileAnnotations
 `augmented.diff` written when they lived on the file's first hunk is
 read with them lifted to the file.
 
-**Segment**
-An LLM-produced semantic sub-slice of a [[hunk]]: a contiguous run of
-the hunk's changed lines the per-hunk pass groups by intent.
-`SegmentBlock` carries `new_start`/`new_count` (its head-side line
-range) plus its own `intent`, `smells`, `context`, `refs`, and a
-stable `id`. When a hunk has segments and segment-fold is on (viewer
-fold mode ≠ `"off"`), the viewer renders the hunk body as a `seg-list`
-— one collapsed summary row per segment, each independently foldable —
-instead of the raw diff; toggling any segment (or fold=off) drops back
-to the raw hunk diff.
+**Annotation span**
+An LLM-produced label on a range of a [[hunk]]'s post-image lines
+(`AnnotationSpan`, ADR 0008): inclusive `start`..`end`, with its own
+`intent`, `smells`, `context`, `refs`, and a stable viewer id
+(`H<f>_<h>:span:<start>-<end>`). A span over several lines is what a
+segment was — a semantically distinct edit inside the hunk; a span over
+one line is a callout (what a line note was). Spans nest, need not cover
+or partition the hunk, and never partially overlap: two spans nest or
+are disjoint. Storage order is outermost first.
 
-Segments are semantic and fallible, *not* the deterministic structural
-[[symbol]] ranges: a segment need not line up with one symbol, and the
-two layers are computed independently.
+The model does not emit coordinates. Each hunk's prompt carries a
+**boundary list** (`augment/boundaries.py`): the post-image lines a span
+may start or end on — the hunk's edges, every changed line and deletion
+seam, every definition edge from the head-side tree-sitter parse, and
+the edges of indentation blocks and blank-separated runs. A submitted
+span (`SpanSubmission`) is a pair of boundary ids (`b7`, `b12`) which
+`build_hunk_annotations` resolves; an id outside the list resolves to
+nothing, so a span cannot leave the hunk, overshoot by one, or land in
+pre-image coordinates. A deletion-only hunk has no post-image lines and
+therefore no boundaries and no spans. In a batched prompt ids are
+numbered continuously across the hunks. The extra-review pass still
+buckets its integer `(file, line)` notes into single-line spans.
+
+In the viewer, at fold level `segments` a hunk's body is a `seg-list`:
+one summary row per top-level span with nested spans indented beneath
+it (a span-less hunk shows one synthetic whole-hunk row); toggling any
+row drops back to the raw diff, where single-line spans attach as inline
+notes on their row. On disk, `scr-span: +a..+b "intent"` is an
+intent-only span and `scr-span-begin` … `scr-span-end` a block with
+smells/context/refs; the retired `scr-segment-*` / `scr-line` directives
+and a sidecar's `segments` / `line_notes` still load, as spans.
+
+Spans are semantic and fallible, *not* the deterministic structural
+[[symbol]] ranges: a span need not line up with one symbol — only its
+edges are drawn from positions that exist.
 
 **Collapsible region**
 The viewer renders a file body from one model (`render._renderFileBody`):
 an ordered run of *live hunks* and *collapsible regions*. Both are the
 same diff-row stream (`_renderDiffRows`); the difference is only the
-chrome — a live hunk shows the full [[hunk]] (header, intent, segments),
+chrome — a live hunk shows the full [[hunk]] (header, intent, spans),
 a region shows a bare "expand N lines" chip that opens to a continuous
 diff.
 
@@ -305,12 +330,12 @@ puts rows on screen, fold shows them at less detail (ADR 0008).
 The viewer's global collapse depth (`RenderState.fold`, driven by the
 fold slider / keys 1–4): `files` → `hunks` → `segments` → `off`, each a
 shallower fold. Code (raw diff rows) shows only at `off`; `segments`
-shows each [[hunk]]'s [[segment]] summaries (a segment-less hunk folds as
-one synthetic whole-hunk segment, so every hunk behaves uniformly);
+shows each [[hunk]]'s [[annotation-span]] summaries (a span-less hunk folds as
+one synthetic whole-hunk span, so every hunk behaves uniformly);
 `hunks` shows hunk headers; `files` shows file headers.
 
 Per-item exceptions live in `RenderState.overrides` — a reviewer
-expanding/collapsing one file/hunk/segment; an override wins over the
+expanding/collapsing one file/hunk/span; an override wins over the
 level default. Picking a level (`_setGlobalFold`) is authoritative: it
 clears every override, folding the whole tree to that depth, including a
 filter's focused hunks. Picking one from inside overview mode also leaves
@@ -370,7 +395,7 @@ A second body renderer for `.md` files (ADR 0004), switched in by a
 per-file toggle in the file header. The text-diff renderer
 (`_renderDiffRows`, `hunk_layout.py`, the [[collapsible-region]] model)
 stays untouched and authoritative — it owns "what changed", hunks,
-segments, and comment anchoring; rendered mode answers only "does the
+spans, and comment anchoring; rendered mode answers only "does the
 finished prose read well". It is a separate renderer, not a feature on
 the existing one: nothing keyed on row objects carries over.
 
@@ -407,7 +432,7 @@ landmarks, with context bleed and a min-run threshold. Controls are
 mode is a per-file toggle, so a mixed text/rendered file set can't share
 one global ladder): a `sections → runs → open` fold ladder and a heading
 **outline** badged changed/unchanged. The outline is a third structural
-notion alongside the LLM-semantic ([[segment]]) and tree-sitter-
+notion alongside the LLM-semantic ([[annotation-span]]) and tree-sitter-
 structural ([[symbol]]) models; like them it answers a different
 question and is not reconciled with them.
 
@@ -594,7 +619,7 @@ Filtering is hunk-granular, not symbol-precise: a pill resolves to the
 *hunks* its symbols overlap, and focus renders those whole hunks live
 (see [[collapsible-region]]). Two symbols in one hunk — adjacent edits
 with no unchanged gap between them — share that hunk id, so focusing
-either surfaces both. Sub-hunk narrowing would key on [[segment]] ranges
+either surfaces both. Sub-hunk narrowing would key on [[annotation-span]] ranges
 (which carry line coordinates) but isn't done today.
 
 **Change explainer**

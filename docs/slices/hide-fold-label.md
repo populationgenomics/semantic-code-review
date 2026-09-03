@@ -79,7 +79,7 @@ and `FileBlock.fold_symbols` gone), `FoldDescription` lifted to
 `FileAnnotations`, `folds.ts` chrome only with its chrome registry
 keyed by row container rather than file id.
 
-## Slice 4 — Annotation spans
+## Slice 4 — Annotation spans ✅ done
 
 Segments and line notes become one `AnnotationSpan` — a post-image range with
 intent, smells, refs and a stable id — that nests. The per-hunk output loses
@@ -91,6 +91,22 @@ on.
 
 **Gate:** no integer coordinate in the model's output schema; every drop
 bucket from #21 is unrepresentable; nested spans render.
+
+Landed as: `augment/boundaries.py` (the list: hunk edges, changed lines
+and deletion seams, head-side definition edges, indentation-block and
+blank-run edges — every changed line is a boundary so every note stays
+expressible and any grouping of changed lines is reachable), a `b<n>`
+gutter beside the line numbers in the hunk prompt with a `structure:`
+line naming each touched definition as a pair, `SpanSubmission`
+(string ids, `end` optional for a callout) resolved by
+`build_hunk_annotations`; partial overlap dropped, nesting kept
+outermost-first. `scr-span` / `scr-span-begin` in the text grammar with
+`scr-segment-*` / `scr-line` and sidecar `segments` / `line_notes`
+lifting on read. `HunkBlock.spans` flat on the wire; the `seg-list`
+renders top-level spans with nested spans indented beneath, and a
+single-line span is the inline row note at `off`. A deletion-only hunk
+has no boundaries and so no spans. The `segments` rung is unchanged
+(slice 5).
 
 ## Slice 5 — The ladder becomes `definitions`
 

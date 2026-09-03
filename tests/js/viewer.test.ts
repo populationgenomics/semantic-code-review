@@ -212,8 +212,7 @@ function makeHunkBlock(id: string, intent = "", overrides: Record<string, unknow
     confidence: null,
     context: "",
     refs: [],
-    line_notes: [],
-    segments: [],
+    spans: [],
     rows: [
       { kind: "pair", old_line: 1, new_line: 1, old_text: "a", new_text: "a" },
       { kind: "pair", old_line: 2, new_line: 2, old_text: "b", new_text: "B" },
@@ -845,7 +844,7 @@ describe("streaming events", () => {
   const codeRows = (sel: string): number =>
     document.querySelectorAll(`${sel} .diff .half-new .row:not(.row-annotation)`).length;
 
-  test("fold ladder reveals code only at 'off'; segment-less hunks fold as one segment", async () => {
+  test("fold ladder reveals code only at 'off'; span-less hunks fold as one span", async () => {
     await bootViewer(makeData({ pending: false, files: [foldFile()], symbols: [] }));
 
     // Default "hunks": headers only, no segment summaries, no code.
@@ -853,7 +852,7 @@ describe("streaming events", () => {
     expect(document.querySelectorAll(".seg-list").length).toBe(0);
     expect(codeRows(".hunk")).toBe(0);
 
-    // "segment": every hunk folds to one synthetic segment summary; no code.
+    // "segments": every hunk folds to one synthetic span summary; no code.
     fold("segments");
     expect(document.querySelectorAll(".hunk .seg-list .segment").length).toBe(3);
     expect(codeRows(".hunk")).toBe(0);
@@ -867,6 +866,57 @@ describe("streaming events", () => {
     fold("hunks");
     expect(codeRows(".hunk")).toBe(0);
     expect(document.querySelectorAll(".seg-list").length).toBe(0);
+  });
+
+  test("nested spans render nested in the seg-list; single-line spans attach inline at 'off'", async () => {
+    const span = (id: string, start: number, end: number, intent: string): Record<string, unknown> =>
+      ({ id, start, end, intent, smells: [], context: "", refs: [] });
+    const rows = [1, 2, 3, 4, 5, 6].map((n) =>
+      ({ kind: "ins", old_line: null, new_line: n, old_text: "", new_text: `l${n}` }));
+    const file = {
+      id: "F0", path: "a.py", status: "modified", language: "python",
+      adds: 6, dels: 0, summary: "", head_line_count: 6,
+      symbols: { added: [], modified: [], removed: [] },
+      hunks: [makeHunkBlock("H0_0", "whole hunk", {
+        old_start: 0, old_count: 0, new_start: 1, new_count: 6, rows,
+        // Wire order is outermost first; nesting is containment.
+        spans: [
+          span("H0_0:span:1-4", 1, 4, "region"),
+          span("H0_0:span:2-3", 2, 3, "inner"),
+          span("H0_0:span:3-3", 3, 3, "callout"),
+          span("H0_0:span:6-6", 6, 6, "tail note"),
+        ],
+      })],
+    };
+    await bootViewer(makeData({ pending: false, files: [file], symbols: [] }));
+    fold("segments");
+
+    const list = document.querySelector(".hunk .seg-list")!;
+    // Two top-level rows: the region and the tail note; nothing synthetic.
+    const topLevel = Array.from(list.children).map((el) =>
+      (el.classList.contains("span-node") ? el.firstElementChild! : el).getAttribute("data-id"));
+    expect(topLevel).toEqual(["H0_0:span:1-4", "H0_0:span:6-6"]);
+    expect(list.querySelector('[data-id="H0_0_whole"]')).toBeNull();
+    // The inner span sits under the region, and the callout under the inner span.
+    const region = list.querySelector('.span-node > .segment[data-id="H0_0:span:1-4"]')!;
+    const inner = region.parentElement!.querySelector(
+      ':scope > .span-children > .span-node > .segment[data-id="H0_0:span:2-3"]');
+    expect(inner).not.toBeNull();
+    expect(inner!.parentElement!.querySelector(
+      ':scope > .span-children > .segment[data-id="H0_0:span:3-3"]')).not.toBeNull();
+    // Range text: a pair for a range, one number for a single line.
+    expect(region.querySelector(".segment-range")!.textContent).toBe("+1..+4");
+    expect(list.querySelector('[data-id="H0_0:span:3-3"] .segment-range')!.textContent).toBe("+3");
+    expect(codeRows(".hunk")).toBe(0);
+
+    // Clicking a nested span opens the hunk's code; the single-line spans
+    // are then notes on their rows, the multi-line ones are not.
+    (list.querySelector('[data-id="H0_0:span:3-3"]') as HTMLElement).click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(codeRows(".hunk")).toBe(6);
+    expect(document.querySelector('.row-annotation.annot-note[data-span-id="H0_0:span:3-3"]')).not.toBeNull();
+    expect(document.querySelector('.row-annotation.annot-note[data-span-id="H0_0:span:6-6"]')).not.toBeNull();
+    expect(document.querySelectorAll(".row-annotation.annot-note").length).toBe(2);
   });
 
   test("focus reveals the focused hunk's code; the slider still folds it to level", async () => {
@@ -946,17 +996,17 @@ describe("LLM observation → comment promotion", () => {
         adds: 0, dels: 0, summary: "", head_line_count: null,
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "real intent", {
-          line_notes: [{ line: 2, body: "consider using Path" }],
+          spans: [{ id: "H0_0:span:2-2", start: 2, end: 2, intent: "consider using Path", smells: [], context: "", refs: [] }],
         })],
       }],
     });
     await bootViewer(data);
     await new Promise<void>((r) => setTimeout(r, 0));
 
-    // The line-note annotation is attached to the row at line 2 and
-    // carries the source-annotation id on its dataset.
+    // The single-line span attaches as a note on the row at line 2 and
+    // carries the span id on its dataset.
     const noteEl = document.querySelector<HTMLElement>(
-      `.row-annotation.annot-note[data-line-note-id="H0_0:line_note:2"]`,
+      `.row-annotation.annot-note[data-span-id="H0_0:span:2-2"]`,
     );
     expect(noteEl).not.toBeNull();
     const promote = noteEl!.querySelector<HTMLButtonElement>(".comment-btn-promote");
@@ -983,11 +1033,11 @@ describe("LLM observation → comment promotion", () => {
 
     expect(posted).not.toBeNull();
     expect(posted!.body).toBe("consider using Path");
-    expect(posted!.derived_from).toBe("H0_0:line_note:2");
+    expect(posted!.derived_from).toBe("H0_0:span:2-2");
     // Source annotation is gone from the DOM — observation transitioned
     // into the comment.
     expect(document.querySelector(
-      `.row-annotation.annot-note[data-line-note-id="H0_0:line_note:2"]`,
+      `.row-annotation.annot-note[data-span-id="H0_0:span:2-2"]`,
     )).toBeNull();
   });
 
@@ -1039,7 +1089,7 @@ describe("LLM observation → comment promotion", () => {
     expect(document.querySelector(`.smell[data-smell-id="H0_0:smell:perf"]`)).toBeNull();
   });
 
-  test("line_note already promoted on initial load is hidden", async () => {
+  test("a single-line span already promoted on initial load is hidden", async () => {
     window.location.hash = "#fold=off";
     const data = makeData({
       pending: false,
@@ -1048,7 +1098,7 @@ describe("LLM observation → comment promotion", () => {
         adds: 0, dels: 0, summary: "", head_line_count: null,
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "", {
-          line_notes: [{ line: 1, body: "old observation" }],
+          spans: [{ id: "H0_0:span:1-1", start: 1, end: 1, intent: "old observation", smells: [], context: "", refs: [] }],
         })],
       }],
     });
@@ -1057,7 +1107,7 @@ describe("LLM observation → comment promotion", () => {
         id: "local-1", file: "a.py", side: "new", line: 1,
         body: "promoted version", created_at: 1, updated_at: 1,
         source: "local",
-        derived_from: "H0_0:line_note:1",
+        derived_from: "H0_0:span:1-1",
       }],
     });
     await new Promise<void>((r) => setTimeout(r, 0));
@@ -1065,7 +1115,7 @@ describe("LLM observation → comment promotion", () => {
     // The annotation source is hidden because a local comment with
     // matching derived_from already exists.
     expect(document.querySelector(
-      `.row-annotation.annot-note[data-line-note-id="H0_0:line_note:1"]`,
+      `.row-annotation.annot-note[data-span-id="H0_0:span:1-1"]`,
     )).toBeNull();
     // The promoted comment is rendered at the same line.
     expect(document.querySelector(

@@ -2,7 +2,7 @@
 //
 // Owns the layout pass that turns DATA into the on-page DOM: PR
 // panel, file blocks, hunk headers, the side-by-side row grid, gap
-// chips for unchanged context, segment-folded summaries, refs, smell
+// chips for unchanged context, span summaries at the segments level, refs, smell
 // pills. Carries the fold state too (STATE.fold / overrides /
 // renderedDiffs cache) because all of that exists to feed the
 // renderer, and binds the user inputs that drive it (fold-slider
@@ -272,7 +272,7 @@ function clearRenderedDiffCache(hunkId: string): void {
 
 function _defaultFileFolded(): boolean    { return _state.fold === "files"; }
 function _defaultHunkFolded(): boolean    { return _state.fold === "files" || _state.fold === "hunks"; }
-function _defaultSegmentFolded(): boolean { return _state.fold !== "off"; }
+function _defaultSpanFolded(): boolean    { return _state.fold !== "off"; }
 
 function _isFolded(scope: PaneScope, id: string, fallback: boolean): boolean {
   return Object.prototype.hasOwnProperty.call(scope.overrides, id)
@@ -372,11 +372,11 @@ function revealHunk(hunkId: string): void {
   // Unfolding the hunk is not enough to show code. At the `hunks` level
   // an open hunk still renders its segment *summaries* — the ladder's
   // whole point — so a reference that landed here would arrive at a
-  // paraphrase of the thing it was citing. Open the segments too: a
+  // paraphrase of the thing it was citing. Open the spans too: a
   // reference is a claim about specific lines, and the lines are what
   // the reviewer came to check.
   const hunk = file && (file.hunks || []).find((h) => h.id === hunkId);
-  if (hunk) for (const s of _displaySegments(hunk)) _state.overrides[s.id] = false;
+  if (hunk) for (const s of _hunkSpans(hunk)) _state.overrides[s.id] = false;
   render();
   const el = document.querySelector('.hunk[data-id="' + _cssEscape(hunkId) + '"]');
   if (el) el.scrollIntoView({ block: "start" });
@@ -429,13 +429,13 @@ function openReference(ref: ExplainerRef): void {
   // The file itself always opens: a panel showing a folded header shows
   // nothing. Under it the collapse level still holds, except for the
   // hunk a hunk reference names — that reference is the claim "read
-  // these lines", so its segments open too, as `revealHunk` does in the
+  // these lines", so its spans open too, as `revealHunk` does in the
   // diff.
   overrides[file.id] = false;
   if (ref.kind === "hunk") {
     overrides[ref.id] = false;
     const hunk = (file.hunks || []).find((h) => h.id === ref.id);
-    if (hunk) for (const s of _displaySegments(hunk)) overrides[s.id] = false;
+    if (hunk) for (const s of _hunkSpans(hunk)) overrides[s.id] = false;
   }
   _panelScope.overrides = overrides;
   ExplainerPanel.open(ref);
@@ -671,7 +671,7 @@ function _uniqueFileSmells(f: FileBlock): string[] {
   const s = new Set<string>();
   for (const h of f.hunks) {
     for (const sm of h.smells || []) s.add(sm.tag);
-    for (const seg of h.segments || []) for (const sm of seg.smells || []) s.add(sm.tag);
+    for (const span of h.spans || []) for (const sm of span.smells || []) s.add(sm.tag);
   }
   return Array.from(s);
 }
@@ -907,15 +907,13 @@ function _renderHunk(h: HunkBlock, f: FileBlock, scope: PaneScope, reveal = fals
   div.classList.toggle("folded", folded);
   div.appendChild(_renderHunkHeader(h, folded, f, scope));
   if (!folded) {
-    // The collapse ladder shows segment summaries (never raw code) until
-    // `off` or a reveal. A hunk with no segments folds as one synthetic
-    // segment spanning it, so every hunk behaves uniformly at this level.
-    const segs = _displaySegments(h);
-    const anyOpen = segs.some((s) => _isFolded(scope, s.id, _defaultSegmentFolded()) === false);
-    if (!reveal && _defaultSegmentFolded() && !anyOpen) {
-      const list = _el("div", "seg-list");
-      for (const s of segs) list.appendChild(_renderSegmentFolded(s, f, scope));
-      div.appendChild(list);
+    // The collapse ladder shows span summaries (never raw code) until
+    // `off` or a reveal. A hunk with no spans folds as one synthetic
+    // span covering it, so every hunk behaves uniformly at this level.
+    const spans = _hunkSpans(h);
+    const anyOpen = spans.some((s) => _isFolded(scope, s.id, _defaultSpanFolded()) === false);
+    if (!reveal && _defaultSpanFolded() && !anyOpen) {
+      div.appendChild(_renderSpanList(_spanTree(spans), f, scope));
     } else {
       div.appendChild(_renderHunkDiff(h, f, scope));
     }
@@ -927,8 +925,8 @@ function _renderHunk(h: HunkBlock, f: FileBlock, scope: PaneScope, reveal = fals
     if (h.refs && h.refs.length) {
       div.appendChild(_renderRefs(h.refs));
     }
-    // line_notes used to render as a bottom-of-hunk block; they're
-    // attached inline by _attachLineNotes() in _renderHunkDiff.
+    // Single-line spans also attach inline to their row when the code is
+    // shown: _attachSpanNotes() in _renderHunkDiff.
   }
   return div;
 }
@@ -958,20 +956,44 @@ function _buildRefLink(ref: Ref): HTMLElement {
   return a;
 }
 
-/** The segments to show a hunk's body as at segment-fold level: its own
- *  if it has any, else one synthetic segment spanning the whole hunk so a
- *  segment-less hunk still folds to a single summary (never raw code). */
-function _displaySegments(h: HunkBlock): SegmentBlock[] {
-  if (h.segments && h.segments.length > 0) return h.segments;
+/** The spans a hunk's body shows as at the segments fold level: its own
+ *  if it has any, else one synthetic span covering the whole hunk so a
+ *  span-less hunk still folds to a single summary (never raw code). */
+function _hunkSpans(h: HunkBlock): AnnotationSpan[] {
+  if (h.spans && h.spans.length > 0) return h.spans;
   return [{
     id: `${h.id}_whole`,
-    new_start: h.new_start,
-    new_count: h.new_count,
+    start: h.new_start,
+    end: h.new_start + Math.max(h.new_count, 1) - 1,
     intent: h.intent || "",
     smells: h.smells || [],
     context: h.context || "",
     refs: h.refs || [],
   }];
+}
+
+interface SpanNode { span: AnnotationSpan; children: SpanNode[]; }
+
+/** Nest a flat span list by containment. The wire order is outermost
+ *  first (`(start, -end)`), so a span is a child of the nearest open
+ *  span that still covers it; an identical range is a sibling, not a
+ *  child — two notes on one line are two observations. */
+function _spanTree(spans: AnnotationSpan[]): SpanNode[] {
+  const roots: SpanNode[] = [];
+  const open: SpanNode[] = [];
+  for (const span of spans) {
+    const node: SpanNode = { span, children: [] };
+    while (open.length) {
+      const top = open[open.length - 1].span;
+      const covers = top.start <= span.start && span.end <= top.end
+        && !(top.start === span.start && top.end === span.end);
+      if (covers) break;
+      open.pop();
+    }
+    (open.length ? open[open.length - 1].children : roots).push(node);
+    open.push(node);
+  }
+  return roots;
 }
 
 function _renderHunkHeader(
@@ -1019,15 +1041,25 @@ function _renderHunkHeader(
   return hdr;
 }
 
-function _renderSegmentFolded(s: SegmentBlock, f: FileBlock, scope: PaneScope): HTMLElement {
+/** The hunk body at the segments fold level: one summary row per span,
+ *  a span's nested spans indented beneath it. */
+function _renderSpanList(nodes: SpanNode[], f: FileBlock, scope: PaneScope): HTMLElement {
+  const list = _el("div", "seg-list");
+  for (const node of nodes) list.appendChild(_renderSpanFolded(node, f, scope));
+  return list;
+}
+
+function _renderSpanFolded(node: SpanNode, f: FileBlock, scope: PaneScope): HTMLElement {
+  const s = node.span;
   const div = _el("div", "segment");
   div.dataset.id = s.id;
   div.appendChild(_chev(true));
-  div.appendChild(_el("span", "segment-range", `+${s.new_start}..+${s.new_start + s.new_count - 1}`));
+  const range = s.start === s.end ? `+${s.start}` : `+${s.start}..+${s.end}`;
+  div.appendChild(_el("span", "segment-range", range));
   div.appendChild(_el("span", s.intent ? "segment-intent" : "segment-intent empty", s.intent || "(no intent)"));
   for (const sm of s.smells || []) div.appendChild(_smellPill(sm, {
     smellId: `${s.id}:smell:${sm.tag}`,
-    file: f.path, side: "new", line: s.new_start,
+    file: f.path, side: "new", line: s.start,
   }));
   div.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -1035,7 +1067,13 @@ function _renderSegmentFolded(s: SegmentBlock, f: FileBlock, scope: PaneScope): 
     // (which, in step b, reveals the whole hunk's code).
     _toggleFold(scope, s.id, true);
   });
-  return div;
+  if (!node.children.length) return div;
+  const wrap = _el("div", "span-node");
+  wrap.appendChild(div);
+  const children = _el("div", "span-children");
+  for (const child of node.children) children.appendChild(_renderSpanFolded(child, f, scope));
+  wrap.appendChild(children);
+  return wrap;
 }
 
 function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLElement {
@@ -1044,7 +1082,7 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLE
   const rows = h.rows || [];
   const marks = _blockMarks(rows);
   const { diff, oldEls, newEls } = _renderDiffRows(file, rows, marks);
-  _attachLineNotes(oldEls, newEls, rows, h.line_notes || [], h.id, file.path);
+  _attachSpanNotes(oldEls, newEls, rows, h.spans || [], h.id, file.path);
   // Record this hunk's rows so folds.ts can build a unified row stream
   // across the hunk and adjacent expanded context.
   FileRows.record(diff, { rows, oldEls, newEls });
@@ -1052,11 +1090,15 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLE
   return diff;
 }
 
-function _attachLineNotes(
+/** With the code shown, a single-line span is a note on its row — the
+ *  same span the seg-list showed as a summary row. Multi-line spans have
+ *  no inline form at this level. */
+function _attachSpanNotes(
   rowElsOld: HTMLElement[], rowElsNew: HTMLElement[],
-  rows: RowBlock[], notes: LineNote[],
+  rows: RowBlock[], spans: AnnotationSpan[],
   hunkId: string, filePath: string,
 ): void {
+  const notes = spans.filter((s) => s.start === s.end);
   if (!notes.length || !rows.length) return;
   const byNewLine = new Map<number, number>();
   for (let i = 0; i < rows.length; i++) {
@@ -1064,35 +1106,35 @@ function _attachLineNotes(
     if (ln !== null && ln !== undefined) byNewLine.set(ln, i);
   }
   for (const note of notes) {
-    const idx = byNewLine.get(note.line);
+    const idx = byNewLine.get(note.start);
     if (idx === undefined) continue;
-    const noteId = `${hunkId}:line_note:${note.line}`;
-    // If this line_note has already been promoted to a local comment,
-    // skip rendering it — the comment now stands in its place. Keeps
-    // a re-augment from resurrecting an observation the reviewer has
-    // already turned into a comment.
-    if (Comments.isPromoted(noteId)) continue;
+    // If this span has already been promoted to a local comment, skip
+    // rendering it — the comment now stands in its place. Keeps a
+    // re-augment from resurrecting an observation the reviewer has
+    // already turned into a comment. A comment store written before
+    // spans recorded the note under its `line_note` id; honour that too.
+    if (Comments.isPromoted(note.id) || Comments.isPromoted(`${hunkId}:line_note:${note.start}`)) continue;
     Annotations.attach({
       anchor: rowElsNew[idx],
       shadowAnchor: rowElsOld[idx],
       variant: "note",
-      content: _buildLineNoteContent(note, noteId, filePath, rowElsNew[idx]),
-      onInsert: (el) => { el.dataset.lineNoteId = noteId; },
+      content: _buildSpanNoteContent(note, filePath, rowElsNew[idx]),
+      onInsert: (el) => { el.dataset.spanId = note.id; },
     });
   }
 }
 
-/** Compose a line_note's annotation body: the LLM's text plus a small
- *  "Add as comment" affordance that hands the body to the comment
+/** Compose a single-line span's annotation body: the LLM's text plus a
+ *  small "Add as comment" affordance that hands the body to the comment
  *  editor pre-filled and anchored at the same row. */
-function _buildLineNoteContent(
-  note: LineNote, noteId: string, filePath: string, rowEl: HTMLElement,
+function _buildSpanNoteContent(
+  note: AnnotationSpan, filePath: string, rowEl: HTMLElement,
 ): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "line-note-body";
   const text = document.createElement("div");
   text.className = "line-note-text";
-  text.textContent = note.body || "";
+  text.textContent = note.intent || "";
   wrap.appendChild(text);
 
   const actions = document.createElement("div");
@@ -1105,9 +1147,9 @@ function _buildLineNoteContent(
   promote.addEventListener("click", (e) => {
     e.stopPropagation();
     Comments.openPromotionEditor({
-      rowEl, side: "new", line: note.line,
-      file: filePath, body: note.body || "",
-      derivedFrom: noteId,
+      rowEl, side: "new", line: note.start,
+      file: filePath, body: note.intent || "",
+      derivedFrom: note.id,
     });
   });
   actions.appendChild(promote);
@@ -1300,8 +1342,8 @@ function _updateStatus(): void {
         smells++;
         if ((_smells[sm.tag] || {} as SmellCatalogueEntry).severity === "critical") critical++;
       }
-      for (const seg of h.segments || []) {
-        for (const sm of seg.smells || []) {
+      for (const span of h.spans || []) {
+        for (const sm of span.smells || []) {
           smells++;
           if ((_smells[sm.tag] || {} as SmellCatalogueEntry).severity === "critical") critical++;
         }
