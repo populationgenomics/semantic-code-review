@@ -460,7 +460,10 @@ def _pr_block(diff: AnnotatedDiff, meta: dict[str, Any]) -> dict[str, Any]:
 def _file_block(f: AnnotatedFile, idx: int, syms: _FileSymbols) -> dict[str, Any]:
     head_spans = _fold_spans(syms.head)
     base_spans = _fold_spans(syms.base)
-    hunks = [build_hunk_viewer_block(h, idx, hi, head_spans, base_spans) for hi, h in enumerate(f.hunks)]
+    hunks = [
+        build_hunk_viewer_block(h, idx, hi, head_spans, base_spans, f.ann.fold_descriptions)
+        for hi, h in enumerate(f.hunks)
+    ]
     adds = sum(h["adds"] for h in hunks)
     dels = sum(h["dels"] for h in hunks)
     ann = f.ann

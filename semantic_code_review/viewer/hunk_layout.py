@@ -34,7 +34,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from ..augment.schemas import AnnotatedHunk, ParsedHunk, Segment
+from ..augment.schemas import AnnotatedHunk, FoldDescription, ParsedHunk, Segment
 
 _RowKind = Literal["ctx", "ins", "del", "pair"]
 
@@ -661,6 +661,7 @@ def build_hunk_viewer_block(
     hunk_idx: int,
     head_spans: list[dict[str, Any]] | None = None,
     base_spans: list[dict[str, Any]] | None = None,
+    fold_descriptions: Sequence[FoldDescription] = (),
 ) -> dict[str, Any]:
     """Build one hunk's viewer-JSON block: rows, folds, segments, counts.
 
@@ -668,6 +669,9 @@ def build_hunk_viewer_block(
     for each side; passing them snaps folds to definition boundaries (and
     keeps the wire `fold_regions` addresses in lockstep with the viewer's
     client-side detector). Omitting them yields indentation-based folds.
+    `fold_descriptions` are the file's persisted summaries
+    (`FileAnnotations.fold_descriptions`); a region whose address matches
+    one carries it.
     """
     hunk_id = f"H{file_idx}_{hunk_idx}"
     parsed = h.parsed
@@ -677,8 +681,7 @@ def build_hunk_viewer_block(
     # Index summaries by (context, ranges) so right/left/both descriptions
     # don't collide when a hunk has folds of multiple kinds.
     summary_by_key: dict[tuple[str, int, int, int, int], str] = {
-        (fd.context, fd.right_start, fd.right_end, fd.left_start, fd.left_end): fd.summary
-        for fd in ann.fold_descriptions
+        (fd.context, fd.right_start, fd.right_end, fd.left_start, fd.left_end): fd.summary for fd in fold_descriptions
     }
     fold_region_blocks: list[dict[str, Any]] = []
     for reg in regions:

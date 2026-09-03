@@ -370,6 +370,7 @@ async def augment_run_dir(
                         fi,
                         hi,
                         *file_spans.get(fi, ([], [])),
+                        fp.ann.fold_descriptions,
                     )
                     _safe_emit(
                         on_event,
@@ -516,7 +517,7 @@ async def _augment_one_batch(
                 try:
                     ann = build_hunk_annotations(hunk.parsed, by_index[hi])
                     block = build_hunk_viewer_block(
-                        AnnotatedHunk(parsed=hunk.parsed, ann=ann), fi, hi, spans[0], spans[1]
+                        AnnotatedHunk(parsed=hunk.parsed, ann=ann), fi, hi, spans[0], spans[1], fp.ann.fold_descriptions
                     )
                 except _BUG_ERRORS:
                     raise
@@ -627,6 +628,7 @@ async def _augment_one_hunk(
                 hi,
                 fold_spans[0],
                 fold_spans[1],
+                fp.ann.fold_descriptions,
             )
             _safe_emit(
                 on_event,

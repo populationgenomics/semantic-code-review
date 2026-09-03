@@ -21,7 +21,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class Severity(str, Enum):
@@ -92,12 +92,13 @@ class Segment(BaseModel):
 
 
 class FoldDescription(BaseModel):
-    """One-line summary of the body inside an indent fold region.
+    """One-line summary of the body inside a fold region.
 
     Addressed by 1-indexed line ranges into the *files* the diff
-    relates — never into the hunk's row sequence — so the
-    representation is stable across re-renders and lets folds span
-    expanded context as well as hunk bodies.
+    relates — never into a hunk's row sequence — the address
+    `viewer.fold_regions` gives a region, so it is stable across
+    re-renders and reaches regions the diff never carried. Carried on
+    the file (`FileAnnotations.fold_descriptions`).
 
     `context` picks which side(s) the fold covers:
       - "right": post-image lines only (the common case — describe
@@ -243,11 +244,10 @@ class ParsedDiff(BaseModel):
 class HunkSubmission(BaseModel):
     """What the per-hunk pass asks the model for.
 
-    Split from `HunkAnnotations` so the output schema carries only fields
-    the model is meant to fill. `fold_descriptions` is storage, written
-    later by the fold-summary pass — asking for it here put a nested
-    model and its enum into every hunk's output grammar for a field the
-    prompt explicitly told the model to leave empty.
+    Split from `HunkAnnotations`, the carried form, so the output schema
+    holds only fields the model is meant to fill: a storage field put
+    into the grammar costs every hunk for a field the prompt told the
+    model to leave empty (ADR 0005).
     """
 
     intent: str = Field(description="1-2 sentences of MOTIVE, not mechanics.")
@@ -273,17 +273,12 @@ class HunkSubmission(BaseModel):
 class HunkAnnotations(HunkSubmission):
     """The per-hunk annotation block carried on `AnnotatedHunk.ann`.
 
-    `HunkSubmission` plus the fold summaries, which are not produced by
-    the per-hunk pass: the review server fires a focused call on first
-    fold-close and writes the result back here (see
-    :mod:`semantic_code_review.augment.fold_summary`). The diff format
-    and the viewer both read them from this field.
+    Shape-identical to `HunkSubmission` today; the two stay distinct so
+    storage can grow a field without it entering the output grammar.
+    Fold summaries, once here, live on the file
+    (`FileAnnotations.fold_descriptions`): a region is a stretch of the
+    file, not of a hunk.
     """
-
-    fold_descriptions: list[FoldDescription] = Field(
-        default_factory=list,
-        description="Filled by the fold-summary pass, not the per-hunk pass.",
-    )
 
 
 class BatchHunkAnnotations(HunkSubmission):
@@ -314,12 +309,21 @@ class BatchAnnotations(BaseModel):
 
 
 class FileAnnotations(BaseModel):
-    """Per-file annotations carried on `AnnotatedFile.ann`."""
+    """Per-file annotations carried on `AnnotatedFile.ann`.
+
+    `fold_descriptions` is not produced by any prompt pass: the review
+    server fires a focused call on first fold-close and writes the
+    result here (see :mod:`semantic_code_review.augment.fold_summary`).
+    """
 
     role: FileRole | None = None
     summary: str = ""
     lang: str | None = None
     symbols: FileSymbols | None = None
+    fold_descriptions: list[FoldDescription] = Field(
+        default_factory=list,
+        description="Filled by the fold-summary pass, not the overview pass.",
+    )
 
 
 class OverviewFileSubmission(BaseModel):
@@ -391,6 +395,40 @@ class AnnotatedFile(BaseModel):
     new_file_marker: str = ""
     ann: FileAnnotations = Field(default_factory=FileAnnotations)
     hunks: list[AnnotatedHunk] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lift_hunk_fold_descriptions(cls, data: object) -> object:
+        """Read a sidecar written before fold summaries moved to the file.
+
+        Those carried `fold_descriptions` on a hunk's annotations (the
+        file's first, by convention). They are lifted onto the file so
+        nothing already paid for is dropped; a description whose address
+        no longer names a region is simply never matched. The input is
+        not mutated.
+        """
+        if not isinstance(data, dict):
+            return data
+        lifted: list[object] = []
+        hunks: list[object] = []
+        for h in data.get("hunks") or []:
+            ann = h.get("ann") if isinstance(h, dict) else None
+            if isinstance(ann, dict) and "fold_descriptions" in ann:
+                ann = dict(ann)
+                lifted.extend(ann.pop("fold_descriptions") or [])
+                h = {**h, "ann": ann}  # noqa: PLW2901 — the copy replaces the input entry
+            hunks.append(h)
+        if not lifted:
+            return data
+        file_ann = data.get("ann")
+        if isinstance(file_ann, FileAnnotations):
+            file_ann = file_ann.model_dump()
+        elif file_ann is None:
+            file_ann = {}
+        elif not isinstance(file_ann, dict):
+            raise TypeError(f"AnnotatedFile.ann must be a FileAnnotations or a dict, got {type(file_ann).__name__}")
+        file_ann = {**file_ann, "fold_descriptions": [*(file_ann.get("fold_descriptions") or []), *lifted]}
+        return {**data, "ann": file_ann, "hunks": hunks}
 
 
 class AnnotatedDiff(BaseModel):

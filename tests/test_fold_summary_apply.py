@@ -124,7 +124,7 @@ async def test_right_context_persists_and_returns_payload(
 
     # Sidecar now carries the FoldDescription.
     reloaded = load_sidecar(run_dir.sidecar)
-    folds = reloaded.files[0].hunks[0].ann.fold_descriptions
+    folds = reloaded.files[0].ann.fold_descriptions
     assert any(
         fd.context == "right" and fd.right_start == 1 and fd.right_end == 3 and fd.summary == "stub-summary-right"
         for fd in folds
@@ -148,7 +148,7 @@ async def test_left_context_persists(
     assert result["context"] == "left"
     assert result["left_start"] == 12 and result["left_end"] == 14
     reloaded = load_sidecar(run_dir.sidecar)
-    folds = reloaded.files[0].hunks[0].ann.fold_descriptions
+    folds = reloaded.files[0].ann.fold_descriptions
     assert any(fd.context == "left" and fd.left_start == 12 and fd.left_end == 14 for fd in folds)
 
 
@@ -179,7 +179,7 @@ async def test_replaces_existing_fold_description_with_same_key(
         model="x",
     )
     reloaded = load_sidecar(run_dir.sidecar)
-    folds = reloaded.files[0].hunks[0].ann.fold_descriptions
+    folds = reloaded.files[0].ann.fold_descriptions
     matching = [fd for fd in folds if fd.context == "right" and fd.right_start == 1 and fd.right_end == 3]
     assert len(matching) == 1
 

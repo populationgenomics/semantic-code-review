@@ -1,14 +1,13 @@
 """On-demand fold-region summariser.
 
-The per-hunk LLM pass used to ask the model for a one-liner per indent
-fold region. Most folds are never collapsed in a review, so we now
-defer: the review server fires this code path the first time the
+Most folds are never collapsed in a review, so no pass summarises them
+up front: the review server fires this code path the first time the
 reviewer closes a region, the result is cached, and the augmented
 sidecar is updated so subsequent loads are free.
 
-Address space (slice 1 of "fold anywhere"): a fold region is identified
-by a file path + a `context` (right / left / both) + 1-indexed line
-ranges into the named worktree file. Pure-context folds use right;
+A fold region is identified by a file + a `context` (right / left /
+both) + 1-indexed line ranges into the named worktree file — the address
+`viewer.fold_regions` gives it. Pure-context folds use right;
 deletion-only folds use left; folds that straddle changed content use
 both. The server reads the actual line content from the head/ and/or
 base/ worktrees and passes a prepared body string to this module —
@@ -344,23 +343,19 @@ async def apply_fold_summary_to_run(
     rs, re_ = right_range or (0, 0)
     ls, le = left_range or (0, 0)
 
-    # Persist iff there's a hunk to stash the description on; see the
-    # comment on _attach_fold_summary for why the file's first hunk is
-    # the chosen home.
-    if fp.hunks:
-        updated_diff = _attach_fold_summary(
-            diff,
-            file_idx=file_idx,
-            context=context,
-            right=(rs, re_),
-            left=(ls, le),
-            summary=summary,
-        )
-        dump_sidecar(updated_diff, sidecar)
-        run_dir.augmented.write_text(
-            emit_augmented_diff(updated_diff),
-            encoding="utf-8",
-        )
+    updated_diff = _attach_fold_summary(
+        diff,
+        file_idx=file_idx,
+        context=context,
+        right=(rs, re_),
+        left=(ls, le),
+        summary=summary,
+    )
+    dump_sidecar(updated_diff, sidecar)
+    run_dir.augmented.write_text(
+        emit_augmented_diff(updated_diff),
+        encoding="utf-8",
+    )
 
     return {
         "file_idx": file_idx,
@@ -383,21 +378,14 @@ def _attach_fold_summary(
     summary: str,
 ) -> AnnotatedDiff:
     """Return `diff` with the matching `FoldDescription` replaced or
-    appended on the addressed file's first hunk's annotations.
-
-    Fold descriptions live at the hunk level for legacy reasons; for
-    v2 (file-level) addressing they describe content addressed at the
-    *file* level, so we stash them on the file's first hunk (chosen as
-    a stable home) until the schema migrates `fold_descriptions` up to
-    `AnnotatedFile`.
+    appended on the addressed file's annotations.
     """
     fp = diff.files[file_idx]
     rs, re_ = right
     ls, le = left
-    hunk = fp.hunks[0]
     new_folds = [
         fd
-        for fd in hunk.ann.fold_descriptions
+        for fd in fp.ann.fold_descriptions
         if not (
             fd.context == context
             and fd.right_start == rs
@@ -416,11 +404,7 @@ def _attach_fold_summary(
             summary=summary,
         )
     )
-    updated_ann = hunk.ann.model_copy(update={"fold_descriptions": new_folds})
-    updated_hunk = hunk.model_copy(update={"ann": updated_ann})
-    updated_hunks = list(fp.hunks)
-    updated_hunks[0] = updated_hunk
-    updated_file = fp.model_copy(update={"hunks": updated_hunks})
+    updated_file = fp.model_copy(update={"ann": fp.ann.model_copy(update={"fold_descriptions": new_folds})})
     updated_files = list(diff.files)
     updated_files[file_idx] = updated_file
     return diff.model_copy(update={"files": updated_files})
