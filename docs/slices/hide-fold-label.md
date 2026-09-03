@@ -73,22 +73,36 @@ Resolves candidate 5 of the architecture review.
 **Gate:** the TS has no fold-region detector; the Python one is the only
 implementation; regions exist for lines the diff never carried.
 
-## Slice 4 — Annotation spans *(blocked: labelling mode)*
+## Slice 4 — Annotation spans
 
 Segments and line notes become one `AnnotationSpan` — a post-image range with
-intent, smells, refs and a stable id — that nests and may cross hunks. The
-per-hunk output loses `new_start`/`new_count`. **Needs the ADR's open
-question answered:** does the model label existing structural spans, select
-from candidate ranges the structural layer proposes, or both?
+intent, smells, refs and a stable id — that nests. The per-hunk output loses
+`new_start`/`new_count`: the prompt carries a numbered list of *boundary
+lines* (hunk edges and every AST node edge inside it; indent changes and
+blanks without a grammar), and a span is a pair of boundary ids plus its
+label. Spans are bounded by the hunk their pass saw until the batch pass is
+on.
 
-## Slice 5 — The ladder becomes structural depth *(blocked: depth semantics)*
+**Gate:** no integer coordinate in the model's output schema; every drop
+bucket from #21 is unrepresentable; nested spans render.
 
-`segments` stops being a fold rung; the level between hunk and code is a
-depth over Slice 3's regions. **Needs:** what "depth" means when AST depth is
-uneven — absolute, or relative to the enclosing definition.
+## Slice 5 — The ladder becomes `definitions`
 
-## Slice 6 — Reveal vs unfold
+`segments` stops being a fold rung. The ladder is `files | hunks |
+definitions | off`: the middle rung folds every definition-level node a hunk
+touches to its opener and label, and a hunk touching no definition folds as
+one region. `SegmentBlock`, the `seg-list` renderer and the synthetic
+whole-hunk segment go.
 
-`focusReveal` is today's unnamed exception to "reveal puts content on screen
-at the current depth". Decide whether a symbol-pill click is a reveal, an
-unfold, or both, and name it.
+**Gate:** key `3` and the URL hash select `definitions`; nothing is
+synthesised; every hunk renders at that level.
+
+## Slice 6 — Focus is the one reveal that unfolds
+
+A reveal puts content on screen at the current depth. A *focus* — the
+symbol-pill click — reveals and unfolds its span to `off`, ephemerally.
+`focusReveal` becomes a property of the gesture, not a flag on `RenderState`,
+and no other reveal path inherits it.
+
+**Gate:** expanding a chip does not change fold depth; clicking a pill shows
+code; touching the slider clears the focus.
