@@ -40,7 +40,7 @@ reminds you of the keys.
 
 The diff starts folded to **hunk** level: you see each hunk's header and
 the model's intent sentence, not the code. The fold slider (top right,
-`Files · Hunks · Segments · Off`) is the master collapse control — keys
+`Files · Hunks · Definitions · Off`) is the master collapse control — keys
 `1`–`4` do the same. Nothing but `Off` reveals code by default.
 
 ## 2. Three ways to navigate
@@ -72,16 +72,19 @@ are **indent folds** (see §7). The italic call-outs hanging off lines are
 the model's per-line observations, each with an **Add as comment** button
 that promotes it into a real reviewer comment.
 
-## 4. Segment summaries
+## 4. Definitions
 
-![Segments](walkthrough/04-segments.png)
+![Definitions](walkthrough/04-segments.png)
 
-At **Segment** level a hunk isn't code and isn't a single blob — it's the
-model's breakdown of the hunk into labelled slices (`+3..+6 Imports the
-new typed exceptions…`, `+25..+30 withdraw guards against frozen state…`),
-each carrying its own intent and smells. A hunk with no segments folds as
-one. It's a table of contents for a large hunk; click any row to open the
-hunk's code.
+At **Definitions** level a hunk isn't code and isn't a single blob — it's
+the definitions it touches (`class Account`, `method Account.withdraw`),
+each folded to one line: its fold summary if one has been written, else
+the model's label for it, else its signature. Nested beneath each are the
+model's labelled spans inside it (`+25..+30 withdraw guards against frozen
+state…`), each with its own intent and smells; a hunk outside every
+definition shows its spans directly under its header. It's a table of
+contents for a large hunk; click any row to open the hunk's code. (The
+screenshot predates the rename and shows the earlier span-only list.)
 
 ## 5. Focusing a symbol
 

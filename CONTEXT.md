@@ -277,11 +277,14 @@ therefore no boundaries and no spans. In a batched prompt ids are
 numbered continuously across the hunks. The extra-review pass still
 buckets its integer `(file, line)` notes into single-line spans.
 
-In the viewer, at fold level `segments` a hunk's body is a `seg-list`:
-one summary row per top-level span with nested spans indented beneath
-it (a span-less hunk shows one synthetic whole-hunk row); toggling any
-row drops back to the raw diff, where single-line spans attach as inline
-notes on their row. On disk, `scr-span: +a..+b "intent"` is an
+In the viewer a span is a label. Below fold level `off`, an open hunk's
+body is its label tree (see [[fold-level]]): each span is a row —
+range, intent, smells — nested by containment under the definition that
+holds it, or under the hunk header when no definition does; a span of
+exactly a definition's extent is that definition's label text instead
+of a row. At `off` the code shows and a single-line span attaches as an
+inline note on its row; a multi-line span has no inline form. Clicking
+any label row opens the hunk's code. On disk, `scr-span: +a..+b "intent"` is an
 intent-only span and `scr-span-begin` … `scr-span-end` a block with
 smells/context/refs; the retired `scr-segment-*` / `scr-line` directives
 and a sidecar's `segments` / `line_notes` still load, as spans.
@@ -328,20 +331,37 @@ puts rows on screen, fold shows them at less detail (ADR 0008).
 
 **Fold level**
 The viewer's global collapse depth (`RenderState.fold`, driven by the
-fold slider / keys 1–4): `files` → `hunks` → `segments` → `off`, each a
-shallower fold. Code (raw diff rows) shows only at `off`; `segments`
-shows each [[hunk]]'s [[annotation-span]] summaries (a span-less hunk folds as
-one synthetic whole-hunk span, so every hunk behaves uniformly);
-`hunks` shows hunk headers; `files` shows file headers.
+fold slider / keys 1–4): `files` → `hunks` → `definitions` → `off`, each
+a shallower fold over the structure (ADR 0008). `files` shows file
+headers; `hunks` shows hunk headers; `definitions` opens every hunk to
+its **label tree**; only `off` shows code (raw diff rows).
+
+The label tree (`render._labelTree`) is the body of an open hunk below
+`off`: every definition the hunk touches — a named
+`FileBlock.fold_regions` entry holding one of the hunk's changed rows;
+a region reached only by context rows is not touched — and every
+[[annotation-span]], nested by containment over the hunk's row indices
+(the one coordinate a deleted definition and a post-image span share).
+A folded definition is one row: `kind qualified_name`, then its text —
+the `FoldDescription` summary if one exists, else the intent of a span
+of exactly its extent (absorbed, not repeated as a child), else its
+opener line when the hunk carries it, else nothing. Nothing is fetched
+for a label; the undisclosed part of a definition stays undisclosed. A
+hunk touching no definition is one region — its spans sit under its
+header. Nothing is synthesised: a hunk with neither definitions nor
+spans has an empty tree. Clicking any row opens the hunk's code.
 
 Per-item exceptions live in `RenderState.overrides` — a reviewer
-expanding/collapsing one file/hunk/span; an override wins over the
-level default. Picking a level (`_setGlobalFold`) is authoritative: it
-clears every override, folding the whole tree to that depth, including a
-filter's focused hunks. Picking one from inside overview mode also leaves
-the mode into the diff at that level — the document is not shown at a
-level, so reaching for the zoom while reading it is a request for the
-ladder.
+expanding/collapsing one file (`F0`), hunk (`H0_1`, header open or
+closed) or hunk body (`H0_1:body`, label tree or code); an override wins
+over the level default. Picking a level (`_setGlobalFold`) is
+authoritative: it clears every override, folding the whole tree to that
+depth, including a filter's focused hunks. Picking one from inside
+overview mode also leaves the mode into the diff at that level — the
+document is not shown at a level, so reaching for the zoom while reading
+it is a request for the ladder. The URL hash carries the level and the
+overrides; `fold=segments` in a link written before ADR 0008 is read as
+`definitions`.
 
 Focus reveal (`RenderState.focusReveal`) is a separate *ephemeral* bit,
 not an override: set when a sidebar pill is clicked
