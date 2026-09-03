@@ -43,15 +43,20 @@ its content-neutral slide range.
 - A run of `n` inserted lines can slide up `k` lines exactly when its last
   `k` equal the `k` lines above it, and down symmetrically. Every position in
   the range renders the identical file; this is a rendering choice.
-- Score candidates: a definition opener beats a blank line beats anything
-  else. Use `structural.parse` where a grammar exists, indentation where not.
+- Score both seams — above the run's first line and below its last — and
+  sum: a definition opener beats a blank line beats anything else. Scoring
+  the first line alone flips git's `entry, blank` into `blank, entry` across
+  every lockfile and import block, which is the same seam with the blank on
+  the other side. An opener's edge includes the decorator and comment lines
+  above it; tree-sitter's definition node does not. Use `structural.parse`
+  where a grammar exists, indentation where not.
 - Line numbers on every row are unchanged; only the row order within the
   hunk moves. Comment anchors are `(file, side, line)` and must be unaffected.
-- The corpus has 53 known instances (runs starting mid-body with the
-  definition opener later in the block); they are the regression fixture.
+- The corpus fixture holds hunks that must move and hunks that must not.
 
-**Gate:** the 53 render with the opener as the first inserted line; every
-other hunk in the corpus renders byte-identically to before.
+**Gate:** every slidable run lands on its best seam; every hunk with no
+slidable run renders byte-identically to before; no hunk loses an
+opener-first rendering.
 
 ## Slice 3 — Fold regions from the AST, once, on the wire
 

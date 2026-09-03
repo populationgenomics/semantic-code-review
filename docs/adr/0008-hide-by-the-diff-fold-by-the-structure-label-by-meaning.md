@@ -44,12 +44,16 @@ Measured against the cached corpus (122 runs, 1074 hunks):
   coordinates or ranges leaving the hunk. #23 recovers 27 by stating the
   range and clamping. The nesting cannot be prompted away: the model is
   describing hierarchy, and the schema is a partition.
-- 53 pure-insertion runs start mid-body with the new definition's opener
-  appearing later in the block — the differ anchored on a shared trailing
-  stanza. They concentrate in large insertions (89, 56, 35, 33 lines). Git's
+- Some pure-insertion runs are drawn starting mid-body, with the new
+  definition's opener later in the block, because the differ anchored on a
+  shared trailing stanza. This is rarer than the shape suggests: of 61
+  corpus hunks matching it, 55 genuinely begin inside the previous definition
+  and no rotation renders the same file. But a run that *can* slide has a
+  content-neutral range the differ chose arbitrarily within, and scoring that
+  range by seam moved 49 corpus hunks, all improvements or neutral. Git's
   indent heuristic slides hunk boundaries, not runs inside a mixed hunk, so
-  the algorithm choice does not reach them (myers and histogram agree on every
-  file tested).
+  the algorithm choice does not reach them (myers and histogram agree on
+  every file tested).
 - The fold-region detector is implemented twice, in Python
   (`hunk_layout.compute_fold_regions`) and TypeScript (`folds._computeFoldRegions`),
   as line-for-line translations held in step by a JSON fixture — while the
