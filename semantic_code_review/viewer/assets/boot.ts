@@ -293,16 +293,18 @@ function applyFoldSummary(payload: SseFoldSummaryEvent): void {
   };
   const outcome = DataStore.applyFoldSummary(DATA, addr, payload.summary);
   if (outcome !== "applied") return;
-  // Cross-tab path: the resolved region tells us which hunk hosts it
-  // so we can replace just that hunk's DOM, then re-attach folds over
-  // the freshly-rendered rows.
+  // Cross-tab path: the summary is on the region object now; re-attach
+  // the fold chrome on every rendered copy of the file (the diff pane's
+  // and, if open, the explainer panel's) so the fold box shows it. The
+  // rows keep their state, so a fold the reviewer closed stays closed.
   const resolved = DataStore.findFoldRegion(DATA, addr);
   if (!resolved) return;
-  Render.renderHunkReplace(resolved.file, resolved.hostHunkIdx);
-  const fileEl = document.querySelector(
+  const fileEls = document.querySelectorAll(
     '.file[data-id="' + _cssEscape(resolved.file.id) + '"]',
-  ) as HTMLElement | null;
-  if (fileEl) Folds.attachFileFolds(fileEl, resolved.file);
+  );
+  for (const fileEl of Array.from(fileEls) as HTMLElement[]) {
+    Folds.attachFileFolds(fileEl, resolved.file);
+  }
 }
 
 function finaliseStreaming(): void {

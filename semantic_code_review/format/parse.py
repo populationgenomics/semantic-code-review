@@ -158,7 +158,7 @@ def _parse_line_note(value: str, lineno: int) -> LineNote:
 
 
 def _parse_fold(value: str, lineno: int) -> FoldDescription:
-    """Parse a `#scr:hunk-fold` directive value.
+    """Parse a `scr-fold` directive value.
 
     Three forms — one per context — to keep the syntax unambiguous:
 
@@ -279,6 +279,8 @@ def _file_annotations(directives: list[_Directive]) -> FileAnnotations:
             except json.JSONDecodeError as e:
                 raise ParseError(f"line {d.lineno}: invalid JSON in scr-file-symbols: {e}") from e
             ann.symbols = FileSymbols(**data)
+        elif d.name == "scr-fold":
+            ann.fold_descriptions.append(_parse_fold(d.value, d.lineno))
         else:
             raise ParseError(f"line {d.lineno}: unknown file-header directive {d.name!r}")
     return ann
@@ -300,8 +302,6 @@ def _hunk_annotations(parsed_hunk: ParsedHunk, directives: list[_Directive]) -> 
             ann.confidence = int(d.value)
         elif d.name == "scr-line":
             ann.line_notes.append(_parse_line_note(d.value, d.lineno))
-        elif d.name == "scr-fold":
-            ann.fold_descriptions.append(_parse_fold(d.value, d.lineno))
         elif d.name == "scr-segment-begin":
             ann.segments.append(_consume_segment(d, it, parsed_hunk))
         elif d.name in {
@@ -532,10 +532,13 @@ def parse_augmented_diff(text: str) -> AnnotatedDiff:
     files: list[AnnotatedFile] = []
     for entry in raw.files:
         file_ann = _file_annotations(entry.header_directives)
-        hunks = [
-            AnnotatedHunk(parsed=ph, ann=_hunk_annotations(ph, ds))
-            for ph, ds in zip(entry.parsed.hunks, entry.hunk_directives, strict=True)
-        ]
+        hunks: list[AnnotatedHunk] = []
+        for ph, ds in zip(entry.parsed.hunks, entry.hunk_directives, strict=True):
+            # `scr-fold` is a file-header directive; a diff written before
+            # fold summaries moved to the file carries it under a hunk.
+            # Lift those rather than lose a summary already paid for.
+            file_ann.fold_descriptions.extend(_parse_fold(d.value, d.lineno) for d in ds if d.name == "scr-fold")
+            hunks.append(AnnotatedHunk(parsed=ph, ann=_hunk_annotations(ph, [d for d in ds if d.name != "scr-fold"])))
         files.append(lift_file(entry.parsed, ann=file_ann, hunks=hunks))
 
     overview = raw.preamble.overview if raw.preamble.overview is not None else SkippedOverview()

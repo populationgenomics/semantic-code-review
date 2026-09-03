@@ -218,7 +218,6 @@ function makeHunkBlock(id: string, intent = "", overrides: Record<string, unknow
       { kind: "pair", old_line: 1, new_line: 1, old_text: "a", new_text: "a" },
       { kind: "pair", old_line: 2, new_line: 2, old_text: "b", new_text: "B" },
     ],
-    fold_regions: [],
     ...overrides,
   };
 }
@@ -1438,28 +1437,30 @@ describe("ingested PR comments", () => {
 });
 
 
-describe("lazy fold summaries", () => {
+describe("fold regions (server-computed) and lazy fold summaries", () => {
+  // A region as the server ships it on the FileBlock: line ranges per
+  // side, no row indices. The viewer places it on whatever rows it has.
+  function region(over: Record<string, unknown>): Record<string, unknown> {
+    return {
+      context: "right", right_start: null, right_end: null, left_start: null, left_end: null,
+      has_changes: false, qualified_name: null, kind: null, summary: "", ...over,
+    };
+  }
+
   function dataWithFold(): ViewerData {
-    // Rows the file-level walker will recognise as a fold: `def foo():`
-    // header at indent 0, indented body. The fold_regions block is
-    // server-computed; the viewer re-detects from the rows but uses
-    // the block when looking up an existing summary.
     return makeData({
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
         adds: 1, dels: 1, summary: "ok", head_line_count: null,
         symbols: { added: [], modified: [], removed: [] },
+        fold_regions: [
+          region({ context: "both", right_start: 1, right_end: 2, left_start: 1, left_end: 2, has_changes: true }),
+        ],
         hunks: [makeHunkBlock("H0_0", "real intent", {
           rows: [
             { kind: "ctx", old_line: 1, new_line: 1, old_text: "def foo():", new_text: "def foo():" },
             { kind: "pair", old_line: 2, new_line: 2, old_text: "    x = 1", new_text: "    x = 2" },
-          ],
-          fold_regions: [
-            { header_idx: 0, body_start_idx: 1, body_end_idx: 1,
-              context: "both", right_start: 1, right_end: 2,
-              left_start: 1, left_end: 2,
-              has_changes: true, summary: "" },
           ],
         })],
       }],
@@ -1470,7 +1471,7 @@ describe("lazy fold summaries", () => {
     // The default fold mode is "hunks" — every hunk renders collapsed
     // and its body isn't in the DOM. Click "off" so the diff body
     // (and its fold-chev) materialises. This matches the user flow:
-    // expand the fold-slider before reaching for an indent fold.
+    // expand the fold-slider before reaching for a fold.
     (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
   }
 
@@ -1481,6 +1482,11 @@ describe("lazy fold summaries", () => {
     // fold-chev handler covers that).
     el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   }
+
+  const chevrons = (root: ParentNode = document): SVGElement[] =>
+    Array.from(root.querySelectorAll<SVGElement>(".fold-chev"));
+  const newRows = (root: ParentNode = document): HTMLElement[] =>
+    Array.from(root.querySelectorAll<HTMLElement>(".half-new .row:not(.row-annotation)"));
 
   test("first fold-close posts /fold-summary and renders the response", async () => {
     await bootViewer(dataWithFold());
@@ -1498,8 +1504,7 @@ describe("lazy fold summaries", () => {
     const foldCalls = fetchCalls.filter((c) => c.url.includes("/fold-summary"));
     expect(foldCalls).toHaveLength(1);
     const body = JSON.parse((foldCalls[0].init!.body as string));
-    // The pair row inside the fold body makes this a "both" region —
-    // the model gets to see a diff body for the change.
+    // The region straddles changed content, so the model gets a diff body.
     expect(body).toEqual({
       file_idx: 0, context: "both",
       right_start: 1, right_end: 2,
@@ -1542,24 +1547,22 @@ describe("lazy fold summaries", () => {
     expect(document.querySelector(".annot-box")?.textContent).toBe("done");
   });
 
-  test("pure-deletion fold posts side=old with old-image coordinates", async () => {
+  test("a deletion-only region posts context=left with pre-image coordinates", async () => {
     await bootViewer(makeData({
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
         adds: 0, dels: 3, summary: "ok", head_line_count: null,
         symbols: { added: [], modified: [], removed: [] },
+        fold_regions: [
+          region({ context: "left", left_start: 10, left_end: 12, has_changes: true, qualified_name: "removed", kind: "function" }),
+        ],
         hunks: [makeHunkBlock("H0_0", "real intent", {
           rows: [
             { kind: "del", old_line: 10, new_line: null, old_text: "def removed():", new_text: "" },
             { kind: "del", old_line: 11, new_line: null, old_text: "    x = 1", new_text: "" },
             { kind: "del", old_line: 12, new_line: null, old_text: "    y = 2", new_text: "" },
           ],
-          fold_regions: [{
-            header_idx: 0, body_start_idx: 1, body_end_idx: 2,
-            context: "left", right_start: null, right_end: null,
-            left_start: 10, left_end: 12, has_changes: true, summary: "",
-          }],
         })],
       }],
     }));
@@ -1571,6 +1574,8 @@ describe("lazy fold summaries", () => {
 
     const marker = document.querySelector(".fold-chev") as SVGElement | null;
     expect(marker).not.toBeNull();
+    // The chevron sits on the old side: the header row has no new content.
+    expect(marker!.closest(".half-old")).not.toBeNull();
     clickEl(marker!);
 
     const foldCalls = fetchCalls.filter((c) => c.url.includes("/fold-summary"));
@@ -1580,27 +1585,25 @@ describe("lazy fold summaries", () => {
     });
 
     await new Promise((r) => setTimeout(r, 0));
-    expect(document.querySelector(".annot-box")?.textContent).toBe("drops the removed() helper");
+    expect(document.querySelector(".annot-box")?.textContent).toBe("function removed — drops the removed() helper");
   });
 
-  test("fold whose body spans expanded context + a hunk collapses across both", async () => {
-    // A def-block opens in the expanded context above a hunk, the
-    // hunk lives inside the body, and the body continues for one
-    // more indented line. Folding the def-block should collapse
-    // rows from both stretches.
+  test("a region the diff never carried folds once a chip discloses it", async () => {
+    // The server folds the whole file: `foo` spans lines 1-3, of which
+    // the hunk shows only line 3. With one row of the region on screen
+    // there is nothing to fold; expanding the gap above brings its
+    // opener and body in, and the chevron on line 1 folds rows from the
+    // expansion and the hunk alike. Nothing here reads the rows' text.
     await bootViewer(makeData({
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 1, dels: 1, summary: "ok",
-        // Head text, fetched when the gap chip is clicked:
-        //   1  def foo():          — fold header (in expanded context)
-        //   2      x = 1           — body line (in expanded context)
-        //   3      return new()    — body line (lives inside the hunk)
-        head_line_count: 3,
+        adds: 1, dels: 1, summary: "ok", head_line_count: 3,
         symbols: { added: [], modified: [], removed: [] },
+        fold_regions: [
+          region({ context: "both", right_start: 1, right_end: 3, left_start: 1, left_end: 3, has_changes: true, qualified_name: "foo", kind: "function" }),
+        ],
         hunks: [makeHunkBlock("H0_0", "ok", {
-          // Hunk covers line 3 only: replace `return old()` with `return new()`.
           old_start: 3, old_count: 1, new_start: 3, new_count: 1,
           rows: [{
             kind: "pair", old_line: 3, new_line: 3,
@@ -1609,122 +1612,98 @@ describe("lazy fold summaries", () => {
         })],
       }],
     }));
-
-    // Unfold the hunk so its rows are visible in the file-level
-    // row stream — without this, the file-level fold walker only
-    // sees the expanded-context rows and the cross-stretch span
-    // doesn't form.
     expandHunk();
-    // Expand the gap above the hunk (covers lines 1-2).
+    expect(chevrons()).toHaveLength(0);   // one row of `foo` on screen: nothing to fold
+
     const chip = document.querySelector(".gap-chip") as HTMLElement;
     queueFileText(0, "a.py", null, "def foo():\n    x = 1\n    return new()\n");
     chip.click();
     await tick();
 
-    // One fold chevron now anchors the def-block; its body spans the
-    // last expanded-context row AND the pair row inside the hunk.
-    const chevrons = document.querySelectorAll(".fold-chev");
-    expect(chevrons.length).toBeGreaterThanOrEqual(1);
+    expect(chevrons()).toHaveLength(1);
+    const expansionRows = newRows(document.querySelector(".gap-expansion")!);
+    const hunkRows = newRows(document.querySelector(".hunk")!);
+    expect(expansionRows).toHaveLength(2);
+    expect(hunkRows).toHaveLength(1);
+    expect(chevrons()[0].closest(".row")).toBe(expansionRows[0]);   // on the opener
 
-    // Identify the row elements (one per side) we expect to hide.
-    // ScrAnnotations.attach injects a .row-annotation wrapper for the
-    // fold's summary box; filter it out and only count diff rows.
-    const expansionRows = document.querySelectorAll(
-      ".gap-expansion .half-new .row:not(.row-annotation)",
-    );
-    const hunkRows = document.querySelectorAll(
-      ".hunk .half-new .row:not(.row-annotation)",
-    );
-    expect(expansionRows.length).toBe(2);
-    expect(hunkRows.length).toBeGreaterThanOrEqual(1);
-    // Pre-condition: all visible.
-    expect((expansionRows[1] as HTMLElement).style.display).not.toBe("none");
-    expect((hunkRows[0] as HTMLElement).style.display).not.toBe("none");
+    clickEl(chevrons()[0]);
+    expect(expansionRows[0].style.display).not.toBe("none");
+    expect(expansionRows[1].style.display).toBe("none");
+    expect(hunkRows[0].style.display).toBe("none");
 
-    // Click the chevron — body of the fold (expansion row 2 + hunk row 1)
-    // should go to display:none. Header (expansion row 1) stays.
-    clickEl(chevrons[0]);
-    expect((expansionRows[0] as HTMLElement).style.display).not.toBe("none");
-    expect((expansionRows[1] as HTMLElement).style.display).toBe("none");
-    expect((hunkRows[0] as HTMLElement).style.display).toBe("none");
-
-    // Fold-summary fires for the cross-stretch range (lines 1..3).
     const foldCalls = fetchCalls.filter((c) => c.url.includes("/fold-summary"));
     expect(foldCalls).toHaveLength(1);
-    const body = JSON.parse(foldCalls[0].init!.body as string);
-    // Pair row inside the body → context is "both".
-    expect(body.context).toBe("both");
-    expect(body.right_start).toBe(1);
-    expect(body.right_end).toBe(3);
+    expect(JSON.parse(foldCalls[0].init!.body as string)).toEqual({
+      file_idx: 0, context: "both", right_start: 1, right_end: 3, left_start: 1, left_end: 3,
+    });
   });
 
-  test("expanded unchanged context exposes its own indent folds", async () => {
-    // File starts with 6 lines of unchanged context above a tiny
-    // hunk. The first 3 lines form a `def foo():` body — the
-    // expand-context path should detect that as an indent fold and
-    // attach a chevron the reviewer can click to summarise.
+  test("a region whose opener is off screen folds from its first rendered row", async () => {
+    // `Foo` spans 1-9 and `Foo.bar` 5-9; the hunk shows 6-8 with neither
+    // opener. Both regions land on row 6; the tighter one — the method —
+    // labels the fold, and one chevron folds the two rows under it.
     await bootViewer(makeData({
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 1, dels: 1, summary: "ok",
-        head_line_count: 7,
+        adds: 1, dels: 1, summary: "ok", head_line_count: 9,
         symbols: { added: [], modified: [], removed: [] },
-        hunks: [makeHunkBlock("H0_0", "trivial", {
-          old_start: 7, old_count: 1, new_start: 7, new_count: 1,
-          rows: [{ kind: "pair", old_line: 7, new_line: 7, old_text: "a", new_text: "A" }],
+        fold_regions: [
+          region({ context: "both", right_start: 1, right_end: 9, left_start: 1, left_end: 9, has_changes: true, qualified_name: "Foo", kind: "class" }),
+          region({ context: "both", right_start: 5, right_end: 9, left_start: 5, left_end: 9, has_changes: true, qualified_name: "Foo.bar", kind: "function" }),
+        ],
+        hunks: [makeHunkBlock("H0_0", "ok", {
+          old_start: 6, old_count: 3, new_start: 6, new_count: 3,
+          rows: [
+            { kind: "ctx", old_line: 6, new_line: 6, old_text: "        a()", new_text: "        a()" },
+            { kind: "pair", old_line: 7, new_line: 7, old_text: "        b()", new_text: "        c()" },
+            { kind: "ctx", old_line: 8, new_line: 8, old_text: "        d()", new_text: "        d()" },
+          ],
         })],
       }],
     }));
+    expandHunk();
 
-    // Expand the gap above the hunk; the chip fetches the head text.
-    const chip = document.querySelector(".gap-chip") as HTMLElement;
-    expect(chip).not.toBeNull();
-    expect(chip.textContent).toContain("expand 6 lines above");
-    queueFileText(0, "a.py", null, [
-      "def foo():",                  // 1
-      "    x = 1",                   // 2
-      "    y = 2",                   // 3
-      "",                            // 4
-      "z = 5",                       // 5
-      "z = 6",                       // 6
-      "A",                           // 7 (the hunk's line)
-    ].join("\n") + "\n");
-    chip.click();
-    await tick();
+    expect(chevrons()).toHaveLength(1);
+    const rows = newRows();
+    expect(chevrons()[0].closest(".row")).toBe(rows[0]);
+    clickEl(chevrons()[0]);
+    expect(rows.map((r) => r.style.display)).toEqual(["", "none", "none"]);
+    expect(document.querySelector(".annot-box")?.textContent).toBe("function Foo.bar — summarising…");
+  });
 
-    // A fold chevron now lives inside the gap-expansion block.
-    const expansion = document.querySelector(".gap-expansion") as HTMLElement;
-    expect(expansion).not.toBeNull();
-    const marker = expansion.querySelector(".fold-chev") as SVGElement | null;
-    expect(marker).not.toBeNull();
-
-    queueFetchResponse({
-      status: 200,
-      body: {
-        file_idx: 0, context: "right", right_start: 1, right_end: 4,
-        left_start: 0, left_end: 0, summary: "initialise x and y",
-      },
-    });
-    clickEl(marker!);   // collapse → fires the request
-
-    const foldCalls = fetchCalls.filter((c) => c.url.includes("/fold-summary"));
-    expect(foldCalls).toHaveLength(1);
-    const body = JSON.parse(foldCalls[0].init!.body as string);
-    expect(body.context).toBe("right");
-    expect(body.file_idx).toBe(0);
-    expect(body.right_start).toBe(1);
-    // Fold ends at the row before the dedenter; that row is the blank
-    // line (line 4 of the head text). Matches Python's compute_fold_regions
-    // — the algorithm doesn't crop trailing blanks.
-    expect(body.right_end).toBe(4);
+  test("regions the rendered rows never reach attach nothing", async () => {
+    // Two whole-file regions elsewhere in the file: neither has a row on
+    // screen, so no chevron, and nothing is derived from the hunk's own
+    // indentation either.
+    await bootViewer(makeData({
+      pending: false,
+      files: [{
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 1, dels: 1, summary: "ok", head_line_count: 40,
+        symbols: { added: [], modified: [], removed: [] },
+        fold_regions: [
+          region({ right_start: 1, right_end: 5, qualified_name: "a", kind: "function" }),
+          region({ right_start: 30, right_end: 40, qualified_name: "z", kind: "function" }),
+        ],
+        hunks: [makeHunkBlock("H0_0", "ok", {
+          old_start: 10, old_count: 2, new_start: 10, new_count: 2,
+          rows: [
+            { kind: "ctx", old_line: 10, new_line: 10, old_text: "def mid():", new_text: "def mid():" },
+            { kind: "pair", old_line: 11, new_line: 11, old_text: "    return 1", new_text: "    return 2" },
+          ],
+        })],
+      }],
+    }));
+    expandHunk();
+    expect(chevrons()).toHaveLength(0);
   });
 
   test("server's broadcast back to the requesting tab does not pop the fold open", async () => {
     // The server publishes a `fold-summary` SSE event to every
     // subscriber after handling the POST — including the tab that
-    // issued it. Re-rendering the hunk on receipt would rebuild the
-    // fold in its default-open state and clobber the user's collapse.
+    // issued it. The fold must stay closed with the summary in place.
     await bootViewer(dataWithFold());
     expandHunk();
     queueFetchResponse({
@@ -1772,10 +1751,41 @@ describe("lazy fold summaries", () => {
     es.dispatch("fold-summary", {
       file_idx: 0, context: "both", right_start: 1, right_end: 2, left_start: 1, left_end: 2, summary: "remote summary",
     });
-    // The SSE handler drops the rendered cache and replaces the hunk
-    // DOM, so the new fold box's content reflects the streamed value.
+    // The SSE handler re-attaches the fold chrome over the same rows;
+    // the rebuilt fold box carries the streamed value and the fold is
+    // still open, as the reviewer left it.
     const box = document.querySelector(".annot-box");
     expect(box?.textContent).toBe("remote summary");
+    expect(document.querySelectorAll(".fold-chev")).toHaveLength(1);
+    expect((document.querySelector(".fold-chev") as SVGElement).classList.contains("open")).toBe(true);
+  });
+
+  test("a fold-summary SSE event for a collapsed fold keeps it collapsed", async () => {
+    await bootViewer(dataWithFold());
+    expandHunk();
+    // Collapse without a summary request racing: the POST fails fast.
+    queueFetchResponse({ status: 500, body: { error: "boom" } });
+    clickEl(document.querySelector(".fold-chev") as SVGElement);
+    await tick();
+    lastEventSource().dispatch("fold-summary", {
+      file_idx: 0, context: "both", right_start: 1, right_end: 2, left_start: 1, left_end: 2, summary: "from another tab",
+    });
+    const marker = document.querySelector(".fold-chev") as SVGElement;
+    expect(marker.classList.contains("open")).toBe(false);
+    expect(newRows()[1].style.display).toBe("none");
+    expect(document.querySelector(".annot-box")?.textContent).toBe("from another tab");
+  });
+
+  test("re-attaching over cached rows replaces the chevrons rather than doubling them", async () => {
+    // A repaint rebuilds the `.file` around the diff pane's cached
+    // `.diff`; the fold pass runs again over the same rows.
+    await bootViewer(dataWithFold());
+    expandHunk();
+    expect(chevrons()).toHaveLength(1);
+    (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+    (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+    expect(chevrons()).toHaveLength(1);
+    expect(document.querySelectorAll(".annot-box")).toHaveLength(1);
   });
 });
 
@@ -2760,6 +2770,11 @@ describe("overview mode (ADR 0007)", () => {
         id: `F${i}`, path, status: "modified", language: "python",
         adds: 1, dels: 1, summary: "", head_line_count: null,
         symbols: { added: [], modified: [], removed: [] },
+        // The hunk's two rows are one server-computed fold region.
+        fold_regions: [{
+          context: "both", right_start: 1, right_end: 2, left_start: 1, left_end: 2,
+          has_changes: true, qualified_name: "guard", kind: "function", summary: "",
+        }],
         hunks: [makeHunkBlock(`H${i}_0`, "guards the path")],
       })),
       makeOneSidedFile(2, "c.py", "added"),
@@ -2832,6 +2847,29 @@ describe("overview mode (ADR 0007)", () => {
       await new Promise<void>((r) => setTimeout(r, 0));
       expect(document.querySelector('.hunk[data-id="H0_0"]')!.classList.contains("folded"))
         .toBe(true);
+    });
+
+    test("fold regions attach inside the panel's copy of a file", async () => {
+      const panel = await bootWithPanel();
+      hunkRef().click();
+
+      const chevron = panel.querySelector(".fold-chev") as SVGElement | null;
+      expect(chevron).not.toBeNull();
+      const rows = Array.from(panel.querySelectorAll<HTMLElement>(".half-new .row:not(.row-annotation)"));
+      expect(rows).toHaveLength(2);
+      chevron!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      expect(rows.map((r) => r.style.display)).toEqual(["", "none"]);
+      expect(panel.querySelector(".annot-box")!.textContent).toBe("function guard — summarising…");
+
+      // Back in the diff, the file's own copy carries its own chevron,
+      // open: the panel's fold is the panel's.
+      (document.getElementById("overview-btn") as HTMLButtonElement).click();
+      await new Promise<void>((r) => setTimeout(r, 0));
+      (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+      const diffFile = document.querySelector('#app .file[data-id="F0"]') as HTMLElement;
+      const diffChevrons = diffFile.querySelectorAll(".fold-chev");
+      expect(diffChevrons).toHaveLength(1);
+      expect(diffChevrons[0].classList.contains("open")).toBe(true);
     });
 
     test("an added file spends the panel on the half that has content", async () => {

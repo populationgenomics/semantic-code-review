@@ -21,6 +21,7 @@ from ..augment.schemas import (
     AnnotatedDiff,
     AnnotatedFile,
     AnnotatedHunk,
+    FoldDescription,
     Overview,
     Segment,
     Smell,
@@ -76,9 +77,19 @@ def _emit_file(f: AnnotatedFile) -> list[str]:
         lines.extend(_text("scr-file-lang", ann.lang))
     if ann.symbols is not None:
         lines.extend(_json("scr-file-symbols", ann.symbols.model_dump()))
+    for fd in ann.fold_descriptions:
+        lines.extend(_text("scr-fold", _fold_value(fd)))
     for h in f.hunks:
         lines.extend(_emit_hunk(h))
     return lines
+
+
+def _fold_value(fd: FoldDescription) -> str:
+    if fd.context == "right":
+        return f'right {fd.right_start}..{fd.right_end} "{fd.summary}"'
+    if fd.context == "left":
+        return f'left {fd.left_start}..{fd.left_end} "{fd.summary}"'
+    return f'both R{fd.right_start}..{fd.right_end} L{fd.left_start}..{fd.left_end} "{fd.summary}"'
 
 
 def _emit_hunk(h: AnnotatedHunk) -> list[str]:
@@ -101,14 +112,6 @@ def _emit_hunk(h: AnnotatedHunk) -> list[str]:
         lines.extend(_text("scr-hunk-confidence", str(ann.confidence)))
     for seg in ann.segments:
         lines.extend(_emit_segment(seg))
-    for fd in ann.fold_descriptions:
-        if fd.context == "right":
-            body = f'right {fd.right_start}..{fd.right_end} "{fd.summary}"'
-        elif fd.context == "left":
-            body = f'left {fd.left_start}..{fd.left_end} "{fd.summary}"'
-        else:  # both
-            body = f'both R{fd.right_start}..{fd.right_end} L{fd.left_start}..{fd.left_end} "{fd.summary}"'
-        lines.extend(_text("scr-fold", body))
     for ln in ann.line_notes:
         lines.extend(_text("scr-line", f'+{ln.line} "{ln.body}"'))
     return lines

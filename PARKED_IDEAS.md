@@ -95,7 +95,8 @@ ordering. Summarised here so they appear in the same backlog.
     Smallest scope of the tree-sitter ideas, no LLM call needed,
     recommended first if the dependency is taken on.
 
-14. **AST-driven fold regions.** Replace the indent-based
+14. **AST-driven fold regions.** *(Shipped — ADR 0008 slice 3,
+    `viewer/fold_regions.py`.)* Replace the indent-based
     `compute_fold_regions` with real function / class / block boundaries.
     Lazy-parse on first hunk-expand to keep cold-start cheap, with the
     indent heuristic as a fallback for languages without grammars.

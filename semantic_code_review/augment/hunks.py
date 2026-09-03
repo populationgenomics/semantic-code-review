@@ -521,9 +521,9 @@ def build_hunk_annotations(parsed: ParsedHunk, submit_args: dict[str, Any]) -> H
 
     Segment ranges are clamped into the hunk's post-image range and past
     the previous kept segment, and dropped only when nothing survives the
-    clamp — see `_clamped_segment_range`. `fold_descriptions` is not read:
-    it is not part of `HunkSubmission`, so the model is never asked for
-    it; the fold-summary pass fills it later.
+    clamp — see `_clamped_segment_range`. Fold summaries are not read:
+    they are the file's (`FileAnnotations.fold_descriptions`), filled by
+    the fold-summary pass, never asked of the model.
     """
     segments: list[Segment] = []
     last_end = parsed.new_start - 1

@@ -8,7 +8,8 @@
 //
 // Mirror of:
 //   - semantic_code_review/viewer/build_json.py  (top-level shape)
-//   - semantic_code_review/viewer/hunk_layout.py (hunk + fold_regions block)
+//   - semantic_code_review/viewer/hunk_layout.py (hunk block)
+//   - semantic_code_review/viewer/fold_regions.py (fold_regions)
 //   - semantic_code_review/augment/schemas.py    (FoldDescription, Smell, etc.)
 // Keep these in lockstep when fields shift.
 
@@ -89,10 +90,11 @@ interface FileBlock {
   dels: number;
   summary: string;
   symbols: FileSymbols;
-  /** Flattened tree-sitter definition spans per side, for symbol-aware
-   *  folding. Empty lists for an unsupported language / unavailable
-   *  worktree. Inert in slice 1 — no consumer yet. */
-  fold_symbols: FoldSymbols;
+  /** Every fold region of the file, both sides, computed by the server
+   *  from the AST (indentation where no grammar exists); the viewer
+   *  hangs chevrons on the rows it has rendered and derives nothing.
+   *  Enclosing regions precede the regions they enclose. */
+  fold_regions: FoldRegion[];
   /** Lines in the post-image, or null when there is none (a deleted
    *  file, or no head worktree). Bounds the collapsible region below
    *  the last hunk; the text itself comes from /file-text on demand. */
@@ -104,24 +106,6 @@ interface FileSymbols {
   added: string[];
   modified: string[];
   removed: string[];
-}
-
-interface FoldSymbols {
-  /** Spans against head/<path> (new_line). */
-  head: FoldSymbolSpan[];
-  /** Spans against base/<path> (old_line). */
-  base: FoldSymbolSpan[];
-}
-
-/** One definition's line span, from the flattened `Symbol` forest.
- *  Depth-first source order; `depth` is the nesting level (0 = top). */
-interface FoldSymbolSpan {
-  /** 1-indexed inclusive line numbers. */
-  start_line: number;
-  end_line: number;
-  kind: string;
-  qualified_name: string;
-  depth: number;
 }
 
 // --- Hunks ------------------------------------------------------------------
@@ -144,7 +128,6 @@ interface HunkBlock {
   line_notes: LineNote[];
   segments: SegmentBlock[];
   rows: RowBlock[];
-  fold_regions: FoldRegion[];
   /** Viewer-runtime only (not on the wire): set by DataStore when the
    *  augment pass reported a hunk-level failure, so the renderer can
    *  show "couldn't produce annotations" instead of the pending
@@ -196,10 +179,10 @@ interface RowBlock {
 
 type FoldContext = "right" | "left" | "both";
 
+/** A foldable stretch of a file, addressed by line range per side — the
+ *  address `/fold-summary` takes. A row is in the region when its line on
+ *  a covered side falls in that side's range. */
 interface FoldRegion {
-  header_idx: number;
-  body_start_idx: number;
-  body_end_idx: number;
   context: FoldContext;
   /** 1-indexed line numbers in head/<path>. Null when context is "left". */
   right_start: number | null;
@@ -207,10 +190,11 @@ interface FoldRegion {
   /** 1-indexed line numbers in base/<path>. Null when context is "right". */
   left_start: number | null;
   left_end: number | null;
+  /** A hunk changes a line inside the region. */
   has_changes: boolean;
-  /** Identity of the definition this region snapped to (e.g. "Foo.bar" /
-   *  "function"); null on an indentation-fallback region. The viewer
-   *  labels the collapsed placeholder with these when present. */
+  /** Identity of the definition this region is (e.g. "Foo.bar" /
+   *  "function"); null on an indentation stanza. The viewer labels the
+   *  collapsed placeholder with these when present. */
   qualified_name: string | null;
   kind: string | null;
   summary: string;

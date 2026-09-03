@@ -8,6 +8,12 @@ Vertical slices, ordered. Each ends in something that ships and is
 exercisable on its own; later slices add consumers but never block
 earlier ones from landing.
 
+> Superseded by [ADR 0008](../adr/0008-hide-by-the-diff-fold-by-the-structure-label-by-meaning.md)
+> slice 3: there is one detector, in Python, over the whole file
+> (`viewer/fold_regions.py`); the client derives nothing and
+> `fold_symbols` no longer ships. The slices below describe the state
+> that replaced.
+
 ## Background — two fold detectors, kept in lockstep
 
 Fold regions are computed **twice**, and the two must agree:

@@ -211,27 +211,44 @@ runs of one row stay put.
 Invariant: for every row, `(side, line) → text` is unchanged, and so is
 the count of each row kind. Only which rows are `ctx` and which are
 `ins`/`del` changes, so [[reviewer-comment]] anchors are unaffected.
-[[fold-region]] addresses are computed from the positioned rows and can
-differ from those of the unpositioned hunk — a region whose lines are
-all inserted is `right`-only rather than `both`.
+[[fold-region]] ranges come from the file text, not the rows, so they
+are unmoved too; only a region's `has_changes` (and with it `right` vs
+`both`) reads the positioned rows — the function a run slides out of
+is unchanged, the definition it slides onto is added.
 
 **Fold region**
-A collapsible region within a [[hunk]] in the viewer. Addressed by
-`(file_idx, context, right_range, left_range)`:
+A foldable stretch of a file — a definition (class / function / method
+/ module-level constant) with its tree-sitter line range, or, where no
+definition covers the lines, an indentation stanza. Computed once, in
+Python (`viewer/fold_regions.py`), over the whole file on both sides,
+and shipped as `FileBlock.fold_regions`; the viewer places each region
+on whichever of its rows a pane has rendered (chevron on the first,
+the rest fold under it) and derives nothing. A region the diff never
+carried folds the moment a chip discloses it. Addressed by
+`(file_idx, context, right_range, left_range)`, ranges 1-indexed into
+the worktree files; the address depends on the file text, not the
+diff's row order, so `position_runs` cannot move it:
 
-- `context = "right"` — unchanged-context fold (collapses lines that
-  exist in the post-image only). Pure-context folds are the common
-  case.
-- `context = "left"` — deletion-only fold (lines present pre-image,
-  removed in post).
-- `context = "both"` — straddles changed content; the LLM sees a
-  unified-diff view of the region.
+- `context = "right"` — post-image lines only: an unchanged region
+  (its base lines are the same text, so no left range) or an added
+  definition.
+- `context = "left"` — pre-image lines only: a deleted definition.
+- `context = "both"` — straddles changed content; both ranges set,
+  and the LLM sees a unified-diff view of the two.
+
+Block granularity is the definition: the AST is the structure inside
+one, so a 40-line function is one region, not one per `if`. Outside
+every definition, an indentation stanza folds when its opener is at
+column 0 and ends with a bracket or colon (a multi-line import, an
+object literal, `if TYPE_CHECKING:`); a file with no grammar folds
+every indentation level. A binary file has none.
 
 Summaries are produced on demand by the fold-summary pass the first
-time a region is collapsed, then persisted in the
-`augmented.scr.json` sidecar as a `FoldDescription` on the file's
-first hunk — a stable home pending a schema migration that lifts
-fold descriptions up to `AnnotatedFile`.
+time a region is collapsed, then persisted in the `augmented.scr.json`
+sidecar as a `FoldDescription` on the file (`FileAnnotations
+.fold_descriptions`), keyed by the address above. A sidecar or
+`augmented.diff` written when they lived on the file's first hunk is
+read with them lifted to the file.
 
 **Segment**
 An LLM-produced semantic sub-slice of a [[hunk]]: a contiguous run of
@@ -278,10 +295,11 @@ unchanged lines are identical on both sides, and a file with no
 post-image (deleted) has nothing unchanged to disclose — its diff
 already carries every base line. `/data.json` carries no file text.
 
-Distinct from [[fold-region]]: a fold region is an indent-based collapse
-*within* a rendered hunk (chevrons + the fold-summary pass); a
+Distinct from [[fold-region]]: a fold region is a structural collapse
+of rows already on screen (chevrons + the fold-summary pass); a
 collapsible region is the between-/around-hunk expand chip that stands in
-for context and, under a filter, demoted hunks.
+for context and, under a filter, demoted hunks. They compose: reveal
+puts rows on screen, fold shows them at less detail (ADR 0008).
 
 **Fold level**
 The viewer's global collapse depth (`RenderState.fold`, driven by the
@@ -485,7 +503,8 @@ rather than raising.
 
 This is the single internal currency the structural consumers read:
 the `RepoTools.outline` / `symbol_at` tools, the diff-wide delta, the
-overview-prompt seed, and the sidebar Symbols axis.
+overview-prompt seed, the sidebar Symbols axis, run positioning, and
+the [[fold-region]]s.
 It is deliberately *not* reconciled with the LLM-derived
 per-file `FileSymbols` — that answers "why did this change" (semantic,
 fallible); `Symbol` answers "where is the code and what does it

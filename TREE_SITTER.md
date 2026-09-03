@@ -36,9 +36,10 @@ HTTP server with a back-channel:
   `structural/symbols.py`). Themes answer "what is this PR for?"; symbols
   answer "show me everything about X".
 - **AST fold regions.** Fold ranges come from real function / class /
-  block boundaries, not indentation (`viewer/build_json.py` `_fold_spans`).
-  The indent heuristic remains only as the fallback for languages without
-  a shipped grammar.
+  block boundaries, not indentation (`viewer/fold_regions.py`), over the
+  whole file on both sides. The indent heuristic remains only as the
+  fallback for languages without a shipped grammar, and for column-0
+  stanzas no definition covers.
 - **Deterministic overview seed.** The overview pass is seeded with the
   base→head `SymbolDelta` (`augment/overview.py` `_format_symbol_seed`),
   so the symbol inventory comes from the parse rather than the LLM

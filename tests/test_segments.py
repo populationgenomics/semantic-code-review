@@ -134,7 +134,7 @@ def test_fold_description_round_trip() -> None:
         new_count=4,
         segments=[],
     )
-    diff.files[0].hunks[0].ann.fold_descriptions = [
+    diff.files[0].ann.fold_descriptions = [
         FoldDescription(context="right", right_start=1, right_end=2, summary="Intro block"),
         FoldDescription(context="left", left_start=3, left_end=4, summary="Deleted tail"),
         FoldDescription(
@@ -150,14 +150,39 @@ def test_fold_description_round_trip() -> None:
     assert 'scr-fold: right 1..2 "Intro block"' in text
     assert 'scr-fold: left 3..4 "Deleted tail"' in text
     assert 'scr-fold: both R5..8 L4..6 "Refactor"' in text
+    # Emitted in the file header, before the first hunk.
+    assert text.index("scr-fold: right") < text.index("@@ ")
     reparsed = parse_augmented_diff(text)
-    fds = reparsed.files[0].hunks[0].ann.fold_descriptions
+    fds = reparsed.files[0].ann.fold_descriptions
     assert len(fds) == 3
     assert fds[0].context == "right" and fds[0].right_start == 1 and fds[0].right_end == 2
     assert fds[1].context == "left" and fds[1].left_start == 3 and fds[1].left_end == 4
     assert fds[2].context == "both"
     assert fds[2].right_start == 5 and fds[2].right_end == 8
     assert fds[2].left_start == 4 and fds[2].left_end == 6
+
+
+def test_hunk_level_scr_fold_from_an_older_diff_lifts_to_the_file() -> None:
+    """Before fold summaries moved to the file, `scr-fold` sat under a
+    hunk. Such a diff still parses, with the summary on the file."""
+    text = (
+        "#scr: scr-version: 1\n"
+        "#scr: scr-pr: x\n"
+        "#scr: scr-base: a\n"
+        "#scr: scr-head: b\n"
+        "diff --git a/f.py b/f.py\n"
+        "--- a/f.py\n"
+        "+++ b/f.py\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-a\n"
+        "+b\n"
+        '#scr: scr-fold: right 1..1 "old home"\n'
+    )
+    diff = parse_augmented_diff(text)
+    assert [fd.summary for fd in diff.files[0].ann.fold_descriptions] == ["old home"]
+    assert "fold_descriptions" not in diff.files[0].hunks[0].ann.model_dump()
+    # Re-emitted, it moves into the file header.
+    assert emit_augmented_diff(diff).index("scr-fold") < emit_augmented_diff(diff).index("@@ ")
 
 
 def test_segment_directive_outside_block_rejected() -> None:
