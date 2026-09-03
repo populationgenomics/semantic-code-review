@@ -125,8 +125,8 @@ interface HunkBlock {
   confidence: number | null;
   context: string;
   refs: Ref[];
-  line_notes: LineNote[];
-  segments: SegmentBlock[];
+  /** Flat, outermost first; nesting is containment of `start..end`. */
+  spans: AnnotationSpan[];
   rows: RowBlock[];
   /** Viewer-runtime only (not on the wire): set by DataStore when the
    *  augment pass reported a hunk-level failure, so the renderer can
@@ -135,10 +135,14 @@ interface HunkBlock {
   _failed?: boolean;
 }
 
-interface SegmentBlock {
+/** A labelled range of a hunk's post-image lines (ADR 0008). `start ==
+ *  end` is a single-line callout. Spans nest and need not cover the
+ *  hunk. `id` is `"<hunk id>:span:<start>-<end>"`, with an ordinal
+ *  suffix for a second span over the same range. */
+interface AnnotationSpan {
   id: string;
-  new_start: number;
-  new_count: number;
+  start: number;
+  end: number;
   intent: string;
   smells: Smell[];
   context: string;
@@ -154,11 +158,6 @@ interface Ref {
   path: string;
   line: number;
   reason: string;
-}
-
-interface LineNote {
-  line: number;
-  body: string;
 }
 
 // --- Rows -------------------------------------------------------------------
@@ -488,7 +487,7 @@ interface ReviewerComment {
     | "file_gone" | "commit_unavailable" | null;
   /** Stable id of the LLM annotation this comment was promoted from.
    *  When set, the viewer hides the source annotation so the comment
-   *  visibly replaces it. Examples: "H0_3:line_note:42",
+   *  visibly replaces it. Examples: "H0_3:span:42-42",
    *  "H0_3:smell:perf". */
   derived_from?: string | null;
 }

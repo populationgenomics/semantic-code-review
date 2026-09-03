@@ -31,7 +31,7 @@ class AugmentConfig:
     skip_globs: tuple[str, ...] = ()
     #: Already-resolved prompt text for the extra-review pass. When set,
     #: each hunk gets a second LLM call with this as the system prompt and
-    #: the returned line-anchored notes merge into `hunk.line_notes`.
+    #: the returned line-anchored notes merge into `hunk.spans` as single-line spans.
     extra_review_prompt: str | None = None
 
 

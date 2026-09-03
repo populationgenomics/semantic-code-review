@@ -658,6 +658,12 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 }
 .segment-intent { flex: 1; font-size: 13px; }
 .segment-intent.empty { color: var(--fg-dim); font-style: italic; }
+/* A span's nested spans sit indented beneath its row, with a hairline
+ * on the left carrying the containment. */
+.span-children {
+  margin-left: 22px; padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
 
 /* Inline notes below the diff — no filled panel; a thin dashed rule
  * separates them from the code above (context keeps its accent margin). */

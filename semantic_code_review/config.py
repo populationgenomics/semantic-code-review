@@ -232,7 +232,7 @@ class ScrConfig:
     model_default: str | None = None
     env: dict[str, str] = field(default_factory=dict)
     # Inline text for an *additional* per-hunk review prompt, run
-    # alongside the main comprehension pass. Output: extra line_notes
+    # alongside the main comprehension pass. Output: extra single-line spans
     # the reviewer can promote to comments. Set under
     # [augment].extra_prompt = """...""" in the config file. None
     # disables. The CLI --extra-prompt flag loads from a file path

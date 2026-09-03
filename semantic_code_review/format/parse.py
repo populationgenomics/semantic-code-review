@@ -10,8 +10,9 @@ Grammar, by zone:
 - Hunk trailer: `#scr:` directives between a hunk's body and the next
   `@@` / `diff --git` / EOF; attach to the hunk just closed.
 
-Within a trailer, `scr-segment-begin` ... `scr-segment-end` brackets enclose
-per-segment directives.
+Within a trailer, a span is one `scr-span` line or a `scr-span-begin` ...
+`scr-span-end` block of per-span directives. The retired `scr-line` and
+`scr-segment-*` directives still parse, as spans.
 
 Two entry points:
 
@@ -34,12 +35,12 @@ from ..augment.schemas import (
     AnnotatedDiff,
     AnnotatedFile,
     AnnotatedHunk,
+    AnnotationSpan,
     FileAnnotations,
     FileRole,
     FileSymbols,
     FoldDescription,
     HunkAnnotations,
-    LineNote,
     Overview,
     OverviewEdge,
     OverviewGroup,
@@ -48,14 +49,14 @@ from ..augment.schemas import (
     ParsedHunk,
     PRInfo,
     Ref,
-    Segment,
     SkippedOverview,
     Smell,
     lift_file,
 )
 
 _HUNK_HEADER_RE = re.compile(r"^@@ -(?P<os>\d+)(?:,(?P<oc>\d+))? \+(?P<ns>\d+)(?:,(?P<nc>\d+))? @@")
-_SEGMENT_RANGE_RE = re.compile(r"^\s*\+(\d+)\.\.\+(\d+)\s*$")
+_SPAN_RANGE_RE = re.compile(r"^\s*\+(\d+)\.\.\+(\d+)\s*$")
+_SPAN_LINE_RE = re.compile(r'^\s*\+(\d+)\.\.\+(\d+)\s+(?:"(.*)"|(.+))\s*$')
 _FOLD_RIGHT_RE = re.compile(r'^\s*right\s+(\d+)\.\.(\d+)\s+(?:"(.*)"|(.+))\s*$')
 _FOLD_LEFT_RE = re.compile(r'^\s*left\s+(\d+)\.\.(\d+)\s+(?:"(.*)"|(.+))\s*$')
 _FOLD_BOTH_RE = re.compile(r'^\s*both\s+R(\d+)\.\.(\d+)\s+L(\d+)\.\.(\d+)\s+(?:"(.*)"|(.+))\s*$')
@@ -146,15 +147,6 @@ def _parse_smell(value: str, lineno: int) -> Smell:
         raise ParseError(f"line {lineno}: malformed smell value {value!r}")
     tag, note = m.group(1), (m.group(2) or "")
     return Smell(tag=tag, note=note)
-
-
-def _parse_line_note(value: str, lineno: int) -> LineNote:
-    m = _LINE_NOTE_RE.match(value)
-    if not m:
-        raise ParseError(f"line {lineno}: malformed scr-line value {value!r}")
-    line = int(m.group(1))
-    body = m.group(2) if m.group(2) is not None else (m.group(3) or "")
-    return LineNote(line=line, body=body)
 
 
 def _parse_fold(value: str, lineno: int) -> FoldDescription:
@@ -286,6 +278,17 @@ def _file_annotations(directives: list[_Directive]) -> FileAnnotations:
     return ann
 
 
+#: Directives of the retired per-segment block and single-line note; a
+#: diff written before spans carries them, and they read as spans.
+_LEGACY_SEGMENT_FIELDS = {
+    "scr-segment-intent": "scr-span-intent",
+    "scr-segment-smell": "scr-span-smell",
+    "scr-segment-context": "scr-span-context",
+    "scr-segment-refs": "scr-span-refs",
+}
+_SPAN_FIELDS = frozenset({"scr-span-intent", "scr-span-smell", "scr-span-context", "scr-span-refs"})
+
+
 def _hunk_annotations(parsed_hunk: ParsedHunk, directives: list[_Directive]) -> HunkAnnotations:
     ann = HunkAnnotations(intent="")
     it = iter(directives)
@@ -300,61 +303,91 @@ def _hunk_annotations(parsed_hunk: ParsedHunk, directives: list[_Directive]) -> 
             ann.refs = _parse_refs(d.value, d.lineno)
         elif d.name == "scr-hunk-confidence":
             ann.confidence = int(d.value)
-        elif d.name == "scr-line":
-            ann.line_notes.append(_parse_line_note(d.value, d.lineno))
-        elif d.name == "scr-segment-begin":
-            ann.segments.append(_consume_segment(d, it, parsed_hunk))
-        elif d.name in {
-            "scr-segment-intent",
-            "scr-segment-smell",
-            "scr-segment-context",
-            "scr-segment-refs",
-            "scr-segment-end",
-        }:
-            raise ParseError(f"line {d.lineno}: {d.name} outside of a scr-segment-begin/end block")
+        elif d.name in ("scr-span", "scr-line"):
+            ann.spans.append(_parse_span_line(d, parsed_hunk))
+        elif d.name in ("scr-span-begin", "scr-segment-begin"):
+            ann.spans.append(_consume_span(d, it, parsed_hunk))
+        elif (
+            d.name in _SPAN_FIELDS or d.name in _LEGACY_SEGMENT_FIELDS or d.name in ("scr-span-end", "scr-segment-end")
+        ):
+            raise ParseError(f"line {d.lineno}: {d.name} outside of a scr-span-begin/end block")
         else:
             raise ParseError(f"line {d.lineno}: unknown hunk directive {d.name!r}")
 
-    # Validate segment non-overlap and ordering.
-    last_end = -1
-    for s in ann.segments:
-        start, end = s.new_start, s.new_start + s.new_count - 1
-        if start <= last_end:
-            raise ParseError(f"segment +{start}..+{end} overlaps previous segment (ends +{last_end})")
-        last_end = end
+    # Spans nest or are disjoint; a partial overlap has no tree to render as.
+    open_spans: list[AnnotationSpan] = []
+    for s in sorted(ann.spans, key=lambda s: (s.start, -s.end)):
+        while open_spans and open_spans[-1].end < s.start:
+            open_spans.pop()
+        if open_spans and s.end > open_spans[-1].end:
+            raise ParseError(
+                f"span +{s.start}..+{s.end} partially overlaps span +{open_spans[-1].start}..+{open_spans[-1].end}"
+            )
+        open_spans.append(s)
     return ann
 
 
-def _consume_segment(begin: _Directive, it: Iterator[_Directive], parsed_hunk: ParsedHunk) -> Segment:
-    m = _SEGMENT_RANGE_RE.match(begin.value)
+def _span_range(value: str, lineno: int, parsed_hunk: ParsedHunk) -> tuple[int, int]:
+    """Parse `+start..+end` and check it lies within the hunk's post-image lines."""
+    m = _SPAN_RANGE_RE.match(value)
     if not m:
-        raise ParseError(f"line {begin.lineno}: malformed segment range {begin.value!r}")
+        raise ParseError(f"line {lineno}: malformed span range {value!r}")
     start, end = int(m.group(1)), int(m.group(2))
     if end < start:
-        raise ParseError(f"line {begin.lineno}: segment end +{end} before start +{start}")
+        raise ParseError(f"line {lineno}: span end +{end} before start +{start}")
     hunk_new_end = parsed_hunk.new_start + parsed_hunk.new_count - 1
     if start < parsed_hunk.new_start or end > hunk_new_end:
         raise ParseError(
-            f"line {begin.lineno}: segment +{start}..+{end} outside hunk range "
-            f"+{parsed_hunk.new_start}..+{hunk_new_end}"
+            f"line {lineno}: span +{start}..+{end} outside hunk range +{parsed_hunk.new_start}..+{hunk_new_end}"
         )
-    seg = Segment(new_start=start, new_count=end - start + 1)
+    return start, end
+
+
+def _parse_span_line(d: _Directive, parsed_hunk: ParsedHunk) -> AnnotationSpan:
+    """The one-line forms: `scr-span: +a..+b "intent"` and the retired
+    `scr-line: +a "body"`, a single-line span whose intent is the note.
+    """
+    if d.name == "scr-line":
+        m = _LINE_NOTE_RE.match(d.value)
+        if not m:
+            raise ParseError(f"line {d.lineno}: malformed scr-line value {d.value!r}")
+        rng = f"+{m.group(1)}..+{m.group(1)}"
+        intent = m.group(2) if m.group(2) is not None else (m.group(3) or "")
+    else:
+        m = _SPAN_LINE_RE.match(d.value)
+        if not m:
+            raise ParseError(f"line {d.lineno}: malformed scr-span value {d.value!r}")
+        rng = f"+{m.group(1)}..+{m.group(2)}"
+        intent = m.group(3) if m.group(3) is not None else (m.group(4) or "")
+    start, end = _span_range(rng, d.lineno, parsed_hunk)
+    return AnnotationSpan(start=start, end=end, intent=intent)
+
+
+def _consume_span(begin: _Directive, it: Iterator[_Directive], parsed_hunk: ParsedHunk) -> AnnotationSpan:
+    """A `scr-span-begin` ... `scr-span-end` block, or the retired
+    `scr-segment-begin` ... `scr-segment-end` one, which reads the same.
+    """
+    legacy = begin.name == "scr-segment-begin"
+    end_name = "scr-segment-end" if legacy else "scr-span-end"
+    start, end = _span_range(begin.value, begin.lineno, parsed_hunk)
+    span = AnnotationSpan(start=start, end=end)
     for d in it:
-        if d.name == "scr-segment-end":
-            return seg
-        if d.name == "scr-segment-begin":
-            raise ParseError(f"line {d.lineno}: nested scr-segment-begin")
-        if d.name == "scr-segment-intent":
-            seg.intent = d.value
-        elif d.name == "scr-segment-smell":
-            seg.smells.append(_parse_smell(d.value, d.lineno))
-        elif d.name == "scr-segment-context":
-            seg.context = d.value
-        elif d.name == "scr-segment-refs":
-            seg.refs = _parse_refs(d.value, d.lineno)
+        name = _LEGACY_SEGMENT_FIELDS.get(d.name, d.name) if legacy else d.name
+        if d.name == end_name:
+            return span
+        if d.name in ("scr-span-begin", "scr-segment-begin"):
+            raise ParseError(f"line {d.lineno}: nested {d.name}")
+        if name == "scr-span-intent":
+            span.intent = d.value
+        elif name == "scr-span-smell":
+            span.smells.append(_parse_smell(d.value, d.lineno))
+        elif name == "scr-span-context":
+            span.context = d.value
+        elif name == "scr-span-refs":
+            span.refs = _parse_refs(d.value, d.lineno)
         else:
-            raise ParseError(f"line {d.lineno}: directive {d.name!r} not allowed inside a segment block")
-    raise ParseError(f"line {begin.lineno}: scr-segment-begin without matching scr-segment-end")
+            raise ParseError(f"line {d.lineno}: directive {d.name!r} not allowed inside a span block")
+    raise ParseError(f"line {begin.lineno}: {begin.name} without matching {end_name}")
 
 
 def _parse_hunk_header(line: str, lineno: int) -> tuple[int, int, int, int]:

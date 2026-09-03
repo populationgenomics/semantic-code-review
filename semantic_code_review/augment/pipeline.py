@@ -23,7 +23,7 @@ from ..format.parse import parse_raw_diff
 from ..format.sidecar import dump_sidecar
 from ..viewer import hunk_layout
 from ..viewer.build_json import file_fold_spans
-from . import config, mcp_http_host, skip, source_cache, usage
+from . import boundaries, config, mcp_http_host, skip, source_cache, usage
 from .agents import Client
 from .hunks import (
     build_hunk_annotations,
@@ -359,7 +359,7 @@ async def augment_run_dir(
                 cache=cache,
                 trace_dir=trace_dir,
             )
-            # Re-emit hunk SSE events for hunks whose line_notes grew.
+            # Re-emit hunk SSE events for hunks whose spans grew.
             # The streaming viewer already rendered the per-hunk blocks
             # without extras; this pushes the augmented bodies so the
             # promote-to-comment affordance lights up on the new notes
@@ -371,7 +371,7 @@ async def augment_run_dir(
                 for hi, hunk in enumerate(fp.hunks):
                     if hi >= len(old_fp.hunks):
                         continue
-                    if len(hunk.ann.line_notes) == len(old_fp.hunks[hi].ann.line_notes):
+                    if len(hunk.ann.spans) == len(old_fp.hunks[hi].ann.spans):
                         continue
                     block = _hunk_block(hunk, fi, hi, file_spans.get(fi, ([], [])))
                     _safe_emit(
@@ -475,6 +475,8 @@ async def _augment_one_batch(
     fp = diff.files[fi]
     file_summary = (fp.ann.summary or "").strip()
     hunks = [(hi, fp.hunks[hi]) for _fi, hi in batch]
+    spans = file_spans.get(fi, ([], []))
+    bounds = boundaries.for_batch([(hi, h.parsed) for hi, h in hunks], spans[0])
     fallback: list[tuple[int, int]] = []
 
     async with sem:
@@ -489,6 +491,7 @@ async def _augment_one_batch(
                 file_summary=file_summary,
                 repo_tools=repo_tools,
                 model=model,
+                bounds=bounds,
                 file_outline=file_outline,
                 removed_symbols=removed_symbols,
                 cache=cache,
@@ -515,9 +518,8 @@ async def _augment_one_batch(
             for hi, hunk in hunks:
                 if hi not in by_index:
                     continue
-                spans = file_spans.get(fi, ([], []))
                 try:
-                    ann = build_hunk_annotations(hunk.parsed, by_index[hi])
+                    ann = build_hunk_annotations(hunk.parsed, by_index[hi], bounds[hi])
                     block = _hunk_block(AnnotatedHunk(parsed=hunk.parsed, ann=ann), fi, hi, spans)
                 except _BUG_ERRORS:
                     raise
@@ -534,13 +536,12 @@ async def _augment_one_batch(
                 results[(fi, hi)] = ann
                 stats.ok += 1
                 log.info(
-                    "hunk %s @ %s (batched): intent=%r smells=%d segs=%d notes=%d",
+                    "hunk %s @ %s (batched): intent=%r smells=%d spans=%d",
                     fp.path,
                     hunk.parsed.header,
                     (ann.intent or "")[:80],
                     len(ann.smells),
-                    len(ann.segments),
-                    len(ann.line_notes),
+                    len(ann.spans),
                 )
                 _safe_emit(
                     on_event,
@@ -591,6 +592,7 @@ async def _augment_one_hunk(
     fp = diff.files[fi]
     hunk = fp.hunks[hi]
     file_summary = (fp.ann.summary or "").strip()
+    bounds = boundaries.Boundaries.for_hunk(hunk.parsed, fold_spans[0])
     async with sem:
         # Announced only AFTER acquiring the semaphore, so queued-but-
         # unstarted hunks stay pending in the viewer rather than all
@@ -605,22 +607,22 @@ async def _augment_one_hunk(
                 file_summary=file_summary,
                 repo_tools=repo_tools,
                 model=model,
+                bounds=bounds,
                 file_outline=file_outline,
                 removed_symbols=removed_symbols,
                 cache=cache,
                 trace_dir=trace_dir,
             )
-            ann = build_hunk_annotations(hunk.parsed, submit)
+            ann = build_hunk_annotations(hunk.parsed, submit, bounds)
             results[(fi, hi)] = ann
             stats.ok += 1
             log.info(
-                "hunk %s @ %s: intent=%r smells=%d segs=%d notes=%d",
+                "hunk %s @ %s: intent=%r smells=%d spans=%d",
                 fp.path,
                 hunk.parsed.header,
                 (ann.intent or "")[:80],
                 len(ann.smells),
-                len(ann.segments),
-                len(ann.line_notes),
+                len(ann.spans),
             )
             block = _hunk_block(AnnotatedHunk(parsed=hunk.parsed, ann=ann), fi, hi, fold_spans)
             _safe_emit(

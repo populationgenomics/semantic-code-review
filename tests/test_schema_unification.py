@@ -15,6 +15,7 @@ from semantic_code_review.augment.schemas import (
     AnnotatedFile,
     FileAnnotations,
     HunkAnnotations,
+    HunkSubmission,
     OverviewSubmission,
 )
 
@@ -31,24 +32,28 @@ def test_overview_submission_dump_has_keys_apply_overview_reads() -> None:
     assert not {"symbols_added", "symbols_modified", "symbols_removed"} & dump.keys()
 
 
-def test_hunk_annotations_dump_has_keys_apply_hunk_reads() -> None:
-    """`apply_hunk_annotations` reads: intent, segments, smells,
-    context, refs, confidence, line_notes. Fold summaries are the file's
-    (`FileAnnotations.fold_descriptions`), not the hunk's."""
-    sub = HunkAnnotations(intent="x")
-    dump = sub.model_dump(by_alias=True)
-    expected = {
-        "intent",
-        "segments",
-        "smells",
-        "context",
-        "refs",
-        "confidence",
-        "line_notes",
-    }
-    assert expected <= dump.keys()
-    assert "fold_descriptions" not in dump
+def test_hunk_submission_dump_has_keys_build_hunk_annotations_reads() -> None:
+    """`build_hunk_annotations` reads: intent, spans, smells, context,
+    refs, confidence — from the submission; the stored `HunkAnnotations`
+    carries the same keys with spans resolved to lines. Fold summaries are
+    the file's (`FileAnnotations.fold_descriptions`), not the hunk's."""
+    expected = {"intent", "spans", "smells", "context", "refs", "confidence"}
+    submission = HunkSubmission(intent="x").model_dump(by_alias=True)
+    stored = HunkAnnotations(intent="x").model_dump(by_alias=True)
+    assert submission.keys() == expected
+    assert stored.keys() == expected
+    assert "fold_descriptions" not in stored
     assert "fold_descriptions" in FileAnnotations().model_dump()
+
+
+def test_submission_and_storage_differ_only_in_how_a_span_is_addressed() -> None:
+    """ADR 0005: the submission shape is not the storage shape. A submitted
+    span names boundary ids; a stored one carries post-image lines."""
+    sub_span = HunkSubmission.model_json_schema()["$defs"]["SpanSubmission"]["properties"]
+    stored_span = HunkAnnotations.model_json_schema()["$defs"]["AnnotationSpan"]["properties"]
+    assert set(sub_span) == set(stored_span) == {"start", "end", "intent", "smells", "context", "refs"}
+    assert sub_span["start"]["type"] == "string"
+    assert stored_span["start"]["type"] == "integer"
 
 
 def test_smell_vocabulary_surfaces_in_field_description() -> None:

@@ -74,3 +74,18 @@ def test_gutter_width_tracks_largest_number():
     # width sized to 3 digits (max line 100)
     assert out[1] == "  1 +a"
     assert out[3] == "100 +b"
+
+
+def test_boundary_id_gutter_sits_left_of_the_number_and_is_blank_elsewhere():
+    body = "@@ -1,2 +1,3 @@\n a\n-gone\n+b\n c"
+    out = linenos.number_for_prompt(body, {1: "b1", 3: "b12"}).split("\n")
+    assert out[0] == "@@ -1,2 +1,3 @@"
+    assert out[1] == "b1  1  a"
+    assert out[2] == "      -gone"  # no post-image line, no id
+    assert out[3] == "    2 +b"  # a post-image line that is not a boundary
+    assert out[4] == "b12 3  c"
+
+
+def test_no_boundary_ids_means_no_id_gutter():
+    body = "@@ -0,0 +1,1 @@\n+x"
+    assert linenos.number_for_prompt(body, {}) == linenos.number_for_prompt(body)

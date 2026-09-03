@@ -609,7 +609,7 @@ function _refreshForAnchor(anchorRowEl: HTMLElement, anchor: Anchor): void {
   for (const thread of threads) {
     _buildThreadRow(thread, anchor, anchorRowEl);
   }
-  // Any LLM annotations (line_notes, fold summaries) that also
+  // Any LLM annotations (span notes, fold summaries) that also
   // anchor at this row now sit further from it — reflow re-measures
   // their arrows to stretch past the newly-inserted comments.
   Annotations.reflow(anchorRowEl);
@@ -619,13 +619,13 @@ function _refreshForAnchor(anchorRowEl: HTMLElement, anchor: Anchor): void {
  *  matches `derivedId`. Used right after a promotion save so the
  *  source observation visibly transitions into the comment.
  *
- *  Two shapes today: line_notes attach as `.row-annotation` rows with
- *  `data-line-note-id`; smells render as inline `.smell` pills with
+ *  Two shapes today: single-line spans attach as `.row-annotation` rows with
+ *  `data-span-id`; smells render as inline `.smell` pills with
  *  `data-smell-id`. Annotation rows need Annotations.detach (resize
  *  observers etc.); the pills are plain elements. */
 function _removeAnnotationByDerivedId(derivedId: string): void {
   document.querySelectorAll<HTMLElement>(
-    `.row-annotation[data-line-note-id="${derivedId}"]`,
+    `.row-annotation[data-span-id="${derivedId}"]`,
   ).forEach((el) => Annotations.detach(el));
   document.querySelectorAll<HTMLElement>(
     `.smell[data-smell-id="${derivedId}"]`,

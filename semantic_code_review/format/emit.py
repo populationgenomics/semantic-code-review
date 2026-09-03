@@ -21,9 +21,9 @@ from ..augment.schemas import (
     AnnotatedDiff,
     AnnotatedFile,
     AnnotatedHunk,
+    AnnotationSpan,
     FoldDescription,
     Overview,
-    Segment,
     Smell,
 )
 
@@ -110,26 +110,29 @@ def _emit_hunk(h: AnnotatedHunk) -> list[str]:
         lines.extend(_json("scr-hunk-refs", [r.model_dump() for r in ann.refs]))
     if ann.confidence is not None:
         lines.extend(_text("scr-hunk-confidence", str(ann.confidence)))
-    for seg in ann.segments:
-        lines.extend(_emit_segment(seg))
-    for ln in ann.line_notes:
-        lines.extend(_text("scr-line", f'+{ln.line} "{ln.body}"'))
+    for span in ann.spans:
+        lines.extend(_emit_span(span))
     return lines
 
 
-def _emit_segment(seg: Segment) -> list[str]:
+def _emit_span(span: AnnotationSpan) -> list[str]:
+    """A span carrying only an intent is one `scr-span` line; anything
+    more opens a `scr-span-begin` ... `scr-span-end` block.
+    """
+    rng = f"+{span.start}..+{span.end}"
+    if not (span.smells or span.context or span.refs):
+        return _text("scr-span", f'{rng} "{span.intent}"')
     lines: list[str] = []
-    end = seg.new_start + seg.new_count - 1
-    lines.extend(_text("scr-segment-begin", f"+{seg.new_start}..+{end}"))
-    if seg.intent:
-        lines.extend(_text("scr-segment-intent", seg.intent))
-    for s in seg.smells:
-        lines.extend(_text("scr-segment-smell", _smell_value(s)))
-    if seg.context:
-        lines.extend(_text("scr-segment-context", seg.context))
-    if seg.refs:
-        lines.extend(_json("scr-segment-refs", [r.model_dump() for r in seg.refs]))
-    lines.append("#scr: scr-segment-end")
+    lines.extend(_text("scr-span-begin", rng))
+    if span.intent:
+        lines.extend(_text("scr-span-intent", span.intent))
+    for s in span.smells:
+        lines.extend(_text("scr-span-smell", _smell_value(s)))
+    if span.context:
+        lines.extend(_text("scr-span-context", span.context))
+    if span.refs:
+        lines.extend(_json("scr-span-refs", [r.model_dump() for r in span.refs]))
+    lines.append("#scr: scr-span-end")
     return lines
 
 

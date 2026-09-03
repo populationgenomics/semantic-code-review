@@ -64,11 +64,8 @@ def _check_smell_tags(diff: AnnotatedDiff, result: LintResult) -> None:
                 if s.tag not in SMELL_TAGS:
                     result.ok = False
                     result.errors.append(f"unknown smell tag {s.tag!r} on hunk {h.parsed.header}")
-            for seg in h.ann.segments:
-                for s in seg.smells:
+            for span in h.ann.spans:
+                for s in span.smells:
                     if s.tag not in SMELL_TAGS:
                         result.ok = False
-                        result.errors.append(
-                            f"unknown smell tag {s.tag!r} on segment "
-                            f"+{seg.new_start}..+{seg.new_start + seg.new_count - 1}"
-                        )
+                        result.errors.append(f"unknown smell tag {s.tag!r} on span +{span.start}..+{span.end}")
