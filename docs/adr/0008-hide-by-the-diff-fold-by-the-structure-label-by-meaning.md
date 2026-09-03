@@ -1,6 +1,6 @@
 # ADR 0008 — Hide by the diff, fold by the structure, label by meaning
 
-- Status: Accepted — slices 1–3 in progress; 4–6 wait on the open questions
+- Status: Accepted — slices 1–2 landed, 3 in progress; the open questions are decided below (2026-09-03)
 - Date: 2026-09-03
 
 ## Context
@@ -187,17 +187,40 @@ ADR 0001. Anchoring to structure is not the same as being structure.
 default; agrees with myers on every real file tested; operates on hunk
 boundaries and does not reach a run inside a mixed hunk.
 
-## Open questions
+## Open questions — decided
 
-- Depth semantics for the ladder: AST depth is uneven across languages and
-  files. The rung may want to be "one level below the enclosing definition"
-  rather than an absolute depth.
-- Whether the model labels existing structural spans, or selects from
-  proposed candidate ranges, or both. The first is simpler and
-  cannot fail; the second preserves more of the current freedom.
-- Which pass owns cross-hunk spans, and whether that is the batch pass
-  turned on or a new file-level pass.
-- Whether a reveal should ever open a fold. The decision says no — reveal
-  puts content on screen at the current depth — but a reviewer clicking a
-  symbol pill expects to see its code, which is a reveal *and* an unfold.
-  `focusReveal` is that case today.
+Amended 2026-09-03, once slices 1 and 2 had landed and the shape of 3 was
+clear. Each decision names the alternative it rejects.
+
+**How the model labels: edges from boundaries.** For each hunk the
+structural layer emits a numbered list of *boundary lines* — the hunk's
+first and last post-image line, and every line where an AST node begins or
+ends inside it; for a language without a grammar, indent changes and blank
+lines instead. A span is a pair of boundary ids plus its label. The edges
+are therefore unforgeable — no overshoot, no pre-image coordinate, no line
+outside the hunk — while the extent stays the model's: half a function, or
+three. Nesting is permitted. Rejected: labelling only existing AST spans,
+which loses that extent; and free candidate ranges, which are combinatorial
+and put arithmetic back in the model's hands.
+
+**Depth: relative, one rung, named `definitions`.** The level between hunk
+and code folds every definition-level node a hunk touches to its opener and
+label; a hunk touching no definition folds as one region. The ladder is
+`files | hunks | definitions | off`. Rejected: a numeric depth, because AST
+depth is uneven across files and languages and the same number would mean
+different things in each. Nothing is synthesised: every hunk has a
+definition or is one region, by construction.
+
+**Cross-hunk spans: the pass that sees the file.** A span may cross hunks
+only when produced by a pass that saw both — today the per-file batch pass,
+which exists and is off. This ADR does not turn it on; until it is, spans
+are bounded by the hunk their pass saw. Rejected: a new file-level pass, as
+a second thing to pay for when one already exists.
+
+**Reveal does not unfold — except focus, which is named.** A reveal puts
+content on screen at the current depth. The one exception is a *focus*: a
+symbol-pill click is a request to see that code, so it reveals and unfolds
+the span to `off`, ephemerally — cleared by the slider, never stored as an
+override. That is `focusReveal` today; the change is that it becomes a
+property of the gesture rather than an unnamed flag, and no other reveal
+inherits it.
