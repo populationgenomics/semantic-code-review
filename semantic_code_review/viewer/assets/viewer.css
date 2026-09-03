@@ -1222,6 +1222,11 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 }
 .gap-chip:hover { color: var(--fg); border-color: var(--accent); }
 .gap-chip .gap-icon { color: var(--accent); }
+/* The chip fetches the file's text on first expand: a wait it shows,
+ * and a failure it says (and retries on the next click). */
+.gap-chip.loading { cursor: progress; }
+.gap-chip.failed { color: var(--err); border-color: var(--err); }
+.gap-chip.failed .gap-icon { color: var(--err); }
 
 .gap-expansion { position: relative; }
 .gap-expansion .diff { border-style: dashed; opacity: 0.92; }

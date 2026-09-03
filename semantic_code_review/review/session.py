@@ -304,16 +304,11 @@ def _range_from_payload(payload: dict[str, Any], side: str) -> tuple[int, int] |
 _GENERATED_FOLD_SUMMARY = "Generated / lock file — not summarised."
 
 
-#: Upper bound on a single `file_text` side. Rendered markdown mode
-#: (ADR 0004) fetches full base+head text on demand; a pathologically
-#: large doc returns null for the offending side so the client falls
-#: back to the text diff rather than shipping megabytes to the browser.
-_FILE_TEXT_CAP_BYTES = 2_000_000
-
-
 def _read_worktree_file(worktree: pathlib.Path, rel: str) -> str | None:
-    """Read a file from a base/head worktree; None when absent, too
-    large, or unreadable.
+    """Read a file from a base/head worktree; None when absent or unreadable.
+
+    No size cap: region expansion discloses the whole file on demand (ADR
+    0008), so a line's reachability cannot depend on the file's size.
 
     `rel` originates in the diff's own file list but is echoed here into
     a filesystem read, so the path-traversal guard stays even though the
@@ -325,10 +320,9 @@ def _read_worktree_file(worktree: pathlib.Path, rel: str) -> str | None:
     try:
         if not path.is_file():
             return None
-        if path.stat().st_size > _FILE_TEXT_CAP_BYTES:
-            return None
         return path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    except OSError as e:
+        log.warning("file-text: %s unreadable: %s", path, e)
         return None
 
 
@@ -490,20 +484,20 @@ class ReviewSession:
         file = self._file_block(file_idx)
         return None if file is None else file.get("status")
 
-    # --- rendered markdown mode (full file text) ------------------------
+    # --- full file text ---------------------------------------------------
 
     def file_text(self, file_idx: int) -> dict[str, Any]:
         """The full base+head source of one changed file.
 
-        Lazy backing for rendered markdown mode (ADR 0004) — fetched only
-        when a `.md` file is flipped, so `ViewerData` carries no eager
-        full-text payload. Reads from the `base/` / `head/` worktrees
-        already materialised in the run dir.
+        Lazy backing for rendered markdown mode (ADR 0004) and for region
+        expansion in the text diff (ADR 0008) — fetched the first time
+        either asks, so `ViewerData` carries no full-text payload. Reads
+        from the `base/` / `head/` worktrees already materialised in the
+        run dir.
 
         Returns `{file_idx, path, base, head}` where `base` / `head` are
-        the full file text or None when that side has no content (added
-        file → base None; deleted file → head None; over the size cap →
-        that side None so the client falls back to the text diff).
+        the full file text or None when that side has no file (added
+        file → base None; deleted file → head None).
 
         Raises:
             ReviewSessionError: 404 — `file_idx` addresses no file.

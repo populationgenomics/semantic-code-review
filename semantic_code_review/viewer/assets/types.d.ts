@@ -93,9 +93,10 @@ interface FileBlock {
    *  folding. Empty lists for an unsupported language / unavailable
    *  worktree. Inert in slice 1 — no consumer yet. */
   fold_symbols: FoldSymbols;
-  /** Full post-image content split into lines, or null when not
-   *  shipped (large file, deleted/binary/generated, etc.). */
-  head_lines: string[] | null;
+  /** Lines in the post-image, or null when there is none (a deleted
+   *  file, or no head worktree). Bounds the collapsible region below
+   *  the last hunk; the text itself comes from /file-text on demand. */
+  head_line_count: number | null;
   hunks: HunkBlock[];
 }
 

@@ -29,9 +29,6 @@ from ..augment.schemas import (
 from ..format.parse import parse_raw_diff
 from .hunk_layout import build_hunk_viewer_block
 
-#: cap — files with more than this many lines don't bundle head_lines.
-_HEAD_LINES_CAP = 5000
-
 
 def build_viewer_json(
     diff: AnnotatedDiff,
@@ -54,7 +51,7 @@ def build_viewer_json(
             }
             for tag, d in SMELL_CATALOGUE.items()
         },
-        "files": [_file_block(f, i, head_dir, file_syms[i]) for i, f in enumerate(diff.files)],
+        "files": [_file_block(f, i, file_syms[i]) for i, f in enumerate(diff.files)],
         "groups": _group_blocks(diff),
         "symbols": _symbol_blocks(diff, file_syms),
     }
@@ -187,13 +184,15 @@ class _SymNode:
 
 @dataclass
 class _FileSymbols:
-    """The parsed base/head `Symbol` forests for one file, and their source.
+    """One file's base/head source, and the `Symbol` forests parsed from it.
 
-    Both lists are empty for an unsupported language or an unavailable
+    A source is None when that side has no file or no worktree. Both
+    forests are empty for an unsupported language or an unavailable
     worktree — the same graceful-degradation guard the changed-symbol
     delta uses, so a file with no parse simply carries no spans. The
     sources ride along because `structural.diff_file` compares span text
-    to tell a moved definition from an edited one.
+    to tell a moved definition from an edited one, and the file block
+    counts the post-image's lines.
     """
 
     base: list[structural.Symbol] = field(default_factory=list)
@@ -207,12 +206,12 @@ def _file_symbols(
     base_dir: Path | None,
     head_dir: Path | None,
 ) -> _FileSymbols:
-    """Parse one file's base/head `Symbol` forests, or empty on degrade."""
-    lang = structural.language_for_path(f.path)
-    if lang is None:
-        return _FileSymbols()
+    """Read one file's base/head source and parse its `Symbol` forests."""
     base_src = _read_tree_source(base_dir, f.old_path or f.path)
     head_src = _read_tree_source(head_dir, f.path)
+    lang = structural.language_for_path(f.path)
+    if lang is None:
+        return _FileSymbols(base_src=base_src, head_src=head_src)
     return _FileSymbols(
         base=structural.outline_symbols(base_src, lang) if base_src is not None else [],
         head=structural.outline_symbols(head_src, lang) if head_src is not None else [],
@@ -458,18 +457,12 @@ def _pr_block(diff: AnnotatedDiff, meta: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _file_block(
-    f: AnnotatedFile,
-    idx: int,
-    head_dir: Path | None,
-    syms: _FileSymbols,
-) -> dict[str, Any]:
+def _file_block(f: AnnotatedFile, idx: int, syms: _FileSymbols) -> dict[str, Any]:
     head_spans = _fold_spans(syms.head)
     base_spans = _fold_spans(syms.base)
     hunks = [build_hunk_viewer_block(h, idx, hi, head_spans, base_spans) for hi, h in enumerate(f.hunks)]
     adds = sum(h["adds"] for h in hunks)
     dels = sum(h["dels"] for h in hunks)
-    head_lines = _load_head_lines(f, head_dir)
     ann = f.ann
     return {
         "id": f"F{idx}",
@@ -482,33 +475,23 @@ def _file_block(
         "summary": ann.summary,
         "symbols": ann.symbols.model_dump() if ann.symbols else {"added": [], "modified": [], "removed": []},
         "fold_symbols": {"head": _fold_spans(syms.head), "base": _fold_spans(syms.base)},
-        "head_lines": head_lines,
+        "head_line_count": _line_count(syms.head_src),
         "hunks": hunks,
     }
 
 
-def _load_head_lines(f: AnnotatedFile, head_dir: Path | None) -> list[str] | None:
-    """Return the full head-file content split into lines, or None if we skip.
+def _line_count(text: str | None) -> int | None:
+    """Lines in `text` as the diff numbers them, or None for no file.
 
-    Skipped when: no head_dir available, file is GENERATED/BINARY, head file
-    doesn't exist (e.g. deleted file), or the file is over the size cap.
+    A trailing newline closes the last line rather than opening an empty
+    one; the viewer's `FileTextCache.splitLines` agrees, so a line
+    number the count admits indexes the fetched text.
     """
-    if head_dir is None:
+    if text is None:
         return None
-    role = f.ann.role
-    if role is not None and role.value in ("generated", "binary", "deleted"):
-        return None
-    path = head_dir / f.path
-    if not path.exists() or not path.is_file():
-        return None
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    lines = text.splitlines()
-    if len(lines) > _HEAD_LINES_CAP:
-        return None
-    return lines
+    if not text:
+        return 0
+    return text.count("\n") + (0 if text.endswith("\n") else 1)
 
 
 # Maps a file extension to a highlight.js language *registered in the

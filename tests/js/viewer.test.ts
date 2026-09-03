@@ -97,6 +97,21 @@ function queueFetchResponse(r: FetchResponse): void {
   fetchResponses.push(r);
 }
 
+/** Queue the `/file-text` payload an expand chip (or the md toggle)
+ *  fetches for file `idx`. Sides are whole-file text, null for a side the
+ *  file has no version on. */
+function queueFileText(idx: number, path: string, base: string | null, head: string | null): void {
+  queueFetchResponse({ status: 200, body: { file_idx: idx, path, base, head } });
+}
+
+/** Let a fetch promise chain settle (a chip's expand, a toggle's flip). */
+function tick(): Promise<void> {
+  return new Promise<void>((r) => setTimeout(r, 0));
+}
+
+/** "l1".."l9", one per line — the text behind the nine-line fixtures. */
+const nineLines = Array.from({ length: 9 }, (_, i) => `l${i + 1}`).join("\n") + "\n";
+
 // --- Boot helper ----------------------------------------------------------
 
 interface ViewerData {
@@ -227,7 +242,7 @@ function makeOneSidedFile(
   return {
     id: `F${idx}`, path, status, language: "python",
     adds: added ? 2 : 0, dels: added ? 0 : 2,
-    summary: "", head_lines: null,
+    summary: "", head_line_count: null,
     symbols: { added: [], modified: [], removed: [] },
     hunks: [makeHunkBlock(`H${idx}_0`, "the whole file", {
       header: added ? "@@ -0,0 +1,2 @@" : "@@ -1,2 +0,0 @@",
@@ -281,7 +296,7 @@ function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
       adds: 1, dels: 1,
       summary: "",
       symbols: { added: [], modified: [], removed: [] },
-      head_lines: null,
+      head_line_count: null,
       hunks: [makeHunkBlock("H0_0")],
     }],
     groups: [],
@@ -374,7 +389,7 @@ describe("pending boot", () => {
     await bootViewer(makeData({
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "", head_line_count: null,
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0"), makeHunkBlock("H0_1")],
       }],
@@ -401,13 +416,13 @@ describe("pending boot", () => {
       files: [
         {
           id: "F0", path: "uv.lock", status: "generated", language: "",
-          adds: 0, dels: 0, summary: "", head_lines: null,
+          adds: 0, dels: 0, summary: "", head_line_count: null,
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H0_0"), makeHunkBlock("H0_1")],
         },
         {
           id: "F1", path: "a.py", status: "modified", language: "python",
-          adds: 0, dels: 0, summary: "", head_lines: null,
+          adds: 0, dels: 0, summary: "", head_line_count: null,
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H1_0")],
         },
@@ -473,7 +488,7 @@ describe("streaming events", () => {
     await bootViewer(makeData({
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "", head_line_count: null,
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0"), makeHunkBlock("H0_1")],
       }],
@@ -508,13 +523,13 @@ describe("streaming events", () => {
       files: [
         {
           id: "F0", path: "a.py", status: "modified", language: "python",
-          adds: 0, dels: 0, summary: "", head_lines: null,
+          adds: 0, dels: 0, summary: "", head_line_count: null,
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H0_0", "alpha"), makeHunkBlock("H0_1", "beta")],
         },
         {
           id: "F1", path: "b.py", status: "modified", language: "python",
-          adds: 0, dels: 0, summary: "", head_lines: null,
+          adds: 0, dels: 0, summary: "", head_line_count: null,
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H1_0", "gamma")],
         },
@@ -553,7 +568,7 @@ describe("streaming events", () => {
   test("by-file axis groups into a directory tree: compress, sort, and subtree filter", async () => {
     const mkFile = (id: string, p: string, hid: string): Record<string, unknown> => ({
       id, path: p, status: "modified", language: "python",
-      adds: 0, dels: 0, summary: "", head_lines: null,
+      adds: 0, dels: 0, summary: "", head_line_count: null,
       symbols: { added: [], modified: [], removed: [] },
       hunks: [makeHunkBlock(hid)],
     });
@@ -618,7 +633,7 @@ describe("streaming events", () => {
         id: "F0", path: "a.py", status: "modified", language: "python",
         adds: 3, dels: 3, summary: "",
         // 9 lines with changed lines at 2, 5, 8 → context at 1, 3-4, 6-7, 9.
-        head_lines: ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9"],
+        head_line_count: 9,
         symbols: { added: [], modified: [], removed: [] },
         hunks: [hunkAt("H0", 2, "a", "A"), hunkAt("H1", 5, "sdf", "fgh"), hunkAt("H2", 8, "e", "E")],
       }],
@@ -651,7 +666,9 @@ describe("streaming events", () => {
     // (continuous diff, no hunk header), alongside the surrounding context.
     const between = Array.from(document.querySelectorAll<HTMLElement>(".file.filtered .gap-chip"))
       .find((c) => (c.textContent || "").includes("hidden"))!;
+    queueFileText(0, "a.py", null, nineLines);
     between.click();
+    await tick();
     const expansion = document.querySelector(".gap-expansion")!;
     expect(expansion.textContent).toContain("fgh");   // H1's demoted change
     expect(expansion.textContent).toContain("l3");     // surrounding context
@@ -674,7 +691,7 @@ describe("streaming events", () => {
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "", head_line_count: null,
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "alpha"), makeHunkBlock("H0_1", "beta")],
       }],
@@ -711,7 +728,7 @@ describe("streaming events", () => {
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "", head_line_count: null,
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "", {
           rows: [
@@ -752,7 +769,7 @@ describe("streaming events", () => {
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "", head_line_count: null,
         symbols: { added: [], modified: [], removed: [] },
         hunks: [
           makeHunkBlock("H0_0", "alpha"),
@@ -813,7 +830,7 @@ describe("streaming events", () => {
   const foldFile = (): Record<string, unknown> => ({
     id: "F0", path: "a.py", status: "modified", language: "python",
     adds: 3, dels: 3, summary: "",
-    head_lines: ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9"],
+    head_line_count: 9,
     symbols: { added: [], modified: [], removed: [] },
     hunks: [
       makeHunkBlock("H0", "", { old_start: 2, old_count: 1, new_start: 2, new_count: 1,
@@ -927,7 +944,7 @@ describe("LLM observation → comment promotion", () => {
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "", head_line_count: null,
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "real intent", {
           line_notes: [{ line: 2, body: "consider using Path" }],
@@ -984,7 +1001,7 @@ describe("LLM observation → comment promotion", () => {
       },
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "", head_line_count: null,
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "real intent", {
           smells: [{ tag: "perf", note: "tight loop in hot path" }],
@@ -1029,7 +1046,7 @@ describe("LLM observation → comment promotion", () => {
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_lines: null,
+        adds: 0, dels: 0, summary: "", head_line_count: null,
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "", {
           line_notes: [{ line: 1, body: "old observation" }],
@@ -1067,13 +1084,13 @@ describe("sidebar comment counts", () => {
       files: [
         {
           id: "F0", path: "a.py", status: "modified", language: "python",
-          adds: 0, dels: 0, summary: "", head_lines: null,
+          adds: 0, dels: 0, summary: "", head_line_count: null,
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H0_0")],
         },
         {
           id: "F1", path: "b.py", status: "modified", language: "python",
-          adds: 0, dels: 0, summary: "", head_lines: null,
+          adds: 0, dels: 0, summary: "", head_line_count: null,
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H1_0")],
         },
@@ -1431,7 +1448,7 @@ describe("lazy fold summaries", () => {
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 1, dels: 1, summary: "ok", head_lines: null,
+        adds: 1, dels: 1, summary: "ok", head_line_count: null,
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "real intent", {
           rows: [
@@ -1530,7 +1547,7 @@ describe("lazy fold summaries", () => {
       pending: false,
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 3, summary: "ok", head_lines: null,
+        adds: 0, dels: 3, summary: "ok", head_line_count: null,
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "real intent", {
           rows: [
@@ -1576,11 +1593,11 @@ describe("lazy fold summaries", () => {
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
         adds: 1, dels: 1, summary: "ok",
-        head_lines: [
-          "def foo():",                  // 1 — fold header (in expanded context)
-          "    x = 1",                   // 2 — body line (in expanded context)
-          "    return new()",            // 3 — body line (lives inside the hunk)
-        ],
+        // Head text, fetched when the gap chip is clicked:
+        //   1  def foo():          — fold header (in expanded context)
+        //   2      x = 1           — body line (in expanded context)
+        //   3      return new()    — body line (lives inside the hunk)
+        head_line_count: 3,
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "ok", {
           // Hunk covers line 3 only: replace `return old()` with `return new()`.
@@ -1600,7 +1617,9 @@ describe("lazy fold summaries", () => {
     expandHunk();
     // Expand the gap above the hunk (covers lines 1-2).
     const chip = document.querySelector(".gap-chip") as HTMLElement;
+    queueFileText(0, "a.py", null, "def foo():\n    x = 1\n    return new()\n");
     chip.click();
+    await tick();
 
     // One fold chevron now anchors the def-block; its body spans the
     // last expanded-context row AND the pair row inside the hunk.
@@ -1649,14 +1668,7 @@ describe("lazy fold summaries", () => {
       files: [{
         id: "F0", path: "a.py", status: "modified", language: "python",
         adds: 1, dels: 1, summary: "ok",
-        head_lines: [
-          "def foo():",                  // 1
-          "    x = 1",                   // 2
-          "    y = 2",                   // 3
-          "",                            // 4
-          "z = 5",                       // 5
-          "z = 6",                       // 6
-        ],
+        head_line_count: 7,
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0", "trivial", {
           old_start: 7, old_count: 1, new_start: 7, new_count: 1,
@@ -1665,10 +1677,21 @@ describe("lazy fold summaries", () => {
       }],
     }));
 
-    // Expand the gap above the hunk.
+    // Expand the gap above the hunk; the chip fetches the head text.
     const chip = document.querySelector(".gap-chip") as HTMLElement;
     expect(chip).not.toBeNull();
+    expect(chip.textContent).toContain("expand 6 lines above");
+    queueFileText(0, "a.py", null, [
+      "def foo():",                  // 1
+      "    x = 1",                   // 2
+      "    y = 2",                   // 3
+      "",                            // 4
+      "z = 5",                       // 5
+      "z = 6",                       // 6
+      "A",                           // 7 (the hunk's line)
+    ].join("\n") + "\n");
     chip.click();
+    await tick();
 
     // A fold chevron now lives inside the gap-expansion block.
     const expansion = document.querySelector(".gap-expansion") as HTMLElement;
@@ -1692,7 +1715,7 @@ describe("lazy fold summaries", () => {
     expect(body.file_idx).toBe(0);
     expect(body.right_start).toBe(1);
     // Fold ends at the row before the dedenter; that row is the blank
-    // line (row 4 of head_lines). Matches Python's compute_fold_regions
+    // line (line 4 of the head text). Matches Python's compute_fold_regions
     // — the algorithm doesn't crop trailing blanks.
     expect(body.right_end).toBe(4);
   });
@@ -2137,7 +2160,7 @@ describe("rendered markdown mode", () => {
       pending: false,
       files: [{
         id: "F0", path: "docs/x.md", status: "modified", language: "markdown",
-        adds: 1, dels: 1, summary: "", head_lines: null,
+        adds: 1, dels: 1, summary: "", head_line_count: null,
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0")],
       }],
@@ -2735,7 +2758,7 @@ describe("overview mode (ADR 0007)", () => {
     const FILES = [
       ...["a.py", "b.py"].map((path, i) => ({
         id: `F${i}`, path, status: "modified", language: "python",
-        adds: 1, dels: 1, summary: "", head_lines: null,
+        adds: 1, dels: 1, summary: "", head_line_count: null,
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock(`H${i}_0`, "guards the path")],
       })),
@@ -3001,7 +3024,7 @@ describe("overview mode (ADR 0007)", () => {
       const MD = "# Head\n\n" + [1, 2, 3, 4, 5, 6].map((n) => `para ${n}`).join("\n\n");
       const MD_FILES = [{
         id: "F0", path: "docs/x.md", status: "modified", language: "markdown",
-        adds: 1, dels: 1, summary: "", head_lines: null,
+        adds: 1, dels: 1, summary: "", head_line_count: null,
         symbols: { added: [], modified: [], removed: [] },
         hunks: [makeHunkBlock("H0_0")],
       }];
@@ -3336,5 +3359,329 @@ describe("overview mode (ADR 0007)", () => {
       });
       await new Promise<void>((r) => setTimeout(r, 0));
     }
+  });
+});
+
+// --- Lazy disclosure (ADR 0008 slice 1) --------------------------------------
+// Everything in a file is disclosable: a region between, above or below
+// the hunks is laid out from the hunks' coordinates and reads its lines
+// from /file-text when its chip is clicked, so nothing about a file's
+// size or side puts a line out of reach. The fetched text is the cache
+// rendered mode reads.
+
+describe("lazy disclosure", () => {
+  type Row = Record<string, unknown>;
+
+  /** Line n of `path`'s text, as the fixtures spell it. */
+  const lineText = (path: string, n: number): string => `${path}:${n}`;
+  const textOf = (path: string, n: number, changed: Record<number, string> = {}): string =>
+    Array.from({ length: n }, (_, i) => changed[i + 1] ?? lineText(path, i + 1)).join("\n") + "\n";
+
+  /** A one-line replacement at `line` with three lines of context each
+   *  side — the shape `git diff -U3` gives a one-line edit. */
+  function editAt(id: string, path: string, line: number): Row {
+    const ctx = (n: number): Row =>
+      ({ kind: "ctx", old_line: n, new_line: n, old_text: lineText(path, n), new_text: lineText(path, n) });
+    return makeHunkBlock(id, "", {
+      old_start: line - 3, old_count: 7, new_start: line - 3, new_count: 7,
+      rows: [
+        ctx(line - 3), ctx(line - 2), ctx(line - 1),
+        { kind: "pair", old_line: line, new_line: line, old_text: `old ${line}`, new_text: `new ${line}` },
+        ctx(line + 1), ctx(line + 2), ctx(line + 3),
+      ],
+    });
+  }
+
+  function file(
+    idx: number, path: string, status: string, headLines: number | null, hunks: Row[], extra: Row = {},
+  ): Row {
+    return {
+      id: `F${idx}`, path, old_path: null, status, language: "python",
+      adds: 0, dels: 0, summary: "", head_line_count: headLines,
+      symbols: { added: [], modified: [], removed: [] },
+      hunks, ...extra,
+    };
+  }
+
+  const fold = (level: string): void =>
+    (document.querySelector(`.fold-slider button[data-fold="${level}"]`) as HTMLElement).click();
+
+  /** Every rendered line number on one side of a file element, with the
+   *  content beside it. Empty cells (the other side of a one-sided row)
+   *  are skipped. */
+  function shown(el: Element, side: "old" | "new"): Map<number, string> {
+    const out = new Map<number, string>();
+    for (const row of el.querySelectorAll(`.half-${side} .row:not(.row-annotation)`)) {
+      const ln = row.querySelector(`.cell-lineno-${side}`)!;
+      if (ln.classList.contains("empty")) continue;
+      out.set(Number(ln.textContent), row.querySelector(".cell-content")!.textContent || "");
+    }
+    return out;
+  }
+
+  const chipsOf = (el: Element): HTMLElement[] => Array.from(el.querySelectorAll<HTMLElement>(".gap-chip"));
+  const fileEl = (id: string): HTMLElement => document.querySelector(`#app .file[data-id="${id}"]`) as HTMLElement;
+  const fileTextHits = (): string[] =>
+    fetchCalls.filter((c) => c.url.includes("/file-text")).map((c) => c.url);
+  const contents = (el: Element, sel: string): (string | null)[] =>
+    Array.from(el.querySelectorAll(sel)).map((c) => c.textContent);
+
+  test("every line of both sides of every file is reachable through a chip", async () => {
+    // Four shapes: a modified file past the old 5,000-line bundle cap
+    // with two edits far apart; a deleted file (base side only); an
+    // added file (head only); a rename with one edit.
+    const BIG = 6000;
+    const big = file(0, "big.py", "modified", BIG, [editAt("H0_0", "big.py", 100), editAt("H0_1", "big.py", 5900)]);
+    const gone = file(1, "gone.py", "deleted", null, [makeHunkBlock("H1_0", "", {
+      old_start: 1, old_count: 4, new_start: 0, new_count: 0,
+      rows: [1, 2, 3, 4].map((n) => ({ kind: "del", old_line: n, new_line: null, old_text: lineText("gone.py", n), new_text: "" })),
+    })]);
+    const fresh = file(2, "new.py", "added", 3, [makeHunkBlock("H2_0", "", {
+      old_start: 0, old_count: 0, new_start: 1, new_count: 3,
+      rows: [1, 2, 3].map((n) => ({ kind: "ins", old_line: null, new_line: n, old_text: "", new_text: lineText("new.py", n) })),
+    })]);
+    const moved = file(3, "moved.py", "renamed", 10, [editAt("H3_0", "moved.py", 5)], { old_path: "orig.py" });
+    await bootViewer(makeData({ pending: false, files: [big, gone, fresh, moved] }));
+    fold("off");   // the hunks' own rows too, so the whole file can be counted
+
+    // The chips are laid out and counted from the hunks alone; no text
+    // has been fetched.
+    expect(fileTextHits()).toHaveLength(0);
+    expect(chipsOf(fileEl("F0")).map((c) => c.textContent)).toEqual([
+      "⬆expand 96 lines above", "⋯expand 5793 hidden lines", "⬇expand 97 lines below",
+    ]);
+    expect(chipsOf(fileEl("F1"))).toHaveLength(0);   // the diff carries every base line
+    expect(chipsOf(fileEl("F2"))).toHaveLength(0);   // and every head line
+    expect(chipsOf(fileEl("F3")).map((c) => c.textContent)).toEqual([
+      "⬆expand 1 line above", "⬇expand 2 lines below",
+    ]);
+
+    // Expand everything. One /file-text round trip per file, on its first
+    // chip; the rest of that file's chips read the cache.
+    const bigHead = textOf("big.py", BIG, { 100: "new 100", 5900: "new 5900" });
+    const movedHead = textOf("moved.py", 10, { 5: "new 5" });
+    for (const [idx, path, head] of [[0, "big.py", bigHead], [3, "moved.py", movedHead]] as const) {
+      queueFileText(idx, path, null, head);
+      for (const chip of chipsOf(fileEl(`F${idx}`))) { chip.click(); await tick(); }
+      expect(chipsOf(fileEl(`F${idx}`))).toHaveLength(0);
+    }
+    expect(fileTextHits()).toEqual(["/file-text?file_idx=0", "/file-text?file_idx=3"]);
+
+    // The whole of each side, line for line, in every file.
+    const expectSide = (id: string, side: "old" | "new", text: string | null, n: number): void => {
+      const got = shown(fileEl(id), side);
+      expect(Array.from(got.keys()).sort((a, b) => a - b)).toEqual(Array.from({ length: n }, (_, i) => i + 1));
+      if (text !== null) {
+        const lines = text.split("\n");
+        for (const [ln, content] of got) expect(content, `${id} ${side} line ${ln}`).toBe(lines[ln - 1]);
+      }
+    };
+    expectSide("F0", "new", bigHead, BIG);
+    expectSide("F0", "old", textOf("big.py", BIG, { 100: "old 100", 5900: "old 5900" }), BIG);
+    expectSide("F1", "old", textOf("gone.py", 4), 4);
+    expectSide("F1", "new", null, 0);
+    expectSide("F2", "new", textOf("new.py", 3), 3);
+    expectSide("F2", "old", null, 0);
+    expectSide("F3", "new", movedHead, 10);
+    expectSide("F3", "old", textOf("moved.py", 10, { 5: "old 5" }), 10);
+  });
+
+  test("a region's line numbers follow the hunk's end on both sides", async () => {
+    // An edit that grows the file: below it old and new numbering differ
+    // by the insertion, and the text arrives after the layout.
+    const grow = makeHunkBlock("H0_0", "", {
+      old_start: 2, old_count: 3, new_start: 2, new_count: 5,
+      rows: [
+        { kind: "ctx", old_line: 2, new_line: 2, old_text: "a.py:2", new_text: "a.py:2" },
+        { kind: "ins", old_line: null, new_line: 3, old_text: "", new_text: "added 3" },
+        { kind: "ins", old_line: null, new_line: 4, old_text: "", new_text: "added 4" },
+        { kind: "ctx", old_line: 3, new_line: 5, old_text: "a.py:5", new_text: "a.py:5" },
+        { kind: "ctx", old_line: 4, new_line: 6, old_text: "a.py:6", new_text: "a.py:6" },
+      ],
+    });
+    await bootViewer(makeData({ pending: false, files: [file(0, "a.py", "modified", 8, [grow])] }));
+    fold("off");
+    queueFileText(0, "a.py", null, textOf("a.py", 8, { 3: "added 3", 4: "added 4" }));
+    for (const chip of chipsOf(fileEl("F0"))) { chip.click(); await tick(); }
+
+    expect(contents(fileEl("F0"), ".gap-expansion .half-new .row .cell-content"))
+      .toEqual(["a.py:1", "a.py:7", "a.py:8"]);
+    const oldOf = shown(fileEl("F0"), "old");
+    const newOf = shown(fileEl("F0"), "new");
+    // Below the hunk, new 7 is old 5 and new 8 is old 6.
+    expect(newOf.get(7)).toBe("a.py:7");
+    expect(oldOf.get(5)).toBe("a.py:7");
+    expect(oldOf.get(6)).toBe("a.py:8");
+    expect(Array.from(oldOf.keys()).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  test("a demoted hunk's region interleaves its rows with fetched context", async () => {
+    const f = file(0, "a.py", "modified", 20, [
+      editAt("H0_0", "a.py", 4), editAt("H0_1", "a.py", 11), editAt("H0_2", "a.py", 17),
+    ]);
+    await bootViewer(makeData({
+      pending: false, files: [f],
+      symbols: [{ id: "SY0", title: "ends", rationale: "", hunk_ids: ["H0_0", "H0_2"] }],
+    }));
+    (document.querySelector('[data-axis="symbols"] .group-btn[data-pill-id="SY0"]') as HTMLElement).click();
+    const between = chipsOf(fileEl("F0")).find((c) => c.textContent!.includes("hidden"))!;
+    // H0_0 covers 1..7 and H0_2 covers 14..20, so the region is 8..13:
+    // the demoted H0_1's seven rows (8..14) minus the one H0_2 owns.
+    expect(between.textContent).toBe("⋯expand 7 hidden lines");
+    queueFileText(0, "a.py", null, textOf("a.py", 20, { 4: "new 4", 11: "new 11", 17: "new 17" }));
+    between.click();
+    await tick();
+    const exp = fileEl("F0").querySelector(".gap-expansion")!;
+    expect(exp.querySelector(".hunk-header")).toBeNull();
+    expect(contents(exp, ".half-new .row .cell-content"))
+      .toEqual(["a.py:8", "a.py:9", "a.py:10", "new 11", "a.py:12", "a.py:13", "a.py:14"]);
+  });
+
+  test("the chip shows the wait, and a second click during it fetches nothing more", async () => {
+    await bootViewer(makeData({ pending: false, files: [file(0, "a.py", "modified", 9, [editAt("H0_0", "a.py", 5)])] }));
+    let release: (r: Response) => void = () => {};
+    (globalThis.fetch as unknown as { mockImplementationOnce: (fn: typeof fetch) => void })
+      .mockImplementationOnce(((url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, init });
+        return new Promise<Response>((r) => { release = r; });
+      }) as typeof fetch);
+    const chip = chipsOf(fileEl("F0"))[0];
+    chip.click();
+    expect(chip.classList.contains("loading")).toBe(true);
+    expect(chip.textContent).toContain("expand 1 line above — loading");
+    chip.click();
+    await tick();
+    expect(fileTextHits()).toHaveLength(1);
+    expect(fileEl("F0").querySelector(".gap-expansion")).toBeNull();
+
+    release({
+      ok: true, status: 200,
+      json: () => Promise.resolve({ file_idx: 0, path: "a.py", base: null, head: textOf("a.py", 9, { 5: "new 5" }) }),
+    } as Response);
+    await tick();
+    expect(fileEl("F0").querySelector(".gap-expansion .cell-content")!.textContent).toBe("a.py:1");
+  });
+
+  test("a failed fetch is said on the chip, and the next click retries", async () => {
+    await bootViewer(makeData({ pending: false, files: [file(0, "a.py", "modified", 9, [editAt("H0_0", "a.py", 5)])] }));
+    queueFetchResponse({ status: 500, body: { error: "boom" } });
+    const chip = chipsOf(fileEl("F0"))[0];
+    chip.click();
+    await tick();
+    expect(chip.isConnected).toBe(true);
+    expect(chip.classList.contains("failed")).toBe(true);
+    expect(chip.classList.contains("loading")).toBe(false);
+    expect(chip.textContent).toContain("could not load: GET /file-text -> 500 (click to retry)");
+    expect(fileEl("F0").querySelector(".gap-expansion")).toBeNull();
+
+    queueFileText(0, "a.py", null, textOf("a.py", 9, { 5: "new 5" }));
+    chip.click();
+    await tick();
+    expect(chip.isConnected).toBe(false);
+    expect(fileEl("F0").querySelector(".gap-expansion .cell-content")!.textContent).toBe("a.py:1");
+    expect(fileTextHits()).toHaveLength(2);
+  });
+
+  test("text that cannot cover the region fails the chip rather than padding it", async () => {
+    // A modified file whose head came back null, and one whose head is
+    // shorter than the diff recorded (a dirty-tree review whose file was
+    // edited under it): neither expands to blank rows.
+    await bootViewer(makeData({ pending: false, files: [
+      file(0, "a.py", "modified", 9, [editAt("H0_0", "a.py", 5)]),
+      file(1, "b.py", "modified", 9, [editAt("H1_0", "b.py", 5)]),
+    ] }));
+    queueFileText(0, "a.py", "base only\n", null);
+    const a = chipsOf(fileEl("F0"))[1];   // below: line 9
+    a.click();
+    await tick();
+    expect(a.classList.contains("failed")).toBe(true);
+    expect(a.textContent).toContain("a.py: no post-image text to expand");
+
+    queueFileText(1, "b.py", null, textOf("b.py", 8, { 5: "new 5" }));
+    const b = chipsOf(fileEl("F1"))[1];
+    b.click();
+    await tick();
+    expect(b.classList.contains("failed")).toBe(true);
+    expect(b.textContent).toContain("b.py: line 9 is past the end of the file (8 lines)");
+    expect(document.querySelector(".gap-expansion")).toBeNull();
+  });
+
+  test("a chip's fetch serves rendered mode, and rendered mode's serves the chips", async () => {
+    const MD = "# T\n\npara\n\nend\n";
+    const md = file(0, "docs/x.md", "modified", 5, [makeHunkBlock("H0_0", "", {
+      old_start: 2, old_count: 3, new_start: 2, new_count: 3,
+      rows: [
+        { kind: "ctx", old_line: 2, new_line: 2, old_text: "", new_text: "" },
+        { kind: "pair", old_line: 3, new_line: 3, old_text: "old", new_text: "para" },
+        { kind: "ctx", old_line: 4, new_line: 4, old_text: "", new_text: "" },
+      ],
+    })], { language: "markdown" });
+    await bootViewer(makeData({ pending: false, files: [md] }));
+
+    queueFileText(0, "docs/x.md", MD.replace("para", "old"), MD);
+    chipsOf(fileEl("F0"))[0].click();   // above: line 1
+    await tick();
+    expect(fileEl("F0").querySelector(".gap-expansion .cell-content")!.textContent).toBe("# T");
+    expect(fileTextHits()).toHaveLength(1);
+
+    (fileEl("F0").querySelector(".md-toggle") as HTMLElement).click();
+    await tick();
+    expect(fileEl("F0").querySelector(".rmd-grid")).not.toBeNull();
+    expect(fileTextHits()).toHaveLength(1);
+
+    (fileEl("F0").querySelector(".md-toggle") as HTMLElement).click();
+    await tick();
+    chipsOf(fileEl("F0"))[1].click();   // below: line 5
+    await tick();
+    expect(contents(fileEl("F0"), ".gap-expansion .half-new .cell-content")).toEqual(["end"]);
+    expect(fileTextHits()).toHaveLength(1);
+  });
+
+  test("a region expanded in the explainer's panel reads the diff pane's fetch, and stays in the panel", async () => {
+    const DOC = {
+      version: 1, base_sha: "b", head_sha: "h", verdict: "narrate", verdict_note: "",
+      figure_family: "", cast: [], toy_data: false, dropped_refs: 0,
+      sections: [{
+        id: "map", kind: "map", title: "Map", state: "ready", body: "",
+        refs: [{ kind: "file", id: "F0" }],
+        map_rows: [{ ref: { kind: "file", id: "F0" }, why: "the contract" }],
+        subsections: [],
+      }],
+    };
+    const f = file(0, "a.py", "modified", 9, [editAt("H0_0", "a.py", 5)]);
+    // A document exists, so the viewer opens on it; step into the diff.
+    await bootViewer(
+      makeData({ pending: false, explainer: true, files: [f] }),
+      { explainer: { status: 200, body: DOC } },
+    );
+    await tick();
+    (document.getElementById("overview-btn") as HTMLButtonElement).click();
+    await tick();
+    queueFileText(0, "a.py", null, textOf("a.py", 9, { 5: "new 5" }));
+    chipsOf(fileEl("F0"))[0].click();
+    await tick();
+    expect(fileEl("F0").querySelector(".gap-expansion")).not.toBeNull();
+    expect(fileTextHits()).toHaveLength(1);
+
+    // Into the document; the panel renders its own copy of the file with
+    // its regions collapsed, and expands one off the cache.
+    (document.getElementById("overview-btn") as HTMLButtonElement).click();
+    await tick();
+    (document.querySelector(".explainer-map-row .explainer-ref") as HTMLElement).click();
+    const panel = document.querySelector("#app .explainer-detail") as HTMLElement;
+    const inPanel = panel.querySelector('.file[data-id="F0"]') as HTMLElement;
+    expect(chipsOf(inPanel)).toHaveLength(2);
+    chipsOf(inPanel)[1].click();   // below: line 9
+    await tick();
+    expect(inPanel.querySelectorAll(".gap-expansion")).toHaveLength(1);
+    expect(inPanel.querySelector(".gap-expansion .cell-content")!.textContent).toBe("a.py:9");
+    expect(fileTextHits()).toHaveLength(1);
+
+    // Back to the diff: its regions are as the pane draws them, not as
+    // the panel left its own.
+    (document.getElementById("overview-btn") as HTMLButtonElement).click();
+    await tick();
+    expect(chipsOf(fileEl("F0"))).toHaveLength(2);
+    expect(fileEl("F0").querySelector(".gap-expansion")).toBeNull();
   });
 });

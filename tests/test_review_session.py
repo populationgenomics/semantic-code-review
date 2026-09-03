@@ -403,6 +403,21 @@ def test_file_text_path_traversal_refused(run_dir: paths.RunDir) -> None:
     assert h.session.file_text(0)["base"] is None
 
 
+def test_file_text_has_no_size_cap(run_dir: paths.RunDir) -> None:
+    """Region expansion discloses the whole file through this route (ADR
+    0008), so a line's reachability cannot depend on the file's size: a
+    side several megabytes long comes back whole, not null."""
+    run_dir.head.mkdir()
+    big = "x" * 79 + "\n"
+    (run_dir.head / "big.py").write_text(big * 40_000)  # 3.2 MB
+    h = _file_text_harness(run_dir, [{"id": "F0", "path": "big.py", "old_path": None, "status": "added"}])
+
+    payload = h.session.file_text(0)
+
+    assert payload["head"] is not None
+    assert len(payload["head"]) == 80 * 40_000
+
+
 # --- console (free-form Q&A) --------------------------------------------
 
 
