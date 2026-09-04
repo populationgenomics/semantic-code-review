@@ -538,8 +538,8 @@ function _smellPill(smell: Smell, promotion?: SmellPromotion): HTMLElement {
       const body = smell.note
         ? `${smell.tag}: ${smell.note}`
         : smell.tag;
-      Comments.promoteSmell({
-        ...promotion, body, smellId: promotion.smellId,
+      Comments.promote({
+        derivedFrom: promotion.smellId, file: promotion.file, side: promotion.side, line: promotion.line, body,
       });
     });
   }
@@ -1267,11 +1267,12 @@ const _SPAN_BAR_COLUMN_PX = 6;
  *  its rows are on screen: its marks in the bars column (a bar over its
  *  rows, or a dot for a span of one line) and its text block in the text
  *  column, whatever its length. A span whose rows are not in the hunk is
- *  warned about and left out; one the reviewer has turned into a comment
- *  is left out too — the comment stands in its place. Everything hangs
- *  off the rows themselves, so it survives the hunk's `.diff` being
- *  reused across repaints and rows arriving above or below it from a
- *  chip. */
+ *  warned about and left out. One the reviewer has turned into a comment
+ *  loses its text block and, on one line, its dot — the comment stands
+ *  in their place — but keeps its bar: the bar marks a range the comment
+ *  does not. Everything hangs off the rows themselves, so it survives
+ *  the hunk's `.diff` being reused across repaints and rows arriving
+ *  above or below it from a chip. */
 function _attachSpans(
   rowElsNew: HTMLElement[], rows: RowBlock[], spans: AnnotationSpan[],
   hunkId: string, filePath: string,
@@ -1284,8 +1285,9 @@ function _attachSpans(
   const blocks: SpanTextBlock[] = [];
   const bars: SpanBar[] = [];
   for (const ps of placed) {
-    if (_spanPromoted(ps.span, hunkId)) continue;
+    const promoted = _spanPromoted(ps.span, hunkId);
     if (ps.first === ps.last) {
+      if (promoted) continue;
       _gutterBars(rowElsNew[ps.first]).appendChild(_spanMark(ps.span, ps.depth, "dot"));
     } else {
       for (let i = ps.first; i <= ps.last; i++) {
@@ -1293,6 +1295,7 @@ function _attachSpans(
         _gutterBars(rowElsNew[i]).appendChild(_spanMark(ps.span, ps.depth, pos));
       }
       bars.push({ span: ps.span, first: rowElsNew[ps.first], last: rowElsNew[ps.last], depth: ps.depth });
+      if (promoted) continue;
     }
     const el = _el("div", "span-text");
     el.dataset.spanId = ps.span.id;
@@ -1304,7 +1307,9 @@ function _attachSpans(
     half.appendChild(el);
     blocks.push({ el, body, row: rowElsNew[ps.first] });
   }
-  if (!blocks.length) return;
+  // A bar with no block still needs the pass: it runs through the
+  // non-code rows that arrive inside it.
+  if (!blocks.length && !bars.length) return;
   const gutter: SpanGutter = { blocks, bars, stretched: [], observer: null };
   _SPAN_GUTTERS.set(half, gutter);
   _observeHalf(half, gutter);
@@ -1432,30 +1437,47 @@ function _spanTooltip(span: AnnotationSpan): string {
   return smells.length ? `${smells.join(" · ")}\n${intent}` : intent;
 }
 
-/** Whether the reviewer has already turned this span into a comment: a
- *  local comment derived from its id, or — for a span of one line — from
- *  the `line_note` id a comment store written before spans recorded the
- *  same observation under. */
+/** Whether the reviewer has already turned this span's intent into a
+ *  comment: a local comment derived from its id, or — for a span of one
+ *  line — from the `line_note` id a comment store written before spans
+ *  recorded the same observation under. */
 function _spanPromoted(span: AnnotationSpan, hunkId: string): boolean {
   if (Comments.isPromoted(span.id)) return true;
   return span.start === span.end && Comments.isPromoted(`${hunkId}:line_note:${span.start}`);
 }
 
-/** One span's text: its smells as promotable pills on the block's first
- *  line — beside the bar's start, since they describe the span — then its
+/** One span's text: a pill row on the block's first line — beside the
+ *  bar's start, since it describes the span — holding its smells as
+ *  promotable pills and the affordance that promotes its intent, then the
  *  intent, wrapping at the gutter's width. */
 function _spanText(span: AnnotationSpan, filePath: string): HTMLElement {
   const el = _el("p", "span-text-body");
   el.dataset.spanId = span.id;
-  if (span.smells && span.smells.length) {
-    const pills = _el("span", "span-text-smells");
-    for (const sm of span.smells) pills.appendChild(_smellPill(sm, {
-      smellId: `${span.id}:smell:${sm.tag}`, file: filePath, side: "new", line: span.start,
-    }));
-    el.appendChild(pills);
-  }
+  const pills = _el("span", "span-text-pills");
+  for (const sm of span.smells || []) pills.appendChild(_smellPill(sm, {
+    smellId: `${span.id}:smell:${sm.tag}`, file: filePath, side: "new", line: span.start,
+  }));
+  if (span.intent) pills.appendChild(_spanPromoteButton(span, filePath));
+  el.appendChild(pills);
   el.appendChild(_el("span", span.intent ? "span-text-intent" : "span-text-intent empty", span.intent || "(no intent)"));
   return el;
+}
+
+/** The affordance that turns a span's intent into a reviewer comment on
+ *  the span's first line, by the one-click path the smell pills use;
+ *  the saved comment is `derived_from` the span's id, which is what
+ *  hides the block from then on. */
+function _spanPromoteButton(span: AnnotationSpan, filePath: string): HTMLElement {
+  const btn = _el("button", "span-promote", "+ comment") as HTMLButtonElement;
+  btn.type = "button";
+  btn.title = `Add this intent as a comment on line ${span.start}`;
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    Comments.promote({
+      derivedFrom: span.id, file: filePath, side: "new", line: span.start, body: span.intent,
+    });
+  });
+  return btn;
 }
 
 /** Re-run the placement pass whenever the half's rows change or its

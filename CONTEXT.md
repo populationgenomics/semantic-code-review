@@ -298,44 +298,48 @@ buckets its integer `(file, line)` notes into single-line spans.
 
 In the viewer a span is a label, and it shows only where its code does
 (see [[fold-level]]). At `files` and `hunks` nothing mentions a span. At
-`code` a span lives in the **span gutter** at the diff's right edge — the
-new half's last two columns, `lineno · code · bars · text`, sticky to
-the half's right edge as the line numbers are to its left, so the strip
-stays put while the code scrolls under it. It has a fixed width per file
-(26ch of text, one 6px bar column per level of nesting; nothing for a
-file with no span), split between the halves so the two code viewports
-stay equal and sit beside each other; the bars sit against the code they
-mark, the text outside them. Every span takes one form, whatever its
-length: a mark in the bars column — a bar over exactly its rows, or a
-dot on a span of one line; the outermost span's column is against the
-text and each level of nesting is one column nearer the code — and a
-text block in the text column, at a smaller size, wrapping at the
-gutter's width, that starts on the span's first row and hangs down for
-as long as it needs — past the end of its bar if it must; nothing is
+`code` a span lives in the **span gutter** at the diff's right edge —
+the new half's last two columns, `lineno · code · bars · text`, sticky
+to the half's right edge as the line numbers are to its left, so the
+strip stays put while the code scrolls under it. It has a fixed width
+per file (26ch of text, one 6px bar column per level of nesting; nothing
+for a file with no span), split between the halves so the two code
+viewports stay equal and sit beside each other; the bars sit against the
+code they mark, the text outside them. Every span takes one form,
+whatever its length: a mark in the bars column — a bar over exactly its
+rows, or a dot on a span of one line; the outermost span's column is
+against the text and each level of nesting is one column nearer the code
+— and a text block in the text column, at a smaller size, wrapping at
+the gutter's width, that starts on the span's first row and hangs down
+for as long as it needs — past the end of its bar if it must; nothing is
 clipped, and nothing of a span is in the code column. The block leads
-with the span's smell pills, so they sit beside the bar's first row,
-then the intent. The block is a zero-height grid item, so it sizes no
-row; the one placement rule is that blocks do not overlap. A downward
-pass over the half's rows (`render._layoutSpanTexts`) enforces it:
-where a block would start inside the one above, the nearest code row
+with a pill row, so it sits beside the bar's first row — the span's
+smell pills, each promotable to a [[reviewer-comment]] by a click, and a
+`+ comment` affordance that promotes the span's intent the same way, by
+the one-click path (`Comments.promote`), as a comment on the span's
+first line — then the intent. The block is a zero-height grid item, so
+it sizes no row; the one placement rule is that blocks do not overlap. A
+downward pass over the half's rows (`render._layoutSpanTexts`) enforces
+it: where a block would start inside the one above, the nearest code row
 above it is stretched by the overlap (a `min-height`, mirrored onto the
-old half's paired row so the halves stay aligned), and text running
-past the hunk's last row stretches its last code row; every other row
-keeps its natural height. Two spans starting on one row chain their
-blocks, outermost first. The same pass gives every non-code row inside
-a bar — a comment thread's row, a fold's label row — a bars cell with
-the bar's segment at its depth, so a bar runs unbroken through them.
-The pass runs when the half's rows change (an annotation inserted, a
-fold hiding rows — a `MutationObserver`) or its size does (a
-`ResizeObserver`, on the next frame); it measures once, writes once,
-and discards the mutation records its own writes queue. When a fold
-hides a span's first row its text hides too and the fold's label tree
-lists it ([[fold-region]]). A span the reviewer has turned into a
-[[reviewer-comment]] (a local comment `derived_from` its id, or the
-`line_note` id a store written before spans used) is not drawn; the
-comment stands in its place. `render._attachSpans` owns all of this;
-the explicit `grid-row` on every row of a half with spans is what
-places the blocks.
+old half's paired row so the halves stay aligned), and text running past
+the hunk's last row stretches its last code row; every other row keeps
+its natural height. Two spans starting on one row chain their blocks,
+outermost first. The same pass gives every non-code row inside a bar — a
+comment thread's row, a fold's label row — a bars cell with the bar's
+segment at its depth, so a bar runs unbroken through them. The pass runs
+when the half's rows change (an annotation inserted, a fold hiding rows
+— a `MutationObserver`) or its size does (a `ResizeObserver`, on the
+next frame); it measures once, writes once, and discards the mutation
+records its own writes queue. When a fold hides a span's first row its
+text hides too and the fold's label tree lists it ([[fold-region]]). A
+span whose intent the reviewer has turned into a [[reviewer-comment]] (a
+local comment `derived_from` its id, or the `line_note` id a store
+written before spans used) loses its text block and, on one line, its
+dot — the comment stands in their place — but keeps its bar, which marks
+a range the comment does not. `render._attachSpans` owns all of this;
+the explicit `grid-row` on every row of a half with spans is what places
+the blocks.
 
 The gutter **folds**, globally: folded, it is the bars alone at the
 right edge — the text column zero wide, every block hidden, no row

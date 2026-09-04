@@ -882,10 +882,22 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 .diff .half-new .cell-annotation { grid-column: 1 / 3; }
 .diff .span-text-body.chained { padding-top: 4px; border-top: 1px dashed var(--border); }
 .diff .span-text-intent.empty { color: var(--fg-dim); font-style: italic; }
-/* The pills lead the block, on its first line, so they sit beside the
- * row the span starts on rather than wherever its intent ends. */
-.diff .span-text-smells { display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 2px; }
-.diff .span-text .smell { font-size: 10px; padding: 0 6px; }
+/* The pill row leads the block, on its first line, so it sits beside the
+ * row the span starts on rather than wherever its intent ends: the smell
+ * pills, then the promote affordance at the row's far end — an outlined
+ * pill, dim until hovered, so it reads as a control and not a smell. */
+.diff .span-text-pills { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-bottom: 2px; }
+.diff .span-text .smell { font-size: 10px; padding: 0 6px; margin-left: 0; }
+.diff .span-promote {
+  margin-left: auto;
+  padding: 0 6px;
+  font: inherit; font-size: 10px; line-height: 14px;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: transparent; color: var(--fg-dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.diff .span-promote:hover { color: var(--accent); border-color: var(--accent); }
 
 /* Each `.row` is a real grid box spanning both of `.half`'s columns,
  * and uses `subgrid` so its two cells land in `.half`'s column tracks

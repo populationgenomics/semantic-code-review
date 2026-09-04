@@ -1253,11 +1253,16 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
     expect(gridRow(inner)).toBe("3");
     expect(inner.querySelector(".span-text-intent")!.textContent).toBe("the inner edit");
     expect(inner.querySelector(".smell")!.textContent).toBe("dead-code");
-    // The pills lead the block — beside the bar's first row, not wherever
-    // a long intent happens to end — and a span with none has no pill row.
+    // The pill row leads the block — beside the bar's first row, not
+    // wherever a long intent happens to end — with the smells, then the
+    // promote affordance; a span with no smells still has the row, for
+    // the affordance.
     const body = inner.querySelector(".span-text-body")!;
-    expect(Array.from(body.children).map((c) => c.className)).toEqual(["span-text-smells", "span-text-intent"]);
-    expect(textOf("H0_0:span:4-7")!.querySelector(".span-text-smells")).toBeNull();
+    expect(Array.from(body.children).map((c) => c.className)).toEqual(["span-text-pills", "span-text-intent"]);
+    expect(Array.from(body.querySelector(".span-text-pills")!.children).map((c) => c.className.split(" ")[0]))
+      .toEqual(["smell", "span-promote"]);
+    expect(Array.from(textOf("H0_0:span:4-7")!.querySelector(".span-text-pills")!.children).map((c) => c.className))
+      .toEqual(["span-promote"]);
 
     // Single-line spans take the same form: a dot on their row at their
     // depth, and their text block in the gutter on that row — nothing in
@@ -1604,6 +1609,149 @@ describe("LLM observation → comment promotion", () => {
     // The gutter's pass, re-run by the removal, has nothing left to place
     // and holds no stretch.
     for (const row of document.querySelectorAll<HTMLElement>(".half-new .row")) expect(row.style.minHeight).toBe("");
+  });
+
+  /** A nine-line file whose one hunk inserts lines 4..8, with `spans`. */
+  function spanFile(spans: Array<Record<string, unknown>>): Record<string, unknown> {
+    const rows = [4, 5, 6, 7, 8].map((n) =>
+      ({ kind: "ins", old_line: null, new_line: n, old_text: "", new_text: `l${n}` }));
+    return {
+      id: "F0", path: "a.py", status: "modified", language: "python",
+      adds: 5, dels: 0, summary: "", head_line_count: 9,
+      symbols: { added: [], modified: [], removed: [] }, fold_regions: [],
+      hunks: [makeHunkBlock("H0_0", "adds five lines", {
+        old_start: 3, old_count: 0, new_start: 4, new_count: 5, rows, spans,
+      })],
+    };
+  }
+  const span = (id: string, start: number, end: number, intent: string, smells: unknown[] = []): Record<string, unknown> =>
+    ({ id, start, end, intent, smells, context: "", refs: [] });
+  /** Capture the next POST /comments body. */
+  function capturePost(): () => Record<string, unknown> | null {
+    let posted: Record<string, unknown> | null = null;
+    (globalThis.fetch as unknown as { mockImplementationOnce: (fn: typeof fetch) => void })
+      .mockImplementationOnce(((url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, init });
+        posted = JSON.parse(init!.body as string);
+        return Promise.resolve({ status: 200, ok: true, json: () => Promise.resolve(posted) } as Response);
+      }) as typeof fetch);
+    return () => posted;
+  }
+  /** The kinds of the marks on code rows for `spanId` (a thread row's
+   *  segment, added by the placement pass, is checked on its own). */
+  const markKinds = (spanId: string): string[] =>
+    Array.from(document.querySelectorAll<HTMLElement>(`.row:not(.row-annotation) > .cell-gutter-bars > .span-mark[data-span-id="${spanId}"]`))
+      .map((m) => Array.from(m.classList).find((c) => c.startsWith("span-") && c !== "span-mark")!);
+
+  test("every block's pill row carries a promote affordance for its intent; a span with no intent has none", async () => {
+    window.location.hash = "#fold=code";
+    await bootViewer(makeData({ pending: false, files: [spanFile([
+      span("H0_0:span:4-7", 4, 7, "a multi-line span", [{ tag: "dead-code", note: "" }]),
+      span("H0_0:span:5-6", 5, 6, "a nested one, no smells"),
+      span("H0_0:span:8-8", 8, 8, "a callout"),
+      span("H0_0:span:7-7", 7, 7, "", []),
+    ])] }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const btn = (id: string): HTMLButtonElement | null =>
+      document.querySelector<HTMLButtonElement>(`.span-text[data-span-id="${id}"] .span-text-pills > .span-promote`);
+    for (const id of ["H0_0:span:4-7", "H0_0:span:5-6", "H0_0:span:8-8"]) {
+      const b = btn(id)!;
+      expect(b, id).not.toBeNull();
+      expect(b.type).toBe("button");
+      expect(b.title).toContain(`line ${id.split(":")[2].split("-")[0]}`);
+    }
+    // Nothing to promote: the block shows "(no intent)" and no button.
+    expect(document.querySelector('.span-text[data-span-id="H0_0:span:7-7"] .span-text-intent.empty')).not.toBeNull();
+    expect(btn("H0_0:span:7-7")).toBeNull();
+  });
+
+  test("promoting a multi-line span's intent saves a comment on its first line, hides its block and keeps its bar", async () => {
+    window.location.hash = "#fold=code";
+    await bootViewer(makeData({ pending: false, files: [spanFile([
+      span("H0_0:span:4-7", 4, 7, "the outer edit", [{ tag: "dead-code", note: "" }]),
+      span("H0_0:span:6-7", 6, 7, "the inner edit"),
+    ])] }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(markKinds("H0_0:span:4-7")).toEqual(["span-bar-top", "span-bar", "span-bar", "span-bar-bottom"]);
+    const posted = capturePost();
+
+    document.querySelector<HTMLElement>('.span-text[data-span-id="H0_0:span:4-7"] .span-promote')!.click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    const c = posted()!;
+    expect(c).not.toBeNull();
+    expect(c.body).toBe("the outer edit");
+    expect(c.derived_from).toBe("H0_0:span:4-7");
+    expect(c.file).toBe("a.py");
+    expect(c.side).toBe("new");
+    expect(c.line).toBe(4);
+    // The block (pills and intent) is gone; the bar still marks the range
+    // the comment, on one line, does not; the thread sits under line 4.
+    expect(document.querySelector('.span-text[data-span-id="H0_0:span:4-7"]')).toBeNull();
+    expect(markKinds("H0_0:span:4-7")).toEqual(["span-bar-top", "span-bar", "span-bar", "span-bar-bottom"]);
+    const row4 = Array.from(document.querySelectorAll<HTMLElement>(".half-new .row"))
+      .find((r) => r.querySelector(".cell-lineno")!.textContent === "4")!;
+    const thread = row4.nextElementSibling as HTMLElement;
+    expect(thread.classList.contains("annot-comment")).toBe(true);
+    expect(thread.querySelector(':scope > .cell-gutter-bars > .span-mark.span-bar[data-span-id="H0_0:span:4-7"]')).not.toBeNull();
+    // The nested span is untouched.
+    expect(document.querySelector('.span-text[data-span-id="H0_0:span:6-7"]')).not.toBeNull();
+    expect(markKinds("H0_0:span:6-7")).toEqual(["span-bar-top", "span-bar-bottom"]);
+  });
+
+  test("promoting a single-line span's intent removes its dot with its block", async () => {
+    window.location.hash = "#fold=code";
+    await bootViewer(makeData({ pending: false, files: [spanFile([span("H0_0:span:5-5", 5, 5, "a callout")])] }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(markKinds("H0_0:span:5-5")).toEqual(["span-dot"]);
+    const posted = capturePost();
+    document.querySelector<HTMLElement>('.span-text[data-span-id="H0_0:span:5-5"] .span-promote')!.click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(posted()!.line).toBe(5);
+    expect(posted()!.derived_from).toBe("H0_0:span:5-5");
+    expect(document.querySelector('[data-span-id="H0_0:span:5-5"]')).toBeNull();
+  });
+
+  test("a multi-line span promoted in an earlier session draws its bar and no block, on load and after a re-augment", async () => {
+    window.location.hash = "#fold=code";
+    const spans = [
+      span("H0_0:span:4-7", 4, 7, "the outer edit", [{ tag: "dead-code", note: "" }]),
+      span("H0_0:span:6-7", 6, 7, "the inner edit"),
+    ];
+    await bootViewer(makeData({ pending: false, files: [spanFile(spans)] }), {
+      comments: [{
+        id: "local-1", file: "a.py", side: "new", line: 4,
+        body: "the outer edit", created_at: 1, updated_at: 1,
+        source: "local", derived_from: "H0_0:span:4-7",
+      }],
+    });
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const check = (): void => {
+      expect(document.querySelector('.span-text[data-span-id="H0_0:span:4-7"]')).toBeNull();
+      expect(markKinds("H0_0:span:4-7")).toEqual(["span-bar-top", "span-bar", "span-bar", "span-bar-bottom"]);
+      expect(document.querySelector('.span-text[data-span-id="H0_0:span:6-7"]')).not.toBeNull();
+    };
+    check();
+    expect(document.querySelector('.comment-thread-entry[data-comment-id="local-1"]')).not.toBeNull();
+    // The bar runs through the thread row under line 4, as any bar does.
+    const row4 = Array.from(document.querySelectorAll<HTMLElement>(".half-new .row"))
+      .find((r) => r.querySelector(".cell-lineno")!.textContent === "4")!;
+    const thread = row4.nextElementSibling as HTMLElement;
+    expect(thread.classList.contains("annot-comment")).toBe(true);
+    expect(thread.querySelector(':scope > .cell-gutter-bars > .span-mark[data-span-id="H0_0:span:4-7"]')).not.toBeNull();
+    // A re-augment rebuilds the hunk with the comments known: the
+    // renderer itself leaves the block out and draws the bar.
+    lastEventSource().dispatch("hunk", {
+      file_idx: 0, hunk_idx: 0, ok: true,
+      block: makeHunkBlock("H0_0", "re-run", {
+        old_start: 3, old_count: 0, new_start: 4, new_count: 5, spans,
+        rows: [4, 5, 6, 7, 8].map((n) => ({ kind: "ins", old_line: null, new_line: n, old_text: "", new_text: `l${n}` })),
+      }),
+    });
+    await new Promise<void>((r) => setTimeout(r, 0));
+    check();
   });
 
   test("a comment store written before spans hides the span under its line_note id", async () => {
