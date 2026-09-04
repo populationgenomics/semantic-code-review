@@ -1909,9 +1909,12 @@ describe("sidebar comment counts", () => {
     expect(bPyBadge).not.toBeNull();
     expect(bPyBadge.textContent).toBe("0/1");
     expect(bPyBadge.classList.contains("has-unresolved")).toBe(false);
+    // With a badge somewhere, the section reserves the badge column on
+    // every row so the count pills stay in one column.
+    expect(filesSection.classList.contains("has-comment-badges")).toBe(true);
   });
 
-  test("pills with no comments get no comment badge", async () => {
+  test("pills with no comments get no comment badge, and the section reserves no badge column", async () => {
     window.location.hash = "#fold=code";
     await bootViewer(makeData({ pending: false }));
     await new Promise<void>((r) => setTimeout(r, 0));
@@ -1919,6 +1922,7 @@ describe("sidebar comment counts", () => {
     const pill = filesSection.querySelector(".group-btn") as HTMLElement;
     expect(pill).not.toBeNull();
     expect(pill.querySelector(".group-btn-comments")).toBeNull();
+    expect(filesSection.classList.contains("has-comment-badges")).toBe(false);
   });
 });
 

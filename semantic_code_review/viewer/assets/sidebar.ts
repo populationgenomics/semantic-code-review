@@ -291,6 +291,7 @@ function render(): void {
       // Files (directory tree) and Symbols (class ▸ method tree) both
       // render as foldable trees. Files pills carry comment-count badges.
       const commentCounts = axis.id === "files" ? _fileGroupCommentCounts() : null;
+      if (commentCounts) _markCommentBadges(section, commentCounts);
       for (const g of axis.groups) section.appendChild(_treeNode(axis, g, commentCounts));
     }
     sidebar.appendChild(section);
@@ -594,6 +595,14 @@ function _renderCommentCountBadge(cc: CommentCounts): HTMLElement | null {
   return badge;
 }
 
+/** Flag the Files section when any pill carries a comment badge; the
+ *  CSS reserves the badge column on every row of a flagged section so
+ *  the count pills stay in one column across badged and unbadged rows. */
+function _markCommentBadges(section: Element, counts: Record<string, CommentCounts>): void {
+  const any = Object.values(counts).some((cc) => cc.total > 0);
+  section.classList.toggle("has-comment-badges", any);
+}
+
 /** Re-paint just the comment-count badges on existing Files-axis pills.
  *  Boot wires this to Comments' onChange so the badges stay in sync
  *  with the store without re-rendering the whole sidebar. */
@@ -603,6 +612,7 @@ function refreshFileCommentCounts(): void {
   const filesSection = sidebar.querySelector('[data-axis="files"]');
   if (!filesSection) return;
   const counts = _fileGroupCommentCounts();
+  _markCommentBadges(filesSection, counts);
   filesSection.querySelectorAll<HTMLElement>(".group-btn").forEach((btn) => {
     const pillId = btn.dataset.pillId || "";
     if (!FILES_AXIS.byId[pillId]) return;
