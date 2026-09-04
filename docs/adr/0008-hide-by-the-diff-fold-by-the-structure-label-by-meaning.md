@@ -1,6 +1,6 @@
 # ADR 0008 — Hide by the diff, fold by the structure, label by meaning
 
-- Status: Accepted (implemented)
+- Status: Accepted (implemented; the ladder decision amended 2026-09-04, see below)
 - Date: 2026-09-03
 
 ## Context
@@ -210,6 +210,30 @@ label; a hunk touching no definition folds as one region. The ladder is
 depth is uneven across files and languages and the same number would mean
 different things in each. Nothing is synthesised: every hunk has a
 definition or is one region, by construction.
+
+*Amended 2026-09-04 — withdrawn.* Built, looked at, and wrong in the same
+way `segments` was. The ladder is **progressive summarisation**: the same
+units at decreasing detail, and the diff already has the units — file, hunk,
+line — each with a summary the pipeline already writes. `segments` and
+`definitions` both broke that by changing the *unit* rather than the
+*detail*: one re-grouped by the model's intent, the other by the AST, and
+neither is a shorter description of the hunk above it. A rung that changes
+the carving is a projection, not a summary, which is why `definitions` did
+not read as one.
+
+The original case for segments was that a git hunk is not a semantic unit —
+it splices unrelated edits — so a finer, semantic re-hunking was worth
+having. Tree-sitter has taken that job: positioning slides runs to
+definition openers and folding follows definition boundaries. The semantic
+layer no longer re-carves anything; it labels.
+
+So the ladder is `files | hunks | code`, and the three axes this ADR names
+are **affordances at the `code` rung**, not rungs: hide is the expand chip,
+fold is the definition chevron, label is the span. A collapsed definition
+shows its labels — the label tree slice 5 built, re-homed from a rung to
+the content of a fold. A multi-line span, when the code is visible, is a
+bracket on the lines it covers; that is the inline form slice 4 left
+unbuilt, and without it the tree is a map with no territory.
 
 **Cross-hunk spans: the pass that sees the file.** A span may cross hunks
 only when produced by a pass that saw both — today the per-file batch pass,
