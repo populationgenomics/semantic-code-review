@@ -153,8 +153,7 @@ async function bootViewer(data: ViewerData, opts: BootOptions = {}): Promise<voi
       <div class="fold-slider">
         <button data-fold="files"></button>
         <button data-fold="hunks"></button>
-        <button data-fold="definitions"></button>
-        <button data-fold="off"></button>
+        <button data-fold="code"></button>
       </div>
       <button id="reset-btn"></button>
       <button id="help-btn"></button>
@@ -721,7 +720,7 @@ describe("streaming events", () => {
   });
 
   test("focusing a symbol pill search-highlights its name across the diff", async () => {
-    window.location.hash = "#fold=off"; // expand hunks so diff bodies render
+    window.location.hash = "#fold=code"; // expand hunks so diff bodies render
     await bootViewer(makeData({
       pending: false,
       files: [{
@@ -844,58 +843,54 @@ describe("streaming events", () => {
   const codeRows = (sel: string): number =>
     document.querySelectorAll(`${sel} .diff .half-new .row:not(.row-annotation)`).length;
 
-  test("fold ladder reveals code only at 'off'; nothing is synthesised for a bare hunk", async () => {
+  test("the ladder is files | hunks | code: only 'code' shows rows", async () => {
     await bootViewer(makeData({ pending: false, files: [foldFile()], symbols: [] }));
+    expect(document.querySelectorAll(".fold-slider button").length).toBe(3);
 
-    // Default "hunks": headers only, no label trees, no code.
+    // Default "hunks": headers only, no code.
     expect(document.querySelectorAll(".hunk-header").length).toBe(3);
-    expect(document.querySelectorAll(".label-tree").length).toBe(0);
     expect(codeRows(".hunk")).toBe(0);
 
-    // "definitions": every hunk is open to its label tree. These hunks
-    // touch no definition and carry no span, so the tree is empty — no
-    // synthetic whole-hunk row stands in.
-    fold("definitions");
-    expect(window.location.hash).toContain("fold=definitions");
-    expect(document.querySelectorAll(".hunk .label-tree").length).toBe(3);
-    expect(document.querySelectorAll(".hunk .label-row").length).toBe(0);
-    expect(document.querySelector('[data-id$="_whole"]')).toBeNull();
-    expect(codeRows(".hunk")).toBe(0);
-
-    // "off": code revealed, trees gone.
-    fold("off");
-    expect(document.querySelectorAll(".label-tree").length).toBe(0);
+    // "code": every hunk is open to its rows.
+    fold("code");
+    expect(window.location.hash).toContain("fold=code");
     expect(codeRows(".hunk")).toBe(3);
 
-    // "hunk": back to headers only.
+    // "hunks": back to headers only; "files": headers of files only.
     fold("hunks");
     expect(codeRows(".hunk")).toBe(0);
-    expect(document.querySelectorAll(".label-tree").length).toBe(0);
+    fold("files");
+    expect(document.querySelectorAll(".hunk-header").length).toBe(0);
+    expect(document.querySelector(".file")!.classList.contains("folded")).toBe(true);
   });
 
-  test("key 3 selects 'definitions'; an old 'fold=segments' hash lands there too", async () => {
-    window.location.hash = "#fold=segments";
+  test("key 3 selects 'code'; there is no key 4", async () => {
     await bootViewer(makeData({ pending: false, files: [foldFile()], symbols: [] }));
-    expect(window.location.hash).toContain("fold=definitions");
-    expect(window.location.hash).not.toContain("segments");
-    expect(document.querySelector('.fold-slider button[data-fold="definitions"]')!.classList)
-      .toContain("active");
-    expect(document.querySelectorAll(".hunk .label-tree").length).toBe(3);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "3" }));
+    expect(window.location.hash).toContain("fold=code");
+    expect(document.querySelector('.fold-slider button[data-fold="code"]')!.classList).toContain("active");
+    expect(codeRows(".hunk")).toBe(3);
 
     fold("hunks");
-    expect(document.querySelectorAll(".hunk .label-tree").length).toBe(0);
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "3" }));
-    expect(window.location.hash).toContain("fold=definitions");
-    expect(document.querySelectorAll(".hunk .label-tree").length).toBe(3);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "4" }));
+    expect(window.location.hash).toContain("fold=hunks");
+    expect(codeRows(".hunk")).toBe(0);
+  });
+
+  test.each(["definitions", "segments", "off"])("an old 'fold=%s' hash lands on 'code' and is rewritten", async (old) => {
+    window.location.hash = `#fold=${old}`;
+    await bootViewer(makeData({ pending: false, files: [foldFile()], symbols: [] }));
+    expect(window.location.hash).toContain("fold=code");
+    expect(window.location.hash).not.toContain(old);
+    expect(document.querySelector('.fold-slider button[data-fold="code"]')!.classList).toContain("active");
+    expect(codeRows(".hunk")).toBe(3);
   });
 
   /** A file whose one hunk adds two functions inside a class, with the
    *  class itself reaching past the hunk on both ends (its opener at
    *  line 1 is undisclosed), and a module-level span outside the class.
    *  The regions are the server's, enclosing first. */
-  const definitionsFile = (
-    spans: Record<string, unknown>[], regionOverrides: Record<string, unknown>[] = [],
-  ): Record<string, unknown> => {
+  const spansFile = (spans: Record<string, unknown>[]): Record<string, unknown> => {
     const rows = [4, 5, 6, 7, 8, 9, 10, 11, 12].map((n) =>
       ({ kind: "ins", old_line: null, new_line: n, old_text: "", new_text:
         n === 5 ? "    def alpha(self):" : n === 8 ? "    def beta(self):" : n === 12 ? "X = 1" : `        l${n}` }));
@@ -908,103 +903,62 @@ describe("streaming events", () => {
       adds: 8, dels: 0, summary: "", head_line_count: 20,
       symbols: { added: [], modified: [], removed: [] },
       fold_regions: [
-        region({ right_start: 1, right_end: 11, qualified_name: "Foo", kind: "class", ...(regionOverrides[0] || {}) }),
-        region({ right_start: 5, right_end: 7, qualified_name: "Foo.alpha", kind: "method", ...(regionOverrides[1] || {}) }),
-        region({ right_start: 8, right_end: 11, qualified_name: "Foo.beta", kind: "method", ...(regionOverrides[2] || {}) }),
-        // An indentation stanza is not a definition: never a label row.
-        region({ right_start: 9, right_end: 11, qualified_name: null, kind: null }),
+        region({ right_start: 1, right_end: 11, qualified_name: "Foo", kind: "class" }),
+        region({ right_start: 5, right_end: 7, qualified_name: "Foo.alpha", kind: "method" }),
+        region({ right_start: 8, right_end: 11, qualified_name: "Foo.beta", kind: "method" }),
       ],
       hunks: [makeHunkBlock("H0_0", "adds two methods", {
         old_start: 3, old_count: 1, new_start: 4, new_count: 9, rows, spans,
+        smells: [{ tag: "long-method", note: "" }], context: "why the hunk", refs: [],
       })],
     };
   };
-  const span = (id: string, start: number, end: number, intent: string, smells: unknown[] = []): Record<string, unknown> =>
-    ({ id, start, end, intent, smells, context: "", refs: [] });
-  const labelRows = (root: ParentNode = document): string[] =>
-    Array.from(root.querySelectorAll<HTMLElement>(".label-row")).map((el) =>
-      `${el.dataset.def ?? el.dataset.id}: ${el.querySelector(".label-text")!.textContent}`);
-  const childrenOf = (def: string): string[] => {
-    const row = document.querySelector<HTMLElement>(`.label-row[data-def="${def}"]`)!;
-    const node = row.parentElement!;
-    if (!node.classList.contains("label-node")) return [];
-    return labelRows(node.querySelector(":scope > .label-children")!);
-  };
+  const span = (id: string, start: number, end: number, intent: string): Record<string, unknown> =>
+    ({ id, start, end, intent, smells: [], context: "", refs: [] });
+  const SPANS = [
+    span("H0_0:span:5-7", 5, 7, "alpha does A"),
+    span("H0_0:span:9-10", 9, 10, "beta's guard"),
+    span("H0_0:span:10-10", 10, 10, "callout"),
+    span("H0_0:span:12-12", 12, 12, "module constant"),
+  ];
 
-  test("'definitions' folds each definition the hunk touches, nested, with its spans inside", async () => {
-    await bootViewer(makeData({ pending: false, files: [definitionsFile([
-      span("H0_0:span:5-7", 5, 7, "alpha does A"),          // exactly Foo.alpha → its label
-      span("H0_0:span:9-10", 9, 10, "beta's guard"),        // inside Foo.beta → its child
-      span("H0_0:span:10-10", 10, 10, "callout", [{ tag: "dead-code", note: "" }]),  // inside the guard
-      span("H0_0:span:12-12", 12, 12, "module constant"),   // outside every definition
-    ])], symbols: [] }));
-    fold("definitions");
-
-    // Top level: the class (it holds changed rows) and the span outside it.
-    // The indentation stanza is not there.
-    const tree = document.querySelector(".hunk .label-tree")!;
-    const topLevel = Array.from(tree.children).map((el) =>
-      (el.classList.contains("label-node") ? el.firstElementChild! : el) as HTMLElement);
-    expect(topLevel.map((el) => el.dataset.def ?? el.dataset.id)).toEqual(["Foo", "H0_0:span:12-12"]);
-    expect(document.querySelectorAll(".label-row").length).toBe(6);
-
-    // The class's opener (line 1) is not in the hunk: its name stands
-    // alone. Both methods nest under it; alpha's exact-range span is its
-    // label text (and is not repeated as a child); beta shows its
-    // opener line, with the guard span and the callout nested beneath.
-    expect(labelRows()[0]).toBe("Foo: ");
-    expect(document.querySelector('.label-row[data-def="Foo"] .label-def')!.textContent).toBe("class Foo");
-    expect(childrenOf("Foo")).toEqual([
-      "Foo.alpha: alpha does A",
-      "Foo.beta: def beta(self):",
-      "H0_0:span:9-10: beta's guard",
-      "H0_0:span:10-10: callout",
-    ]);
-    expect(childrenOf("Foo.alpha")).toEqual([]);
-    expect(childrenOf("Foo.beta")).toEqual(["H0_0:span:9-10: beta's guard", "H0_0:span:10-10: callout"]);
-    expect(document.querySelector('[data-id="H0_0:span:10-10"] .smell')!.textContent).toBe("dead-code");
+  test("at 'hunks' a hunk is its header and intent; nothing mentions a span", async () => {
+    await bootViewer(makeData({ pending: false, files: [spansFile(SPANS)], symbols: [] }));
+    const hunk = document.querySelector(".hunk")!;
+    expect(hunk.querySelector(".hunk-pos")!.textContent).toBe("@@ -1,2 +1,2 @@");
+    expect(hunk.querySelector(".hunk-intent")!.textContent).toBe("adds two methods");
+    expect(hunk.querySelector(".hunk-header .smell")!.textContent).toBe("long-method");
+    expect(hunk.querySelector(".hunk-header .context-icon")).not.toBeNull();
+    // No span text, range, bracket, note or tree anywhere in the hunk.
+    const text = hunk.textContent!;
+    for (const s of SPANS) {
+      expect(text).not.toContain(s.intent as string);
+      expect(text).not.toContain(`+${s.start}`);
+    }
+    expect(hunk.querySelector(".span-mark, .span-text, .annot-note, .label-tree, .label-row")).toBeNull();
     expect(codeRows(".hunk")).toBe(0);
+  });
 
-    // Clicking any label row opens the hunk's code; the single-line spans
-    // are then notes on their rows.
-    (document.querySelector('.label-row[data-def="Foo.beta"]') as HTMLElement).click();
-    await new Promise<void>((r) => setTimeout(r, 0));
+  test("at 'code' a hunk's spans are bars and notes on its rows; the definitions are chevrons", async () => {
+    await bootViewer(makeData({ pending: false, files: [spansFile(SPANS)], symbols: [] }));
+    fold("code");
     expect(codeRows(".hunk")).toBe(9);
-    expect(document.querySelector('.row-annotation.annot-note[data-span-id="H0_0:span:10-10"]')).not.toBeNull();
+    // Multi-line spans bar; single-line spans dot and note; no tree until
+    // a definition is collapsed.
+    expect(document.querySelectorAll('.span-mark[data-span-id="H0_0:span:5-7"]').length).toBe(3);
+    expect(document.querySelectorAll('.span-mark[data-span-id="H0_0:span:9-10"]').length).toBe(2);
+    expect(document.querySelectorAll(".half-new > .span-text").length).toBe(2);
+    expect(document.querySelectorAll(".span-dot").length).toBe(2);
     expect(document.querySelectorAll(".row-annotation.annot-note").length).toBe(2);
+    // The label trees exist only inside the (hidden) fold boxes.
+    for (const tree of document.querySelectorAll<HTMLElement>(".label-tree")) {
+      expect((tree.closest(".row-annotation") as HTMLElement).style.display).toBe("none");
+    }
+    // One chevron per definition with two or more rows on screen.
+    expect(document.querySelectorAll(".fold-chev").length).toBe(3);
   });
 
-  test("a folded definition's text: summary, else its labelling span, else its opener", async () => {
-    await bootViewer(makeData({ pending: false, files: [definitionsFile(
-      [span("H0_0:span:5-7", 5, 7, "alpha does A"), span("H0_0:span:8-11", 8, 11, "beta does B")],
-      [{}, { summary: "the summariser's line" }, {}],
-    )], symbols: [] }));
-    fold("definitions");
-    // A summary wins, and the exact-range span is then kept as a child
-    // rather than dropped; without one the span is the text; without
-    // either, the opener line (beta's here is line 8, inside the hunk).
-    expect(childrenOf("Foo")).toEqual([
-      "Foo.alpha: the summariser's line",
-      "H0_0:span:5-7: alpha does A",
-      "Foo.beta: beta does B",
-    ]);
-    expect(childrenOf("Foo.alpha")).toEqual(["H0_0:span:5-7: alpha does A"]);
-  });
-
-  test("a definition the hunk only brushes with context is not a label", async () => {
-    // The region over the hunk's leading context row alone (line 4) is a
-    // neighbour, not something this hunk changed.
-    const file = definitionsFile([]);
-    (file.fold_regions as Record<string, unknown>[]).push({
-      context: "right", right_start: 2, right_end: 4, left_start: null, left_end: null,
-      has_changes: false, qualified_name: "Foo.before", kind: "method", summary: "",
-    });
-    await bootViewer(makeData({ pending: false, files: [file], symbols: [] }));
-    fold("definitions");
-    expect(labelRows()).toEqual(["Foo: ", "Foo.alpha: def alpha(self):", "Foo.beta: def beta(self):"]);
-  });
-
-  test("a hunk touching no definition shows its spans under its header, nested", async () => {
+  test("a hunk touching no definition has no fold: its spans are on the code alone", async () => {
     const rows = [1, 2, 3, 4, 5, 6].map((n) =>
       ({ kind: "ins", old_line: null, new_line: n, old_text: "", new_text: `l${n}` }));
     const file = {
@@ -1014,7 +968,6 @@ describe("streaming events", () => {
       fold_regions: [],
       hunks: [makeHunkBlock("H0_0", "whole hunk", {
         old_start: 0, old_count: 0, new_start: 1, new_count: 6, rows,
-        // Wire order is outermost first; nesting is containment.
         spans: [
           span("H0_0:span:1-4", 1, 4, "region"),
           span("H0_0:span:2-3", 2, 3, "inner"),
@@ -1024,35 +977,14 @@ describe("streaming events", () => {
       })],
     };
     await bootViewer(makeData({ pending: false, files: [file], symbols: [] }));
-    fold("definitions");
+    expect(document.querySelector(".hunk")!.textContent).not.toContain("region");
 
-    const tree = document.querySelector(".hunk .label-tree")!;
-    // Two top-level rows: the region and the tail note; no definition row
-    // and nothing synthetic.
-    const topLevel = Array.from(tree.children).map((el) =>
-      (el.classList.contains("label-node") ? el.firstElementChild! : el).getAttribute("data-id"));
-    expect(topLevel).toEqual(["H0_0:span:1-4", "H0_0:span:6-6"]);
-    expect(tree.querySelector(".label-definition")).toBeNull();
-    expect(tree.querySelector('[data-id="H0_0_whole"]')).toBeNull();
-    // The inner span sits under the region, and the callout under the inner span.
-    const region = tree.querySelector('.label-node > .label-row[data-id="H0_0:span:1-4"]')!;
-    const inner = region.parentElement!.querySelector(
-      ':scope > .label-children > .label-node > .label-row[data-id="H0_0:span:2-3"]');
-    expect(inner).not.toBeNull();
-    expect(inner!.parentElement!.querySelector(
-      ':scope > .label-children > .label-row[data-id="H0_0:span:3-3"]')).not.toBeNull();
-    // Range text: a pair for a range, one number for a single line.
-    expect(region.querySelector(".label-range")!.textContent).toBe("+1..+4");
-    expect(tree.querySelector('[data-id="H0_0:span:3-3"] .label-range')!.textContent).toBe("+3");
-    expect(codeRows(".hunk")).toBe(0);
-
-    // Clicking a nested span opens the hunk's code; the single-line spans
-    // are then notes on their rows, the multi-line ones are not.
-    (tree.querySelector('[data-id="H0_0:span:3-3"]') as HTMLElement).click();
-    await new Promise<void>((r) => setTimeout(r, 0));
-    expect(codeRows(".hunk")).toBe(6);
-    expect(document.querySelector('.row-annotation.annot-note[data-span-id="H0_0:span:3-3"]')).not.toBeNull();
-    expect(document.querySelector('.row-annotation.annot-note[data-span-id="H0_0:span:6-6"]')).not.toBeNull();
+    fold("code");
+    expect(document.querySelectorAll(".fold-chev").length).toBe(0);
+    expect(document.querySelector(".label-tree")).toBeNull();
+    expect(document.querySelectorAll('.span-mark[data-span-id="H0_0:span:1-4"]').length).toBe(4);
+    expect(document.querySelectorAll('.span-mark[data-span-id="H0_0:span:2-3"]').length).toBe(2);
+    expect(document.querySelector('.span-text[data-span-id="H0_0:span:1-4"] .span-text-intent')!.textContent).toBe("region");
     expect(document.querySelectorAll(".row-annotation.annot-note").length).toBe(2);
   });
 
@@ -1076,8 +1008,8 @@ describe("streaming events", () => {
     expect(document.querySelector('.hunk[data-id="H1"] .hunk-header')).not.toBeNull();
     expect(document.querySelector('.hunk[data-id="H0"]')).toBeNull();
 
-    // "off" shows its code again.
-    fold("off");
+    // "code" shows its code again.
+    fold("code");
     expect(codeRows('.hunk[data-id="H1"]')).toBe(1);
   });
 
@@ -1188,9 +1120,194 @@ describe("streaming events", () => {
 });
 
 
+describe("the centre gutter: spans on visible code (ADR 0008)", () => {
+  type Row = Record<string, unknown>;
+  const span = (id: string, start: number, end: number, intent: string, smells: unknown[] = []): Row =>
+    ({ id, start, end, intent, smells, context: "", refs: [] });
+  const fold = (level: string): void =>
+    (document.querySelector(`.fold-slider button[data-fold="${level}"]`) as HTMLElement).click();
+
+  /** A nine-line file whose one hunk inserts lines 4..8. */
+  function gutterFile(spans: Row[]): Row {
+    const rows = [4, 5, 6, 7, 8].map((n) =>
+      ({ kind: "ins", old_line: null, new_line: n, old_text: "", new_text: `l${n}` }));
+    return {
+      id: "F0", path: "a.py", status: "modified", language: "python",
+      adds: 5, dels: 0, summary: "", head_line_count: 9,
+      symbols: { added: [], modified: [], removed: [] },
+      fold_regions: [],
+      hunks: [makeHunkBlock("H0_0", "adds five lines", {
+        old_start: 3, old_count: 0, new_start: 4, new_count: 5, rows, spans,
+      })],
+    };
+  }
+  /** A span over 4..7, one nested inside it over 6..7, a callout on 5
+   *  (inside the outer span) and another on 8. */
+  const NESTED = [
+    span("H0_0:span:4-7", 4, 7, "the outer edit"),
+    span("H0_0:span:6-7", 6, 7, "the inner edit", [{ tag: "dead-code", note: "" }]),
+    span("H0_0:span:5-5", 5, 5, "a callout"),
+    span("H0_0:span:8-8", 8, 8, "another callout"),
+  ];
+
+  const newRows = (): HTMLElement[] =>
+    Array.from(document.querySelectorAll<HTMLElement>(".half-new .row:not(.row-annotation)"));
+  const rowOfLine = (line: number): HTMLElement =>
+    newRows().find((r) => r.querySelector(".cell-lineno")!.textContent === String(line))!;
+  /** The lines carrying a mark for `spanId`, with each mark's kind. */
+  function marks(spanId: string): Array<[number, string]> {
+    const out: Array<[number, string]> = [];
+    for (const row of newRows()) {
+      const m = row.querySelector<HTMLElement>(`.cell-gutter-bars .span-mark[data-span-id="${spanId}"]`);
+      if (!m) continue;
+      const kind = Array.from(m.classList).find((c) => c.startsWith("span-") && c !== "span-mark")!;
+      out.push([Number(row.querySelector(".cell-lineno")!.textContent), kind]);
+    }
+    return out;
+  }
+  const textOf = (spanId: string): HTMLElement | null =>
+    document.querySelector<HTMLElement>(`.half-new > .span-text[data-span-id="${spanId}"]`);
+  const gridRow = (el: HTMLElement): string => el.style.gridRow;
+
+  test("every new-half row carries the gutter's cells after its content cell", async () => {
+    await bootViewer(makeData({ pending: false, files: [gutterFile([])], symbols: [] }));
+    fold("code");
+    for (const row of newRows()) {
+      expect(Array.from(row.children).map((c) => c.className.split(" ")[0]))
+        .toEqual(["cell", "cell", "cell-gutter-bars", "cell-gutter-text"]);
+      expect(row.children[1].classList.contains("cell-content")).toBe(true);
+    }
+    // No span: the gutter is zero wide and no row is placed explicitly.
+    const body = document.querySelector<HTMLElement>(".file-body")!;
+    expect(body.style.getPropertyValue("--span-bars-w")).toBe("0px");
+    expect(body.style.getPropertyValue("--span-text-w")).toBe("0px");
+    expect(newRows().every((r) => r.style.gridRow === "")).toBe(true);
+  });
+
+  test("a multi-line span is a bar over exactly its rows with its text placed on them", async () => {
+    await bootViewer(makeData({ pending: false, files: [gutterFile(NESTED)], symbols: [] }));
+    fold("code");
+
+    expect(marks("H0_0:span:4-7")).toEqual([[4, "span-bar-top"], [5, "span-bar"], [6, "span-bar"], [7, "span-bar-bottom"]]);
+    // The gutter has a fixed width: two bar columns and the text column.
+    const body = document.querySelector<HTMLElement>(".file-body")!;
+    expect(body.style.getPropertyValue("--span-bars-w")).toBe("16px");
+    expect(body.style.getPropertyValue("--span-text-w")).toBe("26ch");
+
+    // Every row is placed explicitly — the callout's note hangs off line 5
+    // as track 3, so lines 6..8 are tracks 4..6 — and the outer span's text
+    // sits on lines 4..5 and the note beneath 5: it stops the row before
+    // its child begins at line 6.
+    expect(newRows().map(gridRow)).toEqual(["1", "2", "4", "5", "6"]);
+    expect((rowOfLine(5).nextElementSibling as HTMLElement).style.gridRow).toBe("3");
+    const outer = textOf("H0_0:span:4-7")!;
+    expect(outer).not.toBeNull();
+    expect(outer.querySelector(".span-text-intent")!.textContent).toBe("the outer edit");
+    expect(gridRow(outer)).toBe("1 / 4");
+    expect(outer.style.display).toBe("");
+  });
+
+  test("nested spans are parallel bars one column apart; the child's text takes the child's rows", async () => {
+    await bootViewer(makeData({ pending: false, files: [gutterFile(NESTED)], symbols: [] }));
+    fold("code");
+
+    expect(marks("H0_0:span:6-7")).toEqual([[6, "span-bar-top"], [7, "span-bar-bottom"]]);
+    const depth = (spanId: string): string =>
+      document.querySelector<HTMLElement>(`.span-mark[data-span-id="${spanId}"]`)!.style.getPropertyValue("--depth");
+    expect(depth("H0_0:span:4-7")).toBe("0");
+    expect(depth("H0_0:span:6-7")).toBe("1");
+    const inner = textOf("H0_0:span:6-7")!;
+    expect(gridRow(inner)).toBe("4 / 6");
+    expect(inner.querySelector(".span-text-intent")!.textContent).toBe("the inner edit");
+    expect(inner.querySelector(".smell")!.textContent).toBe("dead-code");
+
+    // Single-line spans: a dot on their row at their depth, and the note
+    // beneath the row as before. No text block.
+    expect(marks("H0_0:span:5-5")).toEqual([[5, "span-dot"]]);
+    expect(depth("H0_0:span:5-5")).toBe("1");
+    expect(marks("H0_0:span:8-8")).toEqual([[8, "span-dot"]]);
+    expect(depth("H0_0:span:8-8")).toBe("0");
+    expect(document.querySelectorAll(".row-annotation.annot-note").length).toBe(2);
+    expect(textOf("H0_0:span:5-5")).toBeNull();
+  });
+
+  test("a row inserted later is placed too, and the text blocks move with the rows", async () => {
+    await bootViewer(makeData({ pending: false, files: [gutterFile(NESTED)], symbols: [] }));
+    fold("code");
+    // A comment thread attached under line 4 — the same insertion any
+    // annotation makes — takes a track; the rows below shift and the outer
+    // text, whose rows now include it, spans one more.
+    (rowOfLine(4).querySelector(".cell-lineno") as HTMLElement).click();
+    await tick();
+    const editor = rowOfLine(4).nextElementSibling as HTMLElement;
+    expect(editor.classList.contains("row-annotation")).toBe(true);
+    expect(editor.style.gridRow).toBe("2");
+    expect(newRows().map(gridRow)).toEqual(["1", "3", "5", "6", "7"]);
+    expect(gridRow(textOf("H0_0:span:4-7")!)).toBe("1 / 5");
+    expect(gridRow(textOf("H0_0:span:6-7")!)).toBe("5 / 7");
+  });
+
+  test("a row a text block stretched gives its old-half pair the same height", async () => {
+    await bootViewer(makeData({ pending: false, files: [gutterFile(NESTED)], symbols: [] }));
+    fold("code");
+    // jsdom lays nothing out: stand in for the grid stretching line 4's
+    // row to fit a long rationale, then let the placement pass re-run.
+    const row4 = rowOfLine(4);
+    row4.getBoundingClientRect = () => ({ height: 108 } as DOMRect);
+    row4.style.setProperty("--poke", "1");
+    await tick();
+    const old4 = document.querySelector<HTMLElement>(".half-old .row:not(.row-annotation):not(.row-placeholder)")!;
+    expect(old4.style.minHeight).toBe("108px");
+    // Hiding the block's first row hides the block; its rows are released.
+    row4.style.display = "none";
+    await tick();
+    expect(textOf("H0_0:span:4-7")!.style.display).toBe("none");
+    expect(old4.style.minHeight).toBe("");
+  });
+
+  test("a span whose rows its child takes entirely reads above the child's text", async () => {
+    await bootViewer(makeData({ pending: false, files: [gutterFile([
+      span("H0_0:span:4-7", 4, 7, "the whole thing"),
+      span("H0_0:span:4-7:2", 4, 7, "the same rows, again"),
+    ])], symbols: [] }));
+    fold("code");
+    // Two bars, and one text block carrying both intents, outermost first.
+    expect(marks("H0_0:span:4-7").length).toBe(4);
+    expect(marks("H0_0:span:4-7:2").length).toBe(4);
+    expect(textOf("H0_0:span:4-7")).toBeNull();
+    const host = textOf("H0_0:span:4-7:2")!;
+    expect(Array.from(host.querySelectorAll(".span-text-intent")).map((e) => e.textContent))
+      .toEqual(["the whole thing", "the same rows, again"]);
+    expect(gridRow(host)).toBe("1 / 5");
+  });
+
+  test("the marks survive a chip disclosing rows above them", async () => {
+    await bootViewer(makeData({ pending: false, files: [gutterFile(NESTED)], symbols: [] }));
+    fold("code");
+    const before = marks("H0_0:span:4-7");
+
+    const chip = document.querySelector(".gap-chip") as HTMLElement;   // "expand 3 lines above"
+    expect(chip.textContent).toContain("above");
+    queueFileText(0, "a.py", null, nineLines);
+    chip.click();
+    await tick();
+    expect(document.querySelector(".gap-expansion")).not.toBeNull();
+
+    // The disclosed rows are another grid; the hunk's rows, marks and text
+    // placement are untouched.
+    expect(marks("H0_0:span:4-7")).toEqual(before);
+    expect(document.querySelectorAll(".gap-expansion .span-mark, .gap-expansion .span-text").length).toBe(0);
+    expect(gridRow(textOf("H0_0:span:4-7")!)).toBe("1 / 4");
+    // The disclosed rows carry the gutter cells too, so the strip is
+    // continuous down the file.
+    expect(document.querySelector(".gap-expansion .half-new .row .cell-gutter-text")).not.toBeNull();
+  });
+});
+
+
 describe("LLM observation → comment promotion", () => {
   test("Add as comment opens the editor pre-filled and saves with derived_from", async () => {
-    window.location.hash = "#fold=off";
+    window.location.hash = "#fold=code";
     const data = makeData({
       pending: false,
       files: [{
@@ -1244,7 +1361,7 @@ describe("LLM observation → comment promotion", () => {
   });
 
   test("smell pill click saves a comment immediately and detaches the pill", async () => {
-    window.location.hash = "#fold=off";
+    window.location.hash = "#fold=code";
     const data = makeData({
       pending: false,
       smells_catalogue: {
@@ -1292,7 +1409,7 @@ describe("LLM observation → comment promotion", () => {
   });
 
   test("a single-line span already promoted on initial load is hidden", async () => {
-    window.location.hash = "#fold=off";
+    window.location.hash = "#fold=code";
     const data = makeData({
       pending: false,
       files: [{
@@ -1329,7 +1446,7 @@ describe("LLM observation → comment promotion", () => {
 
 describe("sidebar comment counts", () => {
   test("Files-axis pill shows unresolved/total badge once comments load", async () => {
-    window.location.hash = "#fold=off";
+    window.location.hash = "#fold=code";
     await bootViewer(makeData({
       pending: false,
       files: [
@@ -1399,7 +1516,7 @@ describe("sidebar comment counts", () => {
   });
 
   test("pills with no comments get no comment badge", async () => {
-    window.location.hash = "#fold=off";
+    window.location.hash = "#fold=code";
     await bootViewer(makeData({ pending: false }));
     await new Promise<void>((r) => setTimeout(r, 0));
     const filesSection = document.querySelector('[data-axis="files"]')!;
@@ -1427,9 +1544,9 @@ describe("ingested PR comments", () => {
       html_url: "https://github.com/o/r/pull/1#discussion_r7",
       in_reply_to_id: null,
     };
-    // Boot with the fold mode set to "off" so all hunk rows render —
+    // Boot with the fold mode set to "code" so all hunk rows render —
     // default fold is "hunks" which collapses the diff body.
-    window.location.hash = "#fold=off";
+    window.location.hash = "#fold=code";
     await bootViewer(makeData({ pending: false }), { comments: [ingested] });
     // Comment re-attach happens after the store load Promise resolves.
     // One extra tick lets it settle.
@@ -1459,7 +1576,7 @@ describe("ingested PR comments", () => {
   });
 
   test("thread groups parent + replies into one annotation, parent first", async () => {
-    window.location.hash = "#fold=off";
+    window.location.hash = "#fold=code";
     await bootViewer(makeData({ pending: false }), {
       comments: [
         // Out-of-order on the wire: latest reply first. Sorted into
@@ -1500,7 +1617,7 @@ describe("ingested PR comments", () => {
   });
 
   test("shifted comment anchors at head_line with a 'was line N' chip", async () => {
-    window.location.hash = "#fold=off";
+    window.location.hash = "#fold=code";
     await bootViewer(makeData({ pending: false }), {
       comments: [{
         id: "gh-1", file: "a.py", side: "new",
@@ -1527,7 +1644,7 @@ describe("ingested PR comments", () => {
   });
 
   test("orphaned comment chip names the commit it was lost since", async () => {
-    window.location.hash = "#fold=off";
+    window.location.hash = "#fold=code";
     await bootViewer(makeData({ pending: false }), {
       comments: [{
         id: "gh-1", file: "a.py", side: "new",
@@ -1546,7 +1663,7 @@ describe("ingested PR comments", () => {
   });
 
   test("anchored comment shows no anchor chip", async () => {
-    window.location.hash = "#fold=off";
+    window.location.hash = "#fold=code";
     await bootViewer(makeData({ pending: false }), {
       comments: [{
         id: "gh-1", file: "a.py", side: "new",
@@ -1561,7 +1678,7 @@ describe("ingested PR comments", () => {
   });
 
   test("file_gone comments are skipped (no annotation row)", async () => {
-    window.location.hash = "#fold=off";
+    window.location.hash = "#fold=code";
     await bootViewer(makeData({ pending: false }), {
       comments: [{
         id: "gh-1", file: "a.py", side: "new",
@@ -1576,7 +1693,7 @@ describe("ingested PR comments", () => {
   });
 
   test("chip is only on the thread root, not on replies", async () => {
-    window.location.hash = "#fold=off";
+    window.location.hash = "#fold=code";
     await bootViewer(makeData({ pending: false }), {
       comments: [
         {
@@ -1605,7 +1722,7 @@ describe("ingested PR comments", () => {
   });
 
   test("resolved thread renders collapsed; clicking the header expands", async () => {
-    window.location.hash = "#fold=off";
+    window.location.hash = "#fold=code";
     await bootViewer(makeData({ pending: false }), {
       comments: [
         {
@@ -1648,7 +1765,7 @@ describe("ingested PR comments", () => {
   });
 
   test("Reply opens the editor and saves with in_reply_to_id set", async () => {
-    window.location.hash = "#fold=off";
+    window.location.hash = "#fold=code";
     await bootViewer(makeData({ pending: false }), {
       comments: [{
         id: "gh-1", file: "a.py", side: "new", line: 1,
@@ -1721,10 +1838,10 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
 
   function expandHunk(): void {
     // The default fold mode is "hunks" — every hunk renders collapsed
-    // and its body isn't in the DOM. Click "off" so the diff body
+    // and its body isn't in the DOM. Click "code" so the diff body
     // (and its fold-chev) materialises. This matches the user flow:
     // expand the fold-slider before reaching for a fold.
-    (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+    (document.querySelector('.fold-slider button[data-fold="code"]') as HTMLElement).click();
   }
 
   function clickEl(el: Element): void {
@@ -1925,6 +2042,149 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
     expect(document.querySelector(".annot-box")?.textContent).toBe("function Foo.bar — summarising…");
   });
 
+  // --- A collapsed definition shows its labels (ADR 0008 slice 5b) --------
+
+  /** A class over lines 1..11 with two methods, the hunk inserting 5..12
+   *  with one context row (line 4). Spans: exactly alpha, a guard inside
+   *  beta with a callout inside that, and a module constant after the
+   *  class. Regions enclosing first, as the server lists them. */
+  function labelledFile(regionOverrides: Record<string, unknown>[] = []): Record<string, unknown> {
+    const rows = [4, 5, 6, 7, 8, 9, 10, 11, 12].map((n) =>
+      ({ kind: "ins", old_line: null, new_line: n, old_text: "", new_text:
+        n === 5 ? "    def alpha(self):" : n === 8 ? "    def beta(self):" : n === 12 ? "X = 1" : `        l${n}` }));
+    rows[0] = { kind: "ctx", old_line: 3, new_line: 4, old_text: "    pass", new_text: "    pass" };
+    const span = (id: string, start: number, end: number, intent: string, smells: unknown[] = []): Record<string, unknown> =>
+      ({ id, start, end, intent, smells, context: "", refs: [] });
+    return {
+      id: "F0", path: "a.py", status: "modified", language: "python",
+      adds: 8, dels: 0, summary: "", head_line_count: 20,
+      symbols: { added: [], modified: [], removed: [] },
+      fold_regions: [
+        region({ right_start: 1, right_end: 11, has_changes: true, qualified_name: "Foo", kind: "class", ...(regionOverrides[0] || {}) }),
+        region({ right_start: 5, right_end: 7, has_changes: true, qualified_name: "Foo.alpha", kind: "method", ...(regionOverrides[1] || {}) }),
+        region({ right_start: 8, right_end: 11, has_changes: true, qualified_name: "Foo.beta", kind: "method", ...(regionOverrides[2] || {}) }),
+      ],
+      hunks: [makeHunkBlock("H0_0", "adds two methods", {
+        old_start: 3, old_count: 1, new_start: 4, new_count: 9, rows,
+        spans: [
+          span("H0_0:span:5-7", 5, 7, "alpha does A"),
+          span("H0_0:span:9-10", 9, 10, "beta's guard"),
+          span("H0_0:span:10-10", 10, 10, "callout", [{ tag: "dead-code", note: "" }]),
+          span("H0_0:span:12-12", 12, 12, "module constant"),
+        ],
+      })],
+    };
+  }
+  const chevronOnLine = (line: number): SVGElement =>
+    chevrons().find((c) => c.closest(".row")!.querySelector(".cell-lineno")!.textContent === String(line))!;
+  const rowOfLine = (line: number): HTMLElement =>
+    newRows().find((r) => r.querySelector(".cell-lineno")!.textContent === String(line))!;
+  const labelRows = (root: ParentNode): string[] =>
+    Array.from(root.querySelectorAll<HTMLElement>(".label-row")).map((el) =>
+      `${el.dataset.def ?? el.dataset.id}: ${el.querySelector(".label-text")!.textContent}`);
+  const foldBoxOf = (line: number): HTMLElement =>
+    rowOfLine(line).nextElementSibling!.querySelector<HTMLElement>(".annot-box")!;
+
+  test("collapsing a definition shows the labels it hid, beneath its summary line", async () => {
+    await bootViewer(makeData({ pending: false, files: [labelledFile()], symbols: [] }));
+    expandHunk();
+    queueFetchResponse({ status: 200, body: { file_idx: 0, context: "right", right_start: 8, right_end: 11, summary: "beta guards then acts" } });
+
+    // Collapse `beta` (chevron on its opener, line 8): lines 9-11 hide.
+    clickEl(chevronOnLine(8));
+    expect([9, 10, 11].map((n) => rowOfLine(n).style.display)).toEqual(["none", "none", "none"]);
+    const box = foldBoxOf(8);
+    expect(box.querySelector(".fold-summary")!.textContent).toBe("method Foo.beta — summarising…");
+    // The tree holds the hidden labels: the guard span with its callout
+    // nested inside. Not `Foo` or `beta` (they cover the visible opener),
+    // not alpha's span or the module constant (outside the fold).
+    const tree = box.querySelector(".label-tree")!;
+    expect(labelRows(tree)).toEqual(["H0_0:span:9-10: beta's guard", "H0_0:span:10-10: callout"]);
+    expect(tree.querySelector('.label-node > .label-row[data-id="H0_0:span:9-10"]')).not.toBeNull();
+    expect(tree.querySelector('.label-children > .label-row[data-id="H0_0:span:10-10"] .smell')!.textContent).toBe("dead-code");
+    // The guard's text block (its first row is hidden) and the callout's
+    // note fold with their rows.
+    await tick();
+    const guardText = document.querySelector<HTMLElement>('.span-text[data-span-id="H0_0:span:9-10"]')!;
+    const calloutNote = document.querySelector<HTMLElement>('.annot-note[data-span-id="H0_0:span:10-10"]')!;
+    expect(guardText.style.display).toBe("none");
+    expect(calloutNote.style.display).toBe("none");
+
+    // The summary lands: the line changes, the tree stays.
+    await tick();
+    expect(box.querySelector(".fold-summary")!.textContent).toBe("method Foo.beta — beta guards then acts");
+    expect(labelRows(box.querySelector(".label-tree")!)).toEqual(["H0_0:span:9-10: beta's guard", "H0_0:span:10-10: callout"]);
+
+    // Clicking a span's label opens the fold; its bar and text are back.
+    clickEl(tree.querySelector('.label-row[data-id="H0_0:span:9-10"]')!);
+    await tick();
+    expect(chevronOnLine(8).classList.contains("open")).toBe(true);
+    expect([9, 10, 11].map((n) => rowOfLine(n).style.display)).toEqual(["", "", ""]);
+    expect(guardText.style.display).toBe("");
+    expect(calloutNote.style.display).toBe("");
+    expect(rowOfLine(9).querySelector('.span-mark[data-span-id="H0_0:span:9-10"]')).not.toBeNull();
+    expect(box.closest(".row-annotation")!.style.display).toBe("none");
+  });
+
+  test("a collapsed class lists the definitions inside it, each with its spans", async () => {
+    await bootViewer(makeData({ pending: false, files: [labelledFile([{}, { summary: "alpha, summarised" }, {}])], symbols: [] }));
+    expandHunk();
+    queueFetchResponse({ status: 500, body: {} });
+
+    // `Foo` folds from its first rendered row (line 4, context) through 11.
+    clickEl(chevronOnLine(4));
+    const tree = foldBoxOf(4).querySelector(".label-tree")!;
+    // alpha shows its summary; beta, with none, its opener line. Spans
+    // nest under the method that holds them. The module constant (line
+    // 12) is outside the class and not listed.
+    expect(labelRows(tree)).toEqual([
+      "Foo.alpha: alpha, summarised",
+      "H0_0:span:5-7: alpha does A",
+      "Foo.beta: def beta(self):",
+      "H0_0:span:9-10: beta's guard",
+      "H0_0:span:10-10: callout",
+    ]);
+    const betaNode = tree.querySelector('.label-row[data-def="Foo.beta"]')!.parentElement!;
+    expect(labelRows(betaNode.querySelector(":scope > .label-children")!))
+      .toEqual(["H0_0:span:9-10: beta's guard", "H0_0:span:10-10: callout"]);
+    // The module constant's note, outside the fold, stays visible.
+    expect(document.querySelector<HTMLElement>('.annot-note[data-span-id="H0_0:span:12-12"]')!.style.display).toBe("");
+
+    // Clicking a definition opens the fold and lands on its opener.
+    clickEl(tree.querySelector('.label-row[data-def="Foo.beta"]')!);
+    expect(chevronOnLine(4).classList.contains("open")).toBe(true);
+    expect(rowOfLine(8).style.display).toBe("");
+  });
+
+  test("a span still showing on the chevron row is not repeated as a hidden label", async () => {
+    await bootViewer(makeData({ pending: false, files: [labelledFile()], symbols: [] }));
+    expandHunk();
+    queueFetchResponse({ status: 500, body: {} });
+
+    // `alpha` is exactly its span (5..7): collapsing it hides 6-7, but the
+    // span's bar top and text stay on line 5, so the tree has nothing to
+    // add and the box is the summary line alone.
+    clickEl(chevronOnLine(5));
+    await tick();
+    expect([6, 7].map((n) => rowOfLine(n).style.display)).toEqual(["none", "none"]);
+    const text = document.querySelector<HTMLElement>('.span-text[data-span-id="H0_0:span:5-7"]')!;
+    expect(text.style.display).toBe("");
+    expect(text.style.gridRow).toBe("2 / 3");
+    expect(foldBoxOf(5).querySelector(".label-tree")).toBeNull();
+    expect(foldBoxOf(5).querySelector(".fold-summary")!.textContent).toContain("method Foo.alpha — ");
+  });
+
+  test("a region with nothing labelled inside it shows its summary line alone", async () => {
+    await bootViewer(dataWithFold());
+    expandHunk();
+    queueFetchResponse({ status: 200, body: { summary: "renames the column" } });
+    clickEl(chevrons()[0]);
+    await tick();
+    const box = document.querySelector(".annot-box")!;
+    expect(box.querySelector(".fold-summary")!.textContent).toBe("renames the column");
+    expect(box.querySelector(".label-tree")).toBeNull();
+  });
+
   test("regions the rendered rows never reach attach nothing", async () => {
     // Two whole-file regions elsewhere in the file: neither has a row on
     // screen, so no chevron, and nothing is derived from the hunk's own
@@ -2034,8 +2294,8 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
     await bootViewer(dataWithFold());
     expandHunk();
     expect(chevrons()).toHaveLength(1);
-    (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
-    (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+    (document.querySelector('.fold-slider button[data-fold="code"]') as HTMLElement).click();
+    (document.querySelector('.fold-slider button[data-fold="code"]') as HTMLElement).click();
     expect(chevrons()).toHaveLength(1);
     expect(document.querySelectorAll(".annot-box")).toHaveLength(1);
   });
@@ -2339,7 +2599,7 @@ describe("one-sided files", () => {
   }
 
   test("an added file drops the old half and spans the new one", async () => {
-    window.location.hash = "#fold=off";      // the code, not the summaries
+    window.location.hash = "#fold=code";      // the code, not the summaries
     await bootViewer(oneSidedData("added"));
     installStylesheet();
 
@@ -2357,7 +2617,7 @@ describe("one-sided files", () => {
   });
 
   test("a deleted file drops the new half", async () => {
-    window.location.hash = "#fold=off";
+    window.location.hash = "#fold=code";
     await bootViewer(oneSidedData("deleted"));
     installStylesheet();
 
@@ -2368,18 +2628,23 @@ describe("one-sided files", () => {
   });
 
   test("a modified file keeps both halves", async () => {
-    window.location.hash = "#fold=off";
+    window.location.hash = "#fold=code";
     await bootViewer(makeData({ pending: false }));   // a.py, pair rows
     installStylesheet();
 
     const diff = document.querySelector("#app .file .diff") as HTMLElement;
     expect(diff.className).toBe("diff");
     expect(getComputedStyle(diff.querySelector(".half-old") as HTMLElement).display).toBe("grid");
-    expect(getComputedStyle(diff).gridTemplateColumns).toBe("minmax(0, 1fr) minmax(0, 1fr)");
+    // Two tracks, each half of the width less/plus its share of the span
+    // gutter (zero here — the file has no span).
+    const tracks = getComputedStyle(diff).gridTemplateColumns.split(/\)\s+minmax/);
+    expect(tracks).toHaveLength(2);
+    expect(tracks[0]).toContain("50% - ");
+    expect(tracks[1]).toContain("50% + ");
   });
 
   test("a comment on an added file's line anchors on the new side", async () => {
-    window.location.hash = "#fold=off";
+    window.location.hash = "#fold=code";
     await bootViewer(oneSidedData("added"));
 
     const cell = document.querySelector("#app .half-new .row .cell-lineno") as HTMLElement;
@@ -2548,7 +2813,7 @@ describe("rendered markdown mode", () => {
   });
 
   test("a comment on a rendered block anchors on its source line and round-trips", async () => {
-    window.location.hash = "#fold=off";  // expand the diff body so the round-trip row renders
+    window.location.hash = "#fold=code";  // expand the diff body so the round-trip row renders
     await bootViewer(mdData());
     queueFetchResponse({
       status: 200,
@@ -2621,7 +2886,7 @@ describe("the sidebar divider", () => {
     // what makes it the sidebar's edge in whichever mode is showing.
     await bootViewer(makeData({ pending: false }));
     const el = divider();
-    (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+    (document.querySelector('.fold-slider button[data-fold="code"]') as HTMLElement).click();
     expect(divider()).toBe(el);
   });
 
@@ -2828,20 +3093,20 @@ describe("overview mode (ADR 0007)", () => {
     // reviewer sets there.
     btn.click();
     await new Promise<void>((r) => setTimeout(r, 0));
-    (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+    (document.querySelector('.fold-slider button[data-fold="code"]') as HTMLElement).click();
     const before = window.location.hash;
-    expect(before).toContain("fold=off");
+    expect(before).toContain("fold=code");
 
     btn.click();
     await new Promise<void>((r) => setTimeout(r, 0));
     // The level is untouched while in the mode; only `mode=` flips.
-    expect(window.location.hash).toContain("fold=off");
+    expect(window.location.hash).toContain("fold=code");
     expect(window.location.hash).toContain("mode=overview");
 
     btn.click();
     await new Promise<void>((r) => setTimeout(r, 0));
     expect(window.location.hash).toBe(before);
-    expect(document.querySelector('.fold-slider button[data-fold="off"]')!.classList.contains("active"))
+    expect(document.querySelector('.fold-slider button[data-fold="code"]')!.classList.contains("active"))
       .toBe(true);
   });
 
@@ -2908,22 +3173,22 @@ describe("overview mode (ADR 0007)", () => {
     // replaceState, not an assignment to `location.hash`: the latter
     // fires `hashchange` at the listeners every earlier boot in this
     // file left on the shared window, and they repaint #app.
-    window.history.replaceState(null, "", "#fold=off&mode=diff");
+    window.history.replaceState(null, "", "#fold=code&mode=diff");
     await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
     expect(document.querySelector("#app .file")).not.toBeNull();
     expect(document.querySelector("#app .explainer")).toBeNull();
-    expect(window.location.hash).toContain("fold=off");
+    expect(window.location.hash).toContain("fold=code");
     expect(window.location.hash).toContain("mode=diff");
   });
 
   test("mode=overview in the URL restores the mode and the level under it", async () => {
-    window.history.replaceState(null, "", "#fold=off&mode=overview");
+    window.history.replaceState(null, "", "#fold=code&mode=overview");
     await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
     expect(document.querySelectorAll("#app .explainer-map-row")).toHaveLength(1);
-    expect(window.location.hash).toContain("fold=off");
+    expect(window.location.hash).toContain("fold=code");
     (document.getElementById("overview-btn") as HTMLButtonElement).click();
     await new Promise<void>((r) => setTimeout(r, 0));
-    expect(document.querySelector('.fold-slider button[data-fold="off"]')!.classList)
+    expect(document.querySelector('.fold-slider button[data-fold="code"]')!.classList)
       .toContain("active");
   });
 
@@ -2963,17 +3228,17 @@ describe("overview mode (ADR 0007)", () => {
 
     test("a slider click lands in the diff at the level it names", async () => {
       await bootIntoDocument();
-      (document.querySelector('.fold-slider button[data-fold="definitions"]') as HTMLElement).click();
+      (document.querySelector('.fold-slider button[data-fold="code"]') as HTMLElement).click();
       await new Promise<void>((r) => setTimeout(r, 0));
-      expectDiffAt("definitions");
+      expectDiffAt("code");
       expect(document.querySelector("#app .explainer-detail")).toBeNull();
-      expect(document.querySelector('.fold-slider button[data-fold="definitions"]')!.classList)
+      expect(document.querySelector('.fold-slider button[data-fold="code"]')!.classList)
         .toContain("active");
       expect(Array.from((document.getElementById("overview-btn") as HTMLButtonElement).classList))
         .not.toContain("active");
     });
 
-    test("keys 1-4 do the same", async () => {
+    test("keys 1-3 do the same", async () => {
       // No assertion on the mode button here: the keydown listener is on
       // `document`, which every earlier boot in this file shares, and one
       // of them was booted with the feature off — its handler removes the
@@ -2986,7 +3251,7 @@ describe("overview mode (ADR 0007)", () => {
 
     test("the mode is still there to go back into", async () => {
       await bootIntoDocument();
-      (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+      (document.querySelector('.fold-slider button[data-fold="code"]') as HTMLElement).click();
       await new Promise<void>((r) => setTimeout(r, 0));
 
       (document.getElementById("overview-btn") as HTMLButtonElement).click();
@@ -2994,13 +3259,13 @@ describe("overview mode (ADR 0007)", () => {
       expect(document.querySelectorAll("#app .explainer-map-row")).toHaveLength(1);
       expect(window.location.hash).toContain("mode=overview");
       // And the level the press picked is what the diff is waiting at.
-      expect(window.location.hash).toContain("fold=off");
+      expect(window.location.hash).toContain("fold=code");
     });
 
     test("the slider says where a press lands while the pane is the document", async () => {
       await bootIntoDocument();
-      const off = document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement;
-      expect(off.title).toBe("Leave the document and read the diff at this level");
+      const code = document.querySelector('.fold-slider button[data-fold="code"]') as HTMLElement;
+      expect(code.title).toBe("Leave the document and read the diff at this level");
       // The level highlight is the level a press lands on, so it stays.
       expect(document.querySelector('.fold-slider button[data-fold="hunks"]')!.classList)
         .toContain("active");
@@ -3009,7 +3274,7 @@ describe("overview mode (ADR 0007)", () => {
       // harness's header, which is what says the sentence came off.
       (document.getElementById("overview-btn") as HTMLButtonElement).click();
       await new Promise<void>((r) => setTimeout(r, 0));
-      expect((document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).title)
+      expect((document.querySelector('.fold-slider button[data-fold="code"]') as HTMLElement).title)
         .toBe("");
     });
   });
@@ -3117,7 +3382,7 @@ describe("overview mode (ADR 0007)", () => {
       // open: the panel's fold is the panel's.
       (document.getElementById("overview-btn") as HTMLButtonElement).click();
       await new Promise<void>((r) => setTimeout(r, 0));
-      (document.querySelector('.fold-slider button[data-fold="off"]') as HTMLElement).click();
+      (document.querySelector('.fold-slider button[data-fold="code"]') as HTMLElement).click();
       const diffFile = document.querySelector('#app .file[data-id="F0"]') as HTMLElement;
       const diffChevrons = diffFile.querySelectorAll(".fold-chev");
       expect(diffChevrons).toHaveLength(1);
@@ -3753,7 +4018,7 @@ describe("lazy disclosure", () => {
     })]);
     const moved = file(3, "moved.py", "renamed", 10, [editAt("H3_0", "moved.py", 5)], { old_path: "orig.py" });
     await bootViewer(makeData({ pending: false, files: [big, gone, fresh, moved] }));
-    fold("off");   // the hunks' own rows too, so the whole file can be counted
+    fold("code");   // the hunks' own rows too, so the whole file can be counted
 
     // The chips are laid out and counted from the hunks alone; no text
     // has been fetched.
@@ -3811,7 +4076,7 @@ describe("lazy disclosure", () => {
       ],
     });
     await bootViewer(makeData({ pending: false, files: [file(0, "a.py", "modified", 8, [grow])] }));
-    fold("off");
+    fold("code");
     queueFileText(0, "a.py", null, textOf("a.py", 8, { 3: "added 3", 4: "added 4" }));
     for (const chip of chipsOf(fileEl("F0"))) { chip.click(); await tick(); }
 

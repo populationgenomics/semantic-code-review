@@ -2,16 +2,17 @@
 //
 // Owns the layout pass that turns DATA into the on-page DOM: PR
 // panel, file blocks, hunk headers, the side-by-side row grid, gap
-// chips for unchanged context, label trees at the definitions level, refs,
-// smell pills. Carries the fold state too (STATE.fold / overrides /
-// renderedDiffs cache) because all of that exists to feed the
-// renderer, and binds the user inputs that drive it (fold-slider
-// buttons, keyboard 1-4, hash sync).
+// chips for unchanged context, the centre gutter's span bars and text, the label tree
+// a collapsed fold shows, refs, smell pills. Carries the fold state too
+// (STATE.fold / overrides / renderedDiffs cache) because all of that
+// exists to feed the renderer, and binds the user inputs that drive it
+// (fold-slider buttons, keyboard 1-3, hash sync).
 //
 // Other modules attach to surfaces this module creates:
 //   - sidebar.ts mutates pill state but reads from .file / .hunk
 //   - folds.ts attaches chevrons to the per-half row elements stashed
-//     on each .diff and .gap-expansion container
+//     on each .diff and .gap-expansion container; this module hands it
+//     the labels a collapsed region shows (`_foldLabels`)
 //   - comments.ts replays its comment rows after each renderAll
 //   - annotations.ts hosts the row-annotation DOM
 //   - explainer_panel.ts hosts a second render of one file, beside the
@@ -27,7 +28,7 @@ import { Explainer } from "./explainer";
 import { ExplainerPanel, type PanelHost } from "./explainer_panel";
 import { FileRows } from "./file_rows";
 import { FileTextCache, type FileText } from "./file_text";
-import { Folds } from "./folds";
+import { Folds, type FoldLabels } from "./folds";
 import { Progress } from "./progress";
 import { Rendered, type PaneState } from "./rendered";
 import { Sidebar } from "./sidebar";
@@ -35,11 +36,12 @@ import { blockDiff, matchRanges, wrapRanges, type CharRange } from "./text_highl
 
 // --- Module state --------------------------------------------------------
 
-// The collapse ladder (ADR 0008): `definitions` folds every definition a
-// hunk touches to a labelled row, with the spans inside it nested beneath;
-// only `off` shows code.
-type FoldMode = "files" | "hunks" | "definitions" | "off";
-const _FOLD_MODES: readonly FoldMode[] = ["files", "hunks", "definitions", "off"];
+// The collapse ladder (ADR 0008): the diff's own units at decreasing
+// detail — file headers, hunk headers, code. `code` is the bottom rung,
+// where the three affordances live: the expand chip hides, the definition
+// chevron folds, the span labels.
+type FoldMode = "files" | "hunks" | "code";
+const _FOLD_MODES: readonly FoldMode[] = ["files", "hunks", "code"];
 
 // Which renderer owns the main pane. Orthogonal to FoldMode, not a
 // fifth value of it (ADR 0007): overview mode hides nothing, it
@@ -285,22 +287,14 @@ function clearRenderedDiffCache(hunkId: string): void {
 // --- Fold state ---------------------------------------------------------
 
 function _defaultFileFolded(): boolean    { return _state.fold === "files"; }
-function _defaultHunkFolded(): boolean    { return _state.fold === "files" || _state.fold === "hunks"; }
-/** An open hunk's body is the label tree until `off`, which shows code. */
-function _defaultBodyFolded(): boolean    { return _state.fold !== "off"; }
+/** An open hunk is its code; only `code` opens hunks. */
+function _defaultHunkFolded(): boolean    { return _state.fold !== "code"; }
 
-/** The override id for a hunk's body — labels vs. code — distinct from
- *  the hunk's own (header open vs. closed). */
-function _bodyId(hunkId: string): string { return `${hunkId}:body`; }
-
-/** A hunk's visible fold states. A focus opens the hunk and its body to
- *  code below the level's defaults; an explicit override the reviewer set
- *  still wins over both. */
+/** A hunk's visible fold state. A focus opens the hunk to its code below
+ *  the level's default; an explicit override the reviewer set still wins
+ *  over both. */
 function _hunkFolded(scope: PaneScope, h: HunkBlock): boolean {
   return _isFolded(scope, h.id, _isFocused(scope, h.id) ? false : _defaultHunkFolded());
-}
-function _hunkBodyFolded(scope: PaneScope, h: HunkBlock): boolean {
-  return _isFolded(scope, _bodyId(h.id), _isFocused(scope, h.id) ? false : _defaultBodyFolded());
 }
 /** A file opens for a focused hunk in it: the code asked for must be on
  *  screen at `files` too. */
@@ -320,7 +314,7 @@ function _toggleFold(scope: PaneScope, id: string, currentDefault: boolean): voi
   scope.repaint();
 }
 
-/** Pick a collapse level, from the slider or keys 1-4.
+/** Pick a collapse level, from the slider or keys 1-3.
  *
  *  In overview mode this also leaves the mode: the document is not shown
  *  at a collapse level, so a reviewer reaching for the zoom while reading
@@ -442,13 +436,9 @@ function openReference(ref: ExplainerRef): void {
   // The file itself always opens: a panel showing a folded header shows
   // nothing. Under it the collapse level still holds, except for the
   // hunk a hunk reference names — that reference is the claim "read
-  // these lines", so its body opens to code too, as a focus does
-  // in the diff.
+  // these lines", so it opens to its code, as a focus does in the diff.
   overrides[file.id] = false;
-  if (ref.kind === "hunk") {
-    overrides[ref.id] = false;
-    overrides[_bodyId(ref.id)] = false;
-  }
+  if (ref.kind === "hunk") overrides[ref.id] = false;
   _panelScope.overrides = overrides;
   ExplainerPanel.open(ref);
 }
@@ -597,10 +587,11 @@ function _renderFile(f: FileBlock, scope: PaneScope): HTMLElement | null {
     } else {
       const overview = _renderFileOverview(f);
       if (overview) body.appendChild(overview);
+      _setGutterWidths(body, f);
       _renderFileBody(body, f, liveIds, scope);
       div.appendChild(body);
       // Run a file-level fold pass once the body is assembled.
-      Folds.attachFileFolds(div, f);
+      attachFileFolds(div, f);
     }
   }
   return div;
@@ -903,7 +894,7 @@ function _liveSide(rows: RowBlock[]): "old" | "new" | null {
  *  has since detached. */
 function _refreshFileFolds(el: HTMLElement, f: FileBlock): void {
   const fileEl = el.closest(".file") as HTMLElement | null;
-  if (fileEl) Folds.attachFileFolds(fileEl, f);
+  if (fileEl) attachFileFolds(fileEl, f);
 }
 
 // --- Hunk + diff body ---------------------------------------------------
@@ -915,7 +906,7 @@ function _renderHunk(h: HunkBlock, f: FileBlock, scope: PaneScope): HTMLElement 
   div.classList.toggle("folded", folded);
   div.appendChild(_renderHunkHeader(h, folded, f, scope));
   if (!folded) {
-    div.appendChild(_hunkBodyFolded(scope, h) ? _renderHunkLabels(h, f, scope) : _renderHunkDiff(h, f, scope));
+    div.appendChild(_renderHunkDiff(h, f, scope));
     if (h.context) {
       const c = _el("div", "context-note");
       c.innerHTML = `<strong>context:</strong> ${_esc(h.context)}`;
@@ -924,8 +915,8 @@ function _renderHunk(h: HunkBlock, f: FileBlock, scope: PaneScope): HTMLElement 
     if (h.refs && h.refs.length) {
       div.appendChild(_renderRefs(h.refs));
     }
-    // Single-line spans also attach inline to their row when the code is
-    // shown: _attachSpanNotes() in _renderHunkDiff.
+    // Spans attach to their rows when the code is shown: _attachSpans()
+    // in _renderHunkDiff.
   }
   return div;
 }
@@ -1000,19 +991,28 @@ function _renderHunkHeader(
   return hdr;
 }
 
-// --- The label tree: an open hunk's body below `off` --------------------
+// --- The label tree: what a collapsed fold shows ----------------------------
 //
-// Every definition the hunk touches (a `FileBlock.fold_regions` entry with
-// a name whose range holds a changed row) and every annotation span,
-// nested by containment over the hunk's rows and rendered as labelled
-// rows. Row indices are the one coordinate both kinds share: a deleted
-// definition has only pre-image lines, a span only post-image ones. A
-// hunk touching no definition is one region — its spans sit under the
-// hunk header. Nothing is synthesised for a hunk with neither.
+// The labels on the rows a fold hid (ADR 0008: folding a region shows its
+// label): every definition touched within them (a `FileBlock.fold_regions`
+// entry with a name whose range holds a changed row) and every annotation
+// span with a row in them, nested by containment over row indices and
+// rendered as labelled rows. Row indices are the one coordinate both
+// kinds share: a deleted definition has only pre-image lines, a span only
+// post-image ones. Nothing is synthesised for rows with neither.
 
 type LabelNode =
-  | { kind: "definition"; region: FoldRegion; label: AnnotationSpan | null; first: number; last: number; children: LabelNode[] }
+  | { kind: "definition"; region: FoldRegion; first: number; last: number; children: LabelNode[] }
   | { kind: "span"; span: AnnotationSpan; first: number; last: number; children: LabelNode[] };
+
+/** What the tree is being built for: the fold's chevron row, which stays
+ *  visible above the rows it labels. A definition covering that row
+ *  encloses the fold rather than sitting inside it; a span covering it
+ *  has its bar and text on screen already. Neither is a hidden
+ *  label. */
+interface LabelScope {
+  visibleRow: RowBlock;
+}
 
 /** Row-index extent, inclusive, of the rows `hit` selects; null when none. */
 function _rowExtent(rows: RowBlock[], hit: (r: RowBlock) => boolean): { first: number; last: number } | null {
@@ -1026,18 +1026,18 @@ function _rowExtent(rows: RowBlock[], hit: (r: RowBlock) => boolean): { first: n
   return first < 0 ? null : { first, last };
 }
 
-/** The definitions a hunk touches: named regions holding one of its
- *  changed rows. A region reached only by the hunk's context rows is the
- *  neighbour the diff brushed past, not something the hunk changed. */
-function _touchedDefinitions(h: HunkBlock, f: FileBlock): LabelNode[] {
-  const rows = h.rows || [];
+/** The definitions touched within `rows`: named regions holding one of
+ *  the changed rows. A region reached only by context rows is the
+ *  neighbour the diff brushed past, not something the diff changed. */
+function _touchedDefinitions(f: FileBlock, rows: RowBlock[], scope: LabelScope): LabelNode[] {
   const out: LabelNode[] = [];
   for (const region of f.fold_regions || []) {
     if (region.qualified_name === null) continue;
+    if (Folds.rowInRegion(scope.visibleRow, region)) continue;
     if (!rows.some((r) => r.kind !== "ctx" && Folds.rowInRegion(r, region))) continue;
     const extent = _rowExtent(rows, (r) => Folds.rowInRegion(r, region));
     if (extent === null) continue;
-    out.push({ kind: "definition", region, label: null, ...extent, children: [] });
+    out.push({ kind: "definition", region, ...extent, children: [] });
   }
   return out;
 }
@@ -1046,21 +1046,19 @@ function _touchedDefinitions(h: HunkBlock, f: FileBlock): LabelNode[] {
  *  `(first, -last)`, a definition before a span of the same extent — so a
  *  node is a child of the nearest open node that still covers it. Two
  *  spans of one extent are siblings (two notes on one line are two
- *  observations); a span of exactly a definition's extent becomes that
- *  definition's label when the fold-summary pass has not written one,
- *  and stays a child when it has, so neither label is lost. A span with
- *  no row in the hunk — an older sidecar's coordinates — is warned about
- *  and left out. */
-function _labelTree(h: HunkBlock, f: FileBlock): LabelNode[] {
-  const rows = h.rows || [];
-  const nodes: LabelNode[] = _touchedDefinitions(h, f);
-  for (const span of h.spans || []) {
-    const extent = _rowExtent(rows, (r) => r.new_line != null && span.start <= r.new_line && r.new_line <= span.end);
-    if (extent === null) {
-      console.warn(`${h.id}: span ${span.id} covers no row of the hunk; not shown in the label tree`);
-      continue;
+ *  observations). A span is drawn from whichever hunk carries it; one
+ *  with no row here is simply elsewhere, and one still covering the
+ *  visible line has its bar and text on screen already. */
+function _labelTree(f: FileBlock, rows: RowBlock[], scope: LabelScope): LabelNode[] {
+  const nodes: LabelNode[] = _touchedDefinitions(f, rows, scope);
+  for (const h of f.hunks) {
+    for (const span of h.spans || []) {
+      const shown = scope.visibleRow.new_line;
+      if (shown != null && span.start <= shown && shown <= span.end) continue;
+      const extent = _rowExtent(rows, (r) => r.new_line != null && span.start <= r.new_line && r.new_line <= span.end);
+      if (extent === null) continue;
+      nodes.push({ kind: "span", span, ...extent, children: [] });
     }
-    nodes.push({ kind: "span", span, ...extent, children: [] });
   }
   nodes.sort((a, b) => a.first - b.first || b.last - a.last
     || (a.kind === b.kind ? 0 : a.kind === "definition" ? -1 : 1));
@@ -1076,11 +1074,6 @@ function _labelTree(h: HunkBlock, f: FileBlock): LabelNode[] {
       open.pop();
     }
     const parent = open.length ? open[open.length - 1] : null;
-    if (parent && parent.kind === "definition" && node.kind === "span" && parent.label === null
-        && !parent.region.summary && parent.first === node.first && parent.last === node.last) {
-      parent.label = node.span;
-      continue;
-    }
     (parent ? parent.children : roots).push(node);
     open.push(node);
   }
@@ -1088,71 +1081,91 @@ function _labelTree(h: HunkBlock, f: FileBlock): LabelNode[] {
 }
 
 /** The text a folded definition shows beside its name: the fold-summary
- *  pass's summary, else the intent of the span that labels it, else its
- *  opener line when the hunk carries it. A definition whose opener the
- *  diff never reached shows its name alone; no row is fetched for a
- *  label. */
-function _definitionText(node: Extract<LabelNode, { kind: "definition" }>, rows: RowBlock[]): string {
-  const { region, label } = node;
+ *  pass's summary, else its opener line when the rows carry it. A
+ *  definition whose opener the diff never reached shows its name alone;
+ *  no row is fetched for a label. */
+function _definitionText(region: FoldRegion, rows: RowBlock[]): string {
   if (region.summary) return region.summary;
-  if (label && label.intent) return label.intent;
   const opener = rows.find((r) => r.new_line != null && r.new_line === region.right_start)
     || rows.find((r) => r.old_line != null && r.old_line === region.left_start);
   if (!opener) return "";
   return (opener.new_line != null ? opener.new_text : opener.old_text).trim();
 }
 
-function _renderHunkLabels(h: HunkBlock, f: FileBlock, scope: PaneScope): HTMLElement {
+/** A label row was clicked, asking for the lines it paraphrases. */
+type LabelPick = (node: LabelNode) => void;
+
+function _renderLabelTree(f: FileBlock, rows: RowBlock[], scope: LabelScope, pick: LabelPick): HTMLElement | null {
+  const nodes = _labelTree(f, rows, scope);
+  if (!nodes.length) return null;
   const tree = _el("div", "label-tree");
-  const rows = h.rows || [];
-  for (const node of _labelTree(h, f)) tree.appendChild(_renderLabelNode(node, h, f, rows, scope));
+  for (const node of nodes) tree.appendChild(_renderLabelNode(node, f, rows, pick));
   return tree;
 }
 
-/** One labelled row, its children indented beneath. Any row opens the
- *  hunk's code: a label is a paraphrase, and the click asks for the
- *  lines. */
-function _renderLabelNode(
-  node: LabelNode, h: HunkBlock, f: FileBlock, rows: RowBlock[], scope: PaneScope,
-): HTMLElement {
+/** One labelled row, its children indented beneath. */
+function _renderLabelNode(node: LabelNode, f: FileBlock, rows: RowBlock[], pick: LabelPick): HTMLElement {
   const row = _el("div", `label-row label-${node.kind}`);
   row.appendChild(_chev(true));
-  let smells: Smell[];
-  let smellOwner: string;
-  let smellLine: number;
   if (node.kind === "definition") {
     const { region } = node;
     row.dataset.def = region.qualified_name || "";
     const kind = region.kind ? `${region.kind} ` : "";
     row.appendChild(_el("span", "label-def", `${kind}${region.qualified_name}`));
-    const text = _definitionText(node, rows);
+    const text = _definitionText(region, rows);
     row.appendChild(_el("span", text ? "label-text" : "label-text empty", text));
-    smells = node.label ? node.label.smells || [] : [];
-    smellOwner = node.label ? node.label.id : "";
-    smellLine = node.label ? node.label.start : (region.right_start ?? h.new_start);
   } else {
     const s = node.span;
     row.dataset.id = s.id;
     row.appendChild(_el("span", "label-range", s.start === s.end ? `+${s.start}` : `+${s.start}..+${s.end}`));
     row.appendChild(_el("span", s.intent ? "label-text" : "label-text empty", s.intent || "(no intent)"));
-    smells = s.smells || [];
-    smellOwner = s.id;
-    smellLine = s.start;
+    for (const sm of s.smells || []) row.appendChild(_smellPill(sm, {
+      smellId: `${s.id}:smell:${sm.tag}`, file: f.path, side: "new", line: s.start,
+    }));
   }
-  for (const sm of smells) row.appendChild(_smellPill(sm, {
-    smellId: `${smellOwner}:smell:${sm.tag}`, file: f.path, side: "new", line: smellLine,
-  }));
   row.addEventListener("click", (e) => {
     e.stopPropagation();
-    _toggleFold(scope, _bodyId(h.id), true);
+    pick(node);
   });
   if (!node.children.length) return row;
   const wrap = _el("div", "label-node");
   wrap.appendChild(row);
   const children = _el("div", "label-children");
-  for (const child of node.children) children.appendChild(_renderLabelNode(child, h, f, rows, scope));
+  for (const child of node.children) children.appendChild(_renderLabelNode(child, f, rows, pick));
   wrap.appendChild(children);
   return wrap;
+}
+
+// --- A collapsed fold's labels ---------------------------------------------
+
+/** The labels a collapsed region shows (the `FoldLabels` folds.ts asks
+ *  for): the tree over the rows the fold hid. Clicking one opens the fold
+ *  and lands on what it names — a span's text or note, a definition's
+ *  first row — found within this pane's copy of the file,
+ *  so the explainer panel never scrolls the diff pane. */
+function _foldLabels(f: FileBlock): FoldLabels {
+  return (headerRow, bodyRows, open) => {
+    const scope: LabelScope = { visibleRow: headerRow };
+    let tree: HTMLElement | null = null;
+    const pick: LabelPick = (node) => {
+      open();
+      const pane = tree?.closest(".file") ?? document;
+      const target = node.kind === "span"
+        ? pane.querySelector<HTMLElement>(`.span-text[data-span-id="${_cssEscape(node.span.id)}"], .row-annotation[data-span-id="${_cssEscape(node.span.id)}"]`)
+        : (bodyRows[node.first].newEl.children[1].classList.contains("empty")
+          ? bodyRows[node.first].oldEl : bodyRows[node.first].newEl);
+      if (target) target.scrollIntoView({ block: "nearest" });
+    };
+    tree = _renderLabelTree(f, bodyRows, scope, pick);
+    return tree;
+  };
+}
+
+/** Attach the fold chrome to one pane's copy of `f`, with the labels a
+ *  collapsed region shows. boot.ts calls this when a summary lands from
+ *  another tab. */
+function attachFileFolds(fileEl: HTMLElement, f: FileBlock): void {
+  Folds.attachFileFolds(fileEl, f, _foldLabels(f));
 }
 
 function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLElement {
@@ -1161,7 +1174,7 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLE
   const rows = h.rows || [];
   const marks = _blockMarks(rows);
   const { diff, oldEls, newEls } = _renderDiffRows(file, rows, marks);
-  _attachSpanNotes(oldEls, newEls, rows, h.spans || [], h.id, file.path);
+  _attachSpans(oldEls, newEls, rows, h.spans || [], h.id, file.path);
   // Record this hunk's rows so folds.ts can build a unified row stream
   // across the hunk and adjacent expanded context.
   FileRows.record(diff, { rows, oldEls, newEls });
@@ -1169,38 +1182,292 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLE
   return diff;
 }
 
-/** With the code shown, a single-line span is a note on its row — the
- *  same span the label tree showed as a row. Multi-line spans have no
- *  inline form at this level. */
-function _attachSpanNotes(
+// --- Spans on visible code: the centre gutter ------------------------------
+//
+// The right half's grid has four columns — line number, bars, text, code —
+// the first three sticky so they read as a fixed centre gutter between the
+// halves while the code scrolls beneath. Every row carries an empty bars
+// and text cell for the gutter's background; a span puts its marks in
+// them. A multi-line span is a bar over its rows, one column further right
+// per level of nesting, and its intent as a text block beside them; a
+// single-line span is a dot on its row and the note beneath it. The text
+// is a direct child of the half placed on the rows it belongs to
+// (`grid-row: a / b`), so a rationale longer than its rows stretches them
+// rather than being clipped; the old half's paired rows are given the same
+// heights so the halves stay aligned. Placement is redone whenever the
+// half's rows change (an annotation inserted, a fold hiding rows), which
+// is why every row of such a half carries an explicit `grid-row`.
+
+/** A span placed on a hunk's rows: its row extent, nesting depth, and —
+ *  for a multi-line span — the rows its text may occupy. */
+interface PlacedSpan {
+  span: AnnotationSpan;
+  first: number;
+  last: number;
+  depth: number;
+  /** Rows the text runs through, inclusive; null for a single-line span
+   *  or one whose every row a nested span claims. */
+  textRows: { first: number; last: number } | null;
+  /** For a multi-line span with no rows of its own, the nested span whose
+   *  text block carries this one's text above its own. */
+  textHost: PlacedSpan | null;
+}
+
+/** A multi-line span's text block and the rows it is placed on. */
+interface SpanTextBlock {
+  el: HTMLElement;
+  rows: HTMLElement[];
+}
+
+/** Text blocks per right half, with the observers that keep them placed. */
+const _SPAN_TEXT_BLOCKS = new WeakMap<HTMLElement, SpanTextBlock[]>();
+
+/** The gutter's fixed text width. Held constant so the code halves give
+ *  up a predictable amount. Measured in the half's `ch` (12.5px mono):
+ *  ~30 characters per line at the text's own 11px, so a typical intent
+ *  is two or three lines and fits a span of that many rows. */
+const _SPAN_TEXT_WIDTH = "26ch";
+/** One bar column per level of nesting, plus a margin. */
+const _SPAN_BAR_COLUMN_PX = 6;
+
+/** Spans on visible code — the one owner of the form a span takes when
+ *  its rows are on screen. A span whose rows are not in the hunk is
+ *  warned about and left out. Everything hangs off the rows themselves,
+ *  so it survives the hunk's `.diff` being reused across repaints and
+ *  rows arriving above or below it from a chip. */
+function _attachSpans(
   rowElsOld: HTMLElement[], rowElsNew: HTMLElement[],
   rows: RowBlock[], spans: AnnotationSpan[],
   hunkId: string, filePath: string,
 ): void {
-  const notes = spans.filter((s) => s.start === s.end);
-  if (!notes.length || !rows.length) return;
-  const byNewLine = new Map<number, number>();
-  for (let i = 0; i < rows.length; i++) {
-    const ln = rows[i].new_line;
-    if (ln !== null && ln !== undefined) byNewLine.set(ln, i);
+  if (!spans.length || !rows.length) return;
+  const placed = _placeSpans(rows, spans, hunkId);
+  if (!placed.length) return;
+  const half = rowElsNew[0].parentElement;
+  if (!half) throw new Error(`${hunkId}: rows are not in a half`);
+  const blocks: SpanTextBlock[] = [];
+  const textEls = new Map<PlacedSpan, HTMLElement>();
+  for (const ps of placed) {
+    if (ps.span.start === ps.span.end) {
+      _gutterBars(rowElsNew[ps.first]).appendChild(_spanMark(ps.span.id, ps.depth, "dot"));
+      _attachSpanNote(ps.span, ps.first, rowElsOld, rowElsNew, hunkId, filePath);
+      continue;
+    }
+    for (let i = ps.first; i <= ps.last; i++) {
+      const pos = i === ps.first ? "bar-top" : i === ps.last ? "bar-bottom" : "bar";
+      _gutterBars(rowElsNew[i]).appendChild(_spanMark(ps.span.id, ps.depth, pos));
+    }
+    if (ps.textRows === null) continue;
+    const el = _el("div", "span-text");
+    el.dataset.spanId = ps.span.id;
+    el.appendChild(_spanText(ps.span, filePath));
+    half.appendChild(el);
+    textEls.set(ps, el);
+    blocks.push({ el, rows: rowElsNew.slice(ps.textRows.first, ps.textRows.last + 1) });
   }
-  for (const note of notes) {
-    const idx = byNewLine.get(note.start);
-    if (idx === undefined) continue;
-    // If this span has already been promoted to a local comment, skip
-    // rendering it — the comment now stands in its place. Keeps a
-    // re-augment from resurrecting an observation the reviewer has
-    // already turned into a comment. A comment store written before
-    // spans recorded the note under its `line_note` id; honour that too.
-    if (Comments.isPromoted(note.id) || Comments.isPromoted(`${hunkId}:line_note:${note.start}`)) continue;
-    Annotations.attach({
-      anchor: rowElsNew[idx],
-      shadowAnchor: rowElsOld[idx],
-      variant: "note",
-      content: _buildSpanNoteContent(note, filePath, rowElsNew[idx]),
-      onInsert: (el) => { el.dataset.spanId = note.id; },
-    });
+  // A span with no rows of its own reads above the text of the span that
+  // took them: outermost first, in the same block.
+  for (const ps of placed) {
+    if (ps.textHost === null) continue;
+    const host = textEls.get(ps.textHost);
+    if (!host) throw new Error(`${hunkId}: span ${ps.span.id} has a text host with no text block`);
+    host.insertBefore(_spanText(ps.span, filePath), host.firstChild);
   }
+  if (!blocks.length) return;
+  _SPAN_TEXT_BLOCKS.set(half, blocks);
+  _observeHalf(half);
+  _layoutSpanTexts(half);
+}
+
+/** Row extents and nesting for a hunk's spans, outermost first. Depth
+ *  counts enclosing multi-line spans (a single-line span takes no bar
+ *  column). A multi-line span's text starts on its first row and runs
+ *  down to the row before its first nested multi-line span begins — the
+ *  child's rows carry the child's text; where a child starts on the
+ *  same row, the parent's text takes its first run of rows no child
+ *  claims. Two spans over one range nest, so both bars show. */
+function _placeSpans(rows: RowBlock[], spans: AnnotationSpan[], hunkId: string): PlacedSpan[] {
+  const out: PlacedSpan[] = [];
+  for (const span of spans) {
+    const extent = _rowExtent(rows, (r) => r.new_line != null && span.start <= r.new_line && r.new_line <= span.end);
+    if (extent === null) {
+      console.warn(`${hunkId}: span ${span.id} covers no row of the hunk; not shown`);
+      continue;
+    }
+    out.push({ span, ...extent, depth: 0, textRows: null, textHost: null });
+  }
+  out.sort((a, b) => a.first - b.first || b.last - a.last);
+  const open: PlacedSpan[] = [];
+  const children = new Map<PlacedSpan, PlacedSpan[]>();
+  for (const ps of out) {
+    while (open.length && !(open[open.length - 1].first <= ps.first && ps.last <= open[open.length - 1].last)) open.pop();
+    ps.depth = open.length;
+    if (ps.span.start === ps.span.end) continue;
+    if (open.length) children.get(open[open.length - 1])!.push(ps);
+    children.set(ps, []);
+    open.push(ps);
+  }
+  for (const ps of out) {
+    if (ps.span.start === ps.span.end) continue;
+    let from = ps.first;
+    for (const child of children.get(ps)!) {
+      if (child.first > from) break;
+      from = Math.max(from, child.last + 1);
+    }
+    const next = children.get(ps)!.find((c) => c.first > from);
+    const to = Math.min(ps.last, next ? next.first - 1 : ps.last);
+    ps.textRows = from <= to ? { first: from, last: to } : null;
+  }
+  // Every row claimed: the text rides in the first child's block — or its
+  // first child's, down to the innermost span that kept rows of its own.
+  for (const ps of out) {
+    if (ps.span.start === ps.span.end || ps.textRows !== null) continue;
+    let host = children.get(ps)![0];
+    while (host.textRows === null) host = children.get(host)![0];
+    ps.textHost = host;
+  }
+  return out;
+}
+
+/** The gutter columns a file's spans need (its deepest bar plus one) and
+ *  the text width, as CSS variables on the file body — one gutter for the
+ *  whole file, so every row of every hunk and disclosed region in it pays
+ *  the same and the halves split it evenly. A file with no span has none. */
+function _setGutterWidths(body: HTMLElement, f: FileBlock): void {
+  let cols = 0;
+  for (const h of f.hunks) {
+    for (const ps of _placeSpans(h.rows || [], h.spans || [], h.id)) cols = Math.max(cols, ps.depth + 1);
+  }
+  body.style.setProperty("--span-bars-w", cols ? `${cols * _SPAN_BAR_COLUMN_PX + 4}px` : "0px");
+  body.style.setProperty("--span-text-w", cols ? _SPAN_TEXT_WIDTH : "0px");
+}
+
+/** A row's bars cell (`children[2]`; `[3]` is its text cell). */
+function _gutterBars(rowEl: HTMLElement): HTMLElement {
+  const cell = rowEl.children[2] as HTMLElement | undefined;
+  if (!cell || !cell.classList.contains("cell-gutter-bars")) throw new Error("row has no gutter bars cell");
+  return cell;
+}
+
+/** A bar segment or dot in a row's bars cell, at its depth's column. */
+function _spanMark(spanId: string, depth: number, kind: "bar" | "bar-top" | "bar-bottom" | "dot"): HTMLElement {
+  const mark = _el("span", `span-mark span-${kind}`);
+  mark.dataset.spanId = spanId;
+  mark.style.setProperty("--depth", String(depth));
+  mark.setAttribute("aria-hidden", "true");
+  return mark;
+}
+
+/** One span's text: its intent, wrapping at the gutter's width, then its
+ *  smells as promotable pills anchored at the span's first line. */
+function _spanText(span: AnnotationSpan, filePath: string): HTMLElement {
+  const el = _el("p", "span-text-body");
+  el.dataset.spanId = span.id;
+  el.appendChild(_el("span", span.intent ? "span-text-intent" : "span-text-intent empty", span.intent || "(no intent)"));
+  for (const sm of span.smells || []) el.appendChild(_smellPill(sm, {
+    smellId: `${span.id}:smell:${sm.tag}`, file: filePath, side: "new", line: span.start,
+  }));
+  return el;
+}
+
+/** Re-place a half's text blocks whenever its rows change, and re-sync
+ *  the paired heights whenever its size does. One pair of observers per
+ *  half; the WeakMap entry outlives them. */
+function _observeHalf(half: HTMLElement): void {
+  if (half.dataset.spanObserved !== undefined) return;
+  half.dataset.spanObserved = "";
+  let queued = false;
+  const schedule = (): void => {
+    if (queued) return;
+    queued = true;
+    // Coalesce a burst (a render inserts many rows) into one pass, after
+    // the mutations that caused it have settled.
+    queueMicrotask(() => { queued = false; _layoutSpanTexts(half); });
+  };
+  const mo = new MutationObserver((records) => {
+    for (const r of records) {
+      if (r.type === "childList" || (r.target as HTMLElement).classList?.contains("row")) { schedule(); return; }
+    }
+  });
+  mo.observe(half, { childList: true, attributes: true, attributeFilter: ["style"], subtree: true });
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(() => _syncRowHeights(half)).observe(half);
+  }
+}
+
+/** Assign every visible row of the half its grid row, place each text
+ *  block on the rows it belongs to (hidden while its first row is hidden
+ *  — the fold's label tree carries it then), and sync the old half. */
+function _layoutSpanTexts(half: HTMLElement): void {
+  const blocks = _SPAN_TEXT_BLOCKS.get(half);
+  if (!blocks) return;
+  // Writes only on change: the pass is itself observed, and a rewrite of
+  // the same value would schedule it again.
+  const set = (el: HTMLElement, prop: "gridRow" | "display", value: string): void => {
+    if (el.style[prop] !== value) el.style[prop] = value;
+  };
+  const track = new Map<Element, number>();
+  let n = 0;
+  for (const child of Array.from(half.children) as HTMLElement[]) {
+    if (!child.classList.contains("row")) continue;
+    if (child.style.display === "none") { set(child, "gridRow", ""); continue; }
+    n++;
+    set(child, "gridRow", String(n));
+    track.set(child, n);
+  }
+  for (const block of blocks) {
+    const start = track.get(block.rows[0]);
+    if (start === undefined) { set(block.el, "display", "none"); continue; }
+    let end = start;
+    for (const row of block.rows) end = Math.max(end, track.get(row) ?? end);
+    // What hangs off the block's last row — a note, a comment thread, its
+    // placeholder — is that row's space too, so the text runs past it.
+    for (let s = block.rows[block.rows.length - 1].nextElementSibling as HTMLElement | null;
+         s && (s.classList.contains("row-annotation") || s.classList.contains("row-placeholder"));
+         s = s.nextElementSibling as HTMLElement | null) {
+      end = Math.max(end, track.get(s) ?? end);
+    }
+    set(block.el, "display", "");
+    set(block.el, "gridRow", `${start} / ${end + 1}`);
+  }
+  _syncRowHeights(half);
+}
+
+/** Give each old-half row paired with a row under a text block the
+ *  height the text stretched it to, so the halves stay row-aligned; a
+ *  row under no shown block is released. */
+function _syncRowHeights(half: HTMLElement): void {
+  const blocks = _SPAN_TEXT_BLOCKS.get(half);
+  if (!blocks) return;
+  for (const block of blocks) {
+    const shown = block.el.style.display !== "none";
+    for (const row of block.rows) {
+      const pair = (row as { _scrPair?: HTMLElement })._scrPair;
+      if (!pair) continue;
+      const h = shown && row.style.display !== "none" ? row.getBoundingClientRect().height : 0;
+      pair.style.minHeight = h > 0 ? `${h}px` : "";
+    }
+  }
+}
+
+function _attachSpanNote(
+  note: AnnotationSpan, idx: number,
+  rowElsOld: HTMLElement[], rowElsNew: HTMLElement[],
+  hunkId: string, filePath: string,
+): void {
+  // If this span has already been promoted to a local comment, skip
+  // rendering it — the comment now stands in its place. Keeps a
+  // re-augment from resurrecting an observation the reviewer has
+  // already turned into a comment. A comment store written before
+  // spans recorded the note under its `line_note` id; honour that too.
+  if (Comments.isPromoted(note.id) || Comments.isPromoted(`${hunkId}:line_note:${note.start}`)) return;
+  Annotations.attach({
+    anchor: rowElsNew[idx],
+    shadowAnchor: rowElsOld[idx],
+    variant: "note",
+    content: _buildSpanNoteContent(note, filePath, rowElsNew[idx]),
+    onInsert: (el) => { el.dataset.spanId = note.id; },
+  });
 }
 
 /** Compose a single-line span's annotation body: the LLM's text plus a
@@ -1250,6 +1517,10 @@ function _renderRow(
   const newRow = _el("div", `row row-${row.kind}`);
   newRow.appendChild(_renderLineno(row.new_line, "new", hasNew));
   newRow.appendChild(_renderContent(row.new_text, "new", hasNew, file, newMarks));
+  // The centre gutter's cells, after the content so `children[1]` stays
+  // the content cell; the grid places them between number and code.
+  newRow.appendChild(_el("span", "cell-gutter-bars"));
+  newRow.appendChild(_el("span", "cell-gutter-text"));
   return { old: oldRow, new: newRow };
 }
 
@@ -1429,7 +1700,7 @@ function _updateStatus(): void {
       }
     }
   }
-  s.textContent = `${_data.files.length} files · ${smells} smells · ${critical} critical · keys 1-4 fold · space toggle · ? help`;
+  s.textContent = `${_data.files.length} files · ${smells} smells · ${critical} critical · keys 1-3 fold · space toggle · ? help`;
 }
 
 function _syncHash(): void {
@@ -1459,9 +1730,10 @@ function _restoreHash(): void {
   for (const kv of h.split("&")) {
     const [k, v] = kv.split("=");
     if (k === "fold") {
-      // `segments` was the middle rung's name before ADR 0008; a link
-      // that carries it lands on the rung that replaced it.
-      const level = v === "segments" ? "definitions" : v;
+      // `segments` and `definitions` were middle rungs before ADR 0008
+      // settled the ladder, and `off` the bottom rung's name; a link that
+      // carries any of them lands on the code.
+      const level = v === "segments" || v === "definitions" || v === "off" ? "code" : v;
       if ((_FOLD_MODES as readonly string[]).includes(level)) _state.fold = level as FoldMode;
     } else if (k === "mode") {
       _state.mode = v === "overview" && _explainerEnabled ? "overview" : "diff";
@@ -1479,8 +1751,7 @@ function _onKeydown(e: KeyboardEvent): void {
   switch (e.key) {
     case "1": _setGlobalFold("files"); e.preventDefault(); break;
     case "2": _setGlobalFold("hunks"); e.preventDefault(); break;
-    case "3": _setGlobalFold("definitions"); e.preventDefault(); break;
-    case "4": _setGlobalFold("off"); e.preventDefault(); break;
+    case "3": _setGlobalFold("code"); e.preventDefault(); break;
     case "?": _toggleHelp(); e.preventDefault(); break;
     case "Escape": _onEscape(); break;
   }
@@ -1573,5 +1844,6 @@ export const Render = {
   renderHunkReplace,
   repaintHunkHeader,
   clearRenderedDiffCache,
+  attachFileFolds,
   setSymbolSearch,
 };

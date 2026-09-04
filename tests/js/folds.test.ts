@@ -5,8 +5,11 @@
 
 import { afterEach, describe, expect, test } from "vitest";
 import { FileRows } from "../../semantic_code_review/viewer/assets/file_rows";
-import { Folds } from "../../semantic_code_review/viewer/assets/folds";
+import { Folds, type FoldLabels } from "../../semantic_code_review/viewer/assets/folds";
 import { makeHunkFixture } from "./fixtures/hunk-dom";
+
+/** The renderer's labels callback, for a walker test with no spans. */
+const NO_LABELS: FoldLabels = () => null;
 
 const ROWS: RowBlock[] = [
   { kind: "ctx", old_line: 1, new_line: 1, old_text: "def foo():", new_text: "def foo():" },
@@ -63,8 +66,8 @@ describe("attachFileFolds per pane", () => {
     ensureEndpointMeta();
     const a = mountCopy();
     const b = mountCopy();
-    Folds.attachFileFolds(a.fileEl, FILE);
-    Folds.attachFileFolds(b.fileEl, FILE);
+    Folds.attachFileFolds(a.fileEl, FILE, NO_LABELS);
+    Folds.attachFileFolds(b.fileEl, FILE, NO_LABELS);
     expect(a.fileEl.querySelectorAll(".fold-chev")).toHaveLength(1);
     expect(b.fileEl.querySelectorAll(".fold-chev")).toHaveLength(1);
     expect(a.fileEl.querySelectorAll(".annot-box")).toHaveLength(1);
@@ -74,7 +77,7 @@ describe("attachFileFolds per pane", () => {
   test("re-attaching to a container replaces its chrome and keeps its fold state", () => {
     ensureEndpointMeta();
     const a = mountCopy();
-    Folds.attachFileFolds(a.fileEl, FILE);
+    Folds.attachFileFolds(a.fileEl, FILE, NO_LABELS);
     const chev = a.fileEl.querySelector(".fold-chev") as SVGElement;
     chev.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     const bodyRows = Array.from(a.diff.querySelectorAll<HTMLElement>(".half-new .row:not(.row-annotation)")).slice(1);
@@ -91,7 +94,7 @@ describe("attachFileFolds per pane", () => {
     body2.appendChild(hunk2);
     fileEl2.appendChild(body2);
     document.body.appendChild(fileEl2);
-    Folds.attachFileFolds(fileEl2, FILE);
+    Folds.attachFileFolds(fileEl2, FILE, NO_LABELS);
 
     expect(fileEl2.querySelectorAll(".fold-chev")).toHaveLength(1);
     expect(fileEl2.querySelectorAll(".annot-box")).toHaveLength(1);
@@ -103,7 +106,7 @@ describe("attachFileFolds per pane", () => {
     ensureEndpointMeta();
     const a = mountCopy();
     const narrow = { ...FILE, fold_regions: [{ ...FILE.fold_regions[0], right_start: 3, right_end: 9, left_start: 3, left_end: 9 }] };
-    Folds.attachFileFolds(a.fileEl, narrow as FileBlock);
+    Folds.attachFileFolds(a.fileEl, narrow as FileBlock, NO_LABELS);
     expect(a.fileEl.querySelectorAll(".fold-chev")).toHaveLength(0);
   });
 });

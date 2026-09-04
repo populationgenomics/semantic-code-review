@@ -642,13 +642,20 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 }
 
 /* --- Label tree ----------------------------------------------------------- */
-/* An open hunk's body below `off`: the definitions it touches and its
- * annotation spans, nested. Each label is an inline row (chevron + name or
- * range + text), not a filled/bordered box — the chevron carries the
- * "click to expand" affordance and a subtle hover fill echoes it. */
-.label-tree { padding: 6px 12px; }
+/* What a collapsed fold shows beneath its summary line: the labels on the
+ * rows it hid — the definitions touched and the annotation spans, nested.
+ * The summary line keeps the ~3-line clamp; the tree is not clipped. Each
+ * label is an inline row (chevron + name or range + text), not a
+ * filled/bordered box — the chevron carries the "click to open" affordance
+ * and a subtle hover fill echoes it. */
+.diff .annot-fold .fold-summary { max-height: 5em; overflow: hidden; }
+.label-tree {
+  padding: 4px 0 0; margin-top: 4px;
+  border-top: 1px solid var(--border);
+  font-style: normal;
+}
 .label-row {
-  margin: 1px 0; padding: 3px 6px; border-radius: 4px;
+  margin: 1px 0; padding: 2px 4px; border-radius: 4px;
   display: flex; gap: 10px; align-items: flex-start; cursor: pointer;
 }
 .label-row:hover { background: var(--bg-alt); }
@@ -699,20 +706,31 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 
 /* --- Diff grid -----------------------------------------------------------
  * Two halves side by side, each its own horizontal-scroll container and
- * its own 2-column grid (lineno + content). One shared scrollbar per
- * side, zero mid-hunk scrollbars.
+ * its own grid: the old half lineno + content, the new half lineno +
+ * the centre gutter's two columns (span bars, span text) + content. The
+ * gutter columns are sticky, so with the lineno they read as a fixed strip
+ * between the halves while the code scrolls beneath. One shared scrollbar
+ * per side, zero mid-hunk scrollbars.
  *
  * Vertical alignment across halves: code rows use a uniform line-height
  * and an enforced min-height on every cell, so every code row on both
  * sides is exactly one line tall. Annotation rows break that symmetry
  * (prose wraps); the JS inserts an invisible placeholder row on the
  * opposite side and syncs its height to the real annotation via a
- * ResizeObserver. Subgrid would do this for free but requires explicit
- * outer row tracks, which we don't know at CSS compile time.
- */
+ * ResizeObserver. A span's text block placed over several rows can
+ * stretch them; the JS gives the old half's paired rows the same heights.
+ * Subgrid would do this for free but requires explicit outer row tracks,
+ * which we don't know at CSS compile time.
+ *
+ * The gutter's width (`--span-bars-w` + `--span-text-w`, set per file on
+ * `.file-body`; 0 for a file with no span) is split between the halves,
+ * so the new half is wider by it and the code columns give up the same
+ * amount each. */
 .diff {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns:
+    minmax(0, calc(50% - (var(--span-bars-w, 0px) + var(--span-text-w, 0px)) / 2))
+    minmax(0, calc(50% + (var(--span-bars-w, 0px) + var(--span-text-w, 0px)) / 2));
   font-family: var(--mono);
   font-size: 12.5px;
   line-height: 1.5;
@@ -751,6 +769,78 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 .diff-only-new .half-old,
 .diff-only-old .half-new { display: none; }
 
+/* The new half's grid: number · bars · text · code. Cells are placed by
+ * column, not DOM order — the gutter cells come after the content cell in
+ * the DOM so `children[1]` stays the content cell everywhere. */
+.diff .half-new {
+  grid-template-columns: 3.5em var(--span-bars-w, 0px) var(--span-text-w, 0px) minmax(max-content, 1fr);
+}
+.diff .cell-lineno { grid-column: 1; }
+.diff .half-old .cell-content { grid-column: 2; }
+.diff .half-new .cell-content { grid-column: 4; }
+.diff .cell-gutter-bars, .diff .cell-gutter-text, .diff .span-text {
+  position: sticky;
+  z-index: 1;
+  background: var(--bg-alt);
+}
+.diff .cell-gutter-bars { grid-column: 2; left: 3.5em; }
+.diff .cell-gutter-text, .diff .span-text {
+  grid-column: 3;
+  left: calc(3.5em + var(--span-bars-w, 0px));
+  box-shadow: inset -1px 0 var(--border);
+}
+/* A span's marks in the bars cell: a bar over its rows, a dot on a
+ * single-line span's row, one column further right per level of nesting. */
+.diff .span-mark {
+  position: absolute;
+  left: calc(2px + var(--depth, 0) * 6px);
+  width: 2px;
+  background: var(--accent);
+  opacity: 0.75;
+  pointer-events: none;
+}
+.diff .span-bar, .diff .span-bar-top, .diff .span-bar-bottom { top: 0; bottom: 0; }
+.diff .span-bar-top { top: 3px; border-top-left-radius: 2px; border-top-right-radius: 2px; }
+.diff .span-bar-bottom { bottom: 3px; border-bottom-left-radius: 2px; border-bottom-right-radius: 2px; }
+.diff .span-dot {
+  top: 50%; margin-top: -2px; margin-left: -1px;
+  width: 4px; height: 4px; border-radius: 50%;
+}
+/* A multi-line span's text, placed on its rows (`grid-row`, set by the
+ * renderer) at a smaller size than the code; it wraps at the gutter's
+ * fixed width and stretches its rows when longer than them. */
+.diff .span-text {
+  z-index: 2;
+  min-width: 0;
+  padding: 2px 6px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+/* The size lives on the body, not the block: the block's sticky `left`
+ * is in the half's `em` and must match the cells'. */
+.diff .span-text-body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--fg-muted);
+}
+/* An annotation row has no gutter cells; a sticky pseudo-item keeps the
+ * strip's background continuous through it. */
+.diff .half-new .row-annotation::before {
+  content: "";
+  grid-column: 1 / 4;
+  grid-row: 1;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--bg-alt);
+  box-shadow: inset -1px 0 var(--border);
+}
+.diff .span-text-body + .span-text-body { margin-top: 3px; padding-top: 3px; border-top: 1px dashed var(--border); }
+.diff .span-text-intent.empty { color: var(--fg-dim); font-style: italic; }
+.diff .span-text .smell { font-size: 10px; padding: 0 6px; margin-left: 3px; vertical-align: middle; }
+
 /* Each `.row` is a real grid box spanning both of `.half`'s columns,
  * and uses `subgrid` so its two cells land in `.half`'s column tracks
  * (matching widths across every row). Making the row an actual box
@@ -763,6 +853,10 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   grid-template-columns: subgrid;
   grid-column: 1 / -1;
 }
+/* Every cell sits in the row's one track: the new half's cells are placed
+ * by column out of DOM order, and auto-placement would otherwise wrap a
+ * cell whose column precedes the previous one onto a second track. */
+.diff .row > * { grid-row: 1; }
 
 .diff .cell {
   padding: 0 8px;

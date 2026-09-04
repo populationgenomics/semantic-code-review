@@ -130,7 +130,7 @@ override, `H<f>_<h>:body`, in place of per-span overrides; clicking any
 label row opens the code. `fold=segments` in an old hash reads as
 `definitions`. Nothing in Python named the level.
 
-## Slice 5b — The ladder is `files | hunks | code`
+## Slice 5b — The ladder is `files | hunks | code` ✅ done
 
 Reverses 5's framing, keeps its parts. `FoldMode` is `files | hunks | code`;
 key `3` and the URL hash select `code` (`definitions` and `segments` in an
@@ -144,6 +144,24 @@ they cover, nested by depth, with the intent as a marginal label. At
 multi-line span is visible on the code it covers and nests visibly inside
 its parent; clicking a span label in a fold lands on its bracketed rows;
 nothing at `hunks` mentions a span.
+
+Landed as: `FoldMode = "files" | "hunks" | "code"`, key `3`, and
+`fold=segments` / `fold=definitions` / `fold=off` in an old hash all
+reading as `code`; the `H<f>_<h>:body` override gone with the rung. The
+span form is a **centre gutter** (the reviewer's placement, given
+mid-slice, in place of a left-margin bracket): the new half's sticky
+columns after its line numbers, `lineno · bars · text`, a fixed width per
+file split between the halves. A multi-line span is a bar over its rows,
+one column further right per level of nesting, with its intent as a text
+block placed on those rows (`grid-row`, redone by a `MutationObserver`
+as rows come and go) at a smaller size; a parent's text stops the row
+before a nested span begins; text longer than its rows stretches them,
+the old half's paired rows following. A single-line span is a dot on its
+row and its note beneath it. A collapsed region's box is its summary line
+and the label tree over the rows it hid (spans and the definitions inside
+it, nested); anything covering the chevron row is not listed. Clicking a
+label opens the fold and lands on the span's text or the definition's
+opener. Chevrons keep their place in the code cell.
 
 ## Slice 6 — Focus is the one reveal that unfolds ✅ done
 

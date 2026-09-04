@@ -254,6 +254,25 @@ sidecar as a `FoldDescription` on the file (`FileAnnotations
 `augmented.diff` written when they lived on the file's first hunk is
 read with them lifted to the file.
 
+A collapsed region shows its labels (ADR 0008): its box is the summary
+line — `kind name — summary`, or the pending / failed copy — and beneath
+it the **label tree** (`render._labelTree`) over the rows the fold hid:
+every [[annotation-span]] with a row among them and every named region
+inside them holding a changed row, nested by containment over row
+indices (the one coordinate a deleted definition and a post-image span
+share). A definition row is `kind name` plus its summary, else its
+opener line when the rows carry it; a span row is its range, intent and
+smells. Anything covering the chevron row — the region itself, a class
+enclosing it, a span whose text is still on screen — is not inside the
+fold and is not listed; a body with nothing labelled shows the summary
+line alone. Nothing is fetched for a label. Clicking a row opens the fold
+and lands on what it names. folds.ts owns the box and the summary line
+and asks the renderer for the tree through `FoldLabels`;
+`Render.attachFileFolds` is the entry every re-attach uses. Collapsing
+also hides what hangs off the body rows (notes, comments, their
+placeholders) and shows again only what it hid, so a nested fold keeps
+its own state.
+
 **Annotation span**
 An LLM-produced label on a range of a [[hunk]]'s post-image lines
 (`AnnotationSpan`, ADR 0008): inclusive `start`..`end`, with its own
@@ -277,17 +296,28 @@ therefore no boundaries and no spans. In a batched prompt ids are
 numbered continuously across the hunks. The extra-review pass still
 buckets its integer `(file, line)` notes into single-line spans.
 
-In the viewer a span is a label. Below fold level `off`, an open hunk's
-body is its label tree (see [[fold-level]]): each span is a row —
-range, intent, smells — nested by containment under the definition that
-holds it, or under the hunk header when no definition does; a span of
-exactly a definition's extent is that definition's label text instead
-of a row. At `off` the code shows and a single-line span attaches as an
-inline note on its row; a multi-line span has no inline form. Clicking
-any label row opens the hunk's code. On disk, `scr-span: +a..+b "intent"` is an
-intent-only span and `scr-span-begin` … `scr-span-end` a block with
-smells/context/refs; the retired `scr-segment-*` / `scr-line` directives
-and a sidecar's `segments` / `line_notes` still load, as spans.
+In the viewer a span is a label, and it shows only where its code does
+(see [[fold-level]]). At `files` and `hunks` nothing mentions a span. At
+`code` a span lives in the **centre gutter** — the new half's sticky
+columns after its line numbers, `lineno · bars · text`, a fixed width
+per file (one 6px bar column per level of nesting, 26ch of text; nothing
+for a file with no span) split between the halves. A multi-line span is
+a bar over exactly its rows, one column further right per level of
+nesting, with its intent as a text block placed on those rows at a
+smaller size, wrapping at the gutter's width; where a nested span
+begins, the parent's text stops the row before, and a span whose every
+row a child claims reads above the child's text. A rationale longer than
+its rows stretches them — the old half's paired rows are given the same
+heights — rather than being clipped. A single-line span is a dot on its
+row at its depth and the inline note beneath the row. When a fold hides
+a span's first row its text hides too and the fold's label tree lists
+it ([[fold-region]]). `render._attachSpans` owns all of this; the
+explicit `grid-row` on every row of a half with spans is what places the
+text, redone by a `MutationObserver` as rows come and go. On disk,
+`scr-span: +a..+b "intent"` is an intent-only span and `scr-span-begin`
+… `scr-span-end` a block with smells/context/refs; the retired
+`scr-segment-*` / `scr-line` directives and a sidecar's `segments` /
+`line_notes` still load, as spans.
 
 Spans are semantic and fallible, *not* the deterministic structural
 [[symbol]] ranges: a span need not line up with one symbol — only its
@@ -297,9 +327,9 @@ edges are drawn from positions that exist.
 The viewer renders a file body from one model (`render._renderFileBody`):
 an ordered run of *live hunks* and *collapsible regions*. Both are the
 same diff-row stream (`_renderDiffRows`); the difference is only the
-chrome — a live hunk shows the full [[hunk]] (header, intent, spans),
-a region shows a bare "expand N lines" chip that opens to a continuous
-diff.
+chrome — a live hunk shows the full [[hunk]] (header, intent, chips,
+its code with its spans), a region shows a bare "expand N lines" chip
+that opens to a continuous diff.
 
 Which hunks are live is set by the active sidebar filter (the pill's
 `activeHunkIds`): with no filter every hunk is live and regions hold only
@@ -331,37 +361,30 @@ puts rows on screen, fold shows them at less detail (ADR 0008).
 
 **Fold level**
 The viewer's global collapse depth (`RenderState.fold`, driven by the
-fold slider / keys 1–4): `files` → `hunks` → `definitions` → `off`, each
-a shallower fold over the structure (ADR 0008). `files` shows file
-headers; `hunks` shows hunk headers; `definitions` opens every hunk to
-its **label tree**; only `off` shows code (raw diff rows).
-
-The label tree (`render._labelTree`) is the body of an open hunk below
-`off`: every definition the hunk touches — a named
-`FileBlock.fold_regions` entry holding one of the hunk's changed rows;
-a region reached only by context rows is not touched — and every
-[[annotation-span]], nested by containment over the hunk's row indices
-(the one coordinate a deleted definition and a post-image span share).
-A folded definition is one row: `kind qualified_name`, then its text —
-the `FoldDescription` summary if one exists, else the intent of a span
-of exactly its extent (absorbed, not repeated as a child), else its
-opener line when the hunk carries it, else nothing. Nothing is fetched
-for a label; the undisclosed part of a definition stays undisclosed. A
-hunk touching no definition is one region — its spans sit under its
-header. Nothing is synthesised: a hunk with neither definitions nor
-spans has an empty tree. Clicking any row opens the hunk's code.
+fold slider / keys 1–3): `files` → `hunks` → `code` (ADR 0008). The
+ladder is progressive summarisation — the diff's own units at
+decreasing detail, each with a summary the pipeline already writes:
+`files` shows file headers and summaries; `hunks` shows hunk headers —
+the `@@` line, the intent, the smell / context / confidence chips — and
+nothing that mentions a span; `code` shows the rows. A rung that
+re-carves the diff (`segments` by the model's intent, `definitions` by
+the AST) is a projection, not a summary, and neither exists. The three
+axes the ADR names are affordances at `code`, not rungs: the expand chip
+hides ([[collapsible-region]]), the definition chevron folds
+([[fold-region]] — a collapsed one shows its labels), the span labels
+([[annotation-span]], in the centre gutter).
 
 Per-item exceptions live in `RenderState.overrides` — a reviewer
-expanding/collapsing one file (`F0`), hunk (`H0_1`, header open or
-closed) or hunk body (`H0_1:body`, label tree or code); an override wins
-over the level default. Picking a level (`_setGlobalFold`) is
-authoritative: it clears every override, folding the whole tree to that
-depth, including a filter's focused hunks. Picking one from inside
-overview mode also leaves the mode into the diff at that level — the
-document is not shown at a level, so reaching for the zoom while reading
-it is a request for the ladder. The URL hash carries the level and the
-overrides; `fold=segments` in a link written before ADR 0008 is read as
-`definitions`.
+expanding/collapsing one file (`F0`) or hunk (`H0_1`, header open or
+closed); an override wins over the level default. Picking a level
+(`_setGlobalFold`) is authoritative: it clears every override, folding
+the whole tree to that depth, including a filter's focused hunks. Picking
+one from inside overview mode also leaves the mode into the diff at that
+level — the document is not shown at a level, so reaching for the zoom
+while reading it is a request for the ladder. The URL hash carries the
+level and the overrides; `fold=segments`, `fold=definitions` and
+`fold=off` in a link written before the ladder settled all read as
+`code` and are rewritten.
 
 A reveal — an expand chip, a filter restored at boot — puts rows on
 screen at the current depth and does not unfold (ADR 0008). The one

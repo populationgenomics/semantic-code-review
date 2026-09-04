@@ -13,7 +13,6 @@ import { DataStore, type FoldRegionAddress } from "./data_store";
 import { DebugDrawer } from "./debug_drawer";
 import { Explainer } from "./explainer";
 import { FileTextCache } from "./file_text";
-import { Folds } from "./folds";
 import { LayoutDividers } from "./layout_dividers";
 import { PostModal } from "./post_modal";
 import { Progress } from "./progress";
@@ -303,7 +302,7 @@ function applyFoldSummary(payload: SseFoldSummaryEvent): void {
     '.file[data-id="' + _cssEscape(resolved.file.id) + '"]',
   );
   for (const fileEl of Array.from(fileEls) as HTMLElement[]) {
-    Folds.attachFileFolds(fileEl, resolved.file);
+    Render.attachFileFolds(fileEl, resolved.file);
   }
 }
 
