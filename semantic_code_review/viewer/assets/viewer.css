@@ -236,12 +236,16 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 /* Comment-thread tally on Files-axis pills: unresolved/total. Sits
  * next to the hunk-count badge. Muted when every thread is resolved;
  * amber when there's outstanding discussion to chase. */
+/* Shape carries the state, colour reinforces it: a filled disc while any
+ * thread is open, a hollow ring once every thread is resolved. Orange and
+ * green alone are not distinguishable to every reviewer. */
 .group-btn-comments {
   width: 8px; height: 8px; border-radius: 50%;
   justify-self: center;
+  box-sizing: border-box;
 }
 .group-btn-comments.has-unresolved { background: var(--warn); }
-.group-btn-comments.all-resolved { background: var(--ok); }
+.group-btn-comments.all-resolved { background: transparent; border: 2px solid var(--ok); }
 .group-btn-all {
   margin-bottom: 6px;
   color: var(--fg-muted);
