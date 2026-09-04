@@ -299,9 +299,10 @@ buckets its integer `(file, line)` notes into single-line spans.
 In the viewer a span is a label, and it shows only where its code does
 (see [[fold-level]]). At `files` and `hunks` nothing mentions a span. At
 `code` a span lives in the **centre gutter** — the new half's sticky
-columns after its line numbers, `lineno · bars · text`, a fixed width
-per file (one 6px bar column per level of nesting, 26ch of text; nothing
-for a file with no span) split between the halves. A multi-line span is
+columns after its line numbers, `lineno · text · bars`, a fixed width
+per file (26ch of text, one 6px bar column per level of nesting; nothing
+for a file with no span) split between the halves; the bars sit against
+the code they mark. A multi-line span is
 a bar over exactly its rows, one column further right per level of
 nesting, with its intent as a text block placed on those rows at a
 smaller size, wrapping at the gutter's width; where a nested span

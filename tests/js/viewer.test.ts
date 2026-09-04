@@ -1174,7 +1174,7 @@ describe("the centre gutter: spans on visible code (ADR 0008)", () => {
     fold("code");
     for (const row of newRows()) {
       expect(Array.from(row.children).map((c) => c.className.split(" ")[0]))
-        .toEqual(["cell", "cell", "cell-gutter-bars", "cell-gutter-text"]);
+        .toEqual(["cell", "cell", "cell-gutter-text", "cell-gutter-bars"]);
       expect(row.children[1].classList.contains("cell-content")).toBe(true);
     }
     // No span: the gutter is zero wide and no row is placed explicitly.

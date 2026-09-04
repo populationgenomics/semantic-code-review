@@ -1184,10 +1184,10 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLE
 
 // --- Spans on visible code: the centre gutter ------------------------------
 //
-// The right half's grid has four columns — line number, bars, text, code —
+// The right half's grid has four columns — line number, text, bars, code —
 // the first three sticky so they read as a fixed centre gutter between the
-// halves while the code scrolls beneath. Every row carries an empty bars
-// and text cell for the gutter's background; a span puts its marks in
+// halves while the code scrolls beneath. Every row carries an empty text
+// and bars cell for the gutter's background; a span puts its marks in
 // them. A multi-line span is a bar over its rows, one column further right
 // per level of nesting, and its intent as a text block beside them; a
 // single-line span is a dot on its row and the note beneath it. The text
@@ -1342,9 +1342,9 @@ function _setGutterWidths(body: HTMLElement, f: FileBlock): void {
   body.style.setProperty("--span-text-w", cols ? _SPAN_TEXT_WIDTH : "0px");
 }
 
-/** A row's bars cell (`children[2]`; `[3]` is its text cell). */
+/** A row's bars cell (`children[3]`; `[2]` is its text cell). */
 function _gutterBars(rowEl: HTMLElement): HTMLElement {
-  const cell = rowEl.children[2] as HTMLElement | undefined;
+  const cell = rowEl.children[3] as HTMLElement | undefined;
   if (!cell || !cell.classList.contains("cell-gutter-bars")) throw new Error("row has no gutter bars cell");
   return cell;
 }
@@ -1519,8 +1519,8 @@ function _renderRow(
   newRow.appendChild(_renderContent(row.new_text, "new", hasNew, file, newMarks));
   // The centre gutter's cells, after the content so `children[1]` stays
   // the content cell; the grid places them between number and code.
-  newRow.appendChild(_el("span", "cell-gutter-bars"));
   newRow.appendChild(_el("span", "cell-gutter-text"));
+  newRow.appendChild(_el("span", "cell-gutter-bars"));
   return { old: oldRow, new: newRow };
 }
 

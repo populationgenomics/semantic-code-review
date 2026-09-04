@@ -707,7 +707,7 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 /* --- Diff grid -----------------------------------------------------------
  * Two halves side by side, each its own horizontal-scroll container and
  * its own grid: the old half lineno + content, the new half lineno +
- * the centre gutter's two columns (span bars, span text) + content. The
+ * the centre gutter's two columns (span text, span bars) + content. The
  * gutter columns are sticky, so with the lineno they read as a fixed strip
  * between the halves while the code scrolls beneath. One shared scrollbar
  * per side, zero mid-hunk scrollbars.
@@ -769,11 +769,13 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 .diff-only-new .half-old,
 .diff-only-old .half-new { display: none; }
 
-/* The new half's grid: number · bars · text · code. Cells are placed by
- * column, not DOM order — the gutter cells come after the content cell in
- * the DOM so `children[1]` stays the content cell everywhere. */
+/* The new half's grid: number · text · bars · code — the bars against the
+ * code they mark, the rationale reading from the line number outward.
+ * Cells are placed by column, not DOM order — the gutter cells come after
+ * the content cell in the DOM so `children[1]` stays the content cell
+ * everywhere. */
 .diff .half-new {
-  grid-template-columns: 3.5em var(--span-bars-w, 0px) var(--span-text-w, 0px) minmax(max-content, 1fr);
+  grid-template-columns: 3.5em var(--span-text-w, 0px) var(--span-bars-w, 0px) minmax(max-content, 1fr);
 }
 .diff .cell-lineno { grid-column: 1; }
 .diff .half-old .cell-content { grid-column: 2; }
@@ -783,14 +785,15 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   z-index: 1;
   background: var(--bg-alt);
 }
-.diff .cell-gutter-bars { grid-column: 2; left: 3.5em; }
-.diff .cell-gutter-text, .diff .span-text {
+.diff .cell-gutter-text, .diff .span-text { grid-column: 2; left: 3.5em; }
+.diff .cell-gutter-bars {
   grid-column: 3;
-  left: calc(3.5em + var(--span-bars-w, 0px));
+  left: calc(3.5em + var(--span-text-w, 0px));
   box-shadow: inset -1px 0 var(--border);
 }
 /* A span's marks in the bars cell: a bar over its rows, a dot on a
- * single-line span's row, one column further right per level of nesting. */
+ * single-line span's row, one column further right (nearer the code) per
+ * level of nesting. */
 .diff .span-mark {
   position: absolute;
   left: calc(2px + var(--depth, 0) * 6px);
