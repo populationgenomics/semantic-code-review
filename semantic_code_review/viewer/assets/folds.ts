@@ -179,7 +179,7 @@ function _inRange(line: number | null | undefined, start: number | null, end: nu
 
 /** Whether a rendered row lies in a region: its line on a covered side
  *  falls in that side's range. The one placement rule, shared with the
- *  `definitions` fold level in render.ts. */
+ *  label tree in render.ts. */
 function rowInRegion(row: RowBlock, region: FoldRegion): boolean {
   return _inRange(row.new_line, region.right_start, region.right_end)
     || _inRange(row.old_line, region.left_start, region.left_end);

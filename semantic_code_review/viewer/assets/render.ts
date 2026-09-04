@@ -2,11 +2,11 @@
 //
 // Owns the layout pass that turns DATA into the on-page DOM: PR
 // panel, file blocks, hunk headers, the side-by-side row grid, gap
-// chips for unchanged context, label trees at the definitions level, refs,
-// smell pills. Carries the fold state too (STATE.fold / overrides /
-// renderedDiffs cache) because all of that exists to feed the
-// renderer, and binds the user inputs that drive it (fold-slider
-// buttons, keyboard 1-4, hash sync).
+// chips for unchanged context, span brackets and notes, the label tree
+// a collapsed fold shows, refs, smell pills. Carries the fold state too
+// (STATE.fold / overrides / renderedDiffs cache) because all of that
+// exists to feed the renderer, and binds the user inputs that drive it
+// (fold-slider buttons, keyboard 1-3, hash sync).
 //
 // Other modules attach to surfaces this module creates:
 //   - sidebar.ts mutates pill state but reads from .file / .hunk
@@ -36,11 +36,12 @@ import { blockDiff, matchRanges, wrapRanges, type CharRange } from "./text_highl
 
 // --- Module state --------------------------------------------------------
 
-// The collapse ladder (ADR 0008): `definitions` folds every definition a
-// hunk touches to a labelled row, with the spans inside it nested beneath;
-// only `off` shows code.
-type FoldMode = "files" | "hunks" | "definitions" | "off";
-const _FOLD_MODES: readonly FoldMode[] = ["files", "hunks", "definitions", "off"];
+// The collapse ladder (ADR 0008): the diff's own units at decreasing
+// detail — file headers, hunk headers, code. `code` is the bottom rung,
+// where the three affordances live: the expand chip hides, the definition
+// chevron folds, the span labels.
+type FoldMode = "files" | "hunks" | "code";
+const _FOLD_MODES: readonly FoldMode[] = ["files", "hunks", "code"];
 
 // Which renderer owns the main pane. Orthogonal to FoldMode, not a
 // fifth value of it (ADR 0007): overview mode hides nothing, it
@@ -286,22 +287,14 @@ function clearRenderedDiffCache(hunkId: string): void {
 // --- Fold state ---------------------------------------------------------
 
 function _defaultFileFolded(): boolean    { return _state.fold === "files"; }
-function _defaultHunkFolded(): boolean    { return _state.fold === "files" || _state.fold === "hunks"; }
-/** An open hunk's body is the label tree until `off`, which shows code. */
-function _defaultBodyFolded(): boolean    { return _state.fold !== "off"; }
+/** An open hunk is its code; only `code` opens hunks. */
+function _defaultHunkFolded(): boolean    { return _state.fold !== "code"; }
 
-/** The override id for a hunk's body — labels vs. code — distinct from
- *  the hunk's own (header open vs. closed). */
-function _bodyId(hunkId: string): string { return `${hunkId}:body`; }
-
-/** A hunk's visible fold states. A focus opens the hunk and its body to
- *  code below the level's defaults; an explicit override the reviewer set
- *  still wins over both. */
+/** A hunk's visible fold state. A focus opens the hunk to its code below
+ *  the level's default; an explicit override the reviewer set still wins
+ *  over both. */
 function _hunkFolded(scope: PaneScope, h: HunkBlock): boolean {
   return _isFolded(scope, h.id, _isFocused(scope, h.id) ? false : _defaultHunkFolded());
-}
-function _hunkBodyFolded(scope: PaneScope, h: HunkBlock): boolean {
-  return _isFolded(scope, _bodyId(h.id), _isFocused(scope, h.id) ? false : _defaultBodyFolded());
 }
 /** A file opens for a focused hunk in it: the code asked for must be on
  *  screen at `files` too. */
@@ -321,7 +314,7 @@ function _toggleFold(scope: PaneScope, id: string, currentDefault: boolean): voi
   scope.repaint();
 }
 
-/** Pick a collapse level, from the slider or keys 1-4.
+/** Pick a collapse level, from the slider or keys 1-3.
  *
  *  In overview mode this also leaves the mode: the document is not shown
  *  at a collapse level, so a reviewer reaching for the zoom while reading
@@ -443,13 +436,9 @@ function openReference(ref: ExplainerRef): void {
   // The file itself always opens: a panel showing a folded header shows
   // nothing. Under it the collapse level still holds, except for the
   // hunk a hunk reference names — that reference is the claim "read
-  // these lines", so its body opens to code too, as a focus does
-  // in the diff.
+  // these lines", so it opens to its code, as a focus does in the diff.
   overrides[file.id] = false;
-  if (ref.kind === "hunk") {
-    overrides[ref.id] = false;
-    overrides[_bodyId(ref.id)] = false;
-  }
+  if (ref.kind === "hunk") overrides[ref.id] = false;
   _panelScope.overrides = overrides;
   ExplainerPanel.open(ref);
 }
@@ -917,7 +906,7 @@ function _renderHunk(h: HunkBlock, f: FileBlock, scope: PaneScope): HTMLElement 
   div.classList.toggle("folded", folded);
   div.appendChild(_renderHunkHeader(h, folded, f, scope));
   if (!folded) {
-    div.appendChild(_hunkBodyFolded(scope, h) ? _renderHunkLabels(h, f, scope) : _renderHunkDiff(h, f, scope));
+    div.appendChild(_renderHunkDiff(h, f, scope));
     if (h.context) {
       const c = _el("div", "context-note");
       c.innerHTML = `<strong>context:</strong> ${_esc(h.context)}`;
@@ -1002,30 +991,27 @@ function _renderHunkHeader(
   return hdr;
 }
 
-// --- The label tree: the labels on a run of rows --------------------------
+// --- The label tree: what a collapsed fold shows ----------------------------
 //
-// Every definition touched within the rows (a `FileBlock.fold_regions`
+// The labels on the rows a fold hid (ADR 0008: folding a region shows its
+// label): every definition touched within them (a `FileBlock.fold_regions`
 // entry with a name whose range holds a changed row) and every annotation
 // span with a row in them, nested by containment over row indices and
 // rendered as labelled rows. Row indices are the one coordinate both
 // kinds share: a deleted definition has only pre-image lines, a span only
 // post-image ones. Nothing is synthesised for rows with neither.
-//
-// Two callers: an open hunk's body below `off` (over the hunk's rows), and
-// a collapsed fold region's box (over the rows the fold hid — ADR 0008:
-// folding a region shows its label).
 
 type LabelNode =
   | { kind: "definition"; region: FoldRegion; first: number; last: number; children: LabelNode[] }
   | { kind: "span"; span: AnnotationSpan; first: number; last: number; children: LabelNode[] };
 
-/** What the tree is being built for: the row that stays visible above
- *  the rows it labels (a fold's chevron row), or null for a hunk body,
- *  where every row is hidden. A definition covering that row encloses
- *  the fold rather than sitting inside it; a span covering it has its
- *  bracket and label on screen already. Neither is a hidden label. */
+/** What the tree is being built for: the fold's chevron row, which stays
+ *  visible above the rows it labels. A definition covering that row
+ *  encloses the fold rather than sitting inside it; a span covering it
+ *  has its bracket and label on screen already. Neither is a hidden
+ *  label. */
 interface LabelScope {
-  visibleRow: RowBlock | null;
+  visibleRow: RowBlock;
 }
 
 /** Row-index extent, inclusive, of the rows `hit` selects; null when none. */
@@ -1047,7 +1033,7 @@ function _touchedDefinitions(f: FileBlock, rows: RowBlock[], scope: LabelScope):
   const out: LabelNode[] = [];
   for (const region of f.fold_regions || []) {
     if (region.qualified_name === null) continue;
-    if (scope.visibleRow !== null && Folds.rowInRegion(scope.visibleRow, region)) continue;
+    if (Folds.rowInRegion(scope.visibleRow, region)) continue;
     if (!rows.some((r) => r.kind !== "ctx" && Folds.rowInRegion(r, region))) continue;
     const extent = _rowExtent(rows, (r) => Folds.rowInRegion(r, region));
     if (extent === null) continue;
@@ -1067,7 +1053,7 @@ function _labelTree(f: FileBlock, rows: RowBlock[], scope: LabelScope): LabelNod
   const nodes: LabelNode[] = _touchedDefinitions(f, rows, scope);
   for (const h of f.hunks) {
     for (const span of h.spans || []) {
-      const shown = scope.visibleRow?.new_line;
+      const shown = scope.visibleRow.new_line;
       if (shown != null && span.start <= shown && shown <= span.end) continue;
       const extent = _rowExtent(rows, (r) => r.new_line != null && span.start <= r.new_line && r.new_line <= span.end);
       if (extent === null) continue;
@@ -1115,12 +1101,6 @@ function _renderLabelTree(f: FileBlock, rows: RowBlock[], scope: LabelScope, pic
   const tree = _el("div", "label-tree");
   for (const node of nodes) tree.appendChild(_renderLabelNode(node, f, rows, pick));
   return tree;
-}
-
-function _renderHunkLabels(h: HunkBlock, f: FileBlock, scope: PaneScope): HTMLElement {
-  const rows = h.rows || [];
-  return _renderLabelTree(f, rows, { visibleRow: null }, () => _toggleFold(scope, _bodyId(h.id), true))
-    ?? _el("div", "label-tree");
 }
 
 /** One labelled row, its children indented beneath. */
@@ -1555,7 +1535,7 @@ function _updateStatus(): void {
       }
     }
   }
-  s.textContent = `${_data.files.length} files · ${smells} smells · ${critical} critical · keys 1-4 fold · space toggle · ? help`;
+  s.textContent = `${_data.files.length} files · ${smells} smells · ${critical} critical · keys 1-3 fold · space toggle · ? help`;
 }
 
 function _syncHash(): void {
@@ -1585,9 +1565,10 @@ function _restoreHash(): void {
   for (const kv of h.split("&")) {
     const [k, v] = kv.split("=");
     if (k === "fold") {
-      // `segments` was the middle rung's name before ADR 0008; a link
-      // that carries it lands on the rung that replaced it.
-      const level = v === "segments" ? "definitions" : v;
+      // `segments` and `definitions` were middle rungs before ADR 0008
+      // settled the ladder, and `off` the bottom rung's name; a link that
+      // carries any of them lands on the code.
+      const level = v === "segments" || v === "definitions" || v === "off" ? "code" : v;
       if ((_FOLD_MODES as readonly string[]).includes(level)) _state.fold = level as FoldMode;
     } else if (k === "mode") {
       _state.mode = v === "overview" && _explainerEnabled ? "overview" : "diff";
@@ -1605,8 +1586,7 @@ function _onKeydown(e: KeyboardEvent): void {
   switch (e.key) {
     case "1": _setGlobalFold("files"); e.preventDefault(); break;
     case "2": _setGlobalFold("hunks"); e.preventDefault(); break;
-    case "3": _setGlobalFold("definitions"); e.preventDefault(); break;
-    case "4": _setGlobalFold("off"); e.preventDefault(); break;
+    case "3": _setGlobalFold("code"); e.preventDefault(); break;
     case "?": _toggleHelp(); e.preventDefault(); break;
     case "Escape": _onEscape(); break;
   }
