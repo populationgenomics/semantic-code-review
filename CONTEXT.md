@@ -302,28 +302,47 @@ In the viewer a span is a label, and it shows only where its code does
 columns after its line numbers, `lineno · text · bars`, a fixed width
 per file (26ch of text, one 6px bar column per level of nesting; nothing
 for a file with no span) split between the halves; the bars sit against
-the code they mark. A multi-line span is a bar over exactly its rows,
-one column further right per level of nesting, with its intent as a
-text block at a smaller size, wrapping at the gutter's width, that
-starts on the span's first row and hangs down for as long as it needs —
-past the end of its bar if it must; nothing is clipped. The block is a
-zero-height grid item, so it sizes no row; the one placement rule is
-that blocks do not overlap. A downward pass over the half's rows
-(`render._layoutSpanTexts`) enforces it: where a block would start
-inside the one above, the nearest code row above it is stretched by the
-overlap (a `min-height`, mirrored onto the old half's paired row so the
-halves stay aligned), and text running past the hunk's last row
-stretches its last code row; every other row keeps its natural height.
-Two spans starting on one row chain their blocks, outermost first. The
-pass runs when the half's rows change (an annotation inserted, a fold
-hiding rows — a `MutationObserver`) or its size does (a
+the code they mark. Every span takes one form, whatever its length: a
+mark in the bars column — a bar over exactly its rows, or a dot on a
+span of one line, one column further right per level of nesting — and
+a text block in the text column, at a smaller size, wrapping at the
+gutter's width, that starts on the span's first row and hangs down for
+as long as it needs — past the end of its bar if it must; nothing is
+clipped, and nothing of a span is in the code column. The block leads
+with the span's smell pills, so they sit beside the bar's first row,
+then the intent. The block is a zero-height grid item, so it sizes no
+row; the one placement rule is that blocks do not overlap. A downward
+pass over the half's rows (`render._layoutSpanTexts`) enforces it:
+where a block would start inside the one above, the nearest code row
+above it is stretched by the overlap (a `min-height`, mirrored onto the
+old half's paired row so the halves stay aligned), and text running
+past the hunk's last row stretches its last code row; every other row
+keeps its natural height. Two spans starting on one row chain their
+blocks, outermost first. The same pass gives every non-code row inside
+a bar — a comment thread's row, a fold's label row — a bars cell with
+the bar's segment at its depth, so a bar runs unbroken through them.
+The pass runs when the half's rows change (an annotation inserted, a
+fold hiding rows — a `MutationObserver`) or its size does (a
 `ResizeObserver`, on the next frame); it measures once, writes once,
-and discards the mutation records its own writes queue. A single-line
-span is a dot on its row at its depth and the inline note beneath the
-row. When a fold hides a span's first row its text hides too and the
-fold's label tree lists it ([[fold-region]]). `render._attachSpans`
-owns all of this; the explicit `grid-row` on every row of a half with
-spans is what places the blocks. On disk,
+and discards the mutation records its own writes queue. When a fold
+hides a span's first row its text hides too and the fold's label tree
+lists it ([[fold-region]]). A span the reviewer has turned into a
+[[reviewer-comment]] (a local comment `derived_from` its id, or the
+`line_note` id a store written before spans used) is not drawn; the
+comment stands in its place. `render._attachSpans` owns all of this;
+the explicit `grid-row` on every row of a half with spans is what
+places the blocks.
+
+The gutter **folds**, globally: folded, it is `lineno · bars` — the text
+column zero wide, every block hidden, no row stretched, the bars and
+dots still showing where each span is and how they nest, a mark's
+tooltip its rationale. Clicking a mark unfolds it and brings that
+span's text into view; clicking the strip's empty area, or `g`,
+toggles. A reading preference like the [[fold-level]], not a rung of
+it: kept in localStorage (`scr-gutter-fold`), default expanded, and
+followed by every pane — the explainer's panel included — through one
+class on the document (`html.gutter-collapsed`) that the stylesheet
+zeroes the text column by. On disk,
 `scr-span: +a..+b "intent"` is an intent-only span and `scr-span-begin`
 … `scr-span-end` a block with smells/context/refs; the retired
 `scr-segment-*` / `scr-line` directives and a sidecar's `segments` /
@@ -382,7 +401,10 @@ the AST) is a projection, not a summary, and neither exists. The three
 axes the ADR names are affordances at `code`, not rungs: the expand chip
 hides ([[collapsible-region]]), the definition chevron folds
 ([[fold-region]] — a collapsed one shows its labels), the span labels
-([[annotation-span]], in the centre gutter).
+([[annotation-span]], in the centre gutter). The gutter's own fold (`g`)
+is not a rung either: it hides the spans' text, never rows, and is a
+preference kept in localStorage rather than a level carried by the
+hash.
 
 Per-item exceptions live in `RenderState.overrides` — a reviewer
 expanding/collapsing one file (`F0`) or hunk (`H0_1`, header open or

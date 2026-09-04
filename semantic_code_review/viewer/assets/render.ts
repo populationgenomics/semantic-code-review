@@ -71,6 +71,13 @@ let _smells: Record<string, SmellCatalogueEntry> = {};
 // it up in _renderContent; setSymbolSearch repaints cells already in the
 // DOM. See setSymbolSearch / sidebar's active-pill callback.
 let _symbolSearch: string | null = null;
+// Whether the centre gutter is folded to `lineno · bars` — its text column
+// zero wide, the rationales hidden, the bars and dots still showing where
+// every span is. A reading preference like the fold level, global across
+// files and panes, kept in localStorage rather than the hash: it is the
+// reader's, not the link's. Default expanded.
+let _gutterCollapsed = false;
+const _GUTTER_FOLD_KEY = "scr-gutter-fold";
 // Whether the change explainer exists for this review (`--no-augment`
 // and `[augment].explainer = false` both switch it off server-side).
 // Gates the mode entirely: with it false there is no button, and a
@@ -167,6 +174,7 @@ function renderInit(data: ViewerData): void {
   // A filter restored from localStorage is not a gesture: the diff opens
   // at its level, filtered, with nothing focused.
   _state.focus = null;
+  _applyGutterFold(_readGutterFold());
   _wireInputs();
   _restoreHash();
   render();
@@ -1140,9 +1148,9 @@ function _renderLabelNode(node: LabelNode, f: FileBlock, rows: RowBlock[], pick:
 
 /** The labels a collapsed region shows (the `FoldLabels` folds.ts asks
  *  for): the tree over the rows the fold hid. Clicking one opens the fold
- *  and lands on what it names — a span's text or note, a definition's
- *  first row — found within this pane's copy of the file,
- *  so the explainer panel never scrolls the diff pane. */
+ *  and lands on what it names — a span's text, a definition's first row
+ *  — found within this pane's copy of the file, so the explainer panel
+ *  never scrolls the diff pane. */
 function _foldLabels(f: FileBlock): FoldLabels {
   return (headerRow, bodyRows, open) => {
     const scope: LabelScope = { visibleRow: headerRow };
@@ -1151,7 +1159,7 @@ function _foldLabels(f: FileBlock): FoldLabels {
       open();
       const pane = tree?.closest(".file") ?? document;
       const target = node.kind === "span"
-        ? pane.querySelector<HTMLElement>(`.span-text[data-span-id="${_cssEscape(node.span.id)}"], .row-annotation[data-span-id="${_cssEscape(node.span.id)}"]`)
+        ? pane.querySelector<HTMLElement>(`.span-text[data-span-id="${_cssEscape(node.span.id)}"]`)
         : (bodyRows[node.first].newEl.children[1].classList.contains("empty")
           ? bodyRows[node.first].oldEl : bodyRows[node.first].newEl);
       if (target) target.scrollIntoView({ block: "nearest" });
@@ -1174,7 +1182,7 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLE
   const rows = h.rows || [];
   const marks = _blockMarks(rows);
   const { diff, oldEls, newEls } = _renderDiffRows(file, rows, marks);
-  _attachSpans(oldEls, newEls, rows, h.spans || [], h.id, file.path);
+  _attachSpans(newEls, rows, h.spans || [], h.id, file.path);
   // Record this hunk's rows so folds.ts can build a unified row stream
   // across the hunk and adjacent expanded context.
   FileRows.record(diff, { rows, oldEls, newEls });
@@ -1188,9 +1196,10 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLE
 // the first three sticky so they read as a fixed centre gutter between the
 // halves while the code scrolls beneath. Every row carries an empty text
 // and bars cell for the gutter's background; a span puts its marks in
-// them. A multi-line span is a bar over its rows, one column further right
-// per level of nesting, and its intent as a text block beside them; a
-// single-line span is a dot on its row and the note beneath it.
+// them. Every span takes one form: a mark in the bars column — a bar over
+// its rows, one column further right per level of nesting, or a dot on a
+// span of one line — and its text block in the text column, starting on
+// its first row. Nothing of a span lives in the code column.
 //
 // A text block is a zero-height grid item on its span's first row, so it
 // takes no part in the grid's row sizing: its body hangs down the strip
@@ -1213,18 +1222,31 @@ interface PlacedSpan {
   depth: number;
 }
 
-/** A multi-line span's text block: the grid item, the body whose height
- *  is the block's, and the span's first row. */
+/** A span's text block: the grid item, the body whose height is the
+ *  block's, and the span's first row. */
 interface SpanTextBlock {
   el: HTMLElement;
   body: HTMLElement;
   row: HTMLElement;
 }
 
-/** A right half's gutter state: its text blocks, the code rows the last
- *  pass stretched, and the observer whose records the pass discards. */
+/** A multi-line span's bar: the code rows it runs from and to, and its
+ *  column. The rows between them that are not code — a comment thread's
+ *  row, a fold's label row — arrive after the bar is drawn, so the
+ *  placement pass gives them their segment. */
+interface SpanBar {
+  span: AnnotationSpan;
+  first: HTMLElement;
+  last: HTMLElement;
+  depth: number;
+}
+
+/** A right half's gutter state: its text blocks and bars, the code rows
+ *  the last pass stretched, and the observer whose records the pass
+ *  discards. */
 interface SpanGutter {
   blocks: SpanTextBlock[];
+  bars: SpanBar[];
   stretched: HTMLElement[];
   observer: MutationObserver | null;
 }
@@ -1241,13 +1263,16 @@ const _SPAN_TEXT_WIDTH = "26ch";
 const _SPAN_BAR_COLUMN_PX = 6;
 
 /** Spans on visible code — the one owner of the form a span takes when
- *  its rows are on screen. A span whose rows are not in the hunk is
- *  warned about and left out. Everything hangs off the rows themselves,
- *  so it survives the hunk's `.diff` being reused across repaints and
- *  rows arriving above or below it from a chip. */
+ *  its rows are on screen: its marks in the bars column (a bar over its
+ *  rows, or a dot for a span of one line) and its text block in the text
+ *  column, whatever its length. A span whose rows are not in the hunk is
+ *  warned about and left out; one the reviewer has turned into a comment
+ *  is left out too — the comment stands in its place. Everything hangs
+ *  off the rows themselves, so it survives the hunk's `.diff` being
+ *  reused across repaints and rows arriving above or below it from a
+ *  chip. */
 function _attachSpans(
-  rowElsOld: HTMLElement[], rowElsNew: HTMLElement[],
-  rows: RowBlock[], spans: AnnotationSpan[],
+  rowElsNew: HTMLElement[], rows: RowBlock[], spans: AnnotationSpan[],
   hunkId: string, filePath: string,
 ): void {
   if (!spans.length || !rows.length) return;
@@ -1256,15 +1281,17 @@ function _attachSpans(
   const half = rowElsNew[0].parentElement;
   if (!half) throw new Error(`${hunkId}: rows are not in a half`);
   const blocks: SpanTextBlock[] = [];
+  const bars: SpanBar[] = [];
   for (const ps of placed) {
-    if (ps.span.start === ps.span.end) {
-      _gutterBars(rowElsNew[ps.first]).appendChild(_spanMark(ps.span.id, ps.depth, "dot"));
-      _attachSpanNote(ps.span, ps.first, rowElsOld, rowElsNew, hunkId, filePath);
-      continue;
-    }
-    for (let i = ps.first; i <= ps.last; i++) {
-      const pos = i === ps.first ? "bar-top" : i === ps.last ? "bar-bottom" : "bar";
-      _gutterBars(rowElsNew[i]).appendChild(_spanMark(ps.span.id, ps.depth, pos));
+    if (_spanPromoted(ps.span, hunkId)) continue;
+    if (ps.first === ps.last) {
+      _gutterBars(rowElsNew[ps.first]).appendChild(_spanMark(ps.span, ps.depth, "dot"));
+    } else {
+      for (let i = ps.first; i <= ps.last; i++) {
+        const pos = i === ps.first ? "bar-top" : i === ps.last ? "bar-bottom" : "bar";
+        _gutterBars(rowElsNew[i]).appendChild(_spanMark(ps.span, ps.depth, pos));
+      }
+      bars.push({ span: ps.span, first: rowElsNew[ps.first], last: rowElsNew[ps.last], depth: ps.depth });
     }
     const el = _el("div", "span-text");
     el.dataset.spanId = ps.span.id;
@@ -1277,7 +1304,7 @@ function _attachSpans(
     blocks.push({ el, body, row: rowElsNew[ps.first] });
   }
   if (!blocks.length) return;
-  const gutter: SpanGutter = { blocks, stretched: [], observer: null };
+  const gutter: SpanGutter = { blocks, bars, stretched: [], observer: null };
   _SPAN_GUTTERS.set(half, gutter);
   _observeHalf(half, gutter);
   _layoutSpanTexts(half);
@@ -1320,6 +1347,65 @@ function _setGutterWidths(body: HTMLElement, f: FileBlock): void {
   body.style.setProperty("--span-text-w", cols ? _SPAN_TEXT_WIDTH : "0px");
 }
 
+// --- The gutter fold ---------------------------------------------------------
+
+/** The stored preference; expanded when nothing (or nothing this code
+ *  wrote) is stored. */
+function _readGutterFold(): boolean {
+  try {
+    return localStorage.getItem(_GUTTER_FOLD_KEY) === "collapsed";
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Fold or unfold the gutter everywhere it is on screen. The class on
+ *  the document is what the stylesheet zeroes the text column by, in the
+ *  diff pane and the explainer's panel alike; the placement pass is then
+ *  re-run on every half that has one, so a collapse releases its
+ *  stretches and an expand puts them back. */
+function _applyGutterFold(collapsed: boolean): void {
+  _gutterCollapsed = collapsed;
+  document.documentElement.classList.toggle("gutter-collapsed", collapsed);
+  for (const half of document.querySelectorAll<HTMLElement>(".half-new[data-span-observed]")) _layoutSpanTexts(half);
+  // The code columns moved; the comment arrows point at characters in them.
+  Annotations.reflowAll();
+}
+
+function _setGutterFold(collapsed: boolean): void {
+  if (collapsed === _gutterCollapsed) return;
+  _applyGutterFold(collapsed);
+  try {
+    localStorage.setItem(_GUTTER_FOLD_KEY, collapsed ? "collapsed" : "expanded");
+  } catch (_) { /* localStorage may be unavailable */ }
+}
+
+/** The strip's own affordances, delegated from the document so one
+ *  listener covers every pane: a click on a span's mark expands the
+ *  gutter (if folded) and brings that span's text into view; a click on
+ *  the strip's empty area — a gutter cell itself, not a block or mark on
+ *  it — toggles the fold. */
+function _onGutterClick(e: MouseEvent): void {
+  const target = e.target as HTMLElement | null;
+  if (!target) return;
+  const mark = target.closest<HTMLElement>(".span-mark[data-span-id]");
+  if (mark) {
+    e.stopPropagation();
+    _setGutterFold(false);
+    const half = mark.closest<HTMLElement>(".half-new");
+    const body = half?.querySelector<HTMLElement>(`.span-text-body[data-span-id="${_cssEscape(mark.dataset.spanId!)}"]`);
+    if (body) body.scrollIntoView({ block: "nearest" });
+    return;
+  }
+  if (target.classList.contains("cell-gutter-text") || target.classList.contains("cell-gutter-bars")) {
+    e.stopPropagation();
+    _setGutterFold(!_gutterCollapsed);
+  }
+}
+
+/** What a gutter cell says on hover; the strip has no chrome of its own. */
+const _GUTTER_CELL_TITLE = "Click to fold or unfold the span gutter (g)";
+
 /** A row's bars cell (`children[3]`; `[2]` is its text cell). */
 function _gutterBars(rowEl: HTMLElement): HTMLElement {
   const cell = rowEl.children[3] as HTMLElement | undefined;
@@ -1327,24 +1413,47 @@ function _gutterBars(rowEl: HTMLElement): HTMLElement {
   return cell;
 }
 
-/** A bar segment or dot in a row's bars cell, at its depth's column. */
-function _spanMark(spanId: string, depth: number, kind: "bar" | "bar-top" | "bar-bottom" | "dot"): HTMLElement {
+/** A bar segment or dot in a row's bars cell, at its depth's column. Its
+ *  tooltip is the span's rationale — what a folded gutter shows of it on
+ *  hover; the native tooltip holds a 700-character intent whole. */
+function _spanMark(span: AnnotationSpan, depth: number, kind: "bar" | "bar-top" | "bar-bottom" | "dot"): HTMLElement {
   const mark = _el("span", `span-mark span-${kind}`);
-  mark.dataset.spanId = spanId;
+  mark.dataset.spanId = span.id;
   mark.style.setProperty("--depth", String(depth));
   mark.setAttribute("aria-hidden", "true");
+  mark.title = _spanTooltip(span);
   return mark;
 }
 
-/** One span's text: its intent, wrapping at the gutter's width, then its
- *  smells as promotable pills anchored at the span's first line. */
+function _spanTooltip(span: AnnotationSpan): string {
+  const smells = (span.smells || []).map((sm) => sm.tag);
+  const intent = span.intent || "(no intent)";
+  return smells.length ? `${smells.join(" · ")}\n${intent}` : intent;
+}
+
+/** Whether the reviewer has already turned this span into a comment: a
+ *  local comment derived from its id, or — for a span of one line — from
+ *  the `line_note` id a comment store written before spans recorded the
+ *  same observation under. */
+function _spanPromoted(span: AnnotationSpan, hunkId: string): boolean {
+  if (Comments.isPromoted(span.id)) return true;
+  return span.start === span.end && Comments.isPromoted(`${hunkId}:line_note:${span.start}`);
+}
+
+/** One span's text: its smells as promotable pills on the block's first
+ *  line — beside the bar's start, since they describe the span — then its
+ *  intent, wrapping at the gutter's width. */
 function _spanText(span: AnnotationSpan, filePath: string): HTMLElement {
   const el = _el("p", "span-text-body");
   el.dataset.spanId = span.id;
+  if (span.smells && span.smells.length) {
+    const pills = _el("span", "span-text-smells");
+    for (const sm of span.smells) pills.appendChild(_smellPill(sm, {
+      smellId: `${span.id}:smell:${sm.tag}`, file: filePath, side: "new", line: span.start,
+    }));
+    el.appendChild(pills);
+  }
   el.appendChild(_el("span", span.intent ? "span-text-intent" : "span-text-intent empty", span.intent || "(no intent)"));
-  for (const sm of span.smells || []) el.appendChild(_smellPill(sm, {
-    smellId: `${span.id}:smell:${sm.tag}`, file: filePath, side: "new", line: span.start,
-  }));
   return el;
 }
 
@@ -1390,6 +1499,11 @@ function _observeHalf(half: HTMLElement, gutter: SpanGutter): void {
 function _layoutSpanTexts(half: HTMLElement): void {
   const gutter = _SPAN_GUTTERS.get(half);
   if (!gutter) return;
+  // A span promoted to a comment after the attach has had its block
+  // removed from the half (comments.ts's sweep); it places nothing from
+  // then on. Not `isConnected`: the first pass runs before the hunk's
+  // `.diff` is in the document.
+  gutter.blocks = gutter.blocks.filter((block) => block.el.parentElement === half);
   // Release the last pass's stretches: the rows measure at their natural
   // heights and the pass recomputes every one.
   for (const row of gutter.stretched) {
@@ -1399,19 +1513,24 @@ function _layoutSpanTexts(half: HTMLElement): void {
   gutter.stretched = [];
   const track = new Map<Element, number>();
   const visible: HTMLElement[] = [];
+  const rows: HTMLElement[] = [];
   let n = 0;
   for (const child of Array.from(half.children) as HTMLElement[]) {
     if (!child.classList.contains("row")) continue;
+    rows.push(child);
     if (child.style.display === "none") { child.style.gridRow = ""; continue; }
     n++;
     child.style.gridRow = String(n);
     track.set(child, n);
     visible.push(child);
   }
+  _barNonCodeRows(gutter.bars, rows);
   const shown: SpanTextBlock[] = [];
   for (const block of gutter.blocks) {
     const start = track.get(block.row);
-    if (start === undefined) {
+    // Folded, the gutter has no text to place: every block hides and no
+    // row is stretched — the compact view is the undistorted diff.
+    if (start === undefined || _gutterCollapsed) {
       block.el.style.display = "none";
       block.el.style.transform = "";
       continue;
@@ -1419,6 +1538,10 @@ function _layoutSpanTexts(half: HTMLElement): void {
     block.el.style.display = "";
     block.el.style.gridRow = String(start);
     shown.push(block);
+  }
+  if (!shown.length) {
+    gutter.observer?.takeRecords();
+    return;
   }
   // The one measurement.
   const rects = new Map<HTMLElement, DOMRect>();
@@ -1475,64 +1598,38 @@ function _codeRowAbove(visible: HTMLElement[], from: number): HTMLElement {
   throw new Error("no code row above a colliding span text");
 }
 
+/** Give every non-code row lying inside a bar — a comment thread's row,
+ *  a fold's label row, the placeholder for an old-side thread — a bars
+ *  cell with a segment per enclosing bar at its depth, so a bar runs
+ *  unbroken through them. `rows` is the half's rows in DOM order, hidden
+ *  ones included (a bar may open on a hidden row); a hidden row is left
+ *  alone. Idempotent: a cell already carrying the right segments stays. */
+function _barNonCodeRows(bars: SpanBar[], rows: HTMLElement[]): void {
+  if (!bars.length) return;
+  const open = new Set<SpanBar>();
+  for (const row of rows) {
+    for (const bar of bars) if (bar.first === row) open.add(bar);
+    const code = !row.classList.contains("row-annotation") && !row.classList.contains("row-placeholder");
+    if (!code && row.style.display !== "none") {
+      const key = Array.from(open, (b) => b.span.id).join("\n");
+      let cell = row.querySelector<HTMLElement>(":scope > .cell-gutter-bars");
+      if (cell && cell.dataset.spans !== key) { cell.remove(); cell = null; }
+      if (!cell && open.size) {
+        cell = _el("span", "cell-gutter-bars");
+        cell.dataset.spans = key;
+        for (const bar of open) cell.appendChild(_spanMark(bar.span, bar.depth, "bar"));
+        row.appendChild(cell);
+      }
+    }
+    for (const bar of bars) if (bar.last === row) open.delete(bar);
+  }
+}
+
 /** The old-half row paired with a new-half code row. */
 function _pairOf(row: HTMLElement): HTMLElement {
   const pair = (row as { _scrPair?: HTMLElement })._scrPair;
   if (!pair) throw new Error("code row has no paired row");
   return pair;
-}
-
-function _attachSpanNote(
-  note: AnnotationSpan, idx: number,
-  rowElsOld: HTMLElement[], rowElsNew: HTMLElement[],
-  hunkId: string, filePath: string,
-): void {
-  // If this span has already been promoted to a local comment, skip
-  // rendering it — the comment now stands in its place. Keeps a
-  // re-augment from resurrecting an observation the reviewer has
-  // already turned into a comment. A comment store written before
-  // spans recorded the note under its `line_note` id; honour that too.
-  if (Comments.isPromoted(note.id) || Comments.isPromoted(`${hunkId}:line_note:${note.start}`)) return;
-  Annotations.attach({
-    anchor: rowElsNew[idx],
-    shadowAnchor: rowElsOld[idx],
-    variant: "note",
-    content: _buildSpanNoteContent(note, filePath, rowElsNew[idx]),
-    onInsert: (el) => { el.dataset.spanId = note.id; },
-  });
-}
-
-/** Compose a single-line span's annotation body: the LLM's text plus a
- *  small "Add as comment" affordance that hands the body to the comment
- *  editor pre-filled and anchored at the same row. */
-function _buildSpanNoteContent(
-  note: AnnotationSpan, filePath: string, rowEl: HTMLElement,
-): HTMLElement {
-  const wrap = document.createElement("div");
-  wrap.className = "line-note-body";
-  const text = document.createElement("div");
-  text.className = "line-note-text";
-  text.textContent = note.intent || "";
-  wrap.appendChild(text);
-
-  const actions = document.createElement("div");
-  actions.className = "line-note-actions";
-  const promote = document.createElement("button");
-  promote.className = "comment-btn comment-btn-promote";
-  promote.type = "button";
-  promote.textContent = "Add as comment";
-  promote.title = "Open the comment editor pre-filled with this observation";
-  promote.addEventListener("click", (e) => {
-    e.stopPropagation();
-    Comments.openPromotionEditor({
-      rowEl, side: "new", line: note.start,
-      file: filePath, body: note.intent || "",
-      derivedFrom: note.id,
-    });
-  });
-  actions.appendChild(promote);
-  wrap.appendChild(actions);
-  return wrap;
 }
 
 function _renderRow(
@@ -1551,8 +1648,11 @@ function _renderRow(
   newRow.appendChild(_renderContent(row.new_text, "new", hasNew, file, newMarks));
   // The centre gutter's cells, after the content so `children[1]` stays
   // the content cell; the grid places them between number and code.
-  newRow.appendChild(_el("span", "cell-gutter-text"));
-  newRow.appendChild(_el("span", "cell-gutter-bars"));
+  const text = _el("span", "cell-gutter-text");
+  const bars = _el("span", "cell-gutter-bars");
+  text.title = bars.title = _GUTTER_CELL_TITLE;
+  newRow.appendChild(text);
+  newRow.appendChild(bars);
   return { old: oldRow, new: newRow };
 }
 
@@ -1732,7 +1832,7 @@ function _updateStatus(): void {
       }
     }
   }
-  s.textContent = `${_data.files.length} files · ${smells} smells · ${critical} critical · keys 1-3 fold · space toggle · ? help`;
+  s.textContent = `${_data.files.length} files · ${smells} smells · ${critical} critical · keys 1-3 fold · g gutter · ? help`;
 }
 
 function _syncHash(): void {
@@ -1784,6 +1884,7 @@ function _onKeydown(e: KeyboardEvent): void {
     case "1": _setGlobalFold("files"); e.preventDefault(); break;
     case "2": _setGlobalFold("hunks"); e.preventDefault(); break;
     case "3": _setGlobalFold("code"); e.preventDefault(); break;
+    case "g": _setGutterFold(!_gutterCollapsed); e.preventDefault(); break;
     case "?": _toggleHelp(); e.preventDefault(); break;
     case "Escape": _onEscape(); break;
   }
@@ -1855,6 +1956,7 @@ function _wireInputs(): void {
     if (e.target === overlay) _closeHelp();
   });
   document.addEventListener("keydown", _onKeydown);
+  document.addEventListener("click", _onGutterClick);
   window.addEventListener("hashchange", () => {
     _state.overrides = Object.create(null);
     _restoreHash();

@@ -935,21 +935,22 @@ describe("streaming events", () => {
       expect(text).not.toContain(s.intent as string);
       expect(text).not.toContain(`+${s.start}`);
     }
-    expect(hunk.querySelector(".span-mark, .span-text, .annot-note, .label-tree, .label-row")).toBeNull();
+    expect(hunk.querySelector(".span-mark, .span-text, .label-tree, .label-row")).toBeNull();
     expect(codeRows(".hunk")).toBe(0);
   });
 
-  test("at 'code' a hunk's spans are bars and notes on its rows; the definitions are chevrons", async () => {
+  test("at 'code' a hunk's spans are marks and text blocks in the gutter; the definitions are chevrons", async () => {
     await bootViewer(makeData({ pending: false, files: [spansFile(SPANS)], symbols: [] }));
     fold("code");
     expect(codeRows(".hunk")).toBe(9);
-    // Multi-line spans bar; single-line spans dot and note; no tree until
-    // a definition is collapsed.
+    // Multi-line spans bar, single-line spans dot; every span has a text
+    // block in the gutter and nothing in the code column; no tree until a
+    // definition is collapsed.
     expect(document.querySelectorAll('.span-mark[data-span-id="H0_0:span:5-7"]').length).toBe(3);
     expect(document.querySelectorAll('.span-mark[data-span-id="H0_0:span:9-10"]').length).toBe(2);
-    expect(document.querySelectorAll(".half-new > .span-text").length).toBe(2);
+    expect(document.querySelectorAll(".half-new > .span-text").length).toBe(4);
     expect(document.querySelectorAll(".span-dot").length).toBe(2);
-    expect(document.querySelectorAll(".row-annotation.annot-note").length).toBe(2);
+    expect(document.querySelectorAll(".row-annotation[data-span-id]").length).toBe(0);
     // The label trees exist only inside the (hidden) fold boxes.
     for (const tree of document.querySelectorAll<HTMLElement>(".label-tree")) {
       expect((tree.closest(".row-annotation") as HTMLElement).style.display).toBe("none");
@@ -982,10 +983,15 @@ describe("streaming events", () => {
     fold("code");
     expect(document.querySelectorAll(".fold-chev").length).toBe(0);
     expect(document.querySelector(".label-tree")).toBeNull();
-    expect(document.querySelectorAll('.span-mark[data-span-id="H0_0:span:1-4"]').length).toBe(4);
-    expect(document.querySelectorAll('.span-mark[data-span-id="H0_0:span:2-3"]').length).toBe(2);
+    // Bars over exactly their code rows (the callout's note row at 3 gets
+    // its own segment of the bars running through it).
+    const codeMarks = (id: string): number =>
+      document.querySelectorAll(`.row:not(.row-annotation) > .cell-gutter-bars > .span-mark[data-span-id="${id}"]`).length;
+    expect(codeMarks("H0_0:span:1-4")).toBe(4);
+    expect(codeMarks("H0_0:span:2-3")).toBe(2);
     expect(document.querySelector('.span-text[data-span-id="H0_0:span:1-4"] .span-text-intent')!.textContent).toBe("region");
-    expect(document.querySelectorAll(".row-annotation.annot-note").length).toBe(2);
+    expect(document.querySelector('.span-text[data-span-id="H0_0:span:3-3"] .span-text-intent')!.textContent).toBe("callout");
+    expect(document.querySelectorAll(".row-annotation").length).toBe(0);
   });
 
   test("focus reveals the focused hunk's code; the slider still folds it to level", async () => {
@@ -1222,11 +1228,11 @@ describe("the centre gutter: spans on visible code (ADR 0008)", () => {
     expect(body.style.getPropertyValue("--span-bars-w")).toBe("16px");
     expect(body.style.getPropertyValue("--span-text-w")).toBe("26ch");
 
-    // Every row is placed explicitly — the callout's note hangs off line 5
-    // as track 3, so lines 6..8 are tracks 4..6 — and the outer span's text
-    // block sits on its first row, line 4, hanging down from there.
-    expect(newRows().map(gridRow)).toEqual(["1", "2", "4", "5", "6"]);
-    expect((rowOfLine(5).nextElementSibling as HTMLElement).style.gridRow).toBe("3");
+    // Every row is placed explicitly, and nothing of a span sits between
+    // the rows — the outer span's text block sits on its first row, line
+    // 4, hanging down from there.
+    expect(newRows().map(gridRow)).toEqual(["1", "2", "3", "4", "5"]);
+    expect(document.querySelector(".row-annotation")).toBeNull();
     const outer = textOf("H0_0:span:4-7")!;
     expect(outer).not.toBeNull();
     expect(outer.querySelector(".span-text-intent")!.textContent).toBe("the outer edit");
@@ -1244,18 +1250,47 @@ describe("the centre gutter: spans on visible code (ADR 0008)", () => {
     expect(depth("H0_0:span:4-7")).toBe("0");
     expect(depth("H0_0:span:6-7")).toBe("1");
     const inner = textOf("H0_0:span:6-7")!;
-    expect(gridRow(inner)).toBe("4");
+    expect(gridRow(inner)).toBe("3");
     expect(inner.querySelector(".span-text-intent")!.textContent).toBe("the inner edit");
     expect(inner.querySelector(".smell")!.textContent).toBe("dead-code");
+    // The pills lead the block — beside the bar's first row, not wherever
+    // a long intent happens to end — and a span with none has no pill row.
+    const body = inner.querySelector(".span-text-body")!;
+    expect(Array.from(body.children).map((c) => c.className)).toEqual(["span-text-smells", "span-text-intent"]);
+    expect(textOf("H0_0:span:4-7")!.querySelector(".span-text-smells")).toBeNull();
 
-    // Single-line spans: a dot on their row at their depth, and the note
-    // beneath the row as before. No text block.
+    // Single-line spans take the same form: a dot on their row at their
+    // depth, and their text block in the gutter on that row — nothing in
+    // the code column, no arrow.
     expect(marks("H0_0:span:5-5")).toEqual([[5, "span-dot"]]);
     expect(depth("H0_0:span:5-5")).toBe("1");
     expect(marks("H0_0:span:8-8")).toEqual([[8, "span-dot"]]);
     expect(depth("H0_0:span:8-8")).toBe("0");
-    expect(document.querySelectorAll(".row-annotation.annot-note").length).toBe(2);
-    expect(textOf("H0_0:span:5-5")).toBeNull();
+    const callout = textOf("H0_0:span:5-5")!;
+    expect(callout).not.toBeNull();
+    expect(gridRow(callout)).toBe("2");
+    expect(callout.querySelector(".span-text-intent")!.textContent).toBe("a callout");
+    expect(gridRow(textOf("H0_0:span:8-8")!)).toBe("5");
+    expect(document.querySelector(".row-annotation, .annot-arrow")).toBeNull();
+  });
+
+  test("a single-line span's text joins the waterfall: it is pushed below its parent's, stretching the row before it", async () => {
+    // config.py's +81 inside +76..+81: the parent's text runs down from 76
+    // and the child's starts at 81 — inside the parent's — so the child
+    // moves down by the overlap and line 80 grows by it.
+    await bootViewer(makeData({ pending: false, files: [gutterFile([
+      span("H0_0:span:4-8", 4, 8, "the parent, at length"),
+      span("H0_0:span:8-8", 8, 8, "the child, longer still"),
+    ])], symbols: [] }));
+    fold("code");
+    expect(marks("H0_0:span:8-8")).toEqual([[8, "span-dot"]]);
+    // Line 8 is 80..100; a 90px parent block from 0 ends at 90, so the
+    // child's block moves to 90 and line 7 grows by 10; its 30px then run
+    // 10 past the hunk's shifted bottom (110), so line 8 grows by 10 too.
+    await layoutGeometry({ "H0_0:span:4-8": 90, "H0_0:span:8-8": 30 });
+    expect(textOf("H0_0:span:8-8")!.style.display).toBe("");
+    expect(minHeights(newRows())).toEqual(["", "", "", "30px", "30px"]);
+    expect(minHeights(oldRows())).toEqual(["", "", "", "30px", "30px"]);
   });
 
   test("a row inserted later is placed too, and the text blocks move with the rows", async () => {
@@ -1269,9 +1304,10 @@ describe("the centre gutter: spans on visible code (ADR 0008)", () => {
     const editor = rowOfLine(4).nextElementSibling as HTMLElement;
     expect(editor.classList.contains("row-annotation")).toBe(true);
     expect(editor.style.gridRow).toBe("2");
-    expect(newRows().map(gridRow)).toEqual(["1", "3", "5", "6", "7"]);
+    expect(newRows().map(gridRow)).toEqual(["1", "3", "4", "5", "6"]);
     expect(gridRow(textOf("H0_0:span:4-7")!)).toBe("1");
-    expect(gridRow(textOf("H0_0:span:6-7")!)).toBe("5");
+    expect(gridRow(textOf("H0_0:span:5-5")!)).toBe("3");
+    expect(gridRow(textOf("H0_0:span:6-7")!)).toBe("4");
   });
 
   test("a rationale taller than the hunk stretches only the last row; the old half's pair follows", async () => {
@@ -1374,64 +1410,120 @@ describe("the centre gutter: spans on visible code (ADR 0008)", () => {
     // continuous down the file.
     expect(document.querySelector(".gap-expansion .half-new .row .cell-gutter-text")).not.toBeNull();
   });
+
+  test("a bar runs through the comment rows inside its span, at the span's depth", async () => {
+    // Threads on 5 (inside the outer span 4..7), on 6 (inside it and the
+    // inner span 6..7) and on 7 (the outer span's last row: outside).
+    const comment = (id: string, side: "old" | "new", line: number): Record<string, unknown> =>
+      ({ id, file: "a.py", side, line, body: id, created_at: 1, updated_at: 1, source: "local", derived_from: null });
+    await bootViewer(
+      makeData({ pending: false, files: [gutterFile(NESTED)], symbols: [] }),
+      { comments: [comment("c5", "new", 5), comment("c6", "new", 6), comment("c7", "new", 7)] },
+    );
+    fold("code");
+    await tick();
+    const segments = (row: HTMLElement): Array<[string, string]> =>
+      Array.from(row.querySelectorAll<HTMLElement>(":scope > .cell-gutter-bars > .span-mark"))
+        .map((m) => [m.dataset.spanId!, m.style.getPropertyValue("--depth")]);
+    const threadAfter = (line: number): HTMLElement => {
+      const next = rowOfLine(line).nextElementSibling as HTMLElement;
+      expect(next.classList.contains("annot-comment")).toBe(true);
+      return next;
+    };
+    expect(segments(threadAfter(5))).toEqual([["H0_0:span:4-7", "0"]]);
+    expect(segments(threadAfter(6))).toEqual([["H0_0:span:4-7", "0"], ["H0_0:span:6-7", "1"]]);
+    expect(segments(threadAfter(7))).toEqual([]);
+    expect(threadAfter(7).querySelector(":scope > .cell-gutter-bars")).toBeNull();
+    // The code rows' own marks are untouched by the pass.
+    expect(marks("H0_0:span:4-7")).toEqual([[4, "span-bar-top"], [5, "span-bar"], [6, "span-bar"], [7, "span-bar-bottom"]]);
+  });
+
+  describe("the gutter fold", () => {
+    const key = (k: string): void => { document.dispatchEvent(new KeyboardEvent("keydown", { key: k })); };
+    const collapsed = (): boolean => document.documentElement.classList.contains("gutter-collapsed");
+    /** A tall block, so the expanded gutter stretches the hunk's last row. */
+    const TALL = [span("H0_0:span:4-5", 4, 5, "tall", [{ tag: "dead-code", note: "" }])];
+
+    test("g folds the gutter: blocks hide, no row is stretched, marks stay; g again restores both", async () => {
+      await bootViewer(makeData({ pending: false, files: [gutterFile(TALL)], symbols: [] }));
+      fold("code");
+      await layoutGeometry({ "H0_0:span:4-5": 130 });
+      expect(collapsed()).toBe(false);
+      expect(minHeights(newRows())).toEqual(["", "", "", "", "50px"]);
+
+      key("g");
+      expect(collapsed()).toBe(true);
+      expect(textOf("H0_0:span:4-5")!.style.display).toBe("none");
+      expect(minHeights(newRows())).toEqual(["", "", "", "", ""]);
+      expect(minHeights(oldRows())).toEqual(["", "", "", "", ""]);
+      expect(marks("H0_0:span:4-5")).toEqual([[4, "span-bar-top"], [5, "span-bar-bottom"]]);
+      expect(localStorage.getItem("scr-gutter-fold")).toBe("collapsed");
+      // A pass the rows trigger while folded places nothing either.
+      await layoutGeometry({ "H0_0:span:4-5": 130 });
+      expect(minHeights(newRows())).toEqual(["", "", "", "", ""]);
+
+      key("g");
+      expect(collapsed()).toBe(false);
+      expect(textOf("H0_0:span:4-5")!.style.display).toBe("");
+      expect(minHeights(newRows())).toEqual(["", "", "", "", "50px"]);
+      expect(minHeights(oldRows())).toEqual(["", "", "", "", "50px"]);
+      expect(localStorage.getItem("scr-gutter-fold")).toBe("expanded");
+    });
+
+    test("the fold is remembered across a reload, and applies to every half", async () => {
+      localStorage.setItem("scr-gutter-fold", "collapsed");
+      const file = gutterFile(TALL);
+      const hunks = file.hunks as Record<string, unknown>[];
+      hunks.push(makeHunkBlock("H0_1", "adds more", {
+        old_start: 8, old_count: 0, new_start: 12, new_count: 2,
+        rows: [12, 13].map((n) => ({ kind: "ins", old_line: null, new_line: n, old_text: "", new_text: `l${n}` })),
+        spans: [span("H0_1:span:12-13", 12, 13, "later")],
+      }));
+      await bootViewer(makeData({ pending: false, files: [file], symbols: [] }));
+      fold("code");
+      expect(collapsed()).toBe(true);
+      const blocks = Array.from(document.querySelectorAll<HTMLElement>(".half-new > .span-text"));
+      expect(blocks.length).toBe(2);
+      expect(blocks.map((b) => b.style.display)).toEqual(["none", "none"]);
+      key("g");
+      expect(blocks.map((b) => b.style.display)).toEqual(["", ""]);
+    });
+
+    test("the strip's empty area toggles the fold; a mark expands it and brings its text into view", async () => {
+      await bootViewer(makeData({ pending: false, files: [gutterFile(TALL)], symbols: [] }));
+      fold("code");
+      const cell = rowOfLine(6).querySelector<HTMLElement>(".cell-gutter-text")!;
+      expect(cell.title).toContain("(g)");
+      cell.click();
+      expect(collapsed()).toBe(true);
+      (rowOfLine(6).querySelector(".cell-gutter-bars") as HTMLElement).click();
+      expect(collapsed()).toBe(false);
+      cell.click();
+      expect(collapsed()).toBe(true);
+
+      // Folded, a mark's tooltip is the span's rationale: its smells, then
+      // its intent.
+      const mark = rowOfLine(5).querySelector<HTMLElement>('.span-mark[data-span-id="H0_0:span:4-5"]')!;
+      expect(mark.title).toBe("dead-code\ntall");
+      const scrolled: Element[] = [];
+      const orig = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = function scrollIntoView(this: Element): void { scrolled.push(this); };
+      try {
+        mark.click();
+      } finally {
+        Element.prototype.scrollIntoView = orig;
+      }
+      expect(collapsed()).toBe(false);
+      expect(scrolled).toEqual([textOf("H0_0:span:4-5")!.querySelector(".span-text-body")]);
+      // A click on a block's own text is not a fold gesture.
+      (textOf("H0_0:span:4-5")!.querySelector(".span-text-intent") as HTMLElement).click();
+      expect(collapsed()).toBe(false);
+    });
+  });
 });
 
 
 describe("LLM observation → comment promotion", () => {
-  test("Add as comment opens the editor pre-filled and saves with derived_from", async () => {
-    window.location.hash = "#fold=code";
-    const data = makeData({
-      pending: false,
-      files: [{
-        id: "F0", path: "a.py", status: "modified", language: "python",
-        adds: 0, dels: 0, summary: "", head_line_count: null,
-        symbols: { added: [], modified: [], removed: [] },
-        hunks: [makeHunkBlock("H0_0", "real intent", {
-          spans: [{ id: "H0_0:span:2-2", start: 2, end: 2, intent: "consider using Path", smells: [], context: "", refs: [] }],
-        })],
-      }],
-    });
-    await bootViewer(data);
-    await new Promise<void>((r) => setTimeout(r, 0));
-
-    // The single-line span attaches as a note on the row at line 2 and
-    // carries the span id on its dataset.
-    const noteEl = document.querySelector<HTMLElement>(
-      `.row-annotation.annot-note[data-span-id="H0_0:span:2-2"]`,
-    );
-    expect(noteEl).not.toBeNull();
-    const promote = noteEl!.querySelector<HTMLButtonElement>(".comment-btn-promote");
-    expect(promote).not.toBeNull();
-
-    promote!.click();
-    const ta = document.querySelector<HTMLTextAreaElement>(".comment-editor-input");
-    expect(ta).not.toBeNull();
-    expect(ta!.value).toBe("consider using Path");
-
-    // Capture the POST payload so we can assert derived_from is set.
-    let posted: Record<string, unknown> | null = null;
-    (globalThis.fetch as unknown as { mockImplementationOnce: (fn: typeof fetch) => void })
-      .mockImplementationOnce(((url: string, init?: RequestInit) => {
-        fetchCalls.push({ url, init });
-        posted = JSON.parse(init!.body as string);
-        return Promise.resolve({
-          status: 200, ok: true, json: () => Promise.resolve(posted),
-        } as Response);
-      }) as typeof fetch);
-
-    document.querySelector<HTMLButtonElement>(".comment-btn-save")!.click();
-    await new Promise<void>((r) => setTimeout(r, 0));
-
-    expect(posted).not.toBeNull();
-    expect(posted!.body).toBe("consider using Path");
-    expect(posted!.derived_from).toBe("H0_0:span:2-2");
-    // Source annotation is gone from the DOM — observation transitioned
-    // into the comment.
-    expect(document.querySelector(
-      `.row-annotation.annot-note[data-span-id="H0_0:span:2-2"]`,
-    )).toBeNull();
-  });
-
   test("smell pill click saves a comment immediately and detaches the pill", async () => {
     window.location.hash = "#fold=code";
     const data = makeData({
@@ -1503,15 +1595,45 @@ describe("LLM observation → comment promotion", () => {
     });
     await new Promise<void>((r) => setTimeout(r, 0));
 
-    // The annotation source is hidden because a local comment with
-    // matching derived_from already exists.
-    expect(document.querySelector(
-      `.row-annotation.annot-note[data-span-id="H0_0:span:1-1"]`,
-    )).toBeNull();
-    // The promoted comment is rendered at the same line.
+    // The span is gone from the gutter — block and dot — because a local
+    // comment derived from it exists; the comment stands in its place.
+    expect(document.querySelector('[data-span-id="H0_0:span:1-1"]')).toBeNull();
     expect(document.querySelector(
       '.comment-thread-entry[data-comment-id="local-1"]',
     )).not.toBeNull();
+    // The gutter's pass, re-run by the removal, has nothing left to place
+    // and holds no stretch.
+    for (const row of document.querySelectorAll<HTMLElement>(".half-new .row")) expect(row.style.minHeight).toBe("");
+  });
+
+  test("a comment store written before spans hides the span under its line_note id", async () => {
+    window.location.hash = "#fold=code";
+    const spans = [
+      { id: "H0_0:span:1-1", start: 1, end: 1, intent: "old observation", smells: [], context: "", refs: [] },
+      { id: "H0_0:span:1-2", start: 1, end: 2, intent: "a span over the same start", smells: [], context: "", refs: [] },
+    ];
+    await bootViewer(makeData({ files: [{
+      id: "F0", path: "a.py", status: "modified", language: "python",
+      adds: 0, dels: 0, summary: "", head_line_count: null,
+      symbols: { added: [], modified: [], removed: [] },
+      hunks: [makeHunkBlock("H0_0", "", { spans })],
+    }] }), {
+      comments: [{
+        id: "local-1", file: "a.py", side: "new", line: 1,
+        body: "promoted version", created_at: 1, updated_at: 1,
+        source: "local",
+        derived_from: "H0_0:line_note:1",
+      }],
+    });
+    await new Promise<void>((r) => setTimeout(r, 0));
+    // A re-augment rebuilds the hunk with the comments known: the legacy
+    // id keeps the one-line span from resurrecting, and never touches the
+    // multi-line span starting on the same line.
+    lastEventSource().dispatch("hunk", {
+      file_idx: 0, hunk_idx: 0, ok: true, block: makeHunkBlock("H0_0", "re-run", { spans }),
+    });
+    expect(document.querySelector('[data-span-id="H0_0:span:1-1"]')).toBeNull();
+    expect(document.querySelector('.span-text[data-span-id="H0_0:span:1-2"]')).not.toBeNull();
   });
 });
 
@@ -2174,13 +2296,13 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
     expect(labelRows(tree)).toEqual(["H0_0:span:9-10: beta's guard", "H0_0:span:10-10: callout"]);
     expect(tree.querySelector('.label-node > .label-row[data-id="H0_0:span:9-10"]')).not.toBeNull();
     expect(tree.querySelector('.label-children > .label-row[data-id="H0_0:span:10-10"] .smell')!.textContent).toBe("dead-code");
-    // The guard's text block (its first row is hidden) and the callout's
-    // note fold with their rows.
+    // The guard's and the callout's text blocks (their first rows are
+    // hidden) fold with their rows.
     await tick();
     const guardText = document.querySelector<HTMLElement>('.span-text[data-span-id="H0_0:span:9-10"]')!;
-    const calloutNote = document.querySelector<HTMLElement>('.annot-note[data-span-id="H0_0:span:10-10"]')!;
+    const calloutText = document.querySelector<HTMLElement>('.span-text[data-span-id="H0_0:span:10-10"]')!;
     expect(guardText.style.display).toBe("none");
-    expect(calloutNote.style.display).toBe("none");
+    expect(calloutText.style.display).toBe("none");
 
     // The summary lands: the line changes, the tree stays.
     await tick();
@@ -2193,7 +2315,7 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
     expect(chevronOnLine(8).classList.contains("open")).toBe(true);
     expect([9, 10, 11].map((n) => rowOfLine(n).style.display)).toEqual(["", "", ""]);
     expect(guardText.style.display).toBe("");
-    expect(calloutNote.style.display).toBe("");
+    expect(calloutText.style.display).toBe("");
     expect(rowOfLine(9).querySelector('.span-mark[data-span-id="H0_0:span:9-10"]')).not.toBeNull();
     expect(box.closest(".row-annotation")!.style.display).toBe("none");
   });
@@ -2219,8 +2341,8 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
     const betaNode = tree.querySelector('.label-row[data-def="Foo.beta"]')!.parentElement!;
     expect(labelRows(betaNode.querySelector(":scope > .label-children")!))
       .toEqual(["H0_0:span:9-10: beta's guard", "H0_0:span:10-10: callout"]);
-    // The module constant's note, outside the fold, stays visible.
-    expect(document.querySelector<HTMLElement>('.annot-note[data-span-id="H0_0:span:12-12"]')!.style.display).toBe("");
+    // The module constant's text block, outside the fold, stays visible.
+    expect(document.querySelector<HTMLElement>('.span-text[data-span-id="H0_0:span:12-12"]')!.style.display).toBe("");
 
     // Clicking a definition opens the fold and lands on its opener.
     clickEl(tree.querySelector('.label-row[data-def="Foo.beta"]')!);

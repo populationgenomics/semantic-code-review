@@ -619,14 +619,15 @@ function _refreshForAnchor(anchorRowEl: HTMLElement, anchor: Anchor): void {
  *  matches `derivedId`. Used right after a promotion save so the
  *  source observation visibly transitions into the comment.
  *
- *  Two shapes today: single-line spans attach as `.row-annotation` rows with
- *  `data-span-id`; smells render as inline `.smell` pills with
- *  `data-smell-id`. Annotation rows need Annotations.detach (resize
- *  observers etc.); the pills are plain elements. */
+ *  Two shapes today: a span is its text block (`.span-text`) and marks
+ *  (`.span-mark`) in the centre gutter, both carrying `data-span-id`;
+ *  smells render as inline `.smell` pills with `data-smell-id`. All are
+ *  plain elements; the gutter's placement pass notices a removed block
+ *  on its next run. */
 function _removeAnnotationByDerivedId(derivedId: string): void {
   document.querySelectorAll<HTMLElement>(
-    `.row-annotation[data-span-id="${derivedId}"]`,
-  ).forEach((el) => Annotations.detach(el));
+    `.span-text[data-span-id="${derivedId}"], .span-mark[data-span-id="${derivedId}"]`,
+  ).forEach((el) => el.remove());
   document.querySelectorAll<HTMLElement>(
     `.smell[data-smell-id="${derivedId}"]`,
   ).forEach((el) => el.remove());
@@ -635,7 +636,7 @@ function _removeAnnotationByDerivedId(derivedId: string): void {
 /** Remove the comment rows already rendered for `anchor`.
  *
  *  Keyed rather than positional. Every annotation inserts itself
- *  directly after its anchor row, so an LLM line-note — or the
+ *  directly after its anchor row, so a fold's label row — or the
  *  `.row-placeholder` a side-by-side shadow anchor adds — can sit
  *  between the anchor and its comment rows. A sibling walk that
  *  stopped at the first non-comment row then removed nothing, and
