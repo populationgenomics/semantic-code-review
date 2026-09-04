@@ -982,8 +982,12 @@ describe("streaming events", () => {
     fold("code");
     expect(document.querySelectorAll(".fold-chev").length).toBe(0);
     expect(document.querySelector(".label-tree")).toBeNull();
-    expect(document.querySelectorAll('.span-mark[data-span-id="H0_0:span:1-4"]').length).toBe(4);
-    expect(document.querySelectorAll('.span-mark[data-span-id="H0_0:span:2-3"]').length).toBe(2);
+    // Bars over exactly their code rows (the callout's note row at 3 gets
+    // its own segment of the bars running through it).
+    const codeMarks = (id: string): number =>
+      document.querySelectorAll(`.row:not(.row-annotation) > .cell-gutter-bars > .span-mark[data-span-id="${id}"]`).length;
+    expect(codeMarks("H0_0:span:1-4")).toBe(4);
+    expect(codeMarks("H0_0:span:2-3")).toBe(2);
     expect(document.querySelector('.span-text[data-span-id="H0_0:span:1-4"] .span-text-intent')!.textContent).toBe("region");
     expect(document.querySelectorAll(".row-annotation.annot-note").length).toBe(2);
   });
@@ -1378,6 +1382,33 @@ describe("the centre gutter: spans on visible code (ADR 0008)", () => {
     // The disclosed rows carry the gutter cells too, so the strip is
     // continuous down the file.
     expect(document.querySelector(".gap-expansion .half-new .row .cell-gutter-text")).not.toBeNull();
+  });
+
+  test("a bar runs through the comment rows inside its span, at the span's depth", async () => {
+    // Threads on 5 (inside the outer span 4..7), on 6 (inside it and the
+    // inner span 6..7) and on 7 (the outer span's last row: outside).
+    const comment = (id: string, side: "old" | "new", line: number): Record<string, unknown> =>
+      ({ id, file: "a.py", side, line, body: id, created_at: 1, updated_at: 1, source: "local", derived_from: null });
+    await bootViewer(
+      makeData({ pending: false, files: [gutterFile(NESTED)], symbols: [] }),
+      { comments: [comment("c5", "new", 5), comment("c6", "new", 6), comment("c7", "new", 7)] },
+    );
+    fold("code");
+    await tick();
+    const segments = (row: HTMLElement): Array<[string, string]> =>
+      Array.from(row.querySelectorAll<HTMLElement>(":scope > .cell-gutter-bars > .span-mark"))
+        .map((m) => [m.dataset.spanId!, m.style.getPropertyValue("--depth")]);
+    const threadAfter = (line: number): HTMLElement => {
+      const next = rowOfLine(line).nextElementSibling as HTMLElement;
+      expect(next.classList.contains("annot-comment")).toBe(true);
+      return next;
+    };
+    expect(segments(threadAfter(5))).toEqual([["H0_0:span:4-7", "0"]]);
+    expect(segments(threadAfter(6))).toEqual([["H0_0:span:4-7", "0"], ["H0_0:span:6-7", "1"]]);
+    expect(segments(threadAfter(7))).toEqual([]);
+    expect(threadAfter(7).querySelector(":scope > .cell-gutter-bars")).toBeNull();
+    // The code rows' own marks are untouched by the pass.
+    expect(marks("H0_0:span:4-7")).toEqual([[4, "span-bar-top"], [5, "span-bar"], [6, "span-bar"], [7, "span-bar-bottom"]]);
   });
 });
 

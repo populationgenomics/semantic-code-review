@@ -1221,10 +1221,23 @@ interface SpanTextBlock {
   row: HTMLElement;
 }
 
-/** A right half's gutter state: its text blocks, the code rows the last
- *  pass stretched, and the observer whose records the pass discards. */
+/** A multi-line span's bar: the code rows it runs from and to, and its
+ *  column. The rows between them that are not code — a comment thread's
+ *  row, a fold's label row — arrive after the bar is drawn, so the
+ *  placement pass gives them their segment. */
+interface SpanBar {
+  spanId: string;
+  first: HTMLElement;
+  last: HTMLElement;
+  depth: number;
+}
+
+/** A right half's gutter state: its text blocks and bars, the code rows
+ *  the last pass stretched, and the observer whose records the pass
+ *  discards. */
 interface SpanGutter {
   blocks: SpanTextBlock[];
+  bars: SpanBar[];
   stretched: HTMLElement[];
   observer: MutationObserver | null;
 }
@@ -1256,6 +1269,7 @@ function _attachSpans(
   const half = rowElsNew[0].parentElement;
   if (!half) throw new Error(`${hunkId}: rows are not in a half`);
   const blocks: SpanTextBlock[] = [];
+  const bars: SpanBar[] = [];
   for (const ps of placed) {
     if (ps.span.start === ps.span.end) {
       _gutterBars(rowElsNew[ps.first]).appendChild(_spanMark(ps.span.id, ps.depth, "dot"));
@@ -1266,6 +1280,7 @@ function _attachSpans(
       const pos = i === ps.first ? "bar-top" : i === ps.last ? "bar-bottom" : "bar";
       _gutterBars(rowElsNew[i]).appendChild(_spanMark(ps.span.id, ps.depth, pos));
     }
+    bars.push({ spanId: ps.span.id, first: rowElsNew[ps.first], last: rowElsNew[ps.last], depth: ps.depth });
     const el = _el("div", "span-text");
     el.dataset.spanId = ps.span.id;
     const body = _spanText(ps.span, filePath);
@@ -1277,7 +1292,7 @@ function _attachSpans(
     blocks.push({ el, body, row: rowElsNew[ps.first] });
   }
   if (!blocks.length) return;
-  const gutter: SpanGutter = { blocks, stretched: [], observer: null };
+  const gutter: SpanGutter = { blocks, bars, stretched: [], observer: null };
   _SPAN_GUTTERS.set(half, gutter);
   _observeHalf(half, gutter);
   _layoutSpanTexts(half);
@@ -1404,15 +1419,18 @@ function _layoutSpanTexts(half: HTMLElement): void {
   gutter.stretched = [];
   const track = new Map<Element, number>();
   const visible: HTMLElement[] = [];
+  const rows: HTMLElement[] = [];
   let n = 0;
   for (const child of Array.from(half.children) as HTMLElement[]) {
     if (!child.classList.contains("row")) continue;
+    rows.push(child);
     if (child.style.display === "none") { child.style.gridRow = ""; continue; }
     n++;
     child.style.gridRow = String(n);
     track.set(child, n);
     visible.push(child);
   }
+  _barNonCodeRows(gutter.bars, rows);
   const shown: SpanTextBlock[] = [];
   for (const block of gutter.blocks) {
     const start = track.get(block.row);
@@ -1478,6 +1496,33 @@ function _codeRowAbove(visible: HTMLElement[], from: number): HTMLElement {
     if (!row.classList.contains("row-annotation") && !row.classList.contains("row-placeholder")) return row;
   }
   throw new Error("no code row above a colliding span text");
+}
+
+/** Give every non-code row lying inside a bar — a comment thread's row,
+ *  a fold's label row, the placeholder for an old-side thread — a bars
+ *  cell with a segment per enclosing bar at its depth, so a bar runs
+ *  unbroken through them. `rows` is the half's rows in DOM order, hidden
+ *  ones included (a bar may open on a hidden row); a hidden row is left
+ *  alone. Idempotent: a cell already carrying the right segments stays. */
+function _barNonCodeRows(bars: SpanBar[], rows: HTMLElement[]): void {
+  if (!bars.length) return;
+  const open = new Set<SpanBar>();
+  for (const row of rows) {
+    for (const bar of bars) if (bar.first === row) open.add(bar);
+    const code = !row.classList.contains("row-annotation") && !row.classList.contains("row-placeholder");
+    if (!code && row.style.display !== "none") {
+      const key = Array.from(open, (b) => b.spanId).join("\n");
+      let cell = row.querySelector<HTMLElement>(":scope > .cell-gutter-bars");
+      if (cell && cell.dataset.spans !== key) { cell.remove(); cell = null; }
+      if (!cell && open.size) {
+        cell = _el("span", "cell-gutter-bars");
+        cell.dataset.spans = key;
+        for (const bar of open) cell.appendChild(_spanMark(bar.spanId, bar.depth, "bar"));
+        row.appendChild(cell);
+      }
+    }
+    for (const bar of bars) if (bar.last === row) open.delete(bar);
+  }
 }
 
 /** The old-half row paired with a new-half code row. */

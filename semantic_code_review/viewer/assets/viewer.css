@@ -837,18 +837,24 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   line-height: 1.35;
   color: var(--fg-muted);
 }
-/* An annotation row has no gutter cells; a sticky pseudo-item keeps the
- * strip's background continuous through it. */
-.diff .half-new .row-annotation::before {
+/* An annotation row (or the placeholder for an old-side one) is built
+ * without gutter cells; a sticky pseudo-item keeps the strip's background
+ * continuous through it, and the placement pass adds a bars cell to one
+ * that lies inside a span so the span's bar runs through it too. The
+ * placeholder is `visibility: hidden`; its bars cell shows regardless. */
+.diff .half-new .row-annotation::before,
+.diff .half-new .row-placeholder::before {
   content: "";
   grid-column: 1 / 4;
   grid-row: 1;
   position: sticky;
   left: 0;
   z-index: 1;
+  visibility: visible;
   background: var(--bg-alt);
   box-shadow: inset -1px 0 var(--border);
 }
+.diff .half-new .row-placeholder > .cell-gutter-bars { visibility: visible; }
 .diff .span-text-body.chained { padding-top: 4px; border-top: 1px dashed var(--border); }
 .diff .span-text-intent.empty { color: var(--fg-dim); font-style: italic; }
 /* The pills lead the block, on its first line, so they sit beside the
