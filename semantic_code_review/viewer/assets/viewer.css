@@ -851,7 +851,10 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 }
 .diff .span-text-body.chained { padding-top: 4px; border-top: 1px dashed var(--border); }
 .diff .span-text-intent.empty { color: var(--fg-dim); font-style: italic; }
-.diff .span-text .smell { font-size: 10px; padding: 0 6px; margin-left: 3px; vertical-align: middle; }
+/* The pills lead the block, on its first line, so they sit beside the
+ * row the span starts on rather than wherever its intent ends. */
+.diff .span-text-smells { display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 2px; }
+.diff .span-text .smell { font-size: 10px; padding: 0 6px; }
 
 /* Each `.row` is a real grid box spanning both of `.half`'s columns,
  * and uses `subgrid` so its two cells land in `.half`'s column tracks

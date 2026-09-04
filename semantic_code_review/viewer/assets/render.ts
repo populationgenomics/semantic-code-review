@@ -1336,15 +1336,20 @@ function _spanMark(spanId: string, depth: number, kind: "bar" | "bar-top" | "bar
   return mark;
 }
 
-/** One span's text: its intent, wrapping at the gutter's width, then its
- *  smells as promotable pills anchored at the span's first line. */
+/** One span's text: its smells as promotable pills on the block's first
+ *  line — beside the bar's start, since they describe the span — then its
+ *  intent, wrapping at the gutter's width. */
 function _spanText(span: AnnotationSpan, filePath: string): HTMLElement {
   const el = _el("p", "span-text-body");
   el.dataset.spanId = span.id;
+  if (span.smells && span.smells.length) {
+    const pills = _el("span", "span-text-smells");
+    for (const sm of span.smells) pills.appendChild(_smellPill(sm, {
+      smellId: `${span.id}:smell:${sm.tag}`, file: filePath, side: "new", line: span.start,
+    }));
+    el.appendChild(pills);
+  }
   el.appendChild(_el("span", span.intent ? "span-text-intent" : "span-text-intent empty", span.intent || "(no intent)"));
-  for (const sm of span.smells || []) el.appendChild(_smellPill(sm, {
-    smellId: `${span.id}:smell:${sm.tag}`, file: filePath, side: "new", line: span.start,
-  }));
   return el;
 }
 

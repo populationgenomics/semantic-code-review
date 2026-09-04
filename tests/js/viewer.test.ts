@@ -1247,6 +1247,11 @@ describe("the centre gutter: spans on visible code (ADR 0008)", () => {
     expect(gridRow(inner)).toBe("4");
     expect(inner.querySelector(".span-text-intent")!.textContent).toBe("the inner edit");
     expect(inner.querySelector(".smell")!.textContent).toBe("dead-code");
+    // The pills lead the block — beside the bar's first row, not wherever
+    // a long intent happens to end — and a span with none has no pill row.
+    const body = inner.querySelector(".span-text-body")!;
+    expect(Array.from(body.children).map((c) => c.className)).toEqual(["span-text-smells", "span-text-intent"]);
+    expect(textOf("H0_0:span:4-7")!.querySelector(".span-text-smells")).toBeNull();
 
     // Single-line spans: a dot on their row at their depth, and the note
     // beneath the row as before. No text block.
