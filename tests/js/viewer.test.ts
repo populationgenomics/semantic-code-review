@@ -1841,7 +1841,7 @@ describe("LLM observation → comment promotion", () => {
 
 
 describe("sidebar comment counts", () => {
-  test("Files-axis pill shows unresolved/total badge once comments load", async () => {
+  test("Files-axis pill shows a comment dot once comments load; directories carry none", async () => {
     window.location.hash = "#fold=code";
     await bootViewer(makeData({
       pending: false,
@@ -1853,7 +1853,7 @@ describe("sidebar comment counts", () => {
           hunks: [makeHunkBlock("H0_0")],
         },
         {
-          id: "F1", path: "b.py", status: "modified", language: "python",
+          id: "F1", path: "lib/b.py", status: "modified", language: "python",
           adds: 0, dels: 0, summary: "", head_line_count: null,
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H1_0")],
@@ -1881,7 +1881,7 @@ describe("sidebar comment counts", () => {
         },
         // b.py: all-resolved.
         {
-          id: "gh-3", file: "b.py", side: "new", line: 1,
+          id: "gh-3", file: "lib/b.py", side: "new", line: 1,
           body: "lgtm", created_at: 4, updated_at: 4,
           source: "github", author: "alice", thread_resolved: true,
         },
@@ -1896,18 +1896,25 @@ describe("sidebar comment counts", () => {
     const pills = Array.from(
       filesSection.querySelectorAll<HTMLElement>(".group-btn"),
     );
-    expect(pills).toHaveLength(2);
+    // a.py, lib/, lib/b.py
+    expect(pills).toHaveLength(3);
 
-    // a.py: 1 unresolved of 2 threads (the reply doesn't add to the count).
+    // a.py: 1 unresolved of 2 threads (the reply doesn't add to the count)
+    // — an orange dot. The numbers are in the title, not the badge.
     const aPyBadge = pills[0].querySelector(".group-btn-comments") as HTMLElement;
     expect(aPyBadge).not.toBeNull();
-    expect(aPyBadge.textContent).toBe("1/2");
+    expect(aPyBadge.textContent).toBe("");
     expect(aPyBadge.classList.contains("has-unresolved")).toBe(true);
+    expect(aPyBadge.title).toBe("1 unresolved of 2 threads");
 
-    // b.py: 0 unresolved of 1 — badge present but no warn styling.
-    const bPyBadge = pills[1].querySelector(".group-btn-comments") as HTMLElement;
+    // lib/: a directory carries no dot — the rollup said "something in
+    // here" without saying where, and the file row beneath it does.
+    expect(pills[1].querySelector(".group-btn-comments")).toBeNull();
+
+    // lib/b.py: 0 unresolved of 1 — a green dot.
+    const bPyBadge = pills[2].querySelector(".group-btn-comments") as HTMLElement;
     expect(bPyBadge).not.toBeNull();
-    expect(bPyBadge.textContent).toBe("0/1");
+    expect(bPyBadge.classList.contains("all-resolved")).toBe(true);
     expect(bPyBadge.classList.contains("has-unresolved")).toBe(false);
     // With a badge somewhere, the section reserves the badge column on
     // every row so the count pills stay in one column.

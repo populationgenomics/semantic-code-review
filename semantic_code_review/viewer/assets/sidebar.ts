@@ -561,33 +561,29 @@ function _commentCountsByFilePath(): Record<string, CommentCounts> {
 function _fileGroupCommentCounts(): Record<string, CommentCounts> {
   const byPath = _commentCountsByFilePath();
   const out: Record<string, CommentCounts> = Object.create(null);
-  const visit = (g: GroupBlock): CommentCounts => {
+  // Files only, no rollup: a directory's badge would say "something in
+  // here" without saying where, and the file rows beneath it already do.
+  const visit = (g: GroupBlock): void => {
     const kids = g.children || [];
-    let total = 0;
-    let unresolved = 0;
     if (kids.length === 0) {
       const cc = byPath[g.rationale];
-      if (cc) { total = cc.total; unresolved = cc.unresolved; }
-    } else {
-      for (const c of kids) {
-        const cc = visit(c);
-        total += cc.total;
-        unresolved += cc.unresolved;
-      }
+      if (cc) out[g.id] = { total: cc.total, unresolved: cc.unresolved };
+      return;
     }
-    out[g.id] = { total, unresolved };
-    return out[g.id];
+    for (const c of kids) visit(c);
   };
   for (const g of FILES_AXIS.groups) visit(g);
   return out;
 }
 
+/** A dot, not a count: orange while any thread is unresolved, green once
+ *  every thread is, absent when the file has none. The numbers live in
+ *  the title. */
 function _renderCommentCountBadge(cc: CommentCounts): HTMLElement | null {
   if (cc.total === 0) return null;
   const badge = _el(
     "span",
-    "group-btn-comments" + (cc.unresolved > 0 ? " has-unresolved" : ""),
-    `${cc.unresolved}/${cc.total}`,
+    "group-btn-comments " + (cc.unresolved > 0 ? "has-unresolved" : "all-resolved"),
   );
   badge.title = cc.unresolved > 0
     ? `${cc.unresolved} unresolved of ${cc.total} thread${cc.total === 1 ? "" : "s"}`
