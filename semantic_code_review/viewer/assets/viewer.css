@@ -717,10 +717,12 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  * sides is exactly one line tall. Annotation rows break that symmetry
  * (prose wraps); the JS inserts an invisible placeholder row on the
  * opposite side and syncs its height to the real annotation via a
- * ResizeObserver. A span's text block placed over several rows can
- * stretch them; the JS gives the old half's paired rows the same heights.
- * Subgrid would do this for free but requires explicit outer row tracks,
- * which we don't know at CSS compile time.
+ * ResizeObserver. A span's text block hangs down the strip from its first
+ * row without sizing any row; where it would run into the next block, or
+ * past the last row, the JS stretches one code row (`min-height`) and
+ * gives the old half's paired row the same height. Subgrid would do this
+ * for free but requires explicit outer row tracks, which we don't know at
+ * CSS compile time.
  *
  * The gutter's width (`--span-bars-w` + `--span-text-w`, set per file on
  * `.file-body`; 0 for a file with no span) is split between the halves,
@@ -783,8 +785,8 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 .diff .cell-gutter-bars, .diff .cell-gutter-text, .diff .span-text {
   position: sticky;
   z-index: 1;
-  background: var(--bg-alt);
 }
+.diff .cell-gutter-bars, .diff .cell-gutter-text { background: var(--bg-alt); }
 .diff .cell-gutter-text, .diff .span-text { grid-column: 2; left: 3.5em; }
 .diff .cell-gutter-bars {
   grid-column: 3;
@@ -809,20 +811,27 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   top: 50%; margin-top: -2px; margin-left: -1px;
   width: 4px; height: 4px; border-radius: 50%;
 }
-/* A multi-line span's text, placed on its rows (`grid-row`, set by the
- * renderer) at a smaller size than the code; it wraps at the gutter's
- * fixed width and stretches its rows when longer than them. */
+/* A multi-line span's text: a zero-height item on the span's first row
+ * (`grid-row`, set by the renderer), so the row's size owes it nothing;
+ * the body overflows downward over the strip for as long as it needs.
+ * `transform` is the renderer's chaining offset for a block that starts
+ * on the same row as the one above it. */
 .diff .span-text {
   z-index: 2;
+  align-self: start;
+  height: 0;
   min-width: 0;
-  padding: 2px 6px;
+  overflow: visible;
   white-space: normal;
   overflow-wrap: anywhere;
 }
 /* The size lives on the body, not the block: the block's sticky `left`
- * is in the half's `em` and must match the cells'. */
+ * is in the half's `em` and must match the cells'. The body paints the
+ * strip's background itself, since it may lie over rows with none. */
 .diff .span-text-body {
   margin: 0;
+  padding: 2px 6px;
+  background: var(--bg-alt);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 11px;
   line-height: 1.35;
@@ -840,7 +849,7 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   background: var(--bg-alt);
   box-shadow: inset -1px 0 var(--border);
 }
-.diff .span-text-body + .span-text-body { margin-top: 3px; padding-top: 3px; border-top: 1px dashed var(--border); }
+.diff .span-text-body.chained { padding-top: 4px; border-top: 1px dashed var(--border); }
 .diff .span-text-intent.empty { color: var(--fg-dim); font-style: italic; }
 .diff .span-text .smell { font-size: 10px; padding: 0 6px; margin-left: 3px; vertical-align: middle; }
 
