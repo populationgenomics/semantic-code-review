@@ -17,6 +17,11 @@
 // DATA in place); the server's `fold-summary` SSE event is handled by
 // `applyFoldSummary` in boot.ts.
 //
+// A collapsed region's box is its summary line and, beneath it, the
+// labels the fold hid (ADR 0008: folding a region shows its label). The
+// labels are the renderer's — it knows the spans — and arrive through
+// the `FoldLabels` callback; this module owns the box and the summary.
+//
 import { Annotations, type AnnotationHandle } from "./annotations";
 import { FileRows, type RowWithEls } from "./file_rows";
 
@@ -24,6 +29,15 @@ interface AttachedFold {
   marker: SVGElement;
   foldHandle: AnnotationHandle | null;
 }
+
+/** What a collapsed region shows beneath its summary: the labels on the
+ *  rows the fold hid. `headerRow` stays visible with the chevron;
+ *  `bodyRows` are the rows that fold under it, in order; `open` opens
+ *  the fold (for a label click that asks for the lines). Null when the
+ *  body carries no label. */
+export type FoldLabels = (
+  headerRow: RowWithEls, bodyRows: RowWithEls[], open: () => void,
+) => HTMLElement | null;
 
 interface FoldRequestAddress {
   context: FoldContext;
@@ -241,7 +255,7 @@ function _requestFoldSummary(
   if (!addr) return;
   region._inflight = true;
   const label = _foldLabel(region);
-  _setFoldBoxContent(foldHandle, label + "summarising…", { pending: true });
+  _setFoldSummary(foldHandle, label + "summarising…", { pending: true });
   const retry = (): void => _requestFoldSummary(fileIdx, region, foldHandle);
   fetch(_sessionEndpoint() + "/fold-summary", {
     method: "POST",
@@ -253,9 +267,9 @@ function _requestFoldSummary(
       region._inflight = false;
       if (status === 200 && body.summary) {
         region.summary = body.summary;
-        _setFoldBoxContent(foldHandle, label + body.summary, {});
+        _setFoldSummary(foldHandle, label + body.summary, {});
       } else {
-        _setFoldBoxContent(
+        _setFoldSummary(
           foldHandle, label + "(summary failed — click to retry)",
           { failed: true }, retry,
         );
@@ -263,30 +277,45 @@ function _requestFoldSummary(
     })
     .catch(() => {
       region._inflight = false;
-      _setFoldBoxContent(
+      _setFoldSummary(
         foldHandle, label + "(summary failed — click to retry)",
         { failed: true }, retry,
       );
     });
 }
 
-function _setFoldBoxContent(
+/** The fold box's content: the summary line, then the labels the fold
+ *  hid when it has any. */
+function _foldBoxContent(summary: string, labels: HTMLElement | null): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "fold-body";
+  const line = document.createElement("div");
+  line.className = "fold-summary";
+  line.textContent = summary;
+  wrap.appendChild(line);
+  if (labels) wrap.appendChild(labels);
+  return wrap;
+}
+
+/** Rewrite the summary line alone; the labels beneath it stay. */
+function _setFoldSummary(
   foldHandle: AnnotationHandle, text: string,
   classes: { pending?: boolean; failed?: boolean },
   onClick?: () => void,
 ): void {
   if (!foldHandle || !foldHandle.element) return;
   const box = foldHandle.element.querySelector(".annot-box") as HTMLElement | null;
-  if (!box) return;
-  box.textContent = text;
+  const line = box && (box.querySelector(".fold-summary") as HTMLElement | null);
+  if (!box || !line) return;
+  line.textContent = text;
   box.classList.remove("pending", "failed");
   if (classes.pending) box.classList.add("pending");
   if (classes.failed) box.classList.add("failed");
   if (onClick) {
-    const clone = box.cloneNode(true) as HTMLElement;
+    const clone = line.cloneNode(true) as HTMLElement;
     clone.style.cursor = "pointer";
     clone.addEventListener("click", onClick);
-    box.replaceWith(clone);
+    line.replaceWith(clone);
   }
   foldHandle.resize();
 }
@@ -307,17 +336,40 @@ function _isCollapsed(rows: RowWithEls[], bodyStart: number, bodyEnd: number): b
   return true;
 }
 
+// A body row folds with what hangs off it: the annotation rows, their
+// placeholders and a span's label sit between it and the next recorded
+// row in DOM order. Only what this fold hid is shown again, so a nested
+// fold's own collapsed box and hidden rows stay as they were.
 function _showRows(rows: RowWithEls[], start: number, end: number, show: boolean): void {
+  const recorded = new Set<HTMLElement>();
+  for (const r of rows) { recorded.add(r.oldEl); recorded.add(r.newEl); }
   for (let i = start; i <= end; i++) {
     const r = rows[i];
     if (!r) continue;
-    if (r.oldEl) r.oldEl.style.display = show ? "" : "none";
-    if (r.newEl) r.newEl.style.display = show ? "" : "none";
+    for (const el of [r.oldEl, r.newEl]) {
+      if (!el) continue;
+      el.style.display = show ? "" : "none";
+      _showAttachments(el, recorded, show);
+    }
+  }
+}
+
+function _showAttachments(rowEl: HTMLElement, recorded: Set<HTMLElement>, show: boolean): void {
+  for (let s = rowEl.nextElementSibling as HTMLElement | null; s && !recorded.has(s);
+       s = s.nextElementSibling as HTMLElement | null) {
+    if (show) {
+      if (s.dataset.foldHidden === undefined) continue;
+      delete s.dataset.foldHidden;
+      s.style.display = "";
+    } else if (s.style.display !== "none") {
+      s.dataset.foldHidden = "";
+      s.style.display = "none";
+    }
   }
 }
 
 function _attachOneFold(
-  rows: RowWithEls[], placed: PlacedRegion, fileIdx: number,
+  rows: RowWithEls[], placed: PlacedRegion, fileIdx: number, labels: FoldLabels,
 ): AttachedFold | null {
   const { region } = placed;
   const bodyStart = placed.headerIdx + 1;
@@ -340,33 +392,8 @@ function _attachOneFold(
   marker.setAttribute("tabindex", "0");
 
   let foldHandle: AnnotationHandle | null = null;
-  const canSummarise = _canRequestFoldSummary(fileIdx, region);
-  if (region.summary || region.has_changes || canSummarise) {
-    // Seed the placeholder with the symbol identity (if any) followed by
-    // the summary or its pending/run-augment stand-in.
-    const label = _foldLabel(region);
-    const pending = !region.summary && canSummarise;
-    const bodyText = region.summary
-      || (canSummarise
-        ? "summarising…"
-        : "(changes here; run augment to generate a description)");
-    foldHandle = Annotations.attach({
-      anchor, shadowAnchor: shadow,
-      variant: "fold", content: label + bodyText,
-    });
-    if (!region.summary) {
-      const box = foldHandle.element.querySelector(".annot-box");
-      if (box) box.classList.add("missing");
-      if (pending && box) box.classList.add("pending");
-    }
-    foldHandle.element.style.display = collapsed ? "" : "none";
-    if (foldHandle.placeholder) foldHandle.placeholder.style.display = collapsed ? "" : "none";
-    if (collapsed) foldHandle.resize();
-  }
-
-  marker.addEventListener("click", (e) => {
-    e.stopPropagation();
-    const nowOpen = marker.classList.toggle("open");
+  const setOpen = (nowOpen: boolean): void => {
+    marker.classList.toggle("open", nowOpen);
     _showRows(rows, bodyStart, bodyEnd, nowOpen);
     if (foldHandle) {
       foldHandle.element.style.display = nowOpen ? "none" : "";
@@ -380,6 +407,40 @@ function _attachOneFold(
       _requestFoldSummary(fileIdx, region, foldHandle);
     }
     Annotations.reflow(anchor);
+  };
+  const open = (): void => { if (!marker.classList.contains("open")) setOpen(true); };
+
+  const hidden = labels(headerRow, rows.slice(bodyStart, bodyEnd + 1), open);
+  const canSummarise = _canRequestFoldSummary(fileIdx, region);
+  if (region.summary || region.has_changes || canSummarise || hidden) {
+    // Seed the summary line with the symbol identity (if any) followed by
+    // the summary or its pending/run-augment stand-in.
+    const label = _foldLabel(region);
+    const pending = !region.summary && canSummarise;
+    const bodyText = region.summary
+      || (canSummarise
+        ? "summarising…"
+        : "(changes here; run augment to generate a description)");
+    foldHandle = Annotations.attach({
+      anchor, shadowAnchor: shadow,
+      variant: "fold", content: _foldBoxContent(label + bodyText, hidden),
+      // The clamp is the summary line's (CSS), not the box's: the labels
+      // beneath it must not be cut off.
+      layout: { maxHeight: null },
+    });
+    if (!region.summary) {
+      const box = foldHandle.element.querySelector(".annot-box");
+      if (box) box.classList.add("missing");
+      if (pending && box) box.classList.add("pending");
+    }
+    foldHandle.element.style.display = collapsed ? "" : "none";
+    if (foldHandle.placeholder) foldHandle.placeholder.style.display = collapsed ? "" : "none";
+    if (collapsed) foldHandle.resize();
+  }
+
+  marker.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setOpen(!marker.classList.contains("open"));
   });
 
   const contentCell = anchor && (anchor.children[1] as HTMLElement | undefined);
@@ -387,19 +448,20 @@ function _attachOneFold(
   return { marker, foldHandle };
 }
 
-function attachFileFolds(fileEl: HTMLElement, file: FileBlock): void {
+function attachFileFolds(fileEl: HTMLElement, file: FileBlock, labels: FoldLabels): void {
   const fileIdx = Number(file.id.replace("F", ""));
   const rows = _collectFileRows(fileEl);
   for (const container of new Set(rows.map((r) => r.container))) {
     _teardownContainerFolds(container);
   }
   for (const placed of _placeRegions(rows, file.fold_regions || [])) {
-    const attached = _attachOneFold(rows, placed, fileIdx);
+    const attached = _attachOneFold(rows, placed, fileIdx, labels);
     if (attached) _recordChrome(rows[placed.headerIdx].container, attached);
   }
 }
 
-// The runtime surface. render.ts calls attachFileFolds after a
-// file body is built and after every gap expand/collapse; boot.ts after
-// a fold summary lands from another tab.
+// The runtime surface. render.ts calls attachFileFolds after a file
+// body is built, after every gap expand/collapse, and (via
+// `Render.attachFileFolds`, which supplies the labels) when boot.ts
+// hears a fold summary land from another tab.
 export const Folds = { attachFileFolds, rowInRegion };

@@ -11,7 +11,8 @@
 // Other modules attach to surfaces this module creates:
 //   - sidebar.ts mutates pill state but reads from .file / .hunk
 //   - folds.ts attaches chevrons to the per-half row elements stashed
-//     on each .diff and .gap-expansion container
+//     on each .diff and .gap-expansion container; this module hands it
+//     the labels a collapsed region shows (`_foldLabels`)
 //   - comments.ts replays its comment rows after each renderAll
 //   - annotations.ts hosts the row-annotation DOM
 //   - explainer_panel.ts hosts a second render of one file, beside the
@@ -27,7 +28,7 @@ import { Explainer } from "./explainer";
 import { ExplainerPanel, type PanelHost } from "./explainer_panel";
 import { FileRows } from "./file_rows";
 import { FileTextCache, type FileText } from "./file_text";
-import { Folds } from "./folds";
+import { Folds, type FoldLabels } from "./folds";
 import { Progress } from "./progress";
 import { Rendered, type PaneState } from "./rendered";
 import { Sidebar } from "./sidebar";
@@ -601,7 +602,7 @@ function _renderFile(f: FileBlock, scope: PaneScope): HTMLElement | null {
       _renderFileBody(body, f, liveIds, scope);
       div.appendChild(body);
       // Run a file-level fold pass once the body is assembled.
-      Folds.attachFileFolds(div, f);
+      attachFileFolds(div, f);
     }
   }
   return div;
@@ -904,7 +905,7 @@ function _liveSide(rows: RowBlock[]): "old" | "new" | null {
  *  has since detached. */
 function _refreshFileFolds(el: HTMLElement, f: FileBlock): void {
   const fileEl = el.closest(".file") as HTMLElement | null;
-  if (fileEl) Folds.attachFileFolds(fileEl, f);
+  if (fileEl) attachFileFolds(fileEl, f);
 }
 
 // --- Hunk + diff body ---------------------------------------------------
@@ -1001,19 +1002,31 @@ function _renderHunkHeader(
   return hdr;
 }
 
-// --- The label tree: an open hunk's body below `off` --------------------
+// --- The label tree: the labels on a run of rows --------------------------
 //
-// Every definition the hunk touches (a `FileBlock.fold_regions` entry with
-// a name whose range holds a changed row) and every annotation span,
-// nested by containment over the hunk's rows and rendered as labelled
-// rows. Row indices are the one coordinate both kinds share: a deleted
-// definition has only pre-image lines, a span only post-image ones. A
-// hunk touching no definition is one region — its spans sit under the
-// hunk header. Nothing is synthesised for a hunk with neither.
+// Every definition touched within the rows (a `FileBlock.fold_regions`
+// entry with a name whose range holds a changed row) and every annotation
+// span with a row in them, nested by containment over row indices and
+// rendered as labelled rows. Row indices are the one coordinate both
+// kinds share: a deleted definition has only pre-image lines, a span only
+// post-image ones. Nothing is synthesised for rows with neither.
+//
+// Two callers: an open hunk's body below `off` (over the hunk's rows), and
+// a collapsed fold region's box (over the rows the fold hid — ADR 0008:
+// folding a region shows its label).
 
 type LabelNode =
-  | { kind: "definition"; region: FoldRegion; label: AnnotationSpan | null; first: number; last: number; children: LabelNode[] }
+  | { kind: "definition"; region: FoldRegion; first: number; last: number; children: LabelNode[] }
   | { kind: "span"; span: AnnotationSpan; first: number; last: number; children: LabelNode[] };
+
+/** What the tree is being built for: the row that stays visible above
+ *  the rows it labels (a fold's chevron row), or null for a hunk body,
+ *  where every row is hidden. A definition covering that row encloses
+ *  the fold rather than sitting inside it; a span covering it has its
+ *  bracket and label on screen already. Neither is a hidden label. */
+interface LabelScope {
+  visibleRow: RowBlock | null;
+}
 
 /** Row-index extent, inclusive, of the rows `hit` selects; null when none. */
 function _rowExtent(rows: RowBlock[], hit: (r: RowBlock) => boolean): { first: number; last: number } | null {
@@ -1027,18 +1040,18 @@ function _rowExtent(rows: RowBlock[], hit: (r: RowBlock) => boolean): { first: n
   return first < 0 ? null : { first, last };
 }
 
-/** The definitions a hunk touches: named regions holding one of its
- *  changed rows. A region reached only by the hunk's context rows is the
- *  neighbour the diff brushed past, not something the hunk changed. */
-function _touchedDefinitions(h: HunkBlock, f: FileBlock): LabelNode[] {
-  const rows = h.rows || [];
+/** The definitions touched within `rows`: named regions holding one of
+ *  the changed rows. A region reached only by context rows is the
+ *  neighbour the diff brushed past, not something the diff changed. */
+function _touchedDefinitions(f: FileBlock, rows: RowBlock[], scope: LabelScope): LabelNode[] {
   const out: LabelNode[] = [];
   for (const region of f.fold_regions || []) {
     if (region.qualified_name === null) continue;
+    if (scope.visibleRow !== null && Folds.rowInRegion(scope.visibleRow, region)) continue;
     if (!rows.some((r) => r.kind !== "ctx" && Folds.rowInRegion(r, region))) continue;
     const extent = _rowExtent(rows, (r) => Folds.rowInRegion(r, region));
     if (extent === null) continue;
-    out.push({ kind: "definition", region, label: null, ...extent, children: [] });
+    out.push({ kind: "definition", region, ...extent, children: [] });
   }
   return out;
 }
@@ -1047,21 +1060,19 @@ function _touchedDefinitions(h: HunkBlock, f: FileBlock): LabelNode[] {
  *  `(first, -last)`, a definition before a span of the same extent — so a
  *  node is a child of the nearest open node that still covers it. Two
  *  spans of one extent are siblings (two notes on one line are two
- *  observations); a span of exactly a definition's extent becomes that
- *  definition's label when the fold-summary pass has not written one,
- *  and stays a child when it has, so neither label is lost. A span with
- *  no row in the hunk — an older sidecar's coordinates — is warned about
- *  and left out. */
-function _labelTree(h: HunkBlock, f: FileBlock): LabelNode[] {
-  const rows = h.rows || [];
-  const nodes: LabelNode[] = _touchedDefinitions(h, f);
-  for (const span of h.spans || []) {
-    const extent = _rowExtent(rows, (r) => r.new_line != null && span.start <= r.new_line && r.new_line <= span.end);
-    if (extent === null) {
-      console.warn(`${h.id}: span ${span.id} covers no row of the hunk; not shown in the label tree`);
-      continue;
+ *  observations). A span is drawn from whichever hunk carries it; one
+ *  with no row here is simply elsewhere, and one still covering the
+ *  visible line has its bracket and label on screen already. */
+function _labelTree(f: FileBlock, rows: RowBlock[], scope: LabelScope): LabelNode[] {
+  const nodes: LabelNode[] = _touchedDefinitions(f, rows, scope);
+  for (const h of f.hunks) {
+    for (const span of h.spans || []) {
+      const shown = scope.visibleRow?.new_line;
+      if (shown != null && span.start <= shown && shown <= span.end) continue;
+      const extent = _rowExtent(rows, (r) => r.new_line != null && span.start <= r.new_line && r.new_line <= span.end);
+      if (extent === null) continue;
+      nodes.push({ kind: "span", span, ...extent, children: [] });
     }
-    nodes.push({ kind: "span", span, ...extent, children: [] });
   }
   nodes.sort((a, b) => a.first - b.first || b.last - a.last
     || (a.kind === b.kind ? 0 : a.kind === "definition" ? -1 : 1));
@@ -1077,11 +1088,6 @@ function _labelTree(h: HunkBlock, f: FileBlock): LabelNode[] {
       open.pop();
     }
     const parent = open.length ? open[open.length - 1] : null;
-    if (parent && parent.kind === "definition" && node.kind === "span" && parent.label === null
-        && !parent.region.summary && parent.first === node.first && parent.last === node.last) {
-      parent.label = node.span;
-      continue;
-    }
     (parent ? parent.children : roots).push(node);
     open.push(node);
   }
@@ -1089,71 +1095,97 @@ function _labelTree(h: HunkBlock, f: FileBlock): LabelNode[] {
 }
 
 /** The text a folded definition shows beside its name: the fold-summary
- *  pass's summary, else the intent of the span that labels it, else its
- *  opener line when the hunk carries it. A definition whose opener the
- *  diff never reached shows its name alone; no row is fetched for a
- *  label. */
-function _definitionText(node: Extract<LabelNode, { kind: "definition" }>, rows: RowBlock[]): string {
-  const { region, label } = node;
+ *  pass's summary, else its opener line when the rows carry it. A
+ *  definition whose opener the diff never reached shows its name alone;
+ *  no row is fetched for a label. */
+function _definitionText(region: FoldRegion, rows: RowBlock[]): string {
   if (region.summary) return region.summary;
-  if (label && label.intent) return label.intent;
   const opener = rows.find((r) => r.new_line != null && r.new_line === region.right_start)
     || rows.find((r) => r.old_line != null && r.old_line === region.left_start);
   if (!opener) return "";
   return (opener.new_line != null ? opener.new_text : opener.old_text).trim();
 }
 
-function _renderHunkLabels(h: HunkBlock, f: FileBlock, scope: PaneScope): HTMLElement {
+/** A label row was clicked, asking for the lines it paraphrases. */
+type LabelPick = (node: LabelNode) => void;
+
+function _renderLabelTree(f: FileBlock, rows: RowBlock[], scope: LabelScope, pick: LabelPick): HTMLElement | null {
+  const nodes = _labelTree(f, rows, scope);
+  if (!nodes.length) return null;
   const tree = _el("div", "label-tree");
-  const rows = h.rows || [];
-  for (const node of _labelTree(h, f)) tree.appendChild(_renderLabelNode(node, h, f, rows, scope));
+  for (const node of nodes) tree.appendChild(_renderLabelNode(node, f, rows, pick));
   return tree;
 }
 
-/** One labelled row, its children indented beneath. Any row opens the
- *  hunk's code: a label is a paraphrase, and the click asks for the
- *  lines. */
-function _renderLabelNode(
-  node: LabelNode, h: HunkBlock, f: FileBlock, rows: RowBlock[], scope: PaneScope,
-): HTMLElement {
+function _renderHunkLabels(h: HunkBlock, f: FileBlock, scope: PaneScope): HTMLElement {
+  const rows = h.rows || [];
+  return _renderLabelTree(f, rows, { visibleRow: null }, () => _toggleFold(scope, _bodyId(h.id), true))
+    ?? _el("div", "label-tree");
+}
+
+/** One labelled row, its children indented beneath. */
+function _renderLabelNode(node: LabelNode, f: FileBlock, rows: RowBlock[], pick: LabelPick): HTMLElement {
   const row = _el("div", `label-row label-${node.kind}`);
   row.appendChild(_chev(true));
-  let smells: Smell[];
-  let smellOwner: string;
-  let smellLine: number;
   if (node.kind === "definition") {
     const { region } = node;
     row.dataset.def = region.qualified_name || "";
     const kind = region.kind ? `${region.kind} ` : "";
     row.appendChild(_el("span", "label-def", `${kind}${region.qualified_name}`));
-    const text = _definitionText(node, rows);
+    const text = _definitionText(region, rows);
     row.appendChild(_el("span", text ? "label-text" : "label-text empty", text));
-    smells = node.label ? node.label.smells || [] : [];
-    smellOwner = node.label ? node.label.id : "";
-    smellLine = node.label ? node.label.start : (region.right_start ?? h.new_start);
   } else {
     const s = node.span;
     row.dataset.id = s.id;
     row.appendChild(_el("span", "label-range", s.start === s.end ? `+${s.start}` : `+${s.start}..+${s.end}`));
     row.appendChild(_el("span", s.intent ? "label-text" : "label-text empty", s.intent || "(no intent)"));
-    smells = s.smells || [];
-    smellOwner = s.id;
-    smellLine = s.start;
+    for (const sm of s.smells || []) row.appendChild(_smellPill(sm, {
+      smellId: `${s.id}:smell:${sm.tag}`, file: f.path, side: "new", line: s.start,
+    }));
   }
-  for (const sm of smells) row.appendChild(_smellPill(sm, {
-    smellId: `${smellOwner}:smell:${sm.tag}`, file: f.path, side: "new", line: smellLine,
-  }));
   row.addEventListener("click", (e) => {
     e.stopPropagation();
-    _toggleFold(scope, _bodyId(h.id), true);
+    pick(node);
   });
   if (!node.children.length) return row;
   const wrap = _el("div", "label-node");
   wrap.appendChild(row);
   const children = _el("div", "label-children");
-  for (const child of node.children) children.appendChild(_renderLabelNode(child, h, f, rows, scope));
+  for (const child of node.children) children.appendChild(_renderLabelNode(child, f, rows, pick));
   wrap.appendChild(children);
   return wrap;
+}
+
+// --- A collapsed fold's labels ---------------------------------------------
+
+/** The labels a collapsed region shows (the `FoldLabels` folds.ts asks
+ *  for): the tree over the rows the fold hid. Clicking one opens the fold
+ *  and lands on what it names — a span's bracket label or note, a
+ *  definition's first row — found within this pane's copy of the file,
+ *  so the explainer panel never scrolls the diff pane. */
+function _foldLabels(f: FileBlock): FoldLabels {
+  return (headerRow, bodyRows, open) => {
+    const scope: LabelScope = { visibleRow: headerRow };
+    let tree: HTMLElement | null = null;
+    const pick: LabelPick = (node) => {
+      open();
+      const pane = tree?.closest(".file") ?? document;
+      const target = node.kind === "span"
+        ? pane.querySelector<HTMLElement>(`.row-annotation[data-span-id="${_cssEscape(node.span.id)}"]`)
+        : (bodyRows[node.first].newEl.children[1].classList.contains("empty")
+          ? bodyRows[node.first].oldEl : bodyRows[node.first].newEl);
+      if (target) target.scrollIntoView({ block: "nearest" });
+    };
+    tree = _renderLabelTree(f, bodyRows, scope, pick);
+    return tree;
+  };
+}
+
+/** Attach the fold chrome to one pane's copy of `f`, with the labels a
+ *  collapsed region shows. boot.ts calls this when a summary lands from
+ *  another tab. */
+function attachFileFolds(fileEl: HTMLElement, f: FileBlock): void {
+  Folds.attachFileFolds(fileEl, f, _foldLabels(f));
 }
 
 function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLElement {
@@ -1667,5 +1699,6 @@ export const Render = {
   renderHunkReplace,
   repaintHunkHeader,
   clearRenderedDiffCache,
+  attachFileFolds,
   setSymbolSearch,
 };

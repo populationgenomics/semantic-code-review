@@ -946,21 +946,22 @@ describe("streaming events", () => {
     const topLevel = Array.from(tree.children).map((el) =>
       (el.classList.contains("label-node") ? el.firstElementChild! : el) as HTMLElement);
     expect(topLevel.map((el) => el.dataset.def ?? el.dataset.id)).toEqual(["Foo", "H0_0:span:12-12"]);
-    expect(document.querySelectorAll(".label-row").length).toBe(6);
+    expect(document.querySelectorAll(".label-row").length).toBe(7);
 
     // The class's opener (line 1) is not in the hunk: its name stands
-    // alone. Both methods nest under it; alpha's exact-range span is its
-    // label text (and is not repeated as a child); beta shows its
-    // opener line, with the guard span and the callout nested beneath.
+    // alone. Both methods nest under it and show their opener lines;
+    // alpha's exact-range span is its child, beta's guard span and the
+    // callout nest beneath beta.
     expect(labelRows()[0]).toBe("Foo: ");
     expect(document.querySelector('.label-row[data-def="Foo"] .label-def')!.textContent).toBe("class Foo");
     expect(childrenOf("Foo")).toEqual([
-      "Foo.alpha: alpha does A",
+      "Foo.alpha: def alpha(self):",
+      "H0_0:span:5-7: alpha does A",
       "Foo.beta: def beta(self):",
       "H0_0:span:9-10: beta's guard",
       "H0_0:span:10-10: callout",
     ]);
-    expect(childrenOf("Foo.alpha")).toEqual([]);
+    expect(childrenOf("Foo.alpha")).toEqual(["H0_0:span:5-7: alpha does A"]);
     expect(childrenOf("Foo.beta")).toEqual(["H0_0:span:9-10: beta's guard", "H0_0:span:10-10: callout"]);
     expect(document.querySelector('[data-id="H0_0:span:10-10"] .smell')!.textContent).toBe("dead-code");
     expect(codeRows(".hunk")).toBe(0);
@@ -974,21 +975,23 @@ describe("streaming events", () => {
     expect(document.querySelectorAll(".row-annotation.annot-note").length).toBe(2);
   });
 
-  test("a folded definition's text: summary, else its labelling span, else its opener", async () => {
+  test("a folded definition's text: summary, else its opener; a span is always its own row", async () => {
     await bootViewer(makeData({ pending: false, files: [definitionsFile(
       [span("H0_0:span:5-7", 5, 7, "alpha does A"), span("H0_0:span:8-11", 8, 11, "beta does B")],
       [{}, { summary: "the summariser's line" }, {}],
     )], symbols: [] }));
     fold("definitions");
-    // A summary wins, and the exact-range span is then kept as a child
-    // rather than dropped; without one the span is the text; without
-    // either, the opener line (beta's here is line 8, inside the hunk).
+    // A summary is the text; without one, the opener line (beta's here
+    // is line 8, inside the hunk). A span of exactly the definition's
+    // extent is a child either way.
     expect(childrenOf("Foo")).toEqual([
       "Foo.alpha: the summariser's line",
       "H0_0:span:5-7: alpha does A",
-      "Foo.beta: beta does B",
+      "Foo.beta: def beta(self):",
+      "H0_0:span:8-11: beta does B",
     ]);
     expect(childrenOf("Foo.alpha")).toEqual(["H0_0:span:5-7: alpha does A"]);
+    expect(childrenOf("Foo.beta")).toEqual(["H0_0:span:8-11: beta does B"]);
   });
 
   test("a definition the hunk only brushes with context is not a label", async () => {
@@ -2042,6 +2045,144 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
     clickEl(chevrons()[0]);
     expect(rows.map((r) => r.style.display)).toEqual(["", "none", "none"]);
     expect(document.querySelector(".annot-box")?.textContent).toBe("function Foo.bar — summarising…");
+  });
+
+  // --- A collapsed definition shows its labels (ADR 0008 slice 5b) --------
+
+  /** A class over lines 1..11 with two methods, the hunk inserting 5..12
+   *  with one context row (line 4). Spans: exactly alpha, a guard inside
+   *  beta with a callout inside that, and a module constant after the
+   *  class. Regions enclosing first, as the server lists them. */
+  function labelledFile(regionOverrides: Record<string, unknown>[] = []): Record<string, unknown> {
+    const rows = [4, 5, 6, 7, 8, 9, 10, 11, 12].map((n) =>
+      ({ kind: "ins", old_line: null, new_line: n, old_text: "", new_text:
+        n === 5 ? "    def alpha(self):" : n === 8 ? "    def beta(self):" : n === 12 ? "X = 1" : `        l${n}` }));
+    rows[0] = { kind: "ctx", old_line: 3, new_line: 4, old_text: "    pass", new_text: "    pass" };
+    const span = (id: string, start: number, end: number, intent: string, smells: unknown[] = []): Record<string, unknown> =>
+      ({ id, start, end, intent, smells, context: "", refs: [] });
+    return {
+      id: "F0", path: "a.py", status: "modified", language: "python",
+      adds: 8, dels: 0, summary: "", head_line_count: 20,
+      symbols: { added: [], modified: [], removed: [] },
+      fold_regions: [
+        region({ right_start: 1, right_end: 11, has_changes: true, qualified_name: "Foo", kind: "class", ...(regionOverrides[0] || {}) }),
+        region({ right_start: 5, right_end: 7, has_changes: true, qualified_name: "Foo.alpha", kind: "method", ...(regionOverrides[1] || {}) }),
+        region({ right_start: 8, right_end: 11, has_changes: true, qualified_name: "Foo.beta", kind: "method", ...(regionOverrides[2] || {}) }),
+      ],
+      hunks: [makeHunkBlock("H0_0", "adds two methods", {
+        old_start: 3, old_count: 1, new_start: 4, new_count: 9, rows,
+        spans: [
+          span("H0_0:span:5-7", 5, 7, "alpha does A"),
+          span("H0_0:span:9-10", 9, 10, "beta's guard"),
+          span("H0_0:span:10-10", 10, 10, "callout", [{ tag: "dead-code", note: "" }]),
+          span("H0_0:span:12-12", 12, 12, "module constant"),
+        ],
+      })],
+    };
+  }
+  const chevronOnLine = (line: number): SVGElement =>
+    chevrons().find((c) => c.closest(".row")!.querySelector(".cell-lineno")!.textContent === String(line))!;
+  const rowOfLine = (line: number): HTMLElement =>
+    newRows().find((r) => r.querySelector(".cell-lineno")!.textContent === String(line))!;
+  const labelRows = (root: ParentNode): string[] =>
+    Array.from(root.querySelectorAll<HTMLElement>(".label-row")).map((el) =>
+      `${el.dataset.def ?? el.dataset.id}: ${el.querySelector(".label-text")!.textContent}`);
+  const foldBoxOf = (line: number): HTMLElement =>
+    rowOfLine(line).nextElementSibling!.querySelector<HTMLElement>(".annot-box")!;
+
+  test("collapsing a definition shows the labels it hid, beneath its summary line", async () => {
+    await bootViewer(makeData({ pending: false, files: [labelledFile()], symbols: [] }));
+    expandHunk();
+    queueFetchResponse({ status: 200, body: { file_idx: 0, context: "right", right_start: 8, right_end: 11, summary: "beta guards then acts" } });
+
+    // Collapse `beta` (chevron on its opener, line 8): lines 9-11 hide.
+    clickEl(chevronOnLine(8));
+    expect([9, 10, 11].map((n) => rowOfLine(n).style.display)).toEqual(["none", "none", "none"]);
+    const box = foldBoxOf(8);
+    expect(box.querySelector(".fold-summary")!.textContent).toBe("method Foo.beta — summarising…");
+    // The tree holds the hidden labels: the guard span with its callout
+    // nested inside. Not `Foo` or `beta` (they cover the visible opener),
+    // not alpha's span or the module constant (outside the fold).
+    const tree = box.querySelector(".label-tree")!;
+    expect(labelRows(tree)).toEqual(["H0_0:span:9-10: beta's guard", "H0_0:span:10-10: callout"]);
+    expect(tree.querySelector('.label-node > .label-row[data-id="H0_0:span:9-10"]')).not.toBeNull();
+    expect(tree.querySelector('.label-children > .label-row[data-id="H0_0:span:10-10"] .smell')!.textContent).toBe("dead-code");
+    // The guard's bracket label and the callout's note fold with their rows.
+    const guardLabel = document.querySelector<HTMLElement>('.annot-span[data-span-id="H0_0:span:9-10"]')!;
+    const calloutNote = document.querySelector<HTMLElement>('.annot-note[data-span-id="H0_0:span:10-10"]')!;
+    expect(guardLabel.style.display).toBe("none");
+    expect(calloutNote.style.display).toBe("none");
+
+    // The summary lands: the line changes, the tree stays.
+    await tick();
+    expect(box.querySelector(".fold-summary")!.textContent).toBe("method Foo.beta — beta guards then acts");
+    expect(labelRows(box.querySelector(".label-tree")!)).toEqual(["H0_0:span:9-10: beta's guard", "H0_0:span:10-10: callout"]);
+
+    // Clicking a span's label opens the fold and its bracket is on screen.
+    clickEl(tree.querySelector('.label-row[data-id="H0_0:span:9-10"]')!);
+    expect(chevronOnLine(8).classList.contains("open")).toBe(true);
+    expect([9, 10, 11].map((n) => rowOfLine(n).style.display)).toEqual(["", "", ""]);
+    expect(guardLabel.style.display).toBe("");
+    expect(calloutNote.style.display).toBe("");
+    expect(rowOfLine(9).querySelector('.span-bracket[data-span-id="H0_0:span:9-10"]')).not.toBeNull();
+    expect(box.closest(".row-annotation")!.style.display).toBe("none");
+  });
+
+  test("a collapsed class lists the definitions inside it, each with its spans", async () => {
+    await bootViewer(makeData({ pending: false, files: [labelledFile([{}, { summary: "alpha, summarised" }, {}])], symbols: [] }));
+    expandHunk();
+    queueFetchResponse({ status: 500, body: {} });
+
+    // `Foo` folds from its first rendered row (line 4, context) through 11.
+    clickEl(chevronOnLine(4));
+    const tree = foldBoxOf(4).querySelector(".label-tree")!;
+    // alpha shows its summary; beta, with none, its opener line. Spans
+    // nest under the method that holds them. The module constant (line
+    // 12) is outside the class and not listed.
+    expect(labelRows(tree)).toEqual([
+      "Foo.alpha: alpha, summarised",
+      "H0_0:span:5-7: alpha does A",
+      "Foo.beta: def beta(self):",
+      "H0_0:span:9-10: beta's guard",
+      "H0_0:span:10-10: callout",
+    ]);
+    const betaNode = tree.querySelector('.label-row[data-def="Foo.beta"]')!.parentElement!;
+    expect(labelRows(betaNode.querySelector(":scope > .label-children")!))
+      .toEqual(["H0_0:span:9-10: beta's guard", "H0_0:span:10-10: callout"]);
+    // The module constant's note, outside the fold, stays visible.
+    expect(document.querySelector<HTMLElement>('.annot-note[data-span-id="H0_0:span:12-12"]')!.style.display).toBe("");
+
+    // Clicking a definition opens the fold and lands on its opener.
+    clickEl(tree.querySelector('.label-row[data-def="Foo.beta"]')!);
+    expect(chevronOnLine(4).classList.contains("open")).toBe(true);
+    expect(rowOfLine(8).style.display).toBe("");
+  });
+
+  test("a span still showing on the chevron row is not repeated as a hidden label", async () => {
+    await bootViewer(makeData({ pending: false, files: [labelledFile()], symbols: [] }));
+    expandHunk();
+    queueFetchResponse({ status: 500, body: {} });
+
+    // `alpha` is exactly its span (5..7): collapsing it hides 6-7, but the
+    // span's bracket cap and label stay on line 5, so the tree has nothing
+    // to add and the box is the summary line alone.
+    clickEl(chevronOnLine(5));
+    expect([6, 7].map((n) => rowOfLine(n).style.display)).toEqual(["none", "none"]);
+    const label = document.querySelector<HTMLElement>('.annot-span[data-span-id="H0_0:span:5-7"]')!;
+    expect(label.style.display).toBe("");
+    expect(foldBoxOf(5).querySelector(".label-tree")).toBeNull();
+    expect(foldBoxOf(5).querySelector(".fold-summary")!.textContent).toBe("method Foo.alpha — summarising…");
+  });
+
+  test("a region with nothing labelled inside it shows its summary line alone", async () => {
+    await bootViewer(dataWithFold());
+    expandHunk();
+    queueFetchResponse({ status: 200, body: { summary: "renames the column" } });
+    clickEl(chevrons()[0]);
+    await tick();
+    const box = document.querySelector(".annot-box")!;
+    expect(box.querySelector(".fold-summary")!.textContent).toBe("renames the column");
+    expect(box.querySelector(".label-tree")).toBeNull();
   });
 
   test("regions the rendered rows never reach attach nothing", async () => {

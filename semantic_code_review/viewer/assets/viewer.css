@@ -642,11 +642,20 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 }
 
 /* --- Label tree ----------------------------------------------------------- */
-/* An open hunk's body below `off`: the definitions it touches and its
- * annotation spans, nested. Each label is an inline row (chevron + name or
- * range + text), not a filled/bordered box — the chevron carries the
- * "click to expand" affordance and a subtle hover fill echoes it. */
+/* The labels on a run of rows — the definitions touched and the annotation
+ * spans, nested. Each label is an inline row (chevron + name or range +
+ * text), not a filled/bordered box — the chevron carries the "click to
+ * expand" affordance and a subtle hover fill echoes it. */
 .label-tree { padding: 6px 12px; }
+/* Inside a collapsed fold's box: beneath the summary line, which keeps the
+ * ~3-line clamp the box used to carry. */
+.diff .annot-fold .fold-summary { max-height: 5em; overflow: hidden; }
+.diff .annot-fold .label-tree {
+  padding: 4px 0 0; margin-top: 4px;
+  border-top: 1px solid var(--border);
+  font-style: normal;
+}
+.diff .annot-fold .label-row { padding: 2px 4px; }
 .label-row {
   margin: 1px 0; padding: 3px 6px; border-radius: 4px;
   display: flex; gap: 10px; align-items: flex-start; cursor: pointer;
