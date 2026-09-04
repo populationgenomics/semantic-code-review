@@ -2,7 +2,7 @@
 //
 // Owns the layout pass that turns DATA into the on-page DOM: PR
 // panel, file blocks, hunk headers, the side-by-side row grid, gap
-// chips for unchanged context, span brackets and notes, the label tree
+// chips for unchanged context, the centre gutter's span bars and text, the label tree
 // a collapsed fold shows, refs, smell pills. Carries the fold state too
 // (STATE.fold / overrides / renderedDiffs cache) because all of that
 // exists to feed the renderer, and binds the user inputs that drive it
@@ -587,7 +587,7 @@ function _renderFile(f: FileBlock, scope: PaneScope): HTMLElement | null {
     } else {
       const overview = _renderFileOverview(f);
       if (overview) body.appendChild(overview);
-      body.style.setProperty("--bracket-cols", String(_bracketColumns(f)));
+      _setGutterWidths(body, f);
       _renderFileBody(body, f, liveIds, scope);
       div.appendChild(body);
       // Run a file-level fold pass once the body is assembled.
@@ -1140,8 +1140,8 @@ function _renderLabelNode(node: LabelNode, f: FileBlock, rows: RowBlock[], pick:
 
 /** The labels a collapsed region shows (the `FoldLabels` folds.ts asks
  *  for): the tree over the rows the fold hid. Clicking one opens the fold
- *  and lands on what it names — a span's bracket label or note, a
- *  definition's first row — found within this pane's copy of the file,
+ *  and lands on what it names — a span's text or note, a definition's
+ *  first row — found within this pane's copy of the file,
  *  so the explainer panel never scrolls the diff pane. */
 function _foldLabels(f: FileBlock): FoldLabels {
   return (headerRow, bodyRows, open) => {
@@ -1151,7 +1151,7 @@ function _foldLabels(f: FileBlock): FoldLabels {
       open();
       const pane = tree?.closest(".file") ?? document;
       const target = node.kind === "span"
-        ? pane.querySelector<HTMLElement>(`.row-annotation[data-span-id="${_cssEscape(node.span.id)}"]`)
+        ? pane.querySelector<HTMLElement>(`.span-text[data-span-id="${_cssEscape(node.span.id)}"], .row-annotation[data-span-id="${_cssEscape(node.span.id)}"]`)
         : (bodyRows[node.first].newEl.children[1].classList.contains("empty")
           ? bodyRows[node.first].oldEl : bodyRows[node.first].newEl);
       if (target) target.scrollIntoView({ block: "nearest" });
@@ -1182,59 +1182,272 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLE
   return diff;
 }
 
+// --- Spans on visible code: the centre gutter ------------------------------
+//
+// The right half's grid has four columns — line number, bars, text, code —
+// the first three sticky so they read as a fixed centre gutter between the
+// halves while the code scrolls beneath. Every row carries an empty bars
+// and text cell for the gutter's background; a span puts its marks in
+// them. A multi-line span is a bar over its rows, one column further right
+// per level of nesting, and its intent as a text block beside them; a
+// single-line span is a dot on its row and the note beneath it. The text
+// is a direct child of the half placed on the rows it belongs to
+// (`grid-row: a / b`), so a rationale longer than its rows stretches them
+// rather than being clipped; the old half's paired rows are given the same
+// heights so the halves stay aligned. Placement is redone whenever the
+// half's rows change (an annotation inserted, a fold hiding rows), which
+// is why every row of such a half carries an explicit `grid-row`.
+
+/** A span placed on a hunk's rows: its row extent, nesting depth, and —
+ *  for a multi-line span — the rows its text may occupy. */
+interface PlacedSpan {
+  span: AnnotationSpan;
+  first: number;
+  last: number;
+  depth: number;
+  /** Rows the text runs through, inclusive; null for a single-line span
+   *  or one whose every row a nested span claims. */
+  textRows: { first: number; last: number } | null;
+  /** For a multi-line span with no rows of its own, the nested span whose
+   *  text block carries this one's text above its own. */
+  textHost: PlacedSpan | null;
+}
+
+/** A multi-line span's text block and the rows it is placed on. */
+interface SpanTextBlock {
+  el: HTMLElement;
+  rows: HTMLElement[];
+}
+
+/** Text blocks per right half, with the observers that keep them placed. */
+const _SPAN_TEXT_BLOCKS = new WeakMap<HTMLElement, SpanTextBlock[]>();
+
+/** The gutter's fixed text width. Held constant so the code halves give
+ *  up a predictable amount. Measured in the half's `ch` (12.5px mono):
+ *  ~30 characters per line at the text's own 11px, so a typical intent
+ *  is two or three lines and fits a span of that many rows. */
+const _SPAN_TEXT_WIDTH = "26ch";
+/** One bar column per level of nesting, plus a margin. */
+const _SPAN_BAR_COLUMN_PX = 6;
+
 /** Spans on visible code — the one owner of the form a span takes when
- *  its rows are on screen. A single-line span is a note on its row. A
- *  multi-line span is a bracket in the gutter over the rows it covers,
- *  indented one column per level of nesting, with its intent as a label
- *  hanging from the first row; a span whose rows are not in the hunk is
- *  warned about and left out. Both hang off the rows themselves, so they
- *  survive the hunk's `.diff` being reused across repaints and rows
- *  arriving above or below it from a chip. */
+ *  its rows are on screen. A span whose rows are not in the hunk is
+ *  warned about and left out. Everything hangs off the rows themselves,
+ *  so it survives the hunk's `.diff` being reused across repaints and
+ *  rows arriving above or below it from a chip. */
 function _attachSpans(
   rowElsOld: HTMLElement[], rowElsNew: HTMLElement[],
   rows: RowBlock[], spans: AnnotationSpan[],
   hunkId: string, filePath: string,
 ): void {
   if (!spans.length || !rows.length) return;
-  const depths = _bracketDepths(spans);
+  const placed = _placeSpans(rows, spans, hunkId);
+  if (!placed.length) return;
+  const half = rowElsNew[0].parentElement;
+  if (!half) throw new Error(`${hunkId}: rows are not in a half`);
+  const blocks: SpanTextBlock[] = [];
+  const textEls = new Map<PlacedSpan, HTMLElement>();
+  for (const ps of placed) {
+    if (ps.span.start === ps.span.end) {
+      _gutterBars(rowElsNew[ps.first]).appendChild(_spanMark(ps.span.id, ps.depth, "dot"));
+      _attachSpanNote(ps.span, ps.first, rowElsOld, rowElsNew, hunkId, filePath);
+      continue;
+    }
+    for (let i = ps.first; i <= ps.last; i++) {
+      const pos = i === ps.first ? "bar-top" : i === ps.last ? "bar-bottom" : "bar";
+      _gutterBars(rowElsNew[i]).appendChild(_spanMark(ps.span.id, ps.depth, pos));
+    }
+    if (ps.textRows === null) continue;
+    const el = _el("div", "span-text");
+    el.dataset.spanId = ps.span.id;
+    el.appendChild(_spanText(ps.span, filePath));
+    half.appendChild(el);
+    textEls.set(ps, el);
+    blocks.push({ el, rows: rowElsNew.slice(ps.textRows.first, ps.textRows.last + 1) });
+  }
+  // A span with no rows of its own reads above the text of the span that
+  // took them: outermost first, in the same block.
+  for (const ps of placed) {
+    if (ps.textHost === null) continue;
+    const host = textEls.get(ps.textHost);
+    if (!host) throw new Error(`${hunkId}: span ${ps.span.id} has a text host with no text block`);
+    host.insertBefore(_spanText(ps.span, filePath), host.firstChild);
+  }
+  if (!blocks.length) return;
+  _SPAN_TEXT_BLOCKS.set(half, blocks);
+  _observeHalf(half);
+  _layoutSpanTexts(half);
+}
+
+/** Row extents and nesting for a hunk's spans, outermost first. Depth
+ *  counts enclosing multi-line spans (a single-line span takes no bar
+ *  column). A multi-line span's text starts on its first row and runs
+ *  down to the row before its first nested multi-line span begins — the
+ *  child's rows carry the child's text; where a child starts on the
+ *  same row, the parent's text takes its first run of rows no child
+ *  claims. Two spans over one range nest, so both bars show. */
+function _placeSpans(rows: RowBlock[], spans: AnnotationSpan[], hunkId: string): PlacedSpan[] {
+  const out: PlacedSpan[] = [];
   for (const span of spans) {
     const extent = _rowExtent(rows, (r) => r.new_line != null && span.start <= r.new_line && r.new_line <= span.end);
     if (extent === null) {
       console.warn(`${hunkId}: span ${span.id} covers no row of the hunk; not shown`);
       continue;
     }
-    if (span.start === span.end) _attachSpanNote(span, extent.first, rowElsOld, rowElsNew, hunkId, filePath);
-    else _attachSpanBracket(span, extent, depths.get(span.id) ?? 0, rowElsOld, rowElsNew, filePath);
+    out.push({ span, ...extent, depth: 0, textRows: null, textHost: null });
   }
+  out.sort((a, b) => a.first - b.first || b.last - a.last);
+  const open: PlacedSpan[] = [];
+  const children = new Map<PlacedSpan, PlacedSpan[]>();
+  for (const ps of out) {
+    while (open.length && !(open[open.length - 1].first <= ps.first && ps.last <= open[open.length - 1].last)) open.pop();
+    ps.depth = open.length;
+    if (ps.span.start === ps.span.end) continue;
+    if (open.length) children.get(open[open.length - 1])!.push(ps);
+    children.set(ps, []);
+    open.push(ps);
+  }
+  for (const ps of out) {
+    if (ps.span.start === ps.span.end) continue;
+    let from = ps.first;
+    for (const child of children.get(ps)!) {
+      if (child.first > from) break;
+      from = Math.max(from, child.last + 1);
+    }
+    const next = children.get(ps)!.find((c) => c.first > from);
+    const to = Math.min(ps.last, next ? next.first - 1 : ps.last);
+    ps.textRows = from <= to ? { first: from, last: to } : null;
+  }
+  // Every row claimed: the text rides in the first child's block — or its
+  // first child's, down to the innermost span that kept rows of its own.
+  for (const ps of out) {
+    if (ps.span.start === ps.span.end || ps.textRows !== null) continue;
+    let host = children.get(ps)![0];
+    while (host.textRows === null) host = children.get(host)![0];
+    ps.textHost = host;
+  }
+  return out;
 }
 
-/** Nesting depth of each multi-line span by line containment — 0 for
- *  an outermost span, one more per enclosing multi-line span. Two spans
- *  over one range nest, so both brackets stay visible. Single-line spans
- *  are notes, not brackets, and take no column. */
-function _bracketDepths(spans: AnnotationSpan[]): Map<string, number> {
-  const multi = spans.filter((s) => s.start !== s.end)
-    .sort((a, b) => a.start - b.start || b.end - a.end);
-  const depths = new Map<string, number>();
-  const open: AnnotationSpan[] = [];
-  for (const s of multi) {
-    while (open.length && !(open[open.length - 1].start <= s.start && s.end <= open[open.length - 1].end)) open.pop();
-    depths.set(s.id, open.length);
-    open.push(s);
-  }
-  return depths;
-}
-
-/** The gutter columns a file's brackets need: its deepest nesting plus
- *  one, or 0 when no hunk has a multi-line span. Set on the file body so
- *  every row of the file — hunks and disclosed context alike — pays the
- *  same gutter and indentation reads consistently across them. */
-function _bracketColumns(f: FileBlock): number {
+/** The gutter columns a file's spans need (its deepest bar plus one) and
+ *  the text width, as CSS variables on the file body — one gutter for the
+ *  whole file, so every row of every hunk and disclosed region in it pays
+ *  the same and the halves split it evenly. A file with no span has none. */
+function _setGutterWidths(body: HTMLElement, f: FileBlock): void {
   let cols = 0;
   for (const h of f.hunks) {
-    for (const d of _bracketDepths(h.spans || []).values()) cols = Math.max(cols, d + 1);
+    for (const ps of _placeSpans(h.rows || [], h.spans || [], h.id)) cols = Math.max(cols, ps.depth + 1);
   }
-  return cols;
+  body.style.setProperty("--span-bars-w", cols ? `${cols * _SPAN_BAR_COLUMN_PX + 4}px` : "0px");
+  body.style.setProperty("--span-text-w", cols ? _SPAN_TEXT_WIDTH : "0px");
+}
+
+/** A row's bars cell (`children[2]`; `[3]` is its text cell). */
+function _gutterBars(rowEl: HTMLElement): HTMLElement {
+  const cell = rowEl.children[2] as HTMLElement | undefined;
+  if (!cell || !cell.classList.contains("cell-gutter-bars")) throw new Error("row has no gutter bars cell");
+  return cell;
+}
+
+/** A bar segment or dot in a row's bars cell, at its depth's column. */
+function _spanMark(spanId: string, depth: number, kind: "bar" | "bar-top" | "bar-bottom" | "dot"): HTMLElement {
+  const mark = _el("span", `span-mark span-${kind}`);
+  mark.dataset.spanId = spanId;
+  mark.style.setProperty("--depth", String(depth));
+  mark.setAttribute("aria-hidden", "true");
+  return mark;
+}
+
+/** One span's text: its intent, wrapping at the gutter's width, then its
+ *  smells as promotable pills anchored at the span's first line. */
+function _spanText(span: AnnotationSpan, filePath: string): HTMLElement {
+  const el = _el("p", "span-text-body");
+  el.dataset.spanId = span.id;
+  el.appendChild(_el("span", span.intent ? "span-text-intent" : "span-text-intent empty", span.intent || "(no intent)"));
+  for (const sm of span.smells || []) el.appendChild(_smellPill(sm, {
+    smellId: `${span.id}:smell:${sm.tag}`, file: filePath, side: "new", line: span.start,
+  }));
+  return el;
+}
+
+/** Re-place a half's text blocks whenever its rows change, and re-sync
+ *  the paired heights whenever its size does. One pair of observers per
+ *  half; the WeakMap entry outlives them. */
+function _observeHalf(half: HTMLElement): void {
+  if (half.dataset.spanObserved !== undefined) return;
+  half.dataset.spanObserved = "";
+  let queued = false;
+  const schedule = (): void => {
+    if (queued) return;
+    queued = true;
+    // Coalesce a burst (a render inserts many rows) into one pass, after
+    // the mutations that caused it have settled.
+    queueMicrotask(() => { queued = false; _layoutSpanTexts(half); });
+  };
+  const mo = new MutationObserver((records) => {
+    for (const r of records) {
+      if (r.type === "childList" || (r.target as HTMLElement).classList?.contains("row")) { schedule(); return; }
+    }
+  });
+  mo.observe(half, { childList: true, attributes: true, attributeFilter: ["style"], subtree: true });
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(() => _syncRowHeights(half)).observe(half);
+  }
+}
+
+/** Assign every visible row of the half its grid row, place each text
+ *  block on the rows it belongs to (hidden while its first row is hidden
+ *  — the fold's label tree carries it then), and sync the old half. */
+function _layoutSpanTexts(half: HTMLElement): void {
+  const blocks = _SPAN_TEXT_BLOCKS.get(half);
+  if (!blocks) return;
+  // Writes only on change: the pass is itself observed, and a rewrite of
+  // the same value would schedule it again.
+  const set = (el: HTMLElement, prop: "gridRow" | "display", value: string): void => {
+    if (el.style[prop] !== value) el.style[prop] = value;
+  };
+  const track = new Map<Element, number>();
+  let n = 0;
+  for (const child of Array.from(half.children) as HTMLElement[]) {
+    if (!child.classList.contains("row")) continue;
+    if (child.style.display === "none") { set(child, "gridRow", ""); continue; }
+    n++;
+    set(child, "gridRow", String(n));
+    track.set(child, n);
+  }
+  for (const block of blocks) {
+    const start = track.get(block.rows[0]);
+    if (start === undefined) { set(block.el, "display", "none"); continue; }
+    let end = start;
+    for (const row of block.rows) end = Math.max(end, track.get(row) ?? end);
+    // What hangs off the block's last row — a note, a comment thread, its
+    // placeholder — is that row's space too, so the text runs past it.
+    for (let s = block.rows[block.rows.length - 1].nextElementSibling as HTMLElement | null;
+         s && (s.classList.contains("row-annotation") || s.classList.contains("row-placeholder"));
+         s = s.nextElementSibling as HTMLElement | null) {
+      end = Math.max(end, track.get(s) ?? end);
+    }
+    set(block.el, "display", "");
+    set(block.el, "gridRow", `${start} / ${end + 1}`);
+  }
+  _syncRowHeights(half);
+}
+
+/** Give each old-half row paired with a row under a text block the
+ *  height the text stretched it to, so the halves stay row-aligned; a
+ *  row under no shown block is released. */
+function _syncRowHeights(half: HTMLElement): void {
+  const blocks = _SPAN_TEXT_BLOCKS.get(half);
+  if (!blocks) return;
+  for (const block of blocks) {
+    const shown = block.el.style.display !== "none";
+    for (const row of block.rows) {
+      const pair = (row as { _scrPair?: HTMLElement })._scrPair;
+      if (!pair) continue;
+      const h = shown && row.style.display !== "none" ? row.getBoundingClientRect().height : 0;
+      pair.style.minHeight = h > 0 ? `${h}px` : "";
+    }
+  }
 }
 
 function _attachSpanNote(
@@ -1255,58 +1468,6 @@ function _attachSpanNote(
     content: _buildSpanNoteContent(note, filePath, rowElsNew[idx]),
     onInsert: (el) => { el.dataset.spanId = note.id; },
   });
-}
-
-/** One bracket segment: a vertical rule in the gutter of a row's
- *  post-image cell, capped at the span's first and last rows. */
-function _bracketSegment(spanId: string, depth: number, pos: "top" | "mid" | "bottom"): HTMLElement {
-  const seg = _el("span", `span-bracket span-bracket-${pos}`);
-  seg.dataset.spanId = spanId;
-  seg.style.setProperty("--depth", String(depth));
-  seg.setAttribute("aria-hidden", "true");
-  return seg;
-}
-
-/** A multi-line span's bracket over rows `first..last` of the new half
- *  (a deletion row interleaved in the range is bracketed too, so the
- *  rule is continuous) and its label: one line hanging from the first
- *  row, truncated with the full intent on hover, carrying the bracket
- *  through so the rule does not break at the label. */
-function _attachSpanBracket(
-  span: AnnotationSpan, extent: { first: number; last: number }, depth: number,
-  rowElsOld: HTMLElement[], rowElsNew: HTMLElement[], filePath: string,
-): void {
-  for (let i = extent.first; i <= extent.last; i++) {
-    const pos = i === extent.first ? "top" : i === extent.last ? "bottom" : "mid";
-    rowElsNew[i].children[1].appendChild(_bracketSegment(span.id, depth, pos));
-  }
-  Annotations.attach({
-    anchor: rowElsNew[extent.first],
-    shadowAnchor: rowElsOld[extent.first],
-    variant: "span",
-    content: _buildSpanLabelContent(span, filePath),
-    layout: { wrap: false },
-    onInsert: (el) => {
-      el.dataset.spanId = span.id;
-      el.style.setProperty("--depth", String(depth));
-      const cell = el.querySelector(".cell-annotation");
-      if (cell) cell.appendChild(_bracketSegment(span.id, depth, "mid"));
-      const box = el.querySelector<HTMLElement>(".annot-box");
-      if (box) box.title = span.intent;
-    },
-  });
-}
-
-/** A bracket's label: the span's range and intent, then its smells as
- *  promotable pills anchored at the span's first line. */
-function _buildSpanLabelContent(span: AnnotationSpan, filePath: string): HTMLElement {
-  const wrap = _el("span", "span-label");
-  wrap.appendChild(_el("span", "span-label-range", `+${span.start}..+${span.end}`));
-  wrap.appendChild(_el("span", span.intent ? "span-label-text" : "span-label-text empty", span.intent || "(no intent)"));
-  for (const sm of span.smells || []) wrap.appendChild(_smellPill(sm, {
-    smellId: `${span.id}:smell:${sm.tag}`, file: filePath, side: "new", line: span.start,
-  }));
-  return wrap;
 }
 
 /** Compose a single-line span's annotation body: the LLM's text plus a
@@ -1356,6 +1517,10 @@ function _renderRow(
   const newRow = _el("div", `row row-${row.kind}`);
   newRow.appendChild(_renderLineno(row.new_line, "new", hasNew));
   newRow.appendChild(_renderContent(row.new_text, "new", hasNew, file, newMarks));
+  // The centre gutter's cells, after the content so `children[1]` stays
+  // the content cell; the grid places them between number and code.
+  newRow.appendChild(_el("span", "cell-gutter-bars"));
+  newRow.appendChild(_el("span", "cell-gutter-text"));
   return { old: oldRow, new: newRow };
 }
 

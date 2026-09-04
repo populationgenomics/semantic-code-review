@@ -935,19 +935,20 @@ describe("streaming events", () => {
       expect(text).not.toContain(s.intent as string);
       expect(text).not.toContain(`+${s.start}`);
     }
-    expect(hunk.querySelector(".span-bracket, .annot-span, .annot-note, .label-tree, .label-row")).toBeNull();
+    expect(hunk.querySelector(".span-mark, .span-text, .annot-note, .label-tree, .label-row")).toBeNull();
     expect(codeRows(".hunk")).toBe(0);
   });
 
-  test("at 'code' a hunk's spans are brackets and notes on its rows; the definitions are chevrons", async () => {
+  test("at 'code' a hunk's spans are bars and notes on its rows; the definitions are chevrons", async () => {
     await bootViewer(makeData({ pending: false, files: [spansFile(SPANS)], symbols: [] }));
     fold("code");
     expect(codeRows(".hunk")).toBe(9);
-    // Multi-line spans bracket; single-line spans note; no tree until a
-    // definition is collapsed.
-    expect(document.querySelectorAll('.span-bracket[data-span-id="H0_0:span:5-7"]').length).toBe(4);   // 3 rows + the label row's segment
-    expect(document.querySelectorAll('.span-bracket[data-span-id="H0_0:span:9-10"]').length).toBe(3);
-    expect(document.querySelectorAll(".row-annotation.annot-span").length).toBe(2);
+    // Multi-line spans bar; single-line spans dot and note; no tree until
+    // a definition is collapsed.
+    expect(document.querySelectorAll('.span-mark[data-span-id="H0_0:span:5-7"]').length).toBe(3);
+    expect(document.querySelectorAll('.span-mark[data-span-id="H0_0:span:9-10"]').length).toBe(2);
+    expect(document.querySelectorAll(".half-new > .span-text").length).toBe(2);
+    expect(document.querySelectorAll(".span-dot").length).toBe(2);
     expect(document.querySelectorAll(".row-annotation.annot-note").length).toBe(2);
     // The label trees exist only inside the (hidden) fold boxes.
     for (const tree of document.querySelectorAll<HTMLElement>(".label-tree")) {
@@ -981,9 +982,9 @@ describe("streaming events", () => {
     fold("code");
     expect(document.querySelectorAll(".fold-chev").length).toBe(0);
     expect(document.querySelector(".label-tree")).toBeNull();
-    expect(document.querySelectorAll('.span-bracket[data-span-id="H0_0:span:1-4"]').length).toBe(5);   // 4 rows + the label row's segment
-    expect(document.querySelectorAll('.span-bracket[data-span-id="H0_0:span:2-3"]').length).toBe(3);
-    expect(document.querySelector('.annot-span[data-span-id="H0_0:span:1-4"] .span-label-text')!.textContent).toBe("region");
+    expect(document.querySelectorAll('.span-mark[data-span-id="H0_0:span:1-4"]').length).toBe(4);
+    expect(document.querySelectorAll('.span-mark[data-span-id="H0_0:span:2-3"]').length).toBe(2);
+    expect(document.querySelector('.span-text[data-span-id="H0_0:span:1-4"] .span-text-intent')!.textContent).toBe("region");
     expect(document.querySelectorAll(".row-annotation.annot-note").length).toBe(2);
   });
 
@@ -1119,16 +1120,15 @@ describe("streaming events", () => {
 });
 
 
-describe("span brackets: multi-line spans on visible code (ADR 0008)", () => {
+describe("the centre gutter: spans on visible code (ADR 0008)", () => {
   type Row = Record<string, unknown>;
   const span = (id: string, start: number, end: number, intent: string, smells: unknown[] = []): Row =>
     ({ id, start, end, intent, smells, context: "", refs: [] });
   const fold = (level: string): void =>
     (document.querySelector(`.fold-slider button[data-fold="${level}"]`) as HTMLElement).click();
 
-  /** A nine-line file whose one hunk inserts lines 4..8, with a span over
-   *  4..7, one nested inside it over 5..6, and a callout on 8. */
-  function bracketFile(spans: Row[]): Row {
+  /** A nine-line file whose one hunk inserts lines 4..8. */
+  function gutterFile(spans: Row[]): Row {
     const rows = [4, 5, 6, 7, 8].map((n) =>
       ({ kind: "ins", old_line: null, new_line: n, old_text: "", new_text: `l${n}` }));
     return {
@@ -1141,82 +1141,132 @@ describe("span brackets: multi-line spans on visible code (ADR 0008)", () => {
       })],
     };
   }
+  /** A span over 4..7, one nested inside it over 6..7, a callout on 5
+   *  (inside the outer span) and another on 8. */
   const NESTED = [
     span("H0_0:span:4-7", 4, 7, "the outer edit"),
-    span("H0_0:span:5-6", 5, 6, "the inner edit", [{ tag: "dead-code", note: "" }]),
-    span("H0_0:span:8-8", 8, 8, "a callout"),
+    span("H0_0:span:6-7", 6, 7, "the inner edit", [{ tag: "dead-code", note: "" }]),
+    span("H0_0:span:5-5", 5, 5, "a callout"),
+    span("H0_0:span:8-8", 8, 8, "another callout"),
   ];
 
-  /** The post-image line numbers of the rows carrying a bracket segment
-   *  for `spanId`, and the caps those segments have. */
-  function bracketRows(spanId: string): { lines: number[]; caps: string[] } {
-    const lines: number[] = [];
-    const caps: string[] = [];
-    for (const row of document.querySelectorAll(".half-new .row:not(.row-annotation)")) {
-      const seg = row.querySelector<HTMLElement>(`.span-bracket[data-span-id="${spanId}"]`);
-      if (!seg) continue;
-      lines.push(Number(row.querySelector(".cell-lineno")!.textContent));
-      if (seg.classList.contains("span-bracket-top")) caps.push("top");
-      if (seg.classList.contains("span-bracket-bottom")) caps.push("bottom");
+  const newRows = (): HTMLElement[] =>
+    Array.from(document.querySelectorAll<HTMLElement>(".half-new .row:not(.row-annotation)"));
+  const rowOfLine = (line: number): HTMLElement =>
+    newRows().find((r) => r.querySelector(".cell-lineno")!.textContent === String(line))!;
+  /** The lines carrying a mark for `spanId`, with each mark's kind. */
+  function marks(spanId: string): Array<[number, string]> {
+    const out: Array<[number, string]> = [];
+    for (const row of newRows()) {
+      const m = row.querySelector<HTMLElement>(`.cell-gutter-bars .span-mark[data-span-id="${spanId}"]`);
+      if (!m) continue;
+      const kind = Array.from(m.classList).find((c) => c.startsWith("span-") && c !== "span-mark")!;
+      out.push([Number(row.querySelector(".cell-lineno")!.textContent), kind]);
     }
-    return { lines, caps };
+    return out;
   }
-  const labelOf = (spanId: string): HTMLElement | null =>
-    document.querySelector<HTMLElement>(`.row-annotation.annot-span[data-span-id="${spanId}"]`);
+  const textOf = (spanId: string): HTMLElement | null =>
+    document.querySelector<HTMLElement>(`.half-new > .span-text[data-span-id="${spanId}"]`);
+  const gridRow = (el: HTMLElement): string => el.style.gridRow;
 
-  test("a multi-line span is a bracket over exactly its rows, with its label hanging from the first", async () => {
-    await bootViewer(makeData({ pending: false, files: [bracketFile(NESTED)], symbols: [] }));
+  test("every new-half row carries the gutter's cells after its content cell", async () => {
+    await bootViewer(makeData({ pending: false, files: [gutterFile([])], symbols: [] }));
     fold("code");
-
-    expect(bracketRows("H0_0:span:4-7")).toEqual({ lines: [4, 5, 6, 7], caps: ["top", "bottom"] });
-    const label = labelOf("H0_0:span:4-7")!;
-    expect(label).not.toBeNull();
-    // Hangs from line 4: it is the row right after it in the new half.
-    const line4 = Array.from(document.querySelectorAll<HTMLElement>(".half-new .row:not(.row-annotation)"))
-      .find((r) => r.querySelector(".cell-lineno")!.textContent === "4")!;
-    expect(line4.nextElementSibling).toBe(label);
-    expect(label.querySelector(".span-label-range")!.textContent).toBe("+4..+7");
-    expect(label.querySelector(".span-label-text")!.textContent).toBe("the outer edit");
-    // The full intent is on hover, so a truncated label still reads.
-    expect(label.querySelector<HTMLElement>(".annot-box")!.title).toBe("the outer edit");
-    // The label row carries the bracket through, so the rule is unbroken.
-    expect(label.querySelector('.span-bracket[data-span-id="H0_0:span:4-7"]')).not.toBeNull();
-    // The old half mirrors the label's height with a placeholder.
-    expect(document.querySelectorAll(".half-old .row-placeholder").length).toBe(3);
+    for (const row of newRows()) {
+      expect(Array.from(row.children).map((c) => c.className.split(" ")[0]))
+        .toEqual(["cell", "cell", "cell-gutter-bars", "cell-gutter-text"]);
+      expect(row.children[1].classList.contains("cell-content")).toBe(true);
+    }
+    // No span: the gutter is zero wide and no row is placed explicitly.
+    const body = document.querySelector<HTMLElement>(".file-body")!;
+    expect(body.style.getPropertyValue("--span-bars-w")).toBe("0px");
+    expect(body.style.getPropertyValue("--span-text-w")).toBe("0px");
+    expect(newRows().every((r) => r.style.gridRow === "")).toBe(true);
   });
 
-  test("nested spans nest their brackets, one gutter column deeper per level", async () => {
-    await bootViewer(makeData({ pending: false, files: [bracketFile(NESTED)], symbols: [] }));
+  test("a multi-line span is a bar over exactly its rows with its text placed on them", async () => {
+    await bootViewer(makeData({ pending: false, files: [gutterFile(NESTED)], symbols: [] }));
     fold("code");
 
-    expect(bracketRows("H0_0:span:5-6")).toEqual({ lines: [5, 6], caps: ["top", "bottom"] });
+    expect(marks("H0_0:span:4-7")).toEqual([[4, "span-bar-top"], [5, "span-bar"], [6, "span-bar"], [7, "span-bar-bottom"]]);
+    // The gutter has a fixed width: two bar columns and the text column.
+    const body = document.querySelector<HTMLElement>(".file-body")!;
+    expect(body.style.getPropertyValue("--span-bars-w")).toBe("16px");
+    expect(body.style.getPropertyValue("--span-text-w")).toBe("26ch");
+
+    // Every row is placed explicitly — the callout's note hangs off line 5
+    // as track 3, so lines 6..8 are tracks 4..6 — and the outer span's text
+    // sits on lines 4..5 and the note beneath 5: it stops the row before
+    // its child begins at line 6.
+    expect(newRows().map(gridRow)).toEqual(["1", "2", "4", "5", "6"]);
+    expect((rowOfLine(5).nextElementSibling as HTMLElement).style.gridRow).toBe("3");
+    const outer = textOf("H0_0:span:4-7")!;
+    expect(outer).not.toBeNull();
+    expect(outer.querySelector(".span-text-intent")!.textContent).toBe("the outer edit");
+    expect(gridRow(outer)).toBe("1 / 4");
+    expect(outer.style.display).toBe("");
+  });
+
+  test("nested spans are parallel bars one column apart; the child's text takes the child's rows", async () => {
+    await bootViewer(makeData({ pending: false, files: [gutterFile(NESTED)], symbols: [] }));
+    fold("code");
+
+    expect(marks("H0_0:span:6-7")).toEqual([[6, "span-bar-top"], [7, "span-bar-bottom"]]);
     const depth = (spanId: string): string =>
-      document.querySelector<HTMLElement>(`.span-bracket[data-span-id="${spanId}"]`)!.style.getPropertyValue("--depth");
+      document.querySelector<HTMLElement>(`.span-mark[data-span-id="${spanId}"]`)!.style.getPropertyValue("--depth");
     expect(depth("H0_0:span:4-7")).toBe("0");
-    expect(depth("H0_0:span:5-6")).toBe("1");
-    expect(labelOf("H0_0:span:5-6")!.style.getPropertyValue("--depth")).toBe("1");
-    // The file's gutter makes room for both columns.
-    expect(document.querySelector<HTMLElement>(".file-body")!.style.getPropertyValue("--bracket-cols")).toBe("2");
-    // The inner span's smell rides on its label.
-    expect(labelOf("H0_0:span:5-6")!.querySelector(".smell")!.textContent).toBe("dead-code");
+    expect(depth("H0_0:span:6-7")).toBe("1");
+    const inner = textOf("H0_0:span:6-7")!;
+    expect(gridRow(inner)).toBe("4 / 6");
+    expect(inner.querySelector(".span-text-intent")!.textContent).toBe("the inner edit");
+    expect(inner.querySelector(".smell")!.textContent).toBe("dead-code");
 
-    // The callout is still a row note, and takes no bracket.
-    expect(document.querySelector('.row-annotation.annot-note[data-span-id="H0_0:span:8-8"]')).not.toBeNull();
-    expect(bracketRows("H0_0:span:8-8").lines).toEqual([]);
-    expect(labelOf("H0_0:span:8-8")).toBeNull();
+    // Single-line spans: a dot on their row at their depth, and the note
+    // beneath the row as before. No text block.
+    expect(marks("H0_0:span:5-5")).toEqual([[5, "span-dot"]]);
+    expect(depth("H0_0:span:5-5")).toBe("1");
+    expect(marks("H0_0:span:8-8")).toEqual([[8, "span-dot"]]);
+    expect(depth("H0_0:span:8-8")).toBe("0");
+    expect(document.querySelectorAll(".row-annotation.annot-note").length).toBe(2);
+    expect(textOf("H0_0:span:5-5")).toBeNull();
   });
 
-  test("a file with no multi-line span pays no gutter", async () => {
-    await bootViewer(makeData({ pending: false, files: [bracketFile([span("H0_0:span:8-8", 8, 8, "a callout")])], symbols: [] }));
+  test("a row inserted later is placed too, and the text blocks move with the rows", async () => {
+    await bootViewer(makeData({ pending: false, files: [gutterFile(NESTED)], symbols: [] }));
     fold("code");
-    expect(document.querySelector<HTMLElement>(".file-body")!.style.getPropertyValue("--bracket-cols")).toBe("0");
-    expect(document.querySelectorAll(".span-bracket").length).toBe(0);
+    // A comment thread attached under line 4 — the same insertion any
+    // annotation makes — takes a track; the rows below shift and the outer
+    // text, whose rows now include it, spans one more.
+    (rowOfLine(4).querySelector(".cell-lineno") as HTMLElement).click();
+    await tick();
+    const editor = rowOfLine(4).nextElementSibling as HTMLElement;
+    expect(editor.classList.contains("row-annotation")).toBe(true);
+    expect(editor.style.gridRow).toBe("2");
+    expect(newRows().map(gridRow)).toEqual(["1", "3", "5", "6", "7"]);
+    expect(gridRow(textOf("H0_0:span:4-7")!)).toBe("1 / 5");
+    expect(gridRow(textOf("H0_0:span:6-7")!)).toBe("5 / 7");
   });
 
-  test("the bracket survives a chip disclosing rows above it", async () => {
-    await bootViewer(makeData({ pending: false, files: [bracketFile(NESTED)], symbols: [] }));
+  test("a span whose rows its child takes entirely reads above the child's text", async () => {
+    await bootViewer(makeData({ pending: false, files: [gutterFile([
+      span("H0_0:span:4-7", 4, 7, "the whole thing"),
+      span("H0_0:span:4-7:2", 4, 7, "the same rows, again"),
+    ])], symbols: [] }));
     fold("code");
-    const before = bracketRows("H0_0:span:4-7");
+    // Two bars, and one text block carrying both intents, outermost first.
+    expect(marks("H0_0:span:4-7").length).toBe(4);
+    expect(marks("H0_0:span:4-7:2").length).toBe(4);
+    expect(textOf("H0_0:span:4-7")).toBeNull();
+    const host = textOf("H0_0:span:4-7:2")!;
+    expect(Array.from(host.querySelectorAll(".span-text-intent")).map((e) => e.textContent))
+      .toEqual(["the whole thing", "the same rows, again"]);
+    expect(gridRow(host)).toBe("1 / 5");
+  });
+
+  test("the marks survive a chip disclosing rows above them", async () => {
+    await bootViewer(makeData({ pending: false, files: [gutterFile(NESTED)], symbols: [] }));
+    fold("code");
+    const before = marks("H0_0:span:4-7");
 
     const chip = document.querySelector(".gap-chip") as HTMLElement;   // "expand 3 lines above"
     expect(chip.textContent).toContain("above");
@@ -1225,15 +1275,14 @@ describe("span brackets: multi-line spans on visible code (ADR 0008)", () => {
     await tick();
     expect(document.querySelector(".gap-expansion")).not.toBeNull();
 
-    // Three rows now precede the hunk; the bracket is still on lines 4..7
-    // and its label still hangs from line 4. The disclosed rows carry
-    // no segment.
-    expect(bracketRows("H0_0:span:4-7")).toEqual(before);
-    expect(document.querySelectorAll(".gap-expansion .span-bracket").length).toBe(0);
-    const line4 = Array.from(document.querySelectorAll<HTMLElement>(".half-new .row:not(.row-annotation)"))
-      .find((r) => r.querySelector(".cell-lineno")!.textContent === "4")!;
-    expect(line4.nextElementSibling).toBe(labelOf("H0_0:span:4-7"));
-    expect(document.querySelectorAll(".row-annotation.annot-span").length).toBe(2);
+    // The disclosed rows are another grid; the hunk's rows, marks and text
+    // placement are untouched.
+    expect(marks("H0_0:span:4-7")).toEqual(before);
+    expect(document.querySelectorAll(".gap-expansion .span-mark, .gap-expansion .span-text").length).toBe(0);
+    expect(gridRow(textOf("H0_0:span:4-7")!)).toBe("1 / 4");
+    // The disclosed rows carry the gutter cells too, so the strip is
+    // continuous down the file.
+    expect(document.querySelector(".gap-expansion .half-new .row .cell-gutter-text")).not.toBeNull();
   });
 });
 
@@ -2035,10 +2084,12 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
     expect(labelRows(tree)).toEqual(["H0_0:span:9-10: beta's guard", "H0_0:span:10-10: callout"]);
     expect(tree.querySelector('.label-node > .label-row[data-id="H0_0:span:9-10"]')).not.toBeNull();
     expect(tree.querySelector('.label-children > .label-row[data-id="H0_0:span:10-10"] .smell')!.textContent).toBe("dead-code");
-    // The guard's bracket label and the callout's note fold with their rows.
-    const guardLabel = document.querySelector<HTMLElement>('.annot-span[data-span-id="H0_0:span:9-10"]')!;
+    // The guard's text block (its first row is hidden) and the callout's
+    // note fold with their rows.
+    await tick();
+    const guardText = document.querySelector<HTMLElement>('.span-text[data-span-id="H0_0:span:9-10"]')!;
     const calloutNote = document.querySelector<HTMLElement>('.annot-note[data-span-id="H0_0:span:10-10"]')!;
-    expect(guardLabel.style.display).toBe("none");
+    expect(guardText.style.display).toBe("none");
     expect(calloutNote.style.display).toBe("none");
 
     // The summary lands: the line changes, the tree stays.
@@ -2046,13 +2097,14 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
     expect(box.querySelector(".fold-summary")!.textContent).toBe("method Foo.beta — beta guards then acts");
     expect(labelRows(box.querySelector(".label-tree")!)).toEqual(["H0_0:span:9-10: beta's guard", "H0_0:span:10-10: callout"]);
 
-    // Clicking a span's label opens the fold and its bracket is on screen.
+    // Clicking a span's label opens the fold; its bar and text are back.
     clickEl(tree.querySelector('.label-row[data-id="H0_0:span:9-10"]')!);
+    await tick();
     expect(chevronOnLine(8).classList.contains("open")).toBe(true);
     expect([9, 10, 11].map((n) => rowOfLine(n).style.display)).toEqual(["", "", ""]);
-    expect(guardLabel.style.display).toBe("");
+    expect(guardText.style.display).toBe("");
     expect(calloutNote.style.display).toBe("");
-    expect(rowOfLine(9).querySelector('.span-bracket[data-span-id="H0_0:span:9-10"]')).not.toBeNull();
+    expect(rowOfLine(9).querySelector('.span-mark[data-span-id="H0_0:span:9-10"]')).not.toBeNull();
     expect(box.closest(".row-annotation")!.style.display).toBe("none");
   });
 
@@ -2092,14 +2144,16 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
     queueFetchResponse({ status: 500, body: {} });
 
     // `alpha` is exactly its span (5..7): collapsing it hides 6-7, but the
-    // span's bracket cap and label stay on line 5, so the tree has nothing
-    // to add and the box is the summary line alone.
+    // span's bar top and text stay on line 5, so the tree has nothing to
+    // add and the box is the summary line alone.
     clickEl(chevronOnLine(5));
+    await tick();
     expect([6, 7].map((n) => rowOfLine(n).style.display)).toEqual(["none", "none"]);
-    const label = document.querySelector<HTMLElement>('.annot-span[data-span-id="H0_0:span:5-7"]')!;
-    expect(label.style.display).toBe("");
+    const text = document.querySelector<HTMLElement>('.span-text[data-span-id="H0_0:span:5-7"]')!;
+    expect(text.style.display).toBe("");
+    expect(text.style.gridRow).toBe("2 / 3");
     expect(foldBoxOf(5).querySelector(".label-tree")).toBeNull();
-    expect(foldBoxOf(5).querySelector(".fold-summary")!.textContent).toBe("method Foo.alpha — summarising…");
+    expect(foldBoxOf(5).querySelector(".fold-summary")!.textContent).toContain("method Foo.alpha — ");
   });
 
   test("a region with nothing labelled inside it shows its summary line alone", async () => {
@@ -2563,7 +2617,12 @@ describe("one-sided files", () => {
     const diff = document.querySelector("#app .file .diff") as HTMLElement;
     expect(diff.className).toBe("diff");
     expect(getComputedStyle(diff.querySelector(".half-old") as HTMLElement).display).toBe("grid");
-    expect(getComputedStyle(diff).gridTemplateColumns).toBe("minmax(0, 1fr) minmax(0, 1fr)");
+    // Two tracks, each half of the width less/plus its share of the span
+    // gutter (zero here — the file has no span).
+    const tracks = getComputedStyle(diff).gridTemplateColumns.split(/\)\s+minmax/);
+    expect(tracks).toHaveLength(2);
+    expect(tracks[0]).toContain("50% - ");
+    expect(tracks[1]).toContain("50% + ");
   });
 
   test("a comment on an added file's line anchors on the new side", async () => {
