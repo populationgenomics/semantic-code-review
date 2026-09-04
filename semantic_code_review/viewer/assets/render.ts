@@ -597,6 +597,7 @@ function _renderFile(f: FileBlock, scope: PaneScope): HTMLElement | null {
     } else {
       const overview = _renderFileOverview(f);
       if (overview) body.appendChild(overview);
+      body.style.setProperty("--bracket-cols", String(_bracketColumns(f)));
       _renderFileBody(body, f, liveIds, scope);
       div.appendChild(body);
       // Run a file-level fold pass once the body is assembled.
@@ -924,8 +925,8 @@ function _renderHunk(h: HunkBlock, f: FileBlock, scope: PaneScope): HTMLElement 
     if (h.refs && h.refs.length) {
       div.appendChild(_renderRefs(h.refs));
     }
-    // Single-line spans also attach inline to their row when the code is
-    // shown: _attachSpanNotes() in _renderHunkDiff.
+    // Spans attach to their rows when the code is shown: _attachSpans()
+    // in _renderHunkDiff.
   }
   return div;
 }
@@ -1161,7 +1162,7 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLE
   const rows = h.rows || [];
   const marks = _blockMarks(rows);
   const { diff, oldEls, newEls } = _renderDiffRows(file, rows, marks);
-  _attachSpanNotes(oldEls, newEls, rows, h.spans || [], h.id, file.path);
+  _attachSpans(oldEls, newEls, rows, h.spans || [], h.id, file.path);
   // Record this hunk's rows so folds.ts can build a unified row stream
   // across the hunk and adjacent expanded context.
   FileRows.record(diff, { rows, oldEls, newEls });
@@ -1169,38 +1170,131 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLE
   return diff;
 }
 
-/** With the code shown, a single-line span is a note on its row — the
- *  same span the label tree showed as a row. Multi-line spans have no
- *  inline form at this level. */
-function _attachSpanNotes(
+/** Spans on visible code — the one owner of the form a span takes when
+ *  its rows are on screen. A single-line span is a note on its row. A
+ *  multi-line span is a bracket in the gutter over the rows it covers,
+ *  indented one column per level of nesting, with its intent as a label
+ *  hanging from the first row; a span whose rows are not in the hunk is
+ *  warned about and left out. Both hang off the rows themselves, so they
+ *  survive the hunk's `.diff` being reused across repaints and rows
+ *  arriving above or below it from a chip. */
+function _attachSpans(
   rowElsOld: HTMLElement[], rowElsNew: HTMLElement[],
   rows: RowBlock[], spans: AnnotationSpan[],
   hunkId: string, filePath: string,
 ): void {
-  const notes = spans.filter((s) => s.start === s.end);
-  if (!notes.length || !rows.length) return;
-  const byNewLine = new Map<number, number>();
-  for (let i = 0; i < rows.length; i++) {
-    const ln = rows[i].new_line;
-    if (ln !== null && ln !== undefined) byNewLine.set(ln, i);
+  if (!spans.length || !rows.length) return;
+  const depths = _bracketDepths(spans);
+  for (const span of spans) {
+    const extent = _rowExtent(rows, (r) => r.new_line != null && span.start <= r.new_line && r.new_line <= span.end);
+    if (extent === null) {
+      console.warn(`${hunkId}: span ${span.id} covers no row of the hunk; not shown`);
+      continue;
+    }
+    if (span.start === span.end) _attachSpanNote(span, extent.first, rowElsOld, rowElsNew, hunkId, filePath);
+    else _attachSpanBracket(span, extent, depths.get(span.id) ?? 0, rowElsOld, rowElsNew, filePath);
   }
-  for (const note of notes) {
-    const idx = byNewLine.get(note.start);
-    if (idx === undefined) continue;
-    // If this span has already been promoted to a local comment, skip
-    // rendering it — the comment now stands in its place. Keeps a
-    // re-augment from resurrecting an observation the reviewer has
-    // already turned into a comment. A comment store written before
-    // spans recorded the note under its `line_note` id; honour that too.
-    if (Comments.isPromoted(note.id) || Comments.isPromoted(`${hunkId}:line_note:${note.start}`)) continue;
-    Annotations.attach({
-      anchor: rowElsNew[idx],
-      shadowAnchor: rowElsOld[idx],
-      variant: "note",
-      content: _buildSpanNoteContent(note, filePath, rowElsNew[idx]),
-      onInsert: (el) => { el.dataset.spanId = note.id; },
-    });
+}
+
+/** Nesting depth of each multi-line span by line containment — 0 for
+ *  an outermost span, one more per enclosing multi-line span. Two spans
+ *  over one range nest, so both brackets stay visible. Single-line spans
+ *  are notes, not brackets, and take no column. */
+function _bracketDepths(spans: AnnotationSpan[]): Map<string, number> {
+  const multi = spans.filter((s) => s.start !== s.end)
+    .sort((a, b) => a.start - b.start || b.end - a.end);
+  const depths = new Map<string, number>();
+  const open: AnnotationSpan[] = [];
+  for (const s of multi) {
+    while (open.length && !(open[open.length - 1].start <= s.start && s.end <= open[open.length - 1].end)) open.pop();
+    depths.set(s.id, open.length);
+    open.push(s);
   }
+  return depths;
+}
+
+/** The gutter columns a file's brackets need: its deepest nesting plus
+ *  one, or 0 when no hunk has a multi-line span. Set on the file body so
+ *  every row of the file — hunks and disclosed context alike — pays the
+ *  same gutter and indentation reads consistently across them. */
+function _bracketColumns(f: FileBlock): number {
+  let cols = 0;
+  for (const h of f.hunks) {
+    for (const d of _bracketDepths(h.spans || []).values()) cols = Math.max(cols, d + 1);
+  }
+  return cols;
+}
+
+function _attachSpanNote(
+  note: AnnotationSpan, idx: number,
+  rowElsOld: HTMLElement[], rowElsNew: HTMLElement[],
+  hunkId: string, filePath: string,
+): void {
+  // If this span has already been promoted to a local comment, skip
+  // rendering it — the comment now stands in its place. Keeps a
+  // re-augment from resurrecting an observation the reviewer has
+  // already turned into a comment. A comment store written before
+  // spans recorded the note under its `line_note` id; honour that too.
+  if (Comments.isPromoted(note.id) || Comments.isPromoted(`${hunkId}:line_note:${note.start}`)) return;
+  Annotations.attach({
+    anchor: rowElsNew[idx],
+    shadowAnchor: rowElsOld[idx],
+    variant: "note",
+    content: _buildSpanNoteContent(note, filePath, rowElsNew[idx]),
+    onInsert: (el) => { el.dataset.spanId = note.id; },
+  });
+}
+
+/** One bracket segment: a vertical rule in the gutter of a row's
+ *  post-image cell, capped at the span's first and last rows. */
+function _bracketSegment(spanId: string, depth: number, pos: "top" | "mid" | "bottom"): HTMLElement {
+  const seg = _el("span", `span-bracket span-bracket-${pos}`);
+  seg.dataset.spanId = spanId;
+  seg.style.setProperty("--depth", String(depth));
+  seg.setAttribute("aria-hidden", "true");
+  return seg;
+}
+
+/** A multi-line span's bracket over rows `first..last` of the new half
+ *  (a deletion row interleaved in the range is bracketed too, so the
+ *  rule is continuous) and its label: one line hanging from the first
+ *  row, truncated with the full intent on hover, carrying the bracket
+ *  through so the rule does not break at the label. */
+function _attachSpanBracket(
+  span: AnnotationSpan, extent: { first: number; last: number }, depth: number,
+  rowElsOld: HTMLElement[], rowElsNew: HTMLElement[], filePath: string,
+): void {
+  for (let i = extent.first; i <= extent.last; i++) {
+    const pos = i === extent.first ? "top" : i === extent.last ? "bottom" : "mid";
+    rowElsNew[i].children[1].appendChild(_bracketSegment(span.id, depth, pos));
+  }
+  Annotations.attach({
+    anchor: rowElsNew[extent.first],
+    shadowAnchor: rowElsOld[extent.first],
+    variant: "span",
+    content: _buildSpanLabelContent(span, filePath),
+    layout: { wrap: false },
+    onInsert: (el) => {
+      el.dataset.spanId = span.id;
+      el.style.setProperty("--depth", String(depth));
+      const cell = el.querySelector(".cell-annotation");
+      if (cell) cell.appendChild(_bracketSegment(span.id, depth, "mid"));
+      const box = el.querySelector<HTMLElement>(".annot-box");
+      if (box) box.title = span.intent;
+    },
+  });
+}
+
+/** A bracket's label: the span's range and intent, then its smells as
+ *  promotable pills anchored at the span's first line. */
+function _buildSpanLabelContent(span: AnnotationSpan, filePath: string): HTMLElement {
+  const wrap = _el("span", "span-label");
+  wrap.appendChild(_el("span", "span-label-range", `+${span.start}..+${span.end}`));
+  wrap.appendChild(_el("span", span.intent ? "span-label-text" : "span-label-text empty", span.intent || "(no intent)"));
+  for (const sm of span.smells || []) wrap.appendChild(_smellPill(sm, {
+    smellId: `${span.id}:smell:${sm.tag}`, file: filePath, side: "new", line: span.start,
+  }));
+  return wrap;
 }
 
 /** Compose a single-line span's annotation body: the LLM's text plus a

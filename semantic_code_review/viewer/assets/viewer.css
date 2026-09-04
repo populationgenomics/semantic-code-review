@@ -799,7 +799,9 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
    * `position: relative` makes the chevron's absolute positioning
    * anchor here rather than on the scroll container. */
   position: relative;
-  padding-left: 20px;
+  /* The gutter widens by one 6px column per level of span-bracket
+   * nesting the file has (`--bracket-cols`, set on `.file-body`). */
+  padding-left: calc(20px + var(--bracket-cols, 0) * 6px);
 }
 .diff .cell-content code { background: transparent !important; padding: 0 !important; }
 .diff .cell-content.empty { background: transparent; min-width: 0; }
@@ -863,6 +865,42 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   outline: 1px dotted var(--accent);
   outline-offset: 1px;
 }
+
+/* Span brackets ------------------------------------------------------------ */
+/* A multi-line annotation span, with the code visible: a rule in the
+ * gutter to the right of the chevron, one column (6px) further right per
+ * level of nesting (`--depth`), capped at the span's first and last rows.
+ * The label row hanging from the first row carries a segment too, so the
+ * rule runs unbroken past it. */
+.diff .span-bracket {
+  position: absolute;
+  top: 0; bottom: 0;
+  left: calc(18px + var(--depth, 0) * 6px);
+  width: 4px;
+  border-left: 2px solid var(--accent);
+  opacity: 0.75;
+  pointer-events: none;
+}
+.diff .span-bracket-top    { border-top: 2px solid var(--accent); }
+.diff .span-bracket-bottom { border-bottom: 2px solid var(--accent); }
+/* The label sits in the annotation row, which spans the half's two
+ * columns; its bracket segment is offset past the line-number track. */
+.diff .annot-span .cell-annotation {
+  position: relative;
+  padding-left: calc(3.5em + 26px + var(--depth, 0) * 6px);
+}
+.diff .annot-span .span-bracket { left: calc(3.5em + 18px + var(--depth, 0) * 6px); }
+.diff .annot-span .annot-arrow { display: none; }
+.diff .annot-span .annot-box {
+  max-height: none;
+  padding: 1px 8px;
+  font-size: 12px;
+  display: inline-flex; gap: 8px; align-items: baseline;
+}
+.diff .annot-span .span-label { display: inline-flex; gap: 8px; align-items: baseline; min-width: 0; }
+.span-label-range { font-family: var(--mono); font-style: normal; font-size: 11px; color: var(--fg-dim); flex-shrink: 0; }
+.span-label-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.span-label-text.empty { color: var(--fg-dim); }
 
 /* Annotation rows — emacs-flycheck-style boxed callouts linked to a line
  * in the diff via an L-shaped arrow. The arrow emerges from the first

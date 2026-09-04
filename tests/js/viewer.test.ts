@@ -1188,6 +1188,125 @@ describe("streaming events", () => {
 });
 
 
+describe("span brackets: multi-line spans on visible code (ADR 0008)", () => {
+  type Row = Record<string, unknown>;
+  const span = (id: string, start: number, end: number, intent: string, smells: unknown[] = []): Row =>
+    ({ id, start, end, intent, smells, context: "", refs: [] });
+  const fold = (level: string): void =>
+    (document.querySelector(`.fold-slider button[data-fold="${level}"]`) as HTMLElement).click();
+
+  /** A nine-line file whose one hunk inserts lines 4..8, with a span over
+   *  4..7, one nested inside it over 5..6, and a callout on 8. */
+  function bracketFile(spans: Row[]): Row {
+    const rows = [4, 5, 6, 7, 8].map((n) =>
+      ({ kind: "ins", old_line: null, new_line: n, old_text: "", new_text: `l${n}` }));
+    return {
+      id: "F0", path: "a.py", status: "modified", language: "python",
+      adds: 5, dels: 0, summary: "", head_line_count: 9,
+      symbols: { added: [], modified: [], removed: [] },
+      fold_regions: [],
+      hunks: [makeHunkBlock("H0_0", "adds five lines", {
+        old_start: 3, old_count: 0, new_start: 4, new_count: 5, rows, spans,
+      })],
+    };
+  }
+  const NESTED = [
+    span("H0_0:span:4-7", 4, 7, "the outer edit"),
+    span("H0_0:span:5-6", 5, 6, "the inner edit", [{ tag: "dead-code", note: "" }]),
+    span("H0_0:span:8-8", 8, 8, "a callout"),
+  ];
+
+  /** The post-image line numbers of the rows carrying a bracket segment
+   *  for `spanId`, and the caps those segments have. */
+  function bracketRows(spanId: string): { lines: number[]; caps: string[] } {
+    const lines: number[] = [];
+    const caps: string[] = [];
+    for (const row of document.querySelectorAll(".half-new .row:not(.row-annotation)")) {
+      const seg = row.querySelector<HTMLElement>(`.span-bracket[data-span-id="${spanId}"]`);
+      if (!seg) continue;
+      lines.push(Number(row.querySelector(".cell-lineno")!.textContent));
+      if (seg.classList.contains("span-bracket-top")) caps.push("top");
+      if (seg.classList.contains("span-bracket-bottom")) caps.push("bottom");
+    }
+    return { lines, caps };
+  }
+  const labelOf = (spanId: string): HTMLElement | null =>
+    document.querySelector<HTMLElement>(`.row-annotation.annot-span[data-span-id="${spanId}"]`);
+
+  test("a multi-line span is a bracket over exactly its rows, with its label hanging from the first", async () => {
+    await bootViewer(makeData({ pending: false, files: [bracketFile(NESTED)], symbols: [] }));
+    fold("off");
+
+    expect(bracketRows("H0_0:span:4-7")).toEqual({ lines: [4, 5, 6, 7], caps: ["top", "bottom"] });
+    const label = labelOf("H0_0:span:4-7")!;
+    expect(label).not.toBeNull();
+    // Hangs from line 4: it is the row right after it in the new half.
+    const line4 = Array.from(document.querySelectorAll<HTMLElement>(".half-new .row:not(.row-annotation)"))
+      .find((r) => r.querySelector(".cell-lineno")!.textContent === "4")!;
+    expect(line4.nextElementSibling).toBe(label);
+    expect(label.querySelector(".span-label-range")!.textContent).toBe("+4..+7");
+    expect(label.querySelector(".span-label-text")!.textContent).toBe("the outer edit");
+    // The full intent is on hover, so a truncated label still reads.
+    expect(label.querySelector<HTMLElement>(".annot-box")!.title).toBe("the outer edit");
+    // The label row carries the bracket through, so the rule is unbroken.
+    expect(label.querySelector('.span-bracket[data-span-id="H0_0:span:4-7"]')).not.toBeNull();
+    // The old half mirrors the label's height with a placeholder.
+    expect(document.querySelectorAll(".half-old .row-placeholder").length).toBe(3);
+  });
+
+  test("nested spans nest their brackets, one gutter column deeper per level", async () => {
+    await bootViewer(makeData({ pending: false, files: [bracketFile(NESTED)], symbols: [] }));
+    fold("off");
+
+    expect(bracketRows("H0_0:span:5-6")).toEqual({ lines: [5, 6], caps: ["top", "bottom"] });
+    const depth = (spanId: string): string =>
+      document.querySelector<HTMLElement>(`.span-bracket[data-span-id="${spanId}"]`)!.style.getPropertyValue("--depth");
+    expect(depth("H0_0:span:4-7")).toBe("0");
+    expect(depth("H0_0:span:5-6")).toBe("1");
+    expect(labelOf("H0_0:span:5-6")!.style.getPropertyValue("--depth")).toBe("1");
+    // The file's gutter makes room for both columns.
+    expect(document.querySelector<HTMLElement>(".file-body")!.style.getPropertyValue("--bracket-cols")).toBe("2");
+    // The inner span's smell rides on its label.
+    expect(labelOf("H0_0:span:5-6")!.querySelector(".smell")!.textContent).toBe("dead-code");
+
+    // The callout is still a row note, and takes no bracket.
+    expect(document.querySelector('.row-annotation.annot-note[data-span-id="H0_0:span:8-8"]')).not.toBeNull();
+    expect(bracketRows("H0_0:span:8-8").lines).toEqual([]);
+    expect(labelOf("H0_0:span:8-8")).toBeNull();
+  });
+
+  test("a file with no multi-line span pays no gutter", async () => {
+    await bootViewer(makeData({ pending: false, files: [bracketFile([span("H0_0:span:8-8", 8, 8, "a callout")])], symbols: [] }));
+    fold("off");
+    expect(document.querySelector<HTMLElement>(".file-body")!.style.getPropertyValue("--bracket-cols")).toBe("0");
+    expect(document.querySelectorAll(".span-bracket").length).toBe(0);
+  });
+
+  test("the bracket survives a chip disclosing rows above it", async () => {
+    await bootViewer(makeData({ pending: false, files: [bracketFile(NESTED)], symbols: [] }));
+    fold("off");
+    const before = bracketRows("H0_0:span:4-7");
+
+    const chip = document.querySelector(".gap-chip") as HTMLElement;   // "expand 3 lines above"
+    expect(chip.textContent).toContain("above");
+    queueFileText(0, "a.py", null, nineLines);
+    chip.click();
+    await tick();
+    expect(document.querySelector(".gap-expansion")).not.toBeNull();
+
+    // Three rows now precede the hunk; the bracket is still on lines 4..7
+    // and its label still hangs from line 4. The disclosed rows carry
+    // no segment.
+    expect(bracketRows("H0_0:span:4-7")).toEqual(before);
+    expect(document.querySelectorAll(".gap-expansion .span-bracket").length).toBe(0);
+    const line4 = Array.from(document.querySelectorAll<HTMLElement>(".half-new .row:not(.row-annotation)"))
+      .find((r) => r.querySelector(".cell-lineno")!.textContent === "4")!;
+    expect(line4.nextElementSibling).toBe(labelOf("H0_0:span:4-7"));
+    expect(document.querySelectorAll(".row-annotation.annot-span").length).toBe(2);
+  });
+});
+
+
 describe("LLM observation → comment promotion", () => {
   test("Add as comment opens the editor pre-filled and saves with derived_from", async () => {
     window.location.hash = "#fold=off";
