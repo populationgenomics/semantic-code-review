@@ -1140,9 +1140,9 @@ function _renderLabelNode(node: LabelNode, f: FileBlock, rows: RowBlock[], pick:
 
 /** The labels a collapsed region shows (the `FoldLabels` folds.ts asks
  *  for): the tree over the rows the fold hid. Clicking one opens the fold
- *  and lands on what it names — a span's text or note, a definition's
- *  first row — found within this pane's copy of the file,
- *  so the explainer panel never scrolls the diff pane. */
+ *  and lands on what it names — a span's text, a definition's first row
+ *  — found within this pane's copy of the file, so the explainer panel
+ *  never scrolls the diff pane. */
 function _foldLabels(f: FileBlock): FoldLabels {
   return (headerRow, bodyRows, open) => {
     const scope: LabelScope = { visibleRow: headerRow };
@@ -1151,7 +1151,7 @@ function _foldLabels(f: FileBlock): FoldLabels {
       open();
       const pane = tree?.closest(".file") ?? document;
       const target = node.kind === "span"
-        ? pane.querySelector<HTMLElement>(`.span-text[data-span-id="${_cssEscape(node.span.id)}"], .row-annotation[data-span-id="${_cssEscape(node.span.id)}"]`)
+        ? pane.querySelector<HTMLElement>(`.span-text[data-span-id="${_cssEscape(node.span.id)}"]`)
         : (bodyRows[node.first].newEl.children[1].classList.contains("empty")
           ? bodyRows[node.first].oldEl : bodyRows[node.first].newEl);
       if (target) target.scrollIntoView({ block: "nearest" });
@@ -1174,7 +1174,7 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLE
   const rows = h.rows || [];
   const marks = _blockMarks(rows);
   const { diff, oldEls, newEls } = _renderDiffRows(file, rows, marks);
-  _attachSpans(oldEls, newEls, rows, h.spans || [], h.id, file.path);
+  _attachSpans(newEls, rows, h.spans || [], h.id, file.path);
   // Record this hunk's rows so folds.ts can build a unified row stream
   // across the hunk and adjacent expanded context.
   FileRows.record(diff, { rows, oldEls, newEls });
@@ -1188,9 +1188,10 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLE
 // the first three sticky so they read as a fixed centre gutter between the
 // halves while the code scrolls beneath. Every row carries an empty text
 // and bars cell for the gutter's background; a span puts its marks in
-// them. A multi-line span is a bar over its rows, one column further right
-// per level of nesting, and its intent as a text block beside them; a
-// single-line span is a dot on its row and the note beneath it.
+// them. Every span takes one form: a mark in the bars column — a bar over
+// its rows, one column further right per level of nesting, or a dot on a
+// span of one line — and its text block in the text column, starting on
+// its first row. Nothing of a span lives in the code column.
 //
 // A text block is a zero-height grid item on its span's first row, so it
 // takes no part in the grid's row sizing: its body hangs down the strip
@@ -1213,8 +1214,8 @@ interface PlacedSpan {
   depth: number;
 }
 
-/** A multi-line span's text block: the grid item, the body whose height
- *  is the block's, and the span's first row. */
+/** A span's text block: the grid item, the body whose height is the
+ *  block's, and the span's first row. */
 interface SpanTextBlock {
   el: HTMLElement;
   body: HTMLElement;
@@ -1226,7 +1227,7 @@ interface SpanTextBlock {
  *  row, a fold's label row — arrive after the bar is drawn, so the
  *  placement pass gives them their segment. */
 interface SpanBar {
-  spanId: string;
+  span: AnnotationSpan;
   first: HTMLElement;
   last: HTMLElement;
   depth: number;
@@ -1254,13 +1255,16 @@ const _SPAN_TEXT_WIDTH = "26ch";
 const _SPAN_BAR_COLUMN_PX = 6;
 
 /** Spans on visible code — the one owner of the form a span takes when
- *  its rows are on screen. A span whose rows are not in the hunk is
- *  warned about and left out. Everything hangs off the rows themselves,
- *  so it survives the hunk's `.diff` being reused across repaints and
- *  rows arriving above or below it from a chip. */
+ *  its rows are on screen: its marks in the bars column (a bar over its
+ *  rows, or a dot for a span of one line) and its text block in the text
+ *  column, whatever its length. A span whose rows are not in the hunk is
+ *  warned about and left out; one the reviewer has turned into a comment
+ *  is left out too — the comment stands in its place. Everything hangs
+ *  off the rows themselves, so it survives the hunk's `.diff` being
+ *  reused across repaints and rows arriving above or below it from a
+ *  chip. */
 function _attachSpans(
-  rowElsOld: HTMLElement[], rowElsNew: HTMLElement[],
-  rows: RowBlock[], spans: AnnotationSpan[],
+  rowElsNew: HTMLElement[], rows: RowBlock[], spans: AnnotationSpan[],
   hunkId: string, filePath: string,
 ): void {
   if (!spans.length || !rows.length) return;
@@ -1271,16 +1275,16 @@ function _attachSpans(
   const blocks: SpanTextBlock[] = [];
   const bars: SpanBar[] = [];
   for (const ps of placed) {
-    if (ps.span.start === ps.span.end) {
-      _gutterBars(rowElsNew[ps.first]).appendChild(_spanMark(ps.span.id, ps.depth, "dot"));
-      _attachSpanNote(ps.span, ps.first, rowElsOld, rowElsNew, hunkId, filePath);
-      continue;
+    if (_spanPromoted(ps.span, hunkId)) continue;
+    if (ps.first === ps.last) {
+      _gutterBars(rowElsNew[ps.first]).appendChild(_spanMark(ps.span, ps.depth, "dot"));
+    } else {
+      for (let i = ps.first; i <= ps.last; i++) {
+        const pos = i === ps.first ? "bar-top" : i === ps.last ? "bar-bottom" : "bar";
+        _gutterBars(rowElsNew[i]).appendChild(_spanMark(ps.span, ps.depth, pos));
+      }
+      bars.push({ span: ps.span, first: rowElsNew[ps.first], last: rowElsNew[ps.last], depth: ps.depth });
     }
-    for (let i = ps.first; i <= ps.last; i++) {
-      const pos = i === ps.first ? "bar-top" : i === ps.last ? "bar-bottom" : "bar";
-      _gutterBars(rowElsNew[i]).appendChild(_spanMark(ps.span.id, ps.depth, pos));
-    }
-    bars.push({ spanId: ps.span.id, first: rowElsNew[ps.first], last: rowElsNew[ps.last], depth: ps.depth });
     const el = _el("div", "span-text");
     el.dataset.spanId = ps.span.id;
     const body = _spanText(ps.span, filePath);
@@ -1343,12 +1347,21 @@ function _gutterBars(rowEl: HTMLElement): HTMLElement {
 }
 
 /** A bar segment or dot in a row's bars cell, at its depth's column. */
-function _spanMark(spanId: string, depth: number, kind: "bar" | "bar-top" | "bar-bottom" | "dot"): HTMLElement {
+function _spanMark(span: AnnotationSpan, depth: number, kind: "bar" | "bar-top" | "bar-bottom" | "dot"): HTMLElement {
   const mark = _el("span", `span-mark span-${kind}`);
-  mark.dataset.spanId = spanId;
+  mark.dataset.spanId = span.id;
   mark.style.setProperty("--depth", String(depth));
   mark.setAttribute("aria-hidden", "true");
   return mark;
+}
+
+/** Whether the reviewer has already turned this span into a comment: a
+ *  local comment derived from its id, or — for a span of one line — from
+ *  the `line_note` id a comment store written before spans recorded the
+ *  same observation under. */
+function _spanPromoted(span: AnnotationSpan, hunkId: string): boolean {
+  if (Comments.isPromoted(span.id)) return true;
+  return span.start === span.end && Comments.isPromoted(`${hunkId}:line_note:${span.start}`);
 }
 
 /** One span's text: its smells as promotable pills on the block's first
@@ -1410,6 +1423,11 @@ function _observeHalf(half: HTMLElement, gutter: SpanGutter): void {
 function _layoutSpanTexts(half: HTMLElement): void {
   const gutter = _SPAN_GUTTERS.get(half);
   if (!gutter) return;
+  // A span promoted to a comment after the attach has had its block
+  // removed from the half (comments.ts's sweep); it places nothing from
+  // then on. Not `isConnected`: the first pass runs before the hunk's
+  // `.diff` is in the document.
+  gutter.blocks = gutter.blocks.filter((block) => block.el.parentElement === half);
   // Release the last pass's stretches: the rows measure at their natural
   // heights and the pass recomputes every one.
   for (const row of gutter.stretched) {
@@ -1511,13 +1529,13 @@ function _barNonCodeRows(bars: SpanBar[], rows: HTMLElement[]): void {
     for (const bar of bars) if (bar.first === row) open.add(bar);
     const code = !row.classList.contains("row-annotation") && !row.classList.contains("row-placeholder");
     if (!code && row.style.display !== "none") {
-      const key = Array.from(open, (b) => b.spanId).join("\n");
+      const key = Array.from(open, (b) => b.span.id).join("\n");
       let cell = row.querySelector<HTMLElement>(":scope > .cell-gutter-bars");
       if (cell && cell.dataset.spans !== key) { cell.remove(); cell = null; }
       if (!cell && open.size) {
         cell = _el("span", "cell-gutter-bars");
         cell.dataset.spans = key;
-        for (const bar of open) cell.appendChild(_spanMark(bar.spanId, bar.depth, "bar"));
+        for (const bar of open) cell.appendChild(_spanMark(bar.span, bar.depth, "bar"));
         row.appendChild(cell);
       }
     }
@@ -1530,59 +1548,6 @@ function _pairOf(row: HTMLElement): HTMLElement {
   const pair = (row as { _scrPair?: HTMLElement })._scrPair;
   if (!pair) throw new Error("code row has no paired row");
   return pair;
-}
-
-function _attachSpanNote(
-  note: AnnotationSpan, idx: number,
-  rowElsOld: HTMLElement[], rowElsNew: HTMLElement[],
-  hunkId: string, filePath: string,
-): void {
-  // If this span has already been promoted to a local comment, skip
-  // rendering it — the comment now stands in its place. Keeps a
-  // re-augment from resurrecting an observation the reviewer has
-  // already turned into a comment. A comment store written before
-  // spans recorded the note under its `line_note` id; honour that too.
-  if (Comments.isPromoted(note.id) || Comments.isPromoted(`${hunkId}:line_note:${note.start}`)) return;
-  Annotations.attach({
-    anchor: rowElsNew[idx],
-    shadowAnchor: rowElsOld[idx],
-    variant: "note",
-    content: _buildSpanNoteContent(note, filePath, rowElsNew[idx]),
-    onInsert: (el) => { el.dataset.spanId = note.id; },
-  });
-}
-
-/** Compose a single-line span's annotation body: the LLM's text plus a
- *  small "Add as comment" affordance that hands the body to the comment
- *  editor pre-filled and anchored at the same row. */
-function _buildSpanNoteContent(
-  note: AnnotationSpan, filePath: string, rowEl: HTMLElement,
-): HTMLElement {
-  const wrap = document.createElement("div");
-  wrap.className = "line-note-body";
-  const text = document.createElement("div");
-  text.className = "line-note-text";
-  text.textContent = note.intent || "";
-  wrap.appendChild(text);
-
-  const actions = document.createElement("div");
-  actions.className = "line-note-actions";
-  const promote = document.createElement("button");
-  promote.className = "comment-btn comment-btn-promote";
-  promote.type = "button";
-  promote.textContent = "Add as comment";
-  promote.title = "Open the comment editor pre-filled with this observation";
-  promote.addEventListener("click", (e) => {
-    e.stopPropagation();
-    Comments.openPromotionEditor({
-      rowEl, side: "new", line: note.start,
-      file: filePath, body: note.intent || "",
-      derivedFrom: note.id,
-    });
-  });
-  actions.appendChild(promote);
-  wrap.appendChild(actions);
-  return wrap;
 }
 
 function _renderRow(
