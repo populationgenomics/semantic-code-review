@@ -1008,7 +1008,7 @@ type LabelNode =
 /** What the tree is being built for: the fold's chevron row, which stays
  *  visible above the rows it labels. A definition covering that row
  *  encloses the fold rather than sitting inside it; a span covering it
- *  has its bracket and label on screen already. Neither is a hidden
+ *  has its bar and text on screen already. Neither is a hidden
  *  label. */
 interface LabelScope {
   visibleRow: RowBlock;
@@ -1048,7 +1048,7 @@ function _touchedDefinitions(f: FileBlock, rows: RowBlock[], scope: LabelScope):
  *  spans of one extent are siblings (two notes on one line are two
  *  observations). A span is drawn from whichever hunk carries it; one
  *  with no row here is simply elsewhere, and one still covering the
- *  visible line has its bracket and label on screen already. */
+ *  visible line has its bar and text on screen already. */
 function _labelTree(f: FileBlock, rows: RowBlock[], scope: LabelScope): LabelNode[] {
   const nodes: LabelNode[] = _touchedDefinitions(f, rows, scope);
   for (const h of f.hunks) {
