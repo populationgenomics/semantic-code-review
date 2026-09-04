@@ -1247,6 +1247,24 @@ describe("the centre gutter: spans on visible code (ADR 0008)", () => {
     expect(gridRow(textOf("H0_0:span:6-7")!)).toBe("5 / 7");
   });
 
+  test("a row a text block stretched gives its old-half pair the same height", async () => {
+    await bootViewer(makeData({ pending: false, files: [gutterFile(NESTED)], symbols: [] }));
+    fold("code");
+    // jsdom lays nothing out: stand in for the grid stretching line 4's
+    // row to fit a long rationale, then let the placement pass re-run.
+    const row4 = rowOfLine(4);
+    row4.getBoundingClientRect = () => ({ height: 108 } as DOMRect);
+    row4.style.setProperty("--poke", "1");
+    await tick();
+    const old4 = document.querySelector<HTMLElement>(".half-old .row:not(.row-annotation):not(.row-placeholder)")!;
+    expect(old4.style.minHeight).toBe("108px");
+    // Hiding the block's first row hides the block; its rows are released.
+    row4.style.display = "none";
+    await tick();
+    expect(textOf("H0_0:span:4-7")!.style.display).toBe("none");
+    expect(old4.style.minHeight).toBe("");
+  });
+
   test("a span whose rows its child takes entirely reads above the child's text", async () => {
     await bootViewer(makeData({ pending: false, files: [gutterFile([
       span("H0_0:span:4-7", 4, 7, "the whole thing"),
