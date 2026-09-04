@@ -620,7 +620,7 @@ function _refreshForAnchor(anchorRowEl: HTMLElement, anchor: Anchor): void {
  *  source observation visibly transitions into the comment.
  *
  *  Two shapes today: a span is its text block (`.span-text`) and marks
- *  (`.span-mark`) in the centre gutter, both carrying `data-span-id`;
+ *  (`.span-mark`) in the span gutter, both carrying `data-span-id`;
  *  smells render as inline `.smell` pills with `data-smell-id`. All are
  *  plain elements; the gutter's placement pass notices a removed block
  *  on its next run. */

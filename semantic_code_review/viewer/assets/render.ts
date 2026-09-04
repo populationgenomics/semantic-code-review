@@ -2,7 +2,7 @@
 //
 // Owns the layout pass that turns DATA into the on-page DOM: PR
 // panel, file blocks, hunk headers, the side-by-side row grid, gap
-// chips for unchanged context, the centre gutter's span bars and text, the label tree
+// chips for unchanged context, the span gutter's bars and text, the label tree
 // a collapsed fold shows, refs, smell pills. Carries the fold state too
 // (STATE.fold / overrides / renderedDiffs cache) because all of that
 // exists to feed the renderer, and binds the user inputs that drive it
@@ -71,7 +71,7 @@ let _smells: Record<string, SmellCatalogueEntry> = {};
 // it up in _renderContent; setSymbolSearch repaints cells already in the
 // DOM. See setSymbolSearch / sidebar's active-pill callback.
 let _symbolSearch: string | null = null;
-// Whether the centre gutter is folded to `lineno · bars` — its text column
+// Whether the span gutter is folded to its bars alone — its text column
 // zero wide, the rationales hidden, the bars and dots still showing where
 // every span is. A reading preference like the fold level, global across
 // files and panes, kept in localStorage rather than the hash: it is the
@@ -1190,16 +1190,17 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLE
   return diff;
 }
 
-// --- Spans on visible code: the centre gutter ------------------------------
+// --- Spans on visible code: the span gutter at the right edge --------------
 //
-// The right half's grid has four columns — line number, text, bars, code —
-// the first three sticky so they read as a fixed centre gutter between the
-// halves while the code scrolls beneath. Every row carries an empty text
-// and bars cell for the gutter's background; a span puts its marks in
-// them. Every span takes one form: a mark in the bars column — a bar over
-// its rows, one column further right per level of nesting, or a dot on a
-// span of one line — and its text block in the text column, starting on
-// its first row. Nothing of a span lives in the code column.
+// The right half's grid has four columns — line number, code, bars, text —
+// the last two sticky to the half's right edge so they read as a fixed
+// strip at the diff's right edge while the code scrolls beneath. Every row
+// carries an empty bars and text cell for the gutter's background; a span
+// puts its marks in them. Every span takes one form: a mark in the bars
+// column — a bar over its rows, one column nearer the code per level of
+// nesting, or a dot on a span of one line — and its text block in the text
+// column, starting on its first row. Nothing of a span lives in the code
+// column.
 //
 // A text block is a zero-height grid item on its span's first row, so it
 // takes no part in the grid's row sizing: its body hangs down the strip
@@ -1406,9 +1407,9 @@ function _onGutterClick(e: MouseEvent): void {
 /** What a gutter cell says on hover; the strip has no chrome of its own. */
 const _GUTTER_CELL_TITLE = "Click to fold or unfold the span gutter (g)";
 
-/** A row's bars cell (`children[3]`; `[2]` is its text cell). */
+/** A row's bars cell (`children[2]`; `[3]` is its text cell). */
 function _gutterBars(rowEl: HTMLElement): HTMLElement {
-  const cell = rowEl.children[3] as HTMLElement | undefined;
+  const cell = rowEl.children[2] as HTMLElement | undefined;
   if (!cell || !cell.classList.contains("cell-gutter-bars")) throw new Error("row has no gutter bars cell");
   return cell;
 }
@@ -1646,13 +1647,13 @@ function _renderRow(
   const newRow = _el("div", `row row-${row.kind}`);
   newRow.appendChild(_renderLineno(row.new_line, "new", hasNew));
   newRow.appendChild(_renderContent(row.new_text, "new", hasNew, file, newMarks));
-  // The centre gutter's cells, after the content so `children[1]` stays
-  // the content cell; the grid places them between number and code.
-  const text = _el("span", "cell-gutter-text");
+  // The span gutter's cells, in column order after the content cell:
+  // bars against the code, text at the half's right edge.
   const bars = _el("span", "cell-gutter-bars");
-  text.title = bars.title = _GUTTER_CELL_TITLE;
-  newRow.appendChild(text);
+  const text = _el("span", "cell-gutter-text");
+  bars.title = text.title = _GUTTER_CELL_TITLE;
   newRow.appendChild(bars);
+  newRow.appendChild(text);
   return { old: oldRow, new: newRow };
 }
 

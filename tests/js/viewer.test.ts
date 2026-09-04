@@ -1126,7 +1126,7 @@ describe("streaming events", () => {
 });
 
 
-describe("the centre gutter: spans on visible code (ADR 0008)", () => {
+describe("the span gutter at the right edge: spans on visible code (ADR 0008)", () => {
   type Row = Record<string, unknown>;
   const span = (id: string, start: number, end: number, intent: string, smells: unknown[] = []): Row =>
     ({ id, start, end, intent, smells, context: "", refs: [] });
@@ -1203,12 +1203,12 @@ describe("the centre gutter: spans on visible code (ADR 0008)", () => {
     await tick();
   }
 
-  test("every new-half row carries the gutter's cells after its content cell", async () => {
+  test("every new-half row carries the gutter's cells after its content cell, bars then text", async () => {
     await bootViewer(makeData({ pending: false, files: [gutterFile([])], symbols: [] }));
     fold("code");
     for (const row of newRows()) {
       expect(Array.from(row.children).map((c) => c.className.split(" ")[0]))
-        .toEqual(["cell", "cell", "cell-gutter-text", "cell-gutter-bars"]);
+        .toEqual(["cell", "cell", "cell-gutter-bars", "cell-gutter-text"]);
       expect(row.children[1].classList.contains("cell-content")).toBe(true);
     }
     // No span: the gutter is zero wide and no row is placed explicitly.

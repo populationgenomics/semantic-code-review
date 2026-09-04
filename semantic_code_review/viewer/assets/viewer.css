@@ -707,10 +707,11 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 /* --- Diff grid -----------------------------------------------------------
  * Two halves side by side, each its own horizontal-scroll container and
  * its own grid: the old half lineno + content, the new half lineno +
- * the centre gutter's two columns (span text, span bars) + content. The
- * gutter columns are sticky, so with the lineno they read as a fixed strip
- * between the halves while the code scrolls beneath. One shared scrollbar
- * per side, zero mid-hunk scrollbars.
+ * content + the span gutter's two columns (span bars, span text). The
+ * gutter columns are sticky to the half's right edge, as the lineno is to
+ * its left, so they read as a fixed strip at the diff's right edge while
+ * the code scrolls beneath. One shared scrollbar per side, zero mid-hunk
+ * scrollbars.
  *
  * Vertical alignment across halves: code rows use a uniform line-height
  * and an enforced min-height on every cell, so every code row on both
@@ -726,7 +727,8 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  *
  * The gutter's width (`--span-bars-w` + `--gutter-text-w`; 0 for a file
  * with no span) is split between the halves, so the new half is wider by
- * it and the code columns give up the same amount each. `--span-bars-w`
+ * it and the code columns give up the same amount each; the two code
+ * viewports stay equal with the strip at the far right. `--span-bars-w`
  * and `--span-text-w` are set per file on `.file-body`; `--gutter-text-w`
  * is the text column's live width — `--span-text-w` expanded, 0 when the
  * gutter is folded (`html.gutter-collapsed`, a global preference), so
@@ -776,36 +778,38 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 .diff-only-new .half-old,
 .diff-only-old .half-new { display: none; }
 
-/* The new half's grid: number · text · bars · code — the bars against the
- * code they mark, the rationale reading from the line number outward.
- * Cells are placed by column, not DOM order — the gutter cells come after
- * the content cell in the DOM so `children[1]` stays the content cell
- * everywhere. */
+/* The new half's grid: number · code · bars · text — the line numbers on
+ * the left of each half, the two code columns beside each other, the
+ * bars against the code they mark and the rationale outside them. The
+ * cells follow the same order in the DOM, so `children[1]` is the content
+ * cell in both halves. The strip's two cells are sticky to the half's
+ * right edge: `right` offsets, the mirror of the lineno's `left: 0`. */
 .diff .half-new {
-  grid-template-columns: 3.5em var(--gutter-text-w, 0px) var(--span-bars-w, 0px) minmax(max-content, 1fr);
+  grid-template-columns: 3.5em minmax(max-content, 1fr) var(--span-bars-w, 0px) var(--gutter-text-w, 0px);
 }
 .diff .cell-lineno { grid-column: 1; }
-.diff .half-old .cell-content { grid-column: 2; }
-.diff .half-new .cell-content { grid-column: 4; }
+.diff .cell-content { grid-column: 2; }
 .diff .cell-gutter-bars, .diff .cell-gutter-text, .diff .span-text {
   position: sticky;
   z-index: 1;
 }
 .diff .cell-gutter-bars, .diff .cell-gutter-text { background: var(--bg-alt); }
-.diff .cell-gutter-text, .diff .span-text { grid-column: 2; left: 3.5em; }
 .diff .cell-gutter-bars {
   grid-column: 3;
-  left: calc(3.5em + var(--gutter-text-w, 0px));
-  box-shadow: inset -1px 0 var(--border);
+  right: var(--gutter-text-w, 0px);
+  box-shadow: inset 1px 0 var(--border);
 }
+.diff .cell-gutter-text, .diff .span-text { grid-column: 4; right: 0; }
 /* A span's marks in the bars cell: a bar over its rows, a dot on a
- * single-line span's row, one column further right (nearer the code) per
- * level of nesting. The mark is its column's full 6px for the row's
- * height — the hover and click target; the stroke it draws is 2px. */
+ * single-line span's row. The outermost span's column is the one against
+ * the text, and each level of nesting is one column further left, nearer
+ * the code; the cell's spare 4px sit between the innermost bar and the
+ * code. The mark is its column's full 6px for the row's height — the
+ * hover and click target; the stroke it draws is 2px. */
 .diff .span-mark {
   position: absolute;
   top: 0; bottom: 0;
-  left: calc(var(--depth, 0) * 6px);
+  right: calc(var(--depth, 0) * 6px);
   width: 6px;
   cursor: pointer;
 }
@@ -841,9 +845,9 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   white-space: normal;
   overflow-wrap: anywhere;
 }
-/* The size lives on the body, not the block: the block's sticky `left`
- * is in the half's `em` and must match the cells'. The body paints the
- * strip's background itself, since it may lie over rows with none. */
+/* The size lives on the body, not the block: the block is a grid item of
+ * the half and sticks like the cells do. The body paints the strip's
+ * background itself, since it may lie over rows with none. */
 .diff .span-text-body {
   margin: 0;
   padding: 2px 6px;
@@ -854,23 +858,28 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   color: var(--fg-muted);
 }
 /* An annotation row (or the placeholder for an old-side one) is built
- * without gutter cells; a sticky pseudo-item keeps the strip's background
- * continuous through it, and the placement pass adds a bars cell to one
- * that lies inside a span so the span's bar runs through it too. The
- * placeholder is `visibility: hidden`; its bars cell shows regardless. */
+ * without gutter cells; a sticky pseudo-item over the strip's two columns
+ * keeps its background continuous through the row, and the placement pass
+ * adds a bars cell to one that lies inside a span so the span's bar runs
+ * through it too. The placeholder is `visibility: hidden`; its bars cell
+ * shows regardless. The annotation cell takes the number and code columns
+ * only, so its box wraps before the strip rather than under it (a row
+ * wider than the half still lets the box run under the strip, as it ran
+ * past the half's edge before; scrolling brings it out). */
 .diff .half-new .row-annotation::before,
 .diff .half-new .row-placeholder::before {
   content: "";
-  grid-column: 1 / 4;
+  grid-column: 3 / 5;
   grid-row: 1;
   position: sticky;
-  left: 0;
+  right: 0;
   z-index: 1;
   visibility: visible;
   background: var(--bg-alt);
-  box-shadow: inset -1px 0 var(--border);
+  box-shadow: inset 1px 0 var(--border);
 }
 .diff .half-new .row-placeholder > .cell-gutter-bars { visibility: visible; }
+.diff .half-new .cell-annotation { grid-column: 1 / 3; }
 .diff .span-text-body.chained { padding-top: 4px; border-top: 1px dashed var(--border); }
 .diff .span-text-intent.empty { color: var(--fg-dim); font-style: italic; }
 /* The pills lead the block, on its first line, so they sit beside the
@@ -890,9 +899,10 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   grid-template-columns: subgrid;
   grid-column: 1 / -1;
 }
-/* Every cell sits in the row's one track: the new half's cells are placed
- * by column out of DOM order, and auto-placement would otherwise wrap a
- * cell whose column precedes the previous one onto a second track. */
+/* Every cell sits in the row's one track: cells are placed by column, and
+ * the explicit row keeps auto-placement from opening a second track for a
+ * cell whose column precedes its DOM predecessor's — the bars cell the
+ * placement pass appends to an annotation row, for one. */
 .diff .row > * { grid-row: 1; }
 
 .diff .cell {
