@@ -71,6 +71,13 @@ let _smells: Record<string, SmellCatalogueEntry> = {};
 // it up in _renderContent; setSymbolSearch repaints cells already in the
 // DOM. See setSymbolSearch / sidebar's active-pill callback.
 let _symbolSearch: string | null = null;
+// Whether the centre gutter is folded to `lineno · bars` — its text column
+// zero wide, the rationales hidden, the bars and dots still showing where
+// every span is. A reading preference like the fold level, global across
+// files and panes, kept in localStorage rather than the hash: it is the
+// reader's, not the link's. Default expanded.
+let _gutterCollapsed = false;
+const _GUTTER_FOLD_KEY = "scr-gutter-fold";
 // Whether the change explainer exists for this review (`--no-augment`
 // and `[augment].explainer = false` both switch it off server-side).
 // Gates the mode entirely: with it false there is no button, and a
@@ -167,6 +174,7 @@ function renderInit(data: ViewerData): void {
   // A filter restored from localStorage is not a gesture: the diff opens
   // at its level, filtered, with nothing focused.
   _state.focus = null;
+  _applyGutterFold(_readGutterFold());
   _wireInputs();
   _restoreHash();
   render();
@@ -1339,6 +1347,65 @@ function _setGutterWidths(body: HTMLElement, f: FileBlock): void {
   body.style.setProperty("--span-text-w", cols ? _SPAN_TEXT_WIDTH : "0px");
 }
 
+// --- The gutter fold ---------------------------------------------------------
+
+/** The stored preference; expanded when nothing (or nothing this code
+ *  wrote) is stored. */
+function _readGutterFold(): boolean {
+  try {
+    return localStorage.getItem(_GUTTER_FOLD_KEY) === "collapsed";
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Fold or unfold the gutter everywhere it is on screen. The class on
+ *  the document is what the stylesheet zeroes the text column by, in the
+ *  diff pane and the explainer's panel alike; the placement pass is then
+ *  re-run on every half that has one, so a collapse releases its
+ *  stretches and an expand puts them back. */
+function _applyGutterFold(collapsed: boolean): void {
+  _gutterCollapsed = collapsed;
+  document.documentElement.classList.toggle("gutter-collapsed", collapsed);
+  for (const half of document.querySelectorAll<HTMLElement>(".half-new[data-span-observed]")) _layoutSpanTexts(half);
+  // The code columns moved; the comment arrows point at characters in them.
+  Annotations.reflowAll();
+}
+
+function _setGutterFold(collapsed: boolean): void {
+  if (collapsed === _gutterCollapsed) return;
+  _applyGutterFold(collapsed);
+  try {
+    localStorage.setItem(_GUTTER_FOLD_KEY, collapsed ? "collapsed" : "expanded");
+  } catch (_) { /* localStorage may be unavailable */ }
+}
+
+/** The strip's own affordances, delegated from the document so one
+ *  listener covers every pane: a click on a span's mark expands the
+ *  gutter (if folded) and brings that span's text into view; a click on
+ *  the strip's empty area — a gutter cell itself, not a block or mark on
+ *  it — toggles the fold. */
+function _onGutterClick(e: MouseEvent): void {
+  const target = e.target as HTMLElement | null;
+  if (!target) return;
+  const mark = target.closest<HTMLElement>(".span-mark[data-span-id]");
+  if (mark) {
+    e.stopPropagation();
+    _setGutterFold(false);
+    const half = mark.closest<HTMLElement>(".half-new");
+    const body = half?.querySelector<HTMLElement>(`.span-text-body[data-span-id="${_cssEscape(mark.dataset.spanId!)}"]`);
+    if (body) body.scrollIntoView({ block: "nearest" });
+    return;
+  }
+  if (target.classList.contains("cell-gutter-text") || target.classList.contains("cell-gutter-bars")) {
+    e.stopPropagation();
+    _setGutterFold(!_gutterCollapsed);
+  }
+}
+
+/** What a gutter cell says on hover; the strip has no chrome of its own. */
+const _GUTTER_CELL_TITLE = "Click to fold or unfold the span gutter (g)";
+
 /** A row's bars cell (`children[3]`; `[2]` is its text cell). */
 function _gutterBars(rowEl: HTMLElement): HTMLElement {
   const cell = rowEl.children[3] as HTMLElement | undefined;
@@ -1346,13 +1413,22 @@ function _gutterBars(rowEl: HTMLElement): HTMLElement {
   return cell;
 }
 
-/** A bar segment or dot in a row's bars cell, at its depth's column. */
+/** A bar segment or dot in a row's bars cell, at its depth's column. Its
+ *  tooltip is the span's rationale — what a folded gutter shows of it on
+ *  hover; the native tooltip holds a 700-character intent whole. */
 function _spanMark(span: AnnotationSpan, depth: number, kind: "bar" | "bar-top" | "bar-bottom" | "dot"): HTMLElement {
   const mark = _el("span", `span-mark span-${kind}`);
   mark.dataset.spanId = span.id;
   mark.style.setProperty("--depth", String(depth));
   mark.setAttribute("aria-hidden", "true");
+  mark.title = _spanTooltip(span);
   return mark;
+}
+
+function _spanTooltip(span: AnnotationSpan): string {
+  const smells = (span.smells || []).map((sm) => sm.tag);
+  const intent = span.intent || "(no intent)";
+  return smells.length ? `${smells.join(" · ")}\n${intent}` : intent;
 }
 
 /** Whether the reviewer has already turned this span into a comment: a
@@ -1452,7 +1528,9 @@ function _layoutSpanTexts(half: HTMLElement): void {
   const shown: SpanTextBlock[] = [];
   for (const block of gutter.blocks) {
     const start = track.get(block.row);
-    if (start === undefined) {
+    // Folded, the gutter has no text to place: every block hides and no
+    // row is stretched — the compact view is the undistorted diff.
+    if (start === undefined || _gutterCollapsed) {
       block.el.style.display = "none";
       block.el.style.transform = "";
       continue;
@@ -1460,6 +1538,10 @@ function _layoutSpanTexts(half: HTMLElement): void {
     block.el.style.display = "";
     block.el.style.gridRow = String(start);
     shown.push(block);
+  }
+  if (!shown.length) {
+    gutter.observer?.takeRecords();
+    return;
   }
   // The one measurement.
   const rects = new Map<HTMLElement, DOMRect>();
@@ -1566,8 +1648,11 @@ function _renderRow(
   newRow.appendChild(_renderContent(row.new_text, "new", hasNew, file, newMarks));
   // The centre gutter's cells, after the content so `children[1]` stays
   // the content cell; the grid places them between number and code.
-  newRow.appendChild(_el("span", "cell-gutter-text"));
-  newRow.appendChild(_el("span", "cell-gutter-bars"));
+  const text = _el("span", "cell-gutter-text");
+  const bars = _el("span", "cell-gutter-bars");
+  text.title = bars.title = _GUTTER_CELL_TITLE;
+  newRow.appendChild(text);
+  newRow.appendChild(bars);
   return { old: oldRow, new: newRow };
 }
 
@@ -1747,7 +1832,7 @@ function _updateStatus(): void {
       }
     }
   }
-  s.textContent = `${_data.files.length} files · ${smells} smells · ${critical} critical · keys 1-3 fold · space toggle · ? help`;
+  s.textContent = `${_data.files.length} files · ${smells} smells · ${critical} critical · keys 1-3 fold · g gutter · ? help`;
 }
 
 function _syncHash(): void {
@@ -1799,6 +1884,7 @@ function _onKeydown(e: KeyboardEvent): void {
     case "1": _setGlobalFold("files"); e.preventDefault(); break;
     case "2": _setGlobalFold("hunks"); e.preventDefault(); break;
     case "3": _setGlobalFold("code"); e.preventDefault(); break;
+    case "g": _setGutterFold(!_gutterCollapsed); e.preventDefault(); break;
     case "?": _toggleHelp(); e.preventDefault(); break;
     case "Escape": _onEscape(); break;
   }
@@ -1870,6 +1956,7 @@ function _wireInputs(): void {
     if (e.target === overlay) _closeHelp();
   });
   document.addEventListener("keydown", _onKeydown);
+  document.addEventListener("click", _onGutterClick);
   window.addEventListener("hashchange", () => {
     _state.overrides = Object.create(null);
     _restoreHash();

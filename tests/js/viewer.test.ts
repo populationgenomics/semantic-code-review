@@ -1437,6 +1437,89 @@ describe("the centre gutter: spans on visible code (ADR 0008)", () => {
     // The code rows' own marks are untouched by the pass.
     expect(marks("H0_0:span:4-7")).toEqual([[4, "span-bar-top"], [5, "span-bar"], [6, "span-bar"], [7, "span-bar-bottom"]]);
   });
+
+  describe("the gutter fold", () => {
+    const key = (k: string): void => { document.dispatchEvent(new KeyboardEvent("keydown", { key: k })); };
+    const collapsed = (): boolean => document.documentElement.classList.contains("gutter-collapsed");
+    /** A tall block, so the expanded gutter stretches the hunk's last row. */
+    const TALL = [span("H0_0:span:4-5", 4, 5, "tall", [{ tag: "dead-code", note: "" }])];
+
+    test("g folds the gutter: blocks hide, no row is stretched, marks stay; g again restores both", async () => {
+      await bootViewer(makeData({ pending: false, files: [gutterFile(TALL)], symbols: [] }));
+      fold("code");
+      await layoutGeometry({ "H0_0:span:4-5": 130 });
+      expect(collapsed()).toBe(false);
+      expect(minHeights(newRows())).toEqual(["", "", "", "", "50px"]);
+
+      key("g");
+      expect(collapsed()).toBe(true);
+      expect(textOf("H0_0:span:4-5")!.style.display).toBe("none");
+      expect(minHeights(newRows())).toEqual(["", "", "", "", ""]);
+      expect(minHeights(oldRows())).toEqual(["", "", "", "", ""]);
+      expect(marks("H0_0:span:4-5")).toEqual([[4, "span-bar-top"], [5, "span-bar-bottom"]]);
+      expect(localStorage.getItem("scr-gutter-fold")).toBe("collapsed");
+      // A pass the rows trigger while folded places nothing either.
+      await layoutGeometry({ "H0_0:span:4-5": 130 });
+      expect(minHeights(newRows())).toEqual(["", "", "", "", ""]);
+
+      key("g");
+      expect(collapsed()).toBe(false);
+      expect(textOf("H0_0:span:4-5")!.style.display).toBe("");
+      expect(minHeights(newRows())).toEqual(["", "", "", "", "50px"]);
+      expect(minHeights(oldRows())).toEqual(["", "", "", "", "50px"]);
+      expect(localStorage.getItem("scr-gutter-fold")).toBe("expanded");
+    });
+
+    test("the fold is remembered across a reload, and applies to every half", async () => {
+      localStorage.setItem("scr-gutter-fold", "collapsed");
+      const file = gutterFile(TALL);
+      const hunks = file.hunks as Record<string, unknown>[];
+      hunks.push(makeHunkBlock("H0_1", "adds more", {
+        old_start: 8, old_count: 0, new_start: 12, new_count: 2,
+        rows: [12, 13].map((n) => ({ kind: "ins", old_line: null, new_line: n, old_text: "", new_text: `l${n}` })),
+        spans: [span("H0_1:span:12-13", 12, 13, "later")],
+      }));
+      await bootViewer(makeData({ pending: false, files: [file], symbols: [] }));
+      fold("code");
+      expect(collapsed()).toBe(true);
+      const blocks = Array.from(document.querySelectorAll<HTMLElement>(".half-new > .span-text"));
+      expect(blocks.length).toBe(2);
+      expect(blocks.map((b) => b.style.display)).toEqual(["none", "none"]);
+      key("g");
+      expect(blocks.map((b) => b.style.display)).toEqual(["", ""]);
+    });
+
+    test("the strip's empty area toggles the fold; a mark expands it and brings its text into view", async () => {
+      await bootViewer(makeData({ pending: false, files: [gutterFile(TALL)], symbols: [] }));
+      fold("code");
+      const cell = rowOfLine(6).querySelector<HTMLElement>(".cell-gutter-text")!;
+      expect(cell.title).toContain("(g)");
+      cell.click();
+      expect(collapsed()).toBe(true);
+      (rowOfLine(6).querySelector(".cell-gutter-bars") as HTMLElement).click();
+      expect(collapsed()).toBe(false);
+      cell.click();
+      expect(collapsed()).toBe(true);
+
+      // Folded, a mark's tooltip is the span's rationale: its smells, then
+      // its intent.
+      const mark = rowOfLine(5).querySelector<HTMLElement>('.span-mark[data-span-id="H0_0:span:4-5"]')!;
+      expect(mark.title).toBe("dead-code\ntall");
+      const scrolled: Element[] = [];
+      const orig = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = function scrollIntoView(this: Element): void { scrolled.push(this); };
+      try {
+        mark.click();
+      } finally {
+        Element.prototype.scrollIntoView = orig;
+      }
+      expect(collapsed()).toBe(false);
+      expect(scrolled).toEqual([textOf("H0_0:span:4-5")!.querySelector(".span-text-body")]);
+      // A click on a block's own text is not a fold gesture.
+      (textOf("H0_0:span:4-5")!.querySelector(".span-text-intent") as HTMLElement).click();
+      expect(collapsed()).toBe(false);
+    });
+  });
 });
 
 

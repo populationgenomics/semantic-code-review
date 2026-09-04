@@ -724,15 +724,20 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  * for free but requires explicit outer row tracks, which we don't know at
  * CSS compile time.
  *
- * The gutter's width (`--span-bars-w` + `--span-text-w`, set per file on
- * `.file-body`; 0 for a file with no span) is split between the halves,
- * so the new half is wider by it and the code columns give up the same
- * amount each. */
+ * The gutter's width (`--span-bars-w` + `--gutter-text-w`; 0 for a file
+ * with no span) is split between the halves, so the new half is wider by
+ * it and the code columns give up the same amount each. `--span-bars-w`
+ * and `--span-text-w` are set per file on `.file-body`; `--gutter-text-w`
+ * is the text column's live width — `--span-text-w` expanded, 0 when the
+ * gutter is folded (`html.gutter-collapsed`, a global preference), so
+ * both code columns widen equally and the bars stay. */
+.file-body { --gutter-text-w: var(--span-text-w, 0px); }
+.gutter-collapsed .file-body { --gutter-text-w: 0px; }
 .diff {
   display: grid;
   grid-template-columns:
-    minmax(0, calc(50% - (var(--span-bars-w, 0px) + var(--span-text-w, 0px)) / 2))
-    minmax(0, calc(50% + (var(--span-bars-w, 0px) + var(--span-text-w, 0px)) / 2));
+    minmax(0, calc(50% - (var(--span-bars-w, 0px) + var(--gutter-text-w, 0px)) / 2))
+    minmax(0, calc(50% + (var(--span-bars-w, 0px) + var(--gutter-text-w, 0px)) / 2));
   font-family: var(--mono);
   font-size: 12.5px;
   line-height: 1.5;
@@ -777,7 +782,7 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  * the content cell in the DOM so `children[1]` stays the content cell
  * everywhere. */
 .diff .half-new {
-  grid-template-columns: 3.5em var(--span-text-w, 0px) var(--span-bars-w, 0px) minmax(max-content, 1fr);
+  grid-template-columns: 3.5em var(--gutter-text-w, 0px) var(--span-bars-w, 0px) minmax(max-content, 1fr);
 }
 .diff .cell-lineno { grid-column: 1; }
 .diff .half-old .cell-content { grid-column: 2; }
@@ -790,32 +795,43 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 .diff .cell-gutter-text, .diff .span-text { grid-column: 2; left: 3.5em; }
 .diff .cell-gutter-bars {
   grid-column: 3;
-  left: calc(3.5em + var(--span-text-w, 0px));
+  left: calc(3.5em + var(--gutter-text-w, 0px));
   box-shadow: inset -1px 0 var(--border);
 }
 /* A span's marks in the bars cell: a bar over its rows, a dot on a
  * single-line span's row, one column further right (nearer the code) per
- * level of nesting. */
+ * level of nesting. The mark is its column's full 6px for the row's
+ * height — the hover and click target; the stroke it draws is 2px. */
 .diff .span-mark {
   position: absolute;
-  left: calc(2px + var(--depth, 0) * 6px);
+  top: 0; bottom: 0;
+  left: calc(var(--depth, 0) * 6px);
+  width: 6px;
+  cursor: pointer;
+}
+.diff .span-mark::before {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0; left: 2px;
   width: 2px;
   background: var(--accent);
   opacity: 0.75;
-  pointer-events: none;
 }
-.diff .span-bar, .diff .span-bar-top, .diff .span-bar-bottom { top: 0; bottom: 0; }
-.diff .span-bar-top { top: 3px; border-top-left-radius: 2px; border-top-right-radius: 2px; }
-.diff .span-bar-bottom { bottom: 3px; border-bottom-left-radius: 2px; border-bottom-right-radius: 2px; }
-.diff .span-dot {
-  top: 50%; margin-top: -2px; margin-left: -1px;
+.diff .span-mark:hover::before { opacity: 1; }
+.diff .span-bar-top::before { top: 3px; border-top-left-radius: 2px; border-top-right-radius: 2px; }
+.diff .span-bar-bottom::before { bottom: 3px; border-bottom-left-radius: 2px; border-bottom-right-radius: 2px; }
+.diff .span-dot::before {
+  top: 50%; bottom: auto; margin-top: -2px; left: 1px;
   width: 4px; height: 4px; border-radius: 50%;
 }
-/* A multi-line span's text: a zero-height item on the span's first row
- * (`grid-row`, set by the renderer), so the row's size owes it nothing;
- * the body overflows downward over the strip for as long as it needs.
- * `transform` is the renderer's chaining offset for a block that starts
- * on the same row as the one above it. */
+/* The empty strip is the fold's own affordance. */
+.diff .cell-gutter-text, .diff .cell-gutter-bars { cursor: pointer; }
+/* A span's text: a zero-height item on the span's first row (`grid-row`,
+ * set by the renderer), so the row's size owes it nothing; the body
+ * overflows downward over the strip for as long as it needs. `transform`
+ * is the renderer's chaining offset for a block that starts on the same
+ * row as the one above it. The renderer hides every block while the
+ * gutter is folded. */
 .diff .span-text {
   z-index: 2;
   align-self: start;
