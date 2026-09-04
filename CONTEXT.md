@@ -299,21 +299,31 @@ buckets its integer `(file, line)` notes into single-line spans.
 In the viewer a span is a label, and it shows only where its code does
 (see [[fold-level]]). At `files` and `hunks` nothing mentions a span. At
 `code` a span lives in the **centre gutter** — the new half's sticky
-columns after its line numbers, `lineno · bars · text`, a fixed width
-per file (one 6px bar column per level of nesting, 26ch of text; nothing
-for a file with no span) split between the halves. A multi-line span is
-a bar over exactly its rows, one column further right per level of
-nesting, with its intent as a text block placed on those rows at a
-smaller size, wrapping at the gutter's width; where a nested span
-begins, the parent's text stops the row before, and a span whose every
-row a child claims reads above the child's text. A rationale longer than
-its rows stretches them — the old half's paired rows are given the same
-heights — rather than being clipped. A single-line span is a dot on its
-row at its depth and the inline note beneath the row. When a fold hides
-a span's first row its text hides too and the fold's label tree lists
-it ([[fold-region]]). `render._attachSpans` owns all of this; the
-explicit `grid-row` on every row of a half with spans is what places the
-text, redone by a `MutationObserver` as rows come and go. On disk,
+columns after its line numbers, `lineno · text · bars`, a fixed width
+per file (26ch of text, one 6px bar column per level of nesting; nothing
+for a file with no span) split between the halves; the bars sit against
+the code they mark. A multi-line span is a bar over exactly its rows,
+one column further right per level of nesting, with its intent as a
+text block at a smaller size, wrapping at the gutter's width, that
+starts on the span's first row and hangs down for as long as it needs —
+past the end of its bar if it must; nothing is clipped. The block is a
+zero-height grid item, so it sizes no row; the one placement rule is
+that blocks do not overlap. A downward pass over the half's rows
+(`render._layoutSpanTexts`) enforces it: where a block would start
+inside the one above, the nearest code row above it is stretched by the
+overlap (a `min-height`, mirrored onto the old half's paired row so the
+halves stay aligned), and text running past the hunk's last row
+stretches its last code row; every other row keeps its natural height.
+Two spans starting on one row chain their blocks, outermost first. The
+pass runs when the half's rows change (an annotation inserted, a fold
+hiding rows — a `MutationObserver`) or its size does (a
+`ResizeObserver`, on the next frame); it measures once, writes once,
+and discards the mutation records its own writes queue. A single-line
+span is a dot on its row at its depth and the inline note beneath the
+row. When a fold hides a span's first row its text hides too and the
+fold's label tree lists it ([[fold-region]]). `render._attachSpans`
+owns all of this; the explicit `grid-row` on every row of a half with
+spans is what places the blocks. On disk,
 `scr-span: +a..+b "intent"` is an intent-only span and `scr-span-begin`
 … `scr-span-end` a block with smells/context/refs; the retired
 `scr-segment-*` / `scr-line` directives and a sidecar's `segments` /
