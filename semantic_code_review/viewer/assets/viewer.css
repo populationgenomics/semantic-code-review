@@ -889,7 +889,6 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 .diff .span-text-pills { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-bottom: 2px; }
 .diff .span-text .smell { font-size: 10px; padding: 0 6px; margin-left: 0; }
 .diff .span-promote {
-  margin-left: auto;
   padding: 0 6px;
   font: inherit; font-size: 10px; line-height: 14px;
   border: 1px solid var(--border); border-radius: 10px;
