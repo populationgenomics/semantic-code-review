@@ -40,8 +40,8 @@ reminds you of the keys.
 
 The diff starts folded to **hunk** level: you see each hunk's header and
 the model's intent sentence, not the code. The fold slider (top right,
-`Files · Hunks · Definitions · Off`) is the master collapse control — keys
-`1`–`4` do the same. Nothing but `Off` reveals code by default.
+`Files · Hunks · Code`) is the master collapse control — keys `1`–`3` do
+the same. Nothing but `Code` reveals code by default.
 
 ## 2. Three ways to navigate
 
@@ -64,27 +64,28 @@ the diff to its hunks:
 
 ## 3. The diff itself
 
-![Diff at Off](walkthrough/03-diff.png)
+![Diff at Code](walkthrough/03-diff.png)
 
-At `Off` the full side-by-side diff renders: syntax-highlighted, additions
+At `Code` the full side-by-side diff renders: syntax-highlighted, additions
 tinted, intra-line change marks on edited lines. The chevrons in the gutter
-are **indent folds** (see §7). The italic call-outs hanging off lines are
-the model's per-line observations, each with an **Add as comment** button
-that promotes it into a real reviewer comment.
+are **definition folds** (see §7). The italic call-outs hanging off lines
+are the model's per-line observations, each with an **Add as comment**
+button that promotes it into a real reviewer comment.
 
-## 4. Definitions
+## 4. Spans in the centre gutter
 
-![Definitions](walkthrough/04-segments.png)
+![Spans](walkthrough/04-segments.png)
 
-At **Definitions** level a hunk isn't code and isn't a single blob — it's
-the definitions it touches (`class Account`, `method Account.withdraw`),
-each folded to one line: its fold summary if one has been written, else
-the model's label for it, else its signature. Nested beneath each are the
-model's labelled spans inside it (`+25..+30 withdraw guards against frozen
-state…`), each with its own intent and smells; a hunk outside every
-definition shows its spans directly under its header. It's a table of
-contents for a large hunk; click any row to open the hunk's code. (The
-screenshot predates the rename and shows the earlier span-only list.)
+Between the halves, after the right-hand line numbers, sits a fixed-width
+gutter for the model's **spans** — its labels on ranges of the change. A
+span over several lines is a bar down exactly those rows with its
+rationale beside them, wrapping at the gutter's width; a span nested
+inside another is a second bar one column further right, and its own
+rationale takes over on its rows. A single-line span is a dot on its row
+(its call-out hangs below the line, as in §3). Collapse a definition (§7)
+and the labels it hid are listed under its summary; click one to open the
+fold and land on it. (The screenshot predates the gutter and shows the
+earlier span list.)
 
 ## 5. Focusing a symbol
 
@@ -111,10 +112,11 @@ agent, and `scr pr` posts them to the GitHub PR as one review.
 
 ![Fold summary](walkthrough/07-fold-summary.png)
 
-The gutter chevrons collapse indent regions (a class body, a function).
-The first time you collapse one, the model summarises the hidden code and
-the summary stands in for it — here the whole `class Account` body reduces
-to one line. Collapse to read the shape; expand to read the detail.
+The chevrons collapse definitions (a class body, a function). The first
+time you collapse one, the model summarises the hidden code and the
+summary stands in for it — here the whole `class Account` body reduces to
+one line — with the spans inside it listed beneath (§4). Collapse to read
+the shape; expand to read the detail.
 
 ## 8. Asking about the change
 

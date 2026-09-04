@@ -31,7 +31,7 @@ Two more affordances inside that viewer:
   commenting.
 
 For a screenshot tour of the viewer — the sidebar axes, the fold ladder,
-definitions, comments, and the review console — see
+spans, comments, and the review console — see
 [docs/walkthrough.md](docs/walkthrough.md).
 
 ## Usage as a Claude Code plugin
