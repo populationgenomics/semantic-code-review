@@ -108,7 +108,7 @@ single-line span is the inline row note at `off`. A deletion-only hunk
 has no boundaries and so no spans. The `segments` rung is unchanged
 (slice 5).
 
-## Slice 5 — The ladder becomes `definitions` ✅ done
+## Slice 5 — The ladder becomes `definitions` *(landed, then withdrawn — see 5b)* ✅ done
 
 `segments` stops being a fold rung. The ladder is `files | hunks |
 definitions | off`: the middle rung folds every definition-level node a hunk
@@ -129,6 +129,21 @@ carries it. No row is fetched for a label. The body's state is one
 override, `H<f>_<h>:body`, in place of per-span overrides; clicking any
 label row opens the code. `fold=segments` in an old hash reads as
 `definitions`. Nothing in Python named the level.
+
+## Slice 5b — The ladder is `files | hunks | code`
+
+Reverses 5's framing, keeps its parts. `FoldMode` is `files | hunks | code`;
+key `3` and the URL hash select `code` (`definitions` and `segments` in an
+old hash map forward). The label tree stops being a rung renderer and
+becomes what a collapsed definition chevron shows at `code`. Multi-line
+spans get their inline form at `code`: a bracket in the gutter over the rows
+they cover, nested by depth, with the intent as a marginal label. At
+`hunks`, a hunk is its header and intent — spans are detail and do not show.
+
+**Gate:** three rungs; a collapsed definition shows its labels; a
+multi-line span is visible on the code it covers and nests visibly inside
+its parent; clicking a span label in a fold lands on its bracketed rows;
+nothing at `hunks` mentions a span.
 
 ## Slice 6 — Focus is the one reveal that unfolds ✅ done
 
