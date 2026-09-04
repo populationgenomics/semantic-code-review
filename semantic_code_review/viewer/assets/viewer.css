@@ -200,7 +200,7 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   color: var(--fg);
 }
 .group-axis.has-comment-badges .group-btn {
-  grid-template-columns: minmax(0, 1fr) auto minmax(30px, auto);
+  grid-template-columns: minmax(0, 1fr) auto 12px;
 }
 .group-btn-label {
   min-width: 0;
@@ -237,25 +237,11 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  * next to the hunk-count badge. Muted when every thread is resolved;
  * amber when there's outstanding discussion to chase. */
 .group-btn-comments {
-  background: var(--bg-alt);
-  color: var(--fg-muted);
-  padding: 1px 6px;
-  border-radius: 10px;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  min-width: 30px;
-  text-align: center;
+  width: 8px; height: 8px; border-radius: 50%;
+  justify-self: center;
 }
-.group-btn-comments.has-unresolved {
-  background: transparent;
-  color: var(--warn);
-  border: 1px solid var(--warn);
-  padding: 0 5px;
-}
-.group-btn.active .group-btn-comments {
-  background: var(--bg);
-  color: var(--fg);
-}
+.group-btn-comments.has-unresolved { background: var(--warn); }
+.group-btn-comments.all-resolved { background: var(--ok); }
 .group-btn-all {
   margin-bottom: 6px;
   color: var(--fg-muted);
