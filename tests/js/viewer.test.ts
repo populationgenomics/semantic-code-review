@@ -200,6 +200,13 @@ async function bootViewer(data: ViewerData, opts: BootOptions = {}): Promise<voi
   await new Promise<void>((r) => setTimeout(r, 0));
 }
 
+/** The `+N` / `-M` texts of a Files-axis pill's line-count badge. */
+function lineCounts(pill: Element): [string, string] {
+  const badge = pill.querySelector(".group-btn-count.group-btn-lines");
+  if (!badge) throw new Error("pill has no line-count badge");
+  return [badge.querySelector(".adds")!.textContent!, badge.querySelector(".dels")!.textContent!];
+}
+
 function makeHunkBlock(id: string, intent = "", overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     id,
@@ -520,13 +527,13 @@ describe("streaming events", () => {
       files: [
         {
           id: "F0", path: "a.py", status: "modified", language: "python",
-          adds: 0, dels: 0, summary: "", head_line_count: null,
+          adds: 9, dels: 1, summary: "", head_line_count: null,
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H0_0", "alpha"), makeHunkBlock("H0_1", "beta")],
         },
         {
           id: "F1", path: "b.py", status: "modified", language: "python",
-          adds: 0, dels: 0, summary: "", head_line_count: null,
+          adds: 0, dels: 4, summary: "", head_line_count: null,
           symbols: { added: [], modified: [], removed: [] },
           hunks: [makeHunkBlock("H1_0", "gamma")],
         },
@@ -537,10 +544,13 @@ describe("streaming events", () => {
     expect(filesSection).not.toBeNull();
     const pills = filesSection.querySelectorAll(".group-btn");
     expect(pills).toHaveLength(2);
+    // A file pill is sized by changed lines (matching its file header),
+    // not by hunk count; a zero side still renders.
     expect(pills[0].textContent).toContain("a.py");
-    expect(pills[0].querySelector(".group-btn-count")!.textContent).toBe("2");
+    expect(lineCounts(pills[0])).toEqual(["+9", "-1"]);
     expect(pills[1].textContent).toContain("b.py");
-    expect(pills[1].querySelector(".group-btn-count")!.textContent).toBe("1");
+    expect(lineCounts(pills[1])).toEqual(["+0", "-4"]);
+    expect(document.querySelector('.file[data-id="F0"] .file-meta')!.textContent).toBe("+9-1");
 
     // Click the a.py pill — the view re-renders focused on a.py: both its
     // hunks stay live, and b.py drops out entirely (no surviving hunk).
@@ -563,9 +573,9 @@ describe("streaming events", () => {
   });
 
   test("by-file axis groups into a directory tree: compress, sort, and subtree filter", async () => {
-    const mkFile = (id: string, p: string, hid: string): Record<string, unknown> => ({
+    const mkFile = (id: string, p: string, hid: string, adds: number, dels: number): Record<string, unknown> => ({
       id, path: p, status: "modified", language: "python",
-      adds: 0, dels: 0, summary: "", head_line_count: null,
+      adds, dels, summary: "", head_line_count: null,
       symbols: { added: [], modified: [], removed: [] },
       hunks: [makeHunkBlock(hid)],
     });
@@ -573,10 +583,10 @@ describe("streaming events", () => {
       pending: false,
       files: [
         // src/ holds two files → an interior "src" node with two leaves.
-        mkFile("F0", "src/b.py", "Hb"),
-        mkFile("F1", "src/a.py", "Ha"),
+        mkFile("F0", "src/b.py", "Hb", 5, 2),
+        mkFile("F1", "src/a.py", "Ha", 10, 3),
         // docs/guide/ is a single-child chain → compressed to "docs/guide".
-        mkFile("F2", "docs/guide/intro.md", "Hi"),
+        mkFile("F2", "docs/guide/intro.md", "Hi", 1, 0),
       ],
     }));
     const filesSection = document.querySelector('[data-axis="files"]')!;
@@ -591,11 +601,11 @@ describe("streaming events", () => {
     const docsChildren = docsNode.querySelectorAll(".group-tree-children .group-btn-label");
     expect(Array.from(docsChildren).map((e) => e.textContent)).toEqual(["intro.md"]);
 
-    // "src" holds two leaves, sorted a.py before b.py; its count is the
-    // subtree hunk union (2).
+    // "src" holds two leaves, sorted a.py before b.py; its pill is the
+    // subtree's changed-line sum (its hunk_ids stay the subtree union).
     const srcNode = roots[1];
     const srcPill = srcNode.querySelector(":scope > .group-tree-row > .group-btn") as HTMLElement;
-    expect(srcPill.querySelector(".group-btn-count")!.textContent).toBe("2");
+    expect(lineCounts(srcPill)).toEqual(["+15", "-5"]);
     const srcChildren = srcNode.querySelectorAll(".group-tree-children .group-btn-label");
     expect(Array.from(srcChildren).map((e) => e.textContent)).toEqual(["a.py", "b.py"]);
 
@@ -616,6 +626,50 @@ describe("streaming events", () => {
     expect(document.querySelector('.hunk[data-id="Ha"]')).not.toBeNull();
     expect(document.querySelector('.hunk[data-id="Hb"]')).not.toBeNull();
     expect(document.querySelector('.hunk[data-id="Hi"]')).toBeNull();
+  });
+
+  test("by-file axis line counts: a directory sums every descendant, not just its direct files", async () => {
+    const mkFile = (id: string, p: string, adds: number, dels: number): Record<string, unknown> => ({
+      id, path: p, status: "modified", language: "python",
+      adds, dels, summary: "", head_line_count: null,
+      symbols: { added: [], modified: [], removed: [] },
+      hunks: [makeHunkBlock(`H${id.slice(1)}_0`), makeHunkBlock(`H${id.slice(1)}_1`)],
+    });
+    await bootViewer(makeData({
+      pending: false,
+      groups: [{ id: "G0", title: "theme", rationale: "", hunk_ids: ["H0_0", "H1_0", "H2_1"] }],
+      files: [
+        // pkg/ holds one file directly and two more beneath pkg/sub/, so
+        // the pkg total differs from the sum over its direct files (7/1).
+        mkFile("F0", "pkg/top.py", 7, 1),
+        mkFile("F1", "pkg/sub/x.py", 20, 0),
+        mkFile("F2", "pkg/sub/y.py", 0, 6),
+        mkFile("F3", "other.py", 2, 2),
+      ],
+    }));
+    const pillFor = (title: string): Element => {
+      const label = Array.from(document.querySelectorAll('[data-axis="files"] .group-btn-label'))
+        .find((e) => e.textContent === title);
+      if (!label) throw new Error(`no Files pill titled ${title}`);
+      return label.closest(".group-btn")!;
+    };
+    // Leaves equal their file's header counts.
+    expect(lineCounts(pillFor("top.py"))).toEqual(["+7", "-1"]);
+    expect(lineCounts(pillFor("x.py"))).toEqual(["+20", "-0"]);
+    // pkg/sub sums its two files; pkg sums pkg/sub plus its own file.
+    expect(lineCounts(pillFor("sub"))).toEqual(["+20", "-6"]);
+    expect(lineCounts(pillFor("pkg"))).toEqual(["+27", "-7"]);
+    // The roots together account for every file: pkg (27/7) + other.py (2/2).
+    const roots = document.querySelectorAll('[data-axis="files"] > .group-tree-node > .group-tree-row .group-btn');
+    expect(Array.from(roots).map(lineCounts)).toEqual([["+2", "-2"], ["+27", "-7"]]);
+    // The Files pill is the one that changed: Themes still counts hunks.
+    const themePill = document.querySelector('[data-axis="themes"] .group-btn')!;
+    expect(themePill.querySelector(".group-btn-count")!.textContent).toBe("3");
+    expect(themePill.querySelector(".group-btn-lines")).toBeNull();
+    // The directory pill still filters to its whole subtree.
+    (pillFor("pkg") as HTMLElement).click();
+    expect(document.querySelector('.hunk[data-id="H2_1"]')).not.toBeNull();
+    expect(document.querySelector('.hunk[data-id="H3_0"]')).toBeNull();
   });
 
   test("filtering keeps focused hunks live and folds the rest into expand chips", async () => {

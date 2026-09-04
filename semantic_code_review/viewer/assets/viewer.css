@@ -211,6 +211,18 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   background: var(--accent);
   color: var(--bg);
 }
+/* Files-axis count pill: changed lines as `+N -M`, the signs coloured
+ * like the file header's .file-meta. Active keeps the colours legible
+ * on the page background instead of inverting onto the accent. */
+.group-btn-lines {
+  display: inline-flex;
+  gap: 4px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.group-btn-lines .adds { color: var(--ok); }
+.group-btn-lines .dels { color: var(--err); }
+.group-btn.active .group-btn-lines { background: var(--bg); }
 /* Comment-thread tally on Files-axis pills: unresolved/total. Sits
  * next to the hunk-count badge. Muted when every thread is resolved;
  * amber when there's outstanding discussion to chase. */

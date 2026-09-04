@@ -698,7 +698,11 @@ own and renders only when a changed descendant keeps it alive. A
 changed in …"). A parent's `hunk_ids` is its subtree
 union (clicking it filters to every changed descendant) and the count is
 the distinct hunks beneath it; a leaf carries only its own. Any node
-whose whole subtree touches no hunk yields no block. The viewer's
+whose whole subtree touches no hunk yields no block. The Files axis
+(built client-side by `Sidebar.rebuildFilesAxis` from `DATA.files`, not
+on the wire) is the one axis whose pill is not a hunk count: its nodes
+carry `adds`/`dels` — a file's own on a leaf, the subtree sum on a
+directory — and the pill reads `+N -M` like the file header. The viewer's
 `Sidebar.rebuildSymbolsAxis` loads the forest from `DATA.symbols` at boot
 (flattening every node into `byId` for active-pill lookup) and
 `Sidebar` renders it as an expand/collapse tree (`_symbolNode`) reusing

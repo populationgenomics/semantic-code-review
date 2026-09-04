@@ -144,15 +144,19 @@ function refreshThemes(groups: GroupBlock[]): void {
  *  ("src/main" as one node). Siblings (directories and files together)
  *  are sorted alphanumerically. Ids are distinct ID spaces from themes'
  *  `G<i>` and symbols' `SY<i>`. Skipped files (zero hunks) get no node.
- *  `groups` holds the roots; `byId` flattens every node for active-pill
- *  lookup. */
+ *  Every node carries `adds`/`dels`: a leaf's are its FileBlock's, a
+ *  directory's the sum over its subtree (computed bottom-up from the
+ *  children's own sums). `groups` holds the roots; `byId` flattens every
+ *  node for active-pill lookup. */
 function rebuildFilesAxis(): void {
   if (!_data) return;
   FILES_AXIS.groups.length = 0;
   for (const k of Object.keys(FILES_AXIS.byId)) delete FILES_AXIS.byId[k];
   for (const k of Object.keys(FILES_AXIS.hunkCount)) delete FILES_AXIS.hunkCount[k];
 
-  interface FileLeaf { fi: number; name: string; path: string; hunkIds: string[]; }
+  interface FileLeaf {
+    fi: number; name: string; path: string; hunkIds: string[]; adds: number; dels: number;
+  }
   interface FileDir { name: string; dirs: Map<string, FileDir>; files: FileLeaf[]; }
   const newDir = (name: string): FileDir => ({ name, dirs: new Map(), files: [] });
 
@@ -168,12 +172,17 @@ function rebuildFilesAxis(): void {
       if (!next) { next = newDir(seg); cur.dirs.set(seg, next); }
       cur = next;
     }
-    cur.files.push({ fi, name: fileName, path: f.path, hunkIds: f.hunks.map((h) => h.id) });
+    cur.files.push({
+      fi, name: fileName, path: f.path, hunkIds: f.hunks.map((h) => h.id),
+      adds: f.adds, dels: f.dels,
+    });
   }
 
   let dirSeq = 0;
-  const leafGroup = (leaf: FileLeaf): GroupBlock =>
-    ({ id: `BF${leaf.fi}`, title: leaf.name, rationale: leaf.path, hunk_ids: leaf.hunkIds });
+  const leafGroup = (leaf: FileLeaf): GroupBlock => ({
+    id: `BF${leaf.fi}`, title: leaf.name, rationale: leaf.path, hunk_ids: leaf.hunkIds,
+    adds: leaf.adds, dels: leaf.dels,
+  });
 
   // A directory's children (subdirs + files) as GroupBlocks, sorted
   // alphanumerically by display name. `prefix` is the parent's full
@@ -199,8 +208,15 @@ function rebuildFilesAxis(): void {
     const fullPath = prefix ? `${prefix}/${name}` : name;
     const children = childrenOf(cur, fullPath);
     const hunk_ids: string[] = [];
-    for (const c of children) for (const hid of c.hunk_ids) hunk_ids.push(hid);
-    return { id: `BD${dirSeq++}`, title: name, rationale: fullPath, hunk_ids, children };
+    let adds = 0;
+    let dels = 0;
+    for (const c of children) {
+      for (const hid of c.hunk_ids) hunk_ids.push(hid);
+      const lines = _lineCounts(c);
+      adds += lines.adds;
+      dels += lines.dels;
+    }
+    return { id: `BD${dirSeq++}`, title: name, rationale: fullPath, hunk_ids, children, adds, dels };
   };
 
   const register = (g: GroupBlock): void => {
@@ -346,6 +362,31 @@ function _sectionNode(s: ExplainerSection, tree: SectionTree): HTMLElement {
   return node;
 }
 
+/** A Files-axis node's changed-line counts. Throws on a node without
+ *  them: rebuildFilesAxis sets both on every node it builds, so their
+ *  absence is a construction bug, not a data condition to render around. */
+function _lineCounts(g: GroupBlock): { adds: number; dels: number } {
+  if (g.adds === undefined || g.dels === undefined) {
+    throw new Error(`Files-axis node ${g.id} has no line counts`);
+  }
+  return { adds: g.adds, dels: g.dels };
+}
+
+/** The count badge on a pill. The Files axis sizes a node by changed
+ *  lines (`+N -M`, coloured like the file header's `.file-meta`); the
+ *  Themes and Symbols axes size a node by the hunks beneath it. */
+function _countBadge(axis: SidebarAxis, g: GroupBlock): HTMLElement {
+  if (axis.id !== "files") {
+    return _el("span", "group-btn-count", String((g.hunk_ids || []).length));
+  }
+  const { adds, dels } = _lineCounts(g);
+  const badge = _el("span", "group-btn-count group-btn-lines");
+  badge.appendChild(_el("span", "adds", `+${adds}`));
+  badge.appendChild(_el("span", "dels", `-${dels}`));
+  badge.title = `${adds} added, ${dels} deleted`;
+  return badge;
+}
+
 /** One pill button for a group. Shared by the flat Themes axis and the
  *  Files/Symbols tree's per-node row. `commentCounts` (Files axis only)
  *  is keyed by group id and appends the unresolved/total badge. */
@@ -358,7 +399,7 @@ function _pillButton(
   btn.dataset.axis = axis.id;
   btn.dataset.pillId = g.id;
   btn.appendChild(_el("span", "group-btn-label", g.title));
-  btn.appendChild(_el("span", "group-btn-count", String((g.hunk_ids || []).length)));
+  btn.appendChild(_countBadge(axis, g));
   if (commentCounts) {
     // Files axis only — Themes axis is keyed by hunks, not paths,
     // so there's no single "comments per pill" mapping to surface.

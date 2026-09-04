@@ -207,8 +207,8 @@ interface FoldRegion {
 // --- Sidebar groups ---------------------------------------------------------
 
 interface GroupBlock {
-  /** Stable id. Themes axis uses "G<i>"; files axis uses "BF<file_idx>";
-   *  symbols axis uses "SY<i>". */
+  /** Stable id. Themes axis uses "G<i>"; files axis uses "BF<file_idx>"
+   *  for a file and "BD<n>" for a directory; symbols axis uses "SY<i>". */
   id: string;
   title: string;
   rationale: string;
@@ -216,9 +216,14 @@ interface GroupBlock {
    *  symbols-axis node this is the subtree union (own + every
    *  descendant's), so the count is the distinct hunks under it. */
   hunk_ids: string[];
-  /** Nested children (symbols axis only — class ▸ method). Absent for
-   *  flat axes and for leaf symbol nodes. */
+  /** Nested children (files and symbols axes — directory ▸ file, class ▸
+   *  method). Absent for the flat themes axis and for leaf nodes. */
   children?: GroupBlock[];
+  /** Changed lines. Files axis only, set client-side by
+   *  Sidebar.rebuildFilesAxis (never on the wire): a file's own counts on
+   *  a leaf, the subtree sum on a directory. */
+  adds?: number;
+  dels?: number;
 }
 
 // --- SSE event payloads -----------------------------------------------------
