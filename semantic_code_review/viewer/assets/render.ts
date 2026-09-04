@@ -2,7 +2,7 @@
 //
 // Owns the layout pass that turns DATA into the on-page DOM: PR
 // panel, file blocks, hunk headers, the side-by-side row grid, gap
-// chips for unchanged context, the centre gutter's span bars and text, the label tree
+// chips for unchanged context, the span gutter's bars and text, the label tree
 // a collapsed fold shows, refs, smell pills. Carries the fold state too
 // (STATE.fold / overrides / renderedDiffs cache) because all of that
 // exists to feed the renderer, and binds the user inputs that drive it
@@ -71,7 +71,7 @@ let _smells: Record<string, SmellCatalogueEntry> = {};
 // it up in _renderContent; setSymbolSearch repaints cells already in the
 // DOM. See setSymbolSearch / sidebar's active-pill callback.
 let _symbolSearch: string | null = null;
-// Whether the centre gutter is folded to `lineno · bars` — its text column
+// Whether the span gutter is folded to its bars alone — its text column
 // zero wide, the rationales hidden, the bars and dots still showing where
 // every span is. A reading preference like the fold level, global across
 // files and panes, kept in localStorage rather than the hash: it is the
@@ -538,8 +538,8 @@ function _smellPill(smell: Smell, promotion?: SmellPromotion): HTMLElement {
       const body = smell.note
         ? `${smell.tag}: ${smell.note}`
         : smell.tag;
-      Comments.promoteSmell({
-        ...promotion, body, smellId: promotion.smellId,
+      Comments.promote({
+        derivedFrom: promotion.smellId, file: promotion.file, side: promotion.side, line: promotion.line, body,
       });
     });
   }
@@ -1190,16 +1190,17 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLE
   return diff;
 }
 
-// --- Spans on visible code: the centre gutter ------------------------------
+// --- Spans on visible code: the span gutter at the right edge --------------
 //
-// The right half's grid has four columns — line number, text, bars, code —
-// the first three sticky so they read as a fixed centre gutter between the
-// halves while the code scrolls beneath. Every row carries an empty text
-// and bars cell for the gutter's background; a span puts its marks in
-// them. Every span takes one form: a mark in the bars column — a bar over
-// its rows, one column further right per level of nesting, or a dot on a
-// span of one line — and its text block in the text column, starting on
-// its first row. Nothing of a span lives in the code column.
+// The right half's grid has four columns — line number, code, bars, text —
+// the last two sticky to the half's right edge so they read as a fixed
+// strip at the diff's right edge while the code scrolls beneath. Every row
+// carries an empty bars and text cell for the gutter's background; a span
+// puts its marks in them. Every span takes one form: a mark in the bars
+// column — a bar over its rows, one column nearer the code per level of
+// nesting, or a dot on a span of one line — and its text block in the text
+// column, starting on its first row. Nothing of a span lives in the code
+// column.
 //
 // A text block is a zero-height grid item on its span's first row, so it
 // takes no part in the grid's row sizing: its body hangs down the strip
@@ -1266,11 +1267,12 @@ const _SPAN_BAR_COLUMN_PX = 6;
  *  its rows are on screen: its marks in the bars column (a bar over its
  *  rows, or a dot for a span of one line) and its text block in the text
  *  column, whatever its length. A span whose rows are not in the hunk is
- *  warned about and left out; one the reviewer has turned into a comment
- *  is left out too — the comment stands in its place. Everything hangs
- *  off the rows themselves, so it survives the hunk's `.diff` being
- *  reused across repaints and rows arriving above or below it from a
- *  chip. */
+ *  warned about and left out. One the reviewer has turned into a comment
+ *  loses its text block and, on one line, its dot — the comment stands
+ *  in their place — but keeps its bar: the bar marks a range the comment
+ *  does not. Everything hangs off the rows themselves, so it survives
+ *  the hunk's `.diff` being reused across repaints and rows arriving
+ *  above or below it from a chip. */
 function _attachSpans(
   rowElsNew: HTMLElement[], rows: RowBlock[], spans: AnnotationSpan[],
   hunkId: string, filePath: string,
@@ -1283,8 +1285,9 @@ function _attachSpans(
   const blocks: SpanTextBlock[] = [];
   const bars: SpanBar[] = [];
   for (const ps of placed) {
-    if (_spanPromoted(ps.span, hunkId)) continue;
+    const promoted = _spanPromoted(ps.span, hunkId);
     if (ps.first === ps.last) {
+      if (promoted) continue;
       _gutterBars(rowElsNew[ps.first]).appendChild(_spanMark(ps.span, ps.depth, "dot"));
     } else {
       for (let i = ps.first; i <= ps.last; i++) {
@@ -1292,6 +1295,7 @@ function _attachSpans(
         _gutterBars(rowElsNew[i]).appendChild(_spanMark(ps.span, ps.depth, pos));
       }
       bars.push({ span: ps.span, first: rowElsNew[ps.first], last: rowElsNew[ps.last], depth: ps.depth });
+      if (promoted) continue;
     }
     const el = _el("div", "span-text");
     el.dataset.spanId = ps.span.id;
@@ -1303,7 +1307,9 @@ function _attachSpans(
     half.appendChild(el);
     blocks.push({ el, body, row: rowElsNew[ps.first] });
   }
-  if (!blocks.length) return;
+  // A bar with no block still needs the pass: it runs through the
+  // non-code rows that arrive inside it.
+  if (!blocks.length && !bars.length) return;
   const gutter: SpanGutter = { blocks, bars, stretched: [], observer: null };
   _SPAN_GUTTERS.set(half, gutter);
   _observeHalf(half, gutter);
@@ -1406,9 +1412,9 @@ function _onGutterClick(e: MouseEvent): void {
 /** What a gutter cell says on hover; the strip has no chrome of its own. */
 const _GUTTER_CELL_TITLE = "Click to fold or unfold the span gutter (g)";
 
-/** A row's bars cell (`children[3]`; `[2]` is its text cell). */
+/** A row's bars cell (`children[2]`; `[3]` is its text cell). */
 function _gutterBars(rowEl: HTMLElement): HTMLElement {
-  const cell = rowEl.children[3] as HTMLElement | undefined;
+  const cell = rowEl.children[2] as HTMLElement | undefined;
   if (!cell || !cell.classList.contains("cell-gutter-bars")) throw new Error("row has no gutter bars cell");
   return cell;
 }
@@ -1431,30 +1437,47 @@ function _spanTooltip(span: AnnotationSpan): string {
   return smells.length ? `${smells.join(" · ")}\n${intent}` : intent;
 }
 
-/** Whether the reviewer has already turned this span into a comment: a
- *  local comment derived from its id, or — for a span of one line — from
- *  the `line_note` id a comment store written before spans recorded the
- *  same observation under. */
+/** Whether the reviewer has already turned this span's intent into a
+ *  comment: a local comment derived from its id, or — for a span of one
+ *  line — from the `line_note` id a comment store written before spans
+ *  recorded the same observation under. */
 function _spanPromoted(span: AnnotationSpan, hunkId: string): boolean {
   if (Comments.isPromoted(span.id)) return true;
   return span.start === span.end && Comments.isPromoted(`${hunkId}:line_note:${span.start}`);
 }
 
-/** One span's text: its smells as promotable pills on the block's first
- *  line — beside the bar's start, since they describe the span — then its
+/** One span's text: a pill row on the block's first line — beside the
+ *  bar's start, since it describes the span — holding its smells as
+ *  promotable pills and the affordance that promotes its intent, then the
  *  intent, wrapping at the gutter's width. */
 function _spanText(span: AnnotationSpan, filePath: string): HTMLElement {
   const el = _el("p", "span-text-body");
   el.dataset.spanId = span.id;
-  if (span.smells && span.smells.length) {
-    const pills = _el("span", "span-text-smells");
-    for (const sm of span.smells) pills.appendChild(_smellPill(sm, {
-      smellId: `${span.id}:smell:${sm.tag}`, file: filePath, side: "new", line: span.start,
-    }));
-    el.appendChild(pills);
-  }
+  const pills = _el("span", "span-text-pills");
+  for (const sm of span.smells || []) pills.appendChild(_smellPill(sm, {
+    smellId: `${span.id}:smell:${sm.tag}`, file: filePath, side: "new", line: span.start,
+  }));
+  if (span.intent) pills.appendChild(_spanPromoteButton(span, filePath));
+  el.appendChild(pills);
   el.appendChild(_el("span", span.intent ? "span-text-intent" : "span-text-intent empty", span.intent || "(no intent)"));
   return el;
+}
+
+/** The affordance that turns a span's intent into a reviewer comment on
+ *  the span's first line, by the one-click path the smell pills use;
+ *  the saved comment is `derived_from` the span's id, which is what
+ *  hides the block from then on. */
+function _spanPromoteButton(span: AnnotationSpan, filePath: string): HTMLElement {
+  const btn = _el("button", "span-promote", "+ comment") as HTMLButtonElement;
+  btn.type = "button";
+  btn.title = `Add this intent as a comment on line ${span.start}`;
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    Comments.promote({
+      derivedFrom: span.id, file: filePath, side: "new", line: span.start, body: span.intent,
+    });
+  });
+  return btn;
 }
 
 /** Re-run the placement pass whenever the half's rows change or its
@@ -1646,13 +1669,13 @@ function _renderRow(
   const newRow = _el("div", `row row-${row.kind}`);
   newRow.appendChild(_renderLineno(row.new_line, "new", hasNew));
   newRow.appendChild(_renderContent(row.new_text, "new", hasNew, file, newMarks));
-  // The centre gutter's cells, after the content so `children[1]` stays
-  // the content cell; the grid places them between number and code.
-  const text = _el("span", "cell-gutter-text");
+  // The span gutter's cells, in column order after the content cell:
+  // bars against the code, text at the half's right edge.
   const bars = _el("span", "cell-gutter-bars");
-  text.title = bars.title = _GUTTER_CELL_TITLE;
-  newRow.appendChild(text);
+  const text = _el("span", "cell-gutter-text");
+  bars.title = text.title = _GUTTER_CELL_TITLE;
   newRow.appendChild(bars);
+  newRow.appendChild(text);
   return { old: oldRow, new: newRow };
 }
 

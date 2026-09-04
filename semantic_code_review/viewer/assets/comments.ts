@@ -84,30 +84,15 @@ function isPromoted(annotationId: string): boolean {
   return false;
 }
 
-/** Open the comment editor pre-filled with text from an LLM annotation.
- *  On save the new local comment carries `derived_from` set to the
- *  annotation's id, so the renderer can hide the source annotation. */
-function openPromotionEditor(opts: {
-  rowEl: HTMLElement;
-  side: "old" | "new";
-  line: number;
-  file: string;
-  body: string;
+/** One-click promote: save a local comment with the observation's body
+ *  immediately and detach what the observation showed as. No mid-flight
+ *  editor — a smell often lives in a folded hunk header where there's no
+ *  row to anchor an inline editor on, and the user can edit/delete via
+ *  the comment's normal edit affordance once it's saved. `derivedFrom`
+ *  is the observation's stable id: a smell's (`<owner>:smell:<tag>`) or
+ *  a span's, for its intent. */
+function promote(opts: {
   derivedFrom: string;
-}): void {
-  _openEditor({
-    rowEl: opts.rowEl, side: opts.side, line: opts.line, file: opts.file,
-    prefillBody: opts.body, derivedFrom: opts.derivedFrom,
-  });
-}
-
-/** One-click promote: save a local comment with the smell's body
- *  immediately and detach the source pill. No mid-flight editor —
- *  smells often live in a folded hunk header where there's no row to
- *  anchor an inline editor on, and the user can edit/delete via the
- *  comment's normal edit affordance once it's saved. */
-function promoteSmell(opts: {
-  smellId: string;
   file: string;
   side: "old" | "new";
   line: number;
@@ -118,10 +103,10 @@ function promoteSmell(opts: {
   const c: ReviewerComment = {
     id, file: opts.file, side: opts.side, line: opts.line, body: opts.body,
     created_at: now, updated_at: now,
-    derived_from: opts.smellId,
+    derived_from: opts.derivedFrom,
   };
   _store.save(c).then(() => {
-    _removeAnnotationByDerivedId(opts.smellId);
+    _removeAnnotationByDerivedId(opts.derivedFrom);
     renderAll();
     _onChange?.();
   });
@@ -220,26 +205,18 @@ interface EditorOpts {
   /** When set, the new comment is saved as a reply (in_reply_to_id pinned
    *  to this id). Ignored for edits of an existing comment. */
   replyTo?: string | null;
-  /** Prefill text for the editor (new comments only — edits use existing.body). */
-  prefillBody?: string;
-  /** Stable id of the LLM annotation this comment is being promoted from.
-   *  Persisted on the saved comment so the renderer can hide the source
-   *  annotation. Ignored for edits of an existing comment. */
-  derivedFrom?: string | null;
 }
 
-function _openEditor({ rowEl, side, line, file, existing, replyTo, prefillBody, derivedFrom }: EditorOpts): void {
+function _openEditor({ rowEl, side, line, file, existing, replyTo }: EditorOpts): void {
   const bodyWrap = _el("div", "comment-editor-body");
   const ta = _el("textarea", "comment-editor-input") as HTMLTextAreaElement;
   ta.rows = 1;
   ta.placeholder = existing
     ? "Edit comment… (Enter to save, Shift-Enter for newline, Esc to cancel)"
-    : derivedFrom
-      ? "Edit and save as a comment… (Enter to save, Shift-Enter for newline, Esc to cancel)"
-      : replyTo
-        ? "Write a reply… (Enter to save, Shift-Enter for newline, Esc to cancel)"
-        : "Write a comment… (Enter to save, Shift-Enter for newline, Esc to cancel)";
-  ta.value = existing ? existing.body : (prefillBody ?? "");
+    : replyTo
+      ? "Write a reply… (Enter to save, Shift-Enter for newline, Esc to cancel)"
+      : "Write a comment… (Enter to save, Shift-Enter for newline, Esc to cancel)";
+  ta.value = existing ? existing.body : "";
   bodyWrap.appendChild(ta);
   const bar = _el("div", "comment-editor-bar");
   const save = _el("button", "comment-btn comment-btn-save",
@@ -278,16 +255,10 @@ function _openEditor({ rowEl, side, line, file, existing, replyTo, prefillBody, 
       in_reply_to_id: existing
         ? existing.in_reply_to_id ?? null
         : (replyTo ?? null),
-      derived_from: existing
-        ? existing.derived_from ?? null
-        : (derivedFrom ?? null),
+      derived_from: existing ? existing.derived_from ?? null : null,
     };
     _store.save(c).then(() => {
       close();
-      // If this save came from "Add as comment" on an LLM annotation,
-      // remove the source annotation row from the DOM so the
-      // observation visibly transitions into the comment.
-      if (c.derived_from) _removeAnnotationByDerivedId(c.derived_from);
       _refreshForAnchor(rowEl, { file, side, line });
       _onChange?.();
     });
@@ -620,13 +591,16 @@ function _refreshForAnchor(anchorRowEl: HTMLElement, anchor: Anchor): void {
  *  source observation visibly transitions into the comment.
  *
  *  Two shapes today: a span is its text block (`.span-text`) and marks
- *  (`.span-mark`) in the centre gutter, both carrying `data-span-id`;
- *  smells render as inline `.smell` pills with `data-smell-id`. All are
- *  plain elements; the gutter's placement pass notices a removed block
- *  on its next run. */
+ *  (`.span-mark`) in the span gutter, both carrying `data-span-id`;
+ *  smells render as inline `.smell` pills with `data-smell-id`. Of a
+ *  span, the block and a dot go — the comment stands in their place —
+ *  but a bar stays: it marks a range the comment, on one line, does
+ *  not (the renderer draws a promoted span the same way). All are plain
+ *  elements; the gutter's placement pass notices a removed block on its
+ *  next run. */
 function _removeAnnotationByDerivedId(derivedId: string): void {
   document.querySelectorAll<HTMLElement>(
-    `.span-text[data-span-id="${derivedId}"], .span-mark[data-span-id="${derivedId}"]`,
+    `.span-text[data-span-id="${derivedId}"], .span-mark.span-dot[data-span-id="${derivedId}"]`,
   ).forEach((el) => el.remove());
   document.querySelectorAll<HTMLElement>(
     `.smell[data-smell-id="${derivedId}"]`,
@@ -688,8 +662,7 @@ export const Comments = {
   renderAll,
   getAll,
   isPromoted,
-  openPromotionEditor,
-  promoteSmell,
+  promote,
   openBlockEditor,
   attachBlockThreads,
 };
