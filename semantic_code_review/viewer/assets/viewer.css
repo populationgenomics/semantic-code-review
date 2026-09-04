@@ -168,8 +168,16 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 .group-axis { margin-bottom: 10px; }
 .group-axis:last-child { margin-bottom: 0; }
 .group-axis-header h3 { margin-top: 4px; }
+/* A pill is a grid: the label column's minimum is 0, so the button's
+ * min-content width never includes the label and a long name ellipsises
+ * instead of widening the pill past its row; the badge columns then sit
+ * flush right at the same x on every row of an axis, whatever the label
+ * length or indent. On the Files axis, once any file carries a comment
+ * badge, a third column is reserved on every row so the count pill's
+ * column stays put whether or not the row has a badge. */
 .group-btn {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 6px;
   width: 100%;
@@ -191,19 +199,22 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   border-color: var(--accent);
   color: var(--fg);
 }
+.group-axis.has-comment-badges .group-btn {
+  grid-template-columns: minmax(0, 1fr) auto minmax(30px, auto);
+}
 .group-btn-label {
-  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .group-btn-count {
-  flex: 0 0 auto;
   background: var(--bg-alt);
   color: var(--fg-muted);
   padding: 1px 6px;
   border-radius: 10px;
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
   min-width: 20px;
   text-align: center;
 }
@@ -211,17 +222,28 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   background: var(--accent);
   color: var(--bg);
 }
+/* Files-axis count pill: changed lines as `+N -M`, the signs coloured
+ * like the file header's .file-meta. Active keeps the colours legible
+ * on the page background instead of inverting onto the accent. */
+.group-btn-lines {
+  display: inline-flex;
+  gap: 4px;
+  white-space: nowrap;
+}
+.group-btn-lines .adds { color: var(--ok); }
+.group-btn-lines .dels { color: var(--err); }
+.group-btn.active .group-btn-lines { background: var(--bg); }
 /* Comment-thread tally on Files-axis pills: unresolved/total. Sits
  * next to the hunk-count badge. Muted when every thread is resolved;
  * amber when there's outstanding discussion to chase. */
 .group-btn-comments {
-  flex: 0 0 auto;
   background: var(--bg-alt);
   color: var(--fg-muted);
   padding: 1px 6px;
   border-radius: 10px;
   font-size: 11px;
-  min-width: 28px;
+  font-variant-numeric: tabular-nums;
+  min-width: 30px;
   text-align: center;
 }
 .group-btn-comments.has-unresolved {
