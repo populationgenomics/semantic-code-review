@@ -876,13 +876,13 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 /* The bracket that ties a block to its mark: an L at the body's top-left
  * whose upright stands in the mark's own column (`--depth`, on the block)
  * and whose arm runs a short fixed way along the body's top edge, above
- * the pill row (which starts at the body's 2px padding). Over a bar the
- * upright covers the row's first 6px — onto the bar's rounded start,
- * which begins at 3px — so the two read as one stroke; it is painted
+ * the pill row (which starts at the body's 2px padding). The corner's
+ * radius is the pills'. The upright covers the row's first 12px — onto
+ * a bar's rounded start (which begins at 3px) or down past a dot's top
+ * at the row's middle — so the two read as one stroke; it is painted
  * opaque in the bar's rendered colour rather than at the bar's opacity,
- * so the overlap is not darker. Over a dot (`.dot`, on the body) it runs
- * down to the dot's top at the row's middle. On an inner span the arm
- * crosses the outer bar. The arm is 24px, not `ch`: the body's font is
+ * so the overlap is not darker. On an inner span the arm crosses the
+ * outer bar. The arm is 24px, not `ch`: the body's font is
  * the platform's and its `ch` is not one width, and the bars column is
  * fixed px. It is the block's pseudo-element, not the body's: the body
  * clips its overflow, and the bracket reaches outside it. Folded, the
@@ -890,17 +890,17 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 .diff .span-text::before {
   content: "";
   position: absolute;
+  z-index: 1; /* over the body's top padding, which otherwise paints across the arm */
   top: var(--chain, 0px);
   left: calc(-1 * (var(--depth, 0) * 6px + 4px));
   width: calc(var(--depth, 0) * 6px + 4px + 24px);
-  height: 6px;
+  height: 12px;
   box-sizing: border-box;
   border-top: 2px solid color-mix(in srgb, var(--accent) 75%, var(--bg-alt));
   border-left: 2px solid color-mix(in srgb, var(--accent) 75%, var(--bg-alt));
-  border-top-left-radius: 4px;
+  border-top-left-radius: 10px;
   pointer-events: none;
 }
-.diff .span-text:has(> .span-text-body.dot)::before { height: 8px; }
 /* The cut, where a body's text runs past its clamp: a fade over the last
  * line and a bit, in the strip's own colour, with an ellipsis in its
  * corner. Inside the body, so the clamp puts it at the visible bottom. */
@@ -927,16 +927,20 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  * would otherwise be clipped there and give the half a scrollbar. The
  * body is the text column's width, so it covers gutter text alone. The
  * z-order is the block's: a hovered block above a pinned one, a pinned
- * one above the rest. */
+ * one above the rest. The overlay keeps its block's top and left edge, so
+ * only its bottom edge lies over anything; a 1px line there (inset, so it
+ * adds no height) is the whole separation. A pinned block is marked by
+ * its bracket at full accent, not by a second frame around the body. */
 .diff .span-text.pinned { z-index: 3; }
 .diff .span-text.hover-lifted { z-index: 4; }
 .diff .span-text-body.lifted {
   position: fixed;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 -1px 0 0 var(--border);
   transition: max-height 150ms ease-out;
 }
+.diff .span-text.pinned::before { border-color: var(--accent); }
 .diff .span-text.pinned > .span-text-body.lifted {
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35), 0 0 0 1px color-mix(in srgb, var(--accent) 60%, var(--bg-alt));
+  box-shadow: inset 0 -1px 0 0 var(--accent);
 }
 .diff .span-text-body.lifted.truncated::after { opacity: 0; }
 @media (prefers-reduced-motion: reduce) {
@@ -974,7 +978,8 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  * row the span starts on rather than wherever its intent ends: the smell
  * pills, then the promote affordance at the row's far end — an outlined
  * pill, dim until hovered, so it reads as a control and not a smell. */
-.diff .span-text-pills { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-bottom: 2px; }
+.diff .span-text-head { display: flex; align-items: center; gap: 3px; margin-bottom: 2px; }
+.diff .span-text-pills { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-top: 3px; }
 .diff .span-text .smell { font-size: 10px; padding: 0 6px; margin-left: 0; }
 .diff .span-promote {
   padding: 0 6px;
