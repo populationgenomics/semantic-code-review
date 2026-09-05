@@ -890,6 +890,7 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 .diff .span-text::before {
   content: "";
   position: absolute;
+  z-index: 1; /* over the body's top padding, which otherwise paints across the arm */
   top: var(--chain, 0px);
   left: calc(-1 * (var(--depth, 0) * 6px + 4px));
   width: calc(var(--depth, 0) * 6px + 4px + 24px);
@@ -974,7 +975,8 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  * row the span starts on rather than wherever its intent ends: the smell
  * pills, then the promote affordance at the row's far end — an outlined
  * pill, dim until hovered, so it reads as a control and not a smell. */
-.diff .span-text-pills { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-bottom: 2px; }
+.diff .span-text-head { display: flex; align-items: center; gap: 3px; margin-bottom: 2px; }
+.diff .span-text-pills { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-top: 3px; }
 .diff .span-text .smell { font-size: 10px; padding: 0 6px; margin-left: 0; }
 .diff .span-promote {
   padding: 0 6px;

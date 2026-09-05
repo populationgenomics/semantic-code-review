@@ -1316,16 +1316,17 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
     expect(gridRow(inner)).toBe("3");
     expect(inner.querySelector(".span-text-intent")!.textContent).toBe("the inner edit");
     expect(inner.querySelector(".smell")!.textContent).toBe("dead-code");
-    // The pill row leads the block — beside the bar's first row, not
-    // wherever a long intent happens to end — with the smells, then the
-    // promote affordance; a span with no smells still has the row, for
-    // the affordance.
+    // The promote affordance leads the block, beside the bar's first row;
+    // the smells trail the intent, so a wide pill never pushes the text
+    // down a line. A span with no smells has no trailing row at all.
     const body = inner.querySelector(".span-text-body")!;
-    expect(Array.from(body.children).map((c) => c.className)).toEqual(["span-text-pills", "span-text-intent"]);
+    expect(Array.from(body.children).map((c) => c.className))
+      .toEqual(["span-text-head", "span-text-intent", "span-text-pills"]);
+    expect(Array.from(body.querySelector(".span-text-head")!.children).map((c) => c.className)).toEqual(["span-promote"]);
     expect(Array.from(body.querySelector(".span-text-pills")!.children).map((c) => c.className.split(" ")[0]))
-      .toEqual(["smell", "span-promote"]);
-    expect(Array.from(textOf("H0_0:span:4-7")!.querySelector(".span-text-pills")!.children).map((c) => c.className))
-      .toEqual(["span-promote"]);
+      .toEqual(["smell"]);
+    const plain = textOf("H0_0:span:4-7")!.querySelector(".span-text-body")!;
+    expect(Array.from(plain.children).map((c) => c.className)).toEqual(["span-text-head", "span-text-intent"]);
 
     // Single-line spans take the same form: a dot on their row at their
     // depth, and their text block in the gutter on that row — nothing in
@@ -1867,7 +1868,7 @@ describe("LLM observation → comment promotion", () => {
     ])] }));
     await new Promise<void>((r) => setTimeout(r, 0));
     const btn = (id: string): HTMLButtonElement | null =>
-      document.querySelector<HTMLButtonElement>(`.span-text[data-span-id="${id}"] .span-text-pills > .span-promote`);
+      document.querySelector<HTMLButtonElement>(`.span-text[data-span-id="${id}"] .span-text-head > .span-promote`);
     for (const id of ["H0_0:span:4-7", "H0_0:span:5-6", "H0_0:span:8-8"]) {
       const b = btn(id)!;
       expect(b, id).not.toBeNull();

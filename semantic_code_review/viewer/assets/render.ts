@@ -1496,13 +1496,19 @@ function _spanPromoted(span: AnnotationSpan, hunkId: string): boolean {
 function _spanText(span: AnnotationSpan, filePath: string): HTMLElement {
   const el = _el("p", "span-text-body");
   el.dataset.spanId = span.id;
-  const pills = _el("span", "span-text-pills");
-  for (const sm of span.smells || []) pills.appendChild(_smellPill(sm, {
-    smellId: `${span.id}:smell:${sm.tag}`, file: filePath, side: "new", line: span.start,
-  }));
-  if (span.intent) pills.appendChild(_spanPromoteButton(span, filePath));
-  el.appendChild(pills);
+  // The affordance leads, beside the bar's first row; the smells trail the
+  // intent, so a wide pill never pushes the text down a line.
+  const head = _el("span", "span-text-head");
+  if (span.intent) head.appendChild(_spanPromoteButton(span, filePath));
+  el.appendChild(head);
   el.appendChild(_el("span", span.intent ? "span-text-intent" : "span-text-intent empty", span.intent || "(no intent)"));
+  if (span.smells && span.smells.length) {
+    const pills = _el("span", "span-text-pills");
+    for (const sm of span.smells) pills.appendChild(_smellPill(sm, {
+      smellId: `${span.id}:smell:${sm.tag}`, file: filePath, side: "new", line: span.start,
+    }));
+    el.appendChild(pills);
+  }
   return el;
 }
 
