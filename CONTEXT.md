@@ -318,24 +318,32 @@ smell pills, each promotable to a [[reviewer-comment]] by a click, and a
 `+ comment` affordance that promotes the span's intent the same way, by
 the one-click path (`Comments.promote`), as a comment on the span's
 first line — then the intent. A bracket at the block's top-left (a CSS
-pseudo-element, drawn from the `--depth` and `dot` the renderer puts on
-the block) reaches back across the bars column to the span's own mark
-and runs 24px along the block's top, so the block reads as the mark's;
-folded, it hides with the block. The block is a zero-height grid item, so
-it sizes no row; the one placement rule is that blocks do not overlap. A
-downward pass over the half's rows (`render._layoutSpanTexts`) enforces
-it: where a block would start inside the one above, the nearest code row
-above it is stretched by the overlap (a `min-height`, mirrored onto the
-old half's paired row so the halves stay aligned), and text running past
-the hunk's last row stretches its last code row; every other row keeps
-its natural height. Two spans starting on one row chain their blocks,
-outermost first. The same pass gives every non-code row inside a bar — a
-comment thread's row, a fold's label row — a bars cell with the bar's
-segment at its depth, so a bar runs unbroken through them. The pass runs
-when the half's rows change (an annotation inserted, a fold hiding rows
-— a `MutationObserver`) or its size does (a `ResizeObserver`, on the
-next frame); it measures once, writes once, and discards the mutation
-records its own writes queue. When a fold hides a span's first row its
+pseudo-element of the block, drawn from the `--depth` the renderer puts
+on the block and the `dot` on its body) reaches back across the bars
+column to the span's own mark and runs 24px along the block's top, so
+the block reads as the mark's; folded, it hides with the block. A span
+never changes the shape of the code: the block is a zero-height grid
+item, so it sizes no row, and no row is ever sized for it — not mid-hunk,
+not at the hunk's end. The placement rules are that blocks do not overlap
+and nothing of a block lies below the hunk's last row, and a downward
+pass over the half's rows (`render._layoutSpanTexts`) enforces them by
+cutting, not pushing: each block's **slot** runs from its top to the next
+block's top in the half, or to the last row's bottom when nothing
+follows; its body is clamped to the slot (`max-height`, inline, always
+written) and, when its measured natural height exceeds the slot, marked
+`truncated` — a fade to the strip's colour over the last line and an
+ellipsis in its corner, so a cut is never silent. Two spans starting on
+one row chain their blocks, outermost first, and share the one slot: the
+smaller block takes its natural height, the rest is split equally among
+those that do not fit, and the last block in the chain runs to the slot's
+end; the offset each hangs at is `--chain` on the block, which places
+both its body and its bracket. The same pass gives every non-code row
+inside a bar — a comment thread's row, a fold's label row — a bars cell
+with the bar's segment at its depth, so a bar runs unbroken through them.
+The pass runs when the half's rows change (an annotation inserted, a fold
+hiding rows — a `MutationObserver`) or its size does (a `ResizeObserver`,
+on the next frame); it measures once, writes once, and discards the
+mutation records its own writes queue. When a fold hides a span's first row its
 text hides too and the fold's label tree lists it ([[fold-region]]). A
 span whose intent the reviewer has turned into a [[reviewer-comment]] (a
 local comment `derived_from` its id, or the `line_note` id a store
@@ -346,8 +354,8 @@ the explicit `grid-row` on every row of a half with spans is what places
 the blocks.
 
 The gutter **folds**, globally: folded, it is the bars alone at the
-right edge — the text column zero wide, every block hidden, no row
-stretched, the bars and dots still showing where each span is and how
+right edge — the text column zero wide, every block hidden, the bars and
+dots still showing where each span is and how
 they nest, a mark's tooltip its rationale. Clicking a mark unfolds it
 and brings that
 span's text into view; clicking the strip's empty area, or `g`,

@@ -732,10 +732,7 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  * opposite side and syncs its height to the real annotation via a
  * ResizeObserver. A span's text block hangs down the strip from its first
  * row without sizing any row; where it would run into the next block, or
- * past the last row, the JS stretches one code row (`min-height`) and
- * gives the old half's paired row the same height. Subgrid would do this
- * for free but requires explicit outer row tracks, which we don't know at
- * CSS compile time.
+ * past the last row, the JS clamps it (`max-height`) and marks the cut.
  *
  * The gutter's width (`--span-bars-w` + `--gutter-text-w`; 0 for a file
  * with no span) is split between the halves, so the new half is wider by
@@ -843,11 +840,11 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 /* The empty strip is the fold's own affordance. */
 .diff .cell-gutter-text, .diff .cell-gutter-bars { cursor: pointer; }
 /* A span's text: a zero-height item on the span's first row (`grid-row`,
- * set by the renderer), so the row's size owes it nothing; the body
- * overflows downward over the strip for as long as it needs. `transform`
- * is the renderer's chaining offset for a block that starts on the same
- * row as the one above it. The renderer hides every block while the
- * gutter is folded. */
+ * set by the renderer), so the row's size owes it nothing; the body hangs
+ * downward over the strip. `--chain` is the renderer's offset for a block
+ * that starts on the same row as the one above it: the body and the
+ * bracket both sit that far down. The renderer hides every block while
+ * the gutter is folded. */
 .diff .span-text {
   z-index: 2;
   align-self: start;
@@ -859,11 +856,16 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 }
 /* The size lives on the body, not the block: the block is a grid item of
  * the half and sticks like the cells do. The body paints the strip's
- * background itself, since it may lie over rows with none. */
+ * background itself, since it may lie over rows with none. Its height is
+ * clamped to the slot the renderer measured for it (`max-height`, inline);
+ * what does not fit is cut, and the cut is shown (`.truncated`). */
 .diff .span-text-body {
   position: relative;
+  top: var(--chain, 0px);
+  box-sizing: border-box;
   margin: 0;
   padding: 2px 6px;
+  overflow: hidden;
   background: var(--bg-alt);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 11px;
@@ -877,15 +879,17 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  * upright covers the row's first 6px — onto the bar's rounded start,
  * which begins at 3px — so the two read as one stroke; it is painted
  * opaque in the bar's rendered colour rather than at the bar's opacity,
- * so the overlap is not darker. Over a dot (`.dot`) it runs down to the
- * dot's top at the row's middle. On an inner span the arm crosses the
- * outer bar. The arm is 24px, not `ch`: the body's font is the
- * platform's and its `ch` is not one width, and the bars column is fixed
- * px. Folded, the renderer hides the block and the bracket with it. */
-.diff .span-text-body::before {
+ * so the overlap is not darker. Over a dot (`.dot`, on the body) it runs
+ * down to the dot's top at the row's middle. On an inner span the arm
+ * crosses the outer bar. The arm is 24px, not `ch`: the body's font is
+ * the platform's and its `ch` is not one width, and the bars column is
+ * fixed px. It is the block's pseudo-element, not the body's: the body
+ * clips its overflow, and the bracket reaches outside it. Folded, the
+ * renderer hides the block and the bracket with it. */
+.diff .span-text::before {
   content: "";
   position: absolute;
-  top: 0;
+  top: var(--chain, 0px);
   left: calc(-1 * (var(--depth, 0) * 6px + 4px));
   width: calc(var(--depth, 0) * 6px + 4px + 24px);
   height: 6px;
@@ -895,7 +899,24 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   border-top-left-radius: 4px;
   pointer-events: none;
 }
-.diff .span-text-body.dot::before { height: 8px; }
+.diff .span-text:has(> .span-text-body.dot)::before { height: 8px; }
+/* The cut, where a body's text runs past its clamp: a fade over the last
+ * line and a bit, in the strip's own colour, with an ellipsis in its
+ * corner. Inside the body, so the clamp puts it at the visible bottom. */
+.diff .span-text-body.truncated::after {
+  content: "\2026";
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 18px;
+  padding-right: 6px;
+  box-sizing: border-box;
+  background: linear-gradient(to bottom, transparent, var(--bg-alt) 65%);
+  color: var(--fg-dim);
+  font-size: 11px;
+  line-height: 22px;
+  text-align: right;
+  pointer-events: none;
+}
 /* An annotation row (or the placeholder for an old-side one) is built
  * without gutter cells; a sticky pseudo-item over the strip's two columns
  * keeps its background continuous through the row, and the placement pass
@@ -922,7 +943,7 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 .diff .span-text-body.chained { padding-top: 4px; border-top: 1px dashed var(--border); }
 /* The chained block's bracket is at its own top — over its divider, not
  * under it. */
-.diff .span-text-body.chained::before { top: -1px; }
+.diff .span-text:has(> .span-text-body.chained)::before { top: calc(var(--chain, 0px) - 1px); }
 .diff .span-text-intent.empty { color: var(--fg-dim); font-style: italic; }
 /* The pill row leads the block, on its first line, so it sits beside the
  * row the span starts on rather than wherever its intent ends: the smell

@@ -1204,16 +1204,19 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLE
 //
 // A text block is a zero-height grid item on its span's first row, so it
 // takes no part in the grid's row sizing: its body hangs down the strip
-// from the top of that row for as long as it needs, past the end of the
-// bar if it must. The one invariant is that blocks do not overlap. A
-// downward pass over the rows (`_layoutSpanTexts`) keeps it: where a
-// block would start inside the one above, the nearest code row above it
-// is stretched by the overlap (a `min-height`, mirrored onto the old
-// half's paired row), and text running past the last row stretches the
-// last code row. Two blocks starting on one row chain, outermost first.
-// The pass is redone whenever the half's rows change (an annotation
-// inserted, a fold hiding rows) or its size does; it measures once,
-// writes once, and discards the mutation records its own writes queue.
+// from the top of that row, past the end of the bar if it must. A span
+// never changes the shape of the code: no row is ever sized by a block.
+// The two invariants are that blocks do not overlap and that nothing of a
+// block lies below the hunk's last row. A downward pass over the rows
+// (`_layoutSpanTexts`) keeps them by cutting, not pushing: each block's
+// slot runs from its top to the next block's top in the half — or to the
+// last row's bottom when nothing follows — and its body is clamped to the
+// slot (`max-height`); one whose text does not fit is marked `truncated`
+// and shows the cut. Two blocks starting on one row chain, outermost
+// first, and share the slot. The pass is redone whenever the half's rows
+// change (an annotation inserted, a fold hiding rows) or its size does; it
+// measures once, writes once, and discards the mutation records its own
+// writes queue.
 
 /** A span placed on a hunk's rows: its row extent and nesting depth. */
 interface PlacedSpan {
@@ -1224,11 +1227,14 @@ interface PlacedSpan {
 }
 
 /** A span's text block: the grid item, the body whose height is the
- *  block's, and the span's first row. */
+ *  block's, the span's first row, and what the last pass measured and
+ *  gave it — the body's natural height and the slot it is clamped to. */
 interface SpanTextBlock {
   el: HTMLElement;
   body: HTMLElement;
   row: HTMLElement;
+  natural: number;
+  available: number;
 }
 
 /** A multi-line span's bar: the code rows it runs from and to, and its
@@ -1242,15 +1248,17 @@ interface SpanBar {
   depth: number;
 }
 
-/** A right half's gutter state: its text blocks and bars, the code rows
- *  the last pass stretched, and the observer whose records the pass
- *  discards. */
+/** A right half's gutter state: its text blocks and bars, and the
+ *  observer whose records the pass discards. */
 interface SpanGutter {
   blocks: SpanTextBlock[];
   bars: SpanBar[];
-  stretched: HTMLElement[];
   observer: MutationObserver | null;
 }
+
+/** Slack under which a body counts as fitting its slot: a cut of less
+ *  than half a pixel is rounding, not text. */
+const _TRUNCATION_EPSILON_PX = 0.5;
 
 /** Gutter state per right half. */
 const _SPAN_GUTTERS = new WeakMap<HTMLElement, SpanGutter>();
@@ -1310,12 +1318,12 @@ function _attachSpans(
     if (blocks.length && blocks[blocks.length - 1].row === rowElsNew[ps.first]) body.classList.add("chained");
     el.appendChild(body);
     half.appendChild(el);
-    blocks.push({ el, body, row: rowElsNew[ps.first] });
+    blocks.push({ el, body, row: rowElsNew[ps.first], natural: 0, available: 0 });
   }
   // A bar with no block still needs the pass: it runs through the
   // non-code rows that arrive inside it.
   if (!blocks.length && !bars.length) return;
-  const gutter: SpanGutter = { blocks, bars, stretched: [], observer: null };
+  const gutter: SpanGutter = { blocks, bars, observer: null };
   _SPAN_GUTTERS.set(half, gutter);
   _observeHalf(half, gutter);
   _layoutSpanTexts(half);
@@ -1373,8 +1381,8 @@ function _readGutterFold(): boolean {
 /** Fold or unfold the gutter everywhere it is on screen. The class on
  *  the document is what the stylesheet zeroes the text column by, in the
  *  diff pane and the explainer's panel alike; the placement pass is then
- *  re-run on every half that has one, so a collapse releases its
- *  stretches and an expand puts them back. */
+ *  re-run on every half that has one, so a collapse hides the blocks
+ *  and an expand places them again. */
 function _applyGutterFold(collapsed: boolean): void {
   _gutterCollapsed = collapsed;
   document.documentElement.classList.toggle("gutter-collapsed", collapsed);
@@ -1521,9 +1529,11 @@ function _observeHalf(half: HTMLElement, gutter: SpanGutter): void {
 /** Place a half's text blocks: give every visible row its grid row, put
  *  each block on its span's first row (hidden while that row is hidden —
  *  the fold's label tree carries it then), then run the waterfall over
- *  the blocks' measured heights so none overlaps the one above it. The
- *  writes happen before and after a single measurement; the mutation
- *  records they queue are discarded, so the pass does not re-run itself. */
+ *  the blocks' measured heights: each is clamped to its slot, and one
+ *  whose text runs past the slot is marked `truncated`. No row is sized
+ *  by any of it. The writes happen before and after a single measurement;
+ *  the mutation records they queue are discarded, so the pass does not
+ *  re-run itself. */
 function _layoutSpanTexts(half: HTMLElement): void {
   const gutter = _SPAN_GUTTERS.get(half);
   if (!gutter) return;
@@ -1532,13 +1542,6 @@ function _layoutSpanTexts(half: HTMLElement): void {
   // then on. Not `isConnected`: the first pass runs before the hunk's
   // `.diff` is in the document.
   gutter.blocks = gutter.blocks.filter((block) => block.el.parentElement === half);
-  // Release the last pass's stretches: the rows measure at their natural
-  // heights and the pass recomputes every one.
-  for (const row of gutter.stretched) {
-    row.style.minHeight = "";
-    _pairOf(row).style.minHeight = "";
-  }
-  gutter.stretched = [];
   const track = new Map<Element, number>();
   const visible: HTMLElement[] = [];
   const rows: HTMLElement[] = [];
@@ -1556,15 +1559,17 @@ function _layoutSpanTexts(half: HTMLElement): void {
   const shown: SpanTextBlock[] = [];
   for (const block of gutter.blocks) {
     const start = track.get(block.row);
-    // Folded, the gutter has no text to place: every block hides and no
-    // row is stretched — the compact view is the undistorted diff.
+    // Folded, the gutter has no text to place: every block hides — the
+    // compact view is the undistorted diff.
     if (start === undefined || _gutterCollapsed) {
       block.el.style.display = "none";
-      block.el.style.transform = "";
+      block.el.style.removeProperty("--chain");
       continue;
     }
     block.el.style.display = "";
     block.el.style.gridRow = String(start);
+    // Released so the body measures at its natural height.
+    block.body.style.maxHeight = "";
     shown.push(block);
   }
   if (!shown.length) {
@@ -1574,56 +1579,50 @@ function _layoutSpanTexts(half: HTMLElement): void {
   // The one measurement.
   const rects = new Map<HTMLElement, DOMRect>();
   for (const row of visible) rects.set(row, row.getBoundingClientRect());
-  const heights = new Map<SpanTextBlock, number>();
-  for (const block of shown) heights.set(block, block.body.getBoundingClientRect().height);
-  // The waterfall. `shift` is what the stretches so far have pushed every
-  // row below them down by; `occupiedUntil` is where the lowest block so
-  // far ends.
+  for (const block of shown) block.natural = block.body.getBoundingClientRect().height;
+  const bottom = rects.get(visible[visible.length - 1])!.bottom;
+  // The waterfall: the blocks starting on one row are a chain that
+  // shares the slot from that row's top to the next chain's top (or the
+  // last row's bottom).
   shown.sort((a, b) => track.get(a.row)! - track.get(b.row)!);
-  const stretch = new Map<HTMLElement, number>();
-  const stretchBy = (row: HTMLElement, px: number): void => { stretch.set(row, (stretch.get(row) ?? 0) + px); };
-  let shift = 0;
-  let occupiedUntil = -Infinity;
   for (let i = 0; i < shown.length;) {
     const row = shown[i].row;
-    let top = rects.get(row)!.top + shift;
-    if (top < occupiedUntil) {
-      const overlap = occupiedUntil - top;
-      stretchBy(_codeRowAbove(visible, visible.indexOf(row) - 1), overlap);
-      shift += overlap;
-      top = occupiedUntil;
-    }
-    let y = top;
-    for (; i < shown.length && shown[i].row === row; i++) {
-      const offset = y - top;
-      shown[i].el.style.transform = offset > 0 ? `translateY(${offset}px)` : "";
-      y += heights.get(shown[i])!;
-    }
-    occupiedUntil = Math.max(occupiedUntil, y);
-  }
-  if (visible.length) {
-    const last = visible[visible.length - 1];
-    const bottom = rects.get(last)!.bottom + shift;
-    if (occupiedUntil > bottom) stretchBy(_codeRowAbove(visible, visible.length - 1), occupiedUntil - bottom);
-  }
-  for (const [row, px] of stretch) {
-    const h = `${rects.get(row)!.height + px}px`;
-    row.style.minHeight = h;
-    _pairOf(row).style.minHeight = h;
-    gutter.stretched.push(row);
+    const chain: SpanTextBlock[] = [];
+    for (; i < shown.length && shown[i].row === row; i++) chain.push(shown[i]);
+    const top = rects.get(row)!.top;
+    const end = i < shown.length ? rects.get(shown[i].row)!.top : bottom;
+    _placeChain(chain, end - top);
   }
   gutter.observer?.takeRecords();
 }
 
-/** The nearest code row at or above `visible[from]` — the row a stretch
- *  goes on, since a code row has a paired row in the old half to carry
- *  the stretch across; an annotation row or a placeholder does not. */
-function _codeRowAbove(visible: HTMLElement[], from: number): HTMLElement {
-  for (let i = from; i >= 0; i--) {
-    const row = visible[i];
-    if (!row.classList.contains("row-annotation") && !row.classList.contains("row-placeholder")) return row;
+/** Clamp a chain's blocks into a slot `space` tall. Every block but the
+ *  last is clamped to its share — its natural height, or an equal split
+ *  of what the smaller blocks leave when the chain does not fit — and
+ *  the last runs to the slot's end; each hangs under the one before it
+ *  (`--chain`, the offset the stylesheet places its body and bracket by).
+ *  A block whose text runs past its clamp is `truncated`. */
+function _placeChain(chain: SpanTextBlock[], space: number): void {
+  const share = new Map<SpanTextBlock, number>();
+  let remaining = space;
+  const bySize = [...chain].sort((a, b) => a.natural - b.natural);
+  for (let left = bySize.length; left > 0; left--) {
+    const block = bySize[bySize.length - left];
+    const portion = Math.min(block.natural, remaining / left);
+    share.set(block, portion);
+    remaining -= portion;
   }
-  throw new Error("no code row above a colliding span text");
+  let offset = 0;
+  for (let i = 0; i < chain.length; i++) {
+    const block = chain[i];
+    const last = i === chain.length - 1;
+    block.available = Math.max(0, last ? space - offset : share.get(block)!);
+    if (offset > 0) block.el.style.setProperty("--chain", `${offset}px`);
+    else block.el.style.removeProperty("--chain");
+    block.body.style.maxHeight = `${block.available}px`;
+    block.body.classList.toggle("truncated", block.natural > block.available + _TRUNCATION_EPSILON_PX);
+    offset += block.available;
+  }
 }
 
 /** Give every non-code row lying inside a bar — a comment thread's row,
@@ -1651,13 +1650,6 @@ function _barNonCodeRows(bars: SpanBar[], rows: HTMLElement[]): void {
     }
     for (const bar of bars) if (bar.last === row) open.delete(bar);
   }
-}
-
-/** The old-half row paired with a new-half code row. */
-function _pairOf(row: HTMLElement): HTMLElement {
-  const pair = (row as { _scrPair?: HTMLElement })._scrPair;
-  if (!pair) throw new Error("code row has no paired row");
-  return pair;
 }
 
 function _renderRow(
