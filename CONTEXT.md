@@ -343,7 +343,29 @@ with the bar's segment at its depth, so a bar runs unbroken through them.
 The pass runs when the half's rows change (an annotation inserted, a fold
 hiding rows — a `MutationObserver`) or its size does (a `ResizeObserver`,
 on the next frame); it measures once, writes once, and discards the
-mutation records its own writes queue. When a fold hides a span's first row its
+mutation records its own writes queue.
+
+A cut block is read by **lifting** it: hovering its body or any of its
+marks lifts the body to its measured natural height, over whatever
+gutter content lies below — never moving a row — and leaving settles it
+back; a click on the body **pins** the lift, a second click unpins, and
+the block's controls (the pills, `+ comment`) are their own targets, not
+the pin's. The lifted body is a `position: fixed` overlay at the
+coordinates it already had (the half is a scroll container, so a body
+in the grid running past the hunk's last row would be clipped there and
+give the half a scrollbar), re-anchored to its block on every scroll
+(captured at the document, so a pane's scroll counts) and every pass;
+its `max-height` transitions to the measured px (150ms, none under
+`prefers-reduced-motion`), and it returns to the grid when the retract's
+transition has run (`getAnimations().finished`). While it is an overlay
+the pass neither measures nor re-clamps it. It is the text column's
+width, so it covers gutter text alone within the hunk; past the hunk's
+last row it covers whatever is there (the context note, the next hunk),
+and the viewport is the only thing that clips it. Z-order is the
+block's: hovered above pinned above the rest, so hovering the bar of a
+block a pinned neighbour covers brings it up. Pins live in memory on the
+block, so a repainted hunk's new blocks start unpinned, and folding the
+gutter clears them. When a fold hides a span's first row its
 text hides too and the fold's label tree lists it ([[fold-region]]). A
 span whose intent the reviewer has turned into a [[reviewer-comment]] (a
 local comment `derived_from` its id, or the `line_note` id a store

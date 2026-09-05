@@ -1217,6 +1217,16 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLE
 // change (an annotation inserted, a fold hiding rows) or its size does; it
 // measures once, writes once, and discards the mutation records its own
 // writes queue.
+//
+// The cut is read by lifting: hovering a block (its body or its marks)
+// lifts its body to its natural height as an overlay — `position: fixed`
+// at the coordinates it already has, since the half is a scroll container
+// and would otherwise clip the body at the hunk's end and grow a scrollbar
+// for it — over whatever gutter content is below it, never moving a row;
+// a click pins the lift, a second unpins. The overlay is re-anchored to
+// its block on every scroll and every pass, and released once its retract
+// has run. The lift is the block's alone: hovered draws above pinned,
+// pinned above the rest.
 
 /** A span placed on a hunk's rows: its row extent and nesting depth. */
 interface PlacedSpan {
@@ -1227,14 +1237,21 @@ interface PlacedSpan {
 }
 
 /** A span's text block: the grid item, the body whose height is the
- *  block's, the span's first row, and what the last pass measured and
- *  gave it — the body's natural height and the slot it is clamped to. */
+ *  block's, the span's first row; what the last pass measured and gave it
+ *  — the body's natural height, the slot it is clamped to, the offset it
+ *  hangs at under a block sharing its row; and its lift — whether the
+ *  pointer is on it, whether a click pinned it, and whether the body is
+ *  lifted now (the two's disjunction, applied). */
 interface SpanTextBlock {
   el: HTMLElement;
   body: HTMLElement;
   row: HTMLElement;
   natural: number;
   available: number;
+  chain: number;
+  hover: boolean;
+  pinned: boolean;
+  lifted: boolean;
 }
 
 /** A multi-line span's bar: the code rows it runs from and to, and its
@@ -1318,7 +1335,9 @@ function _attachSpans(
     if (blocks.length && blocks[blocks.length - 1].row === rowElsNew[ps.first]) body.classList.add("chained");
     el.appendChild(body);
     half.appendChild(el);
-    blocks.push({ el, body, row: rowElsNew[ps.first], natural: 0, available: 0 });
+    blocks.push({
+      el, body, row: rowElsNew[ps.first], natural: 0, available: 0, chain: 0, hover: false, pinned: false, lifted: false,
+    });
   }
   // A bar with no block still needs the pass: it runs through the
   // non-code rows that arrive inside it.
@@ -1400,13 +1419,24 @@ function _setGutterFold(collapsed: boolean): void {
 }
 
 /** The strip's own affordances, delegated from the document so one
- *  listener covers every pane: a click on a span's mark expands the
- *  gutter (if folded) and brings that span's text into view; a click on
- *  the strip's empty area — a gutter cell itself, not a block or mark on
- *  it — toggles the fold. */
+ *  listener covers every pane: a click on a block's body pins or unpins
+ *  its lift — the body, not its controls, whose clicks are their own; a
+ *  click on a span's mark expands the gutter (if folded) and brings that
+ *  span's text into view; a click on the strip's empty area — a gutter
+ *  cell itself, not a block or mark on it — toggles the fold. */
 function _onGutterClick(e: MouseEvent): void {
   const target = e.target as HTMLElement | null;
   if (!target) return;
+  const body = target.closest<HTMLElement>(".span-text-body[data-span-id]");
+  if (body) {
+    if (target.closest("button, .smell")) return;
+    const block = _blockAt(body);
+    if (!block) return;
+    e.stopPropagation();
+    block.pinned = !block.pinned;
+    _applyLift(block);
+    return;
+  }
   const mark = target.closest<HTMLElement>(".span-mark[data-span-id]");
   if (mark) {
     e.stopPropagation();
@@ -1562,14 +1592,17 @@ function _layoutSpanTexts(half: HTMLElement): void {
     // Folded, the gutter has no text to place: every block hides — the
     // compact view is the undistorted diff.
     if (start === undefined || _gutterCollapsed) {
+      _dropLift(block);
       block.el.style.display = "none";
       block.el.style.removeProperty("--chain");
       continue;
     }
     block.el.style.display = "";
     block.el.style.gridRow = String(start);
-    // Released so the body measures at its natural height.
-    block.body.style.maxHeight = "";
+    // Released so the body measures at its natural height — unless it is
+    // an overlay (lifted, or retracting), whose clamp is in transition
+    // and whose natural height is the one it was lifted to.
+    if (!_isOverlay(block)) block.body.style.maxHeight = "";
     shown.push(block);
   }
   if (!shown.length) {
@@ -1579,7 +1612,9 @@ function _layoutSpanTexts(half: HTMLElement): void {
   // The one measurement.
   const rects = new Map<HTMLElement, DOMRect>();
   for (const row of visible) rects.set(row, row.getBoundingClientRect());
-  for (const block of shown) block.natural = block.body.getBoundingClientRect().height;
+  for (const block of shown) {
+    if (!_isOverlay(block)) block.natural = block.body.getBoundingClientRect().height;
+  }
   const bottom = rects.get(visible[visible.length - 1])!.bottom;
   // The waterfall: the blocks starting on one row are a chain that
   // shares the slot from that row's top to the next chain's top (or the
@@ -1617,11 +1652,138 @@ function _placeChain(chain: SpanTextBlock[], space: number): void {
     const block = chain[i];
     const last = i === chain.length - 1;
     block.available = Math.max(0, last ? space - offset : share.get(block)!);
+    block.chain = offset;
     if (offset > 0) block.el.style.setProperty("--chain", `${offset}px`);
     else block.el.style.removeProperty("--chain");
-    block.body.style.maxHeight = `${block.available}px`;
+    // A lifted body keeps its lift; a retracting one is already headed
+    // for the clamp, and an overlay's coordinates follow its block.
+    if (!block.lifted) block.body.style.maxHeight = `${block.available}px`;
+    if (_isOverlay(block)) _anchorOverlay(block);
     block.body.classList.toggle("truncated", block.natural > block.available + _TRUNCATION_EPSILON_PX);
     offset += block.available;
+  }
+}
+
+// --- The lift ----------------------------------------------------------------
+
+/** The blocks whose bodies are overlays now, for re-anchoring on scroll. */
+const _OVERLAYS = new Set<SpanTextBlock>();
+/** The block under the pointer, if it is on a block's body or marks. */
+let _hoveredBlock: SpanTextBlock | null = null;
+
+/** Whether the block's body is out of the grid as a fixed overlay:
+ *  lifted, or still retracting from a lift. */
+function _isOverlay(block: SpanTextBlock): boolean {
+  return block.body.classList.contains("lifted");
+}
+
+/** Put the overlay where its block is: the block is the zero-height grid
+ *  item, still in place, so its rect (plus the chain offset) is where the
+ *  body would be in the grid. */
+function _anchorOverlay(block: SpanTextBlock): void {
+  const r = block.el.getBoundingClientRect();
+  block.body.style.top = `${r.top + block.chain}px`;
+  block.body.style.left = `${r.left}px`;
+  block.body.style.width = `${r.width}px`;
+}
+
+/** Apply a block's lift state. Lifting anchors the body as an overlay at
+ *  the coordinates it has in the grid and sets its clamp to the natural
+ *  height, which the stylesheet transitions; un-lifting sets the clamp
+ *  back and returns the body to the grid once the transition has run.
+ *  The classes on the block carry the z-order — a hovered block above a
+ *  pinned one, a pinned one above the rest. */
+function _applyLift(block: SpanTextBlock): void {
+  const lifted = block.hover || block.pinned;
+  block.el.classList.toggle("hover-lifted", block.hover);
+  block.el.classList.toggle("pinned", block.pinned);
+  if (lifted === block.lifted) return;
+  block.lifted = lifted;
+  if (lifted) {
+    if (!_isOverlay(block)) {
+      _anchorOverlay(block);
+      block.body.classList.add("lifted");
+      _OVERLAYS.add(block);
+    }
+    block.body.style.maxHeight = `${block.natural}px`;
+  } else {
+    block.body.style.maxHeight = `${block.available}px`;
+    _afterTransition(block.body, () => { if (!block.lifted) _settleOverlay(block); });
+  }
+}
+
+/** Return an overlay's body to the grid. */
+function _settleOverlay(block: SpanTextBlock): void {
+  _OVERLAYS.delete(block);
+  block.body.classList.remove("lifted");
+  block.body.style.top = "";
+  block.body.style.left = "";
+  block.body.style.width = "";
+}
+
+/** Clear a block's lift outright — it is being hidden. */
+function _dropLift(block: SpanTextBlock): void {
+  block.hover = false;
+  block.pinned = false;
+  block.lifted = false;
+  block.el.classList.remove("hover-lifted", "pinned");
+  if (_isOverlay(block)) _settleOverlay(block);
+  if (_hoveredBlock === block) _hoveredBlock = null;
+}
+
+/** Run `fn` once the element's running transitions have ended — or at
+ *  once when there are none (`prefers-reduced-motion`, or a document
+ *  without animations). A cancelled transition counts as ended; `fn`
+ *  re-checks the state it acts on. */
+function _afterTransition(el: HTMLElement, fn: () => void): void {
+  const anims = typeof el.getAnimations === "function" ? el.getAnimations() : [];
+  if (!anims.length) { fn(); return; }
+  void Promise.allSettled(anims.map((a) => a.finished)).then(fn);
+}
+
+/** The block a pointer event is on: the target's block body, or one of
+ *  its marks in the bars column (the marks stay reachable when a pinned
+ *  neighbour covers the body). Nothing for a hidden block. */
+function _blockAt(target: EventTarget | null): SpanTextBlock | null {
+  if (!(target instanceof Element)) return null;
+  const hit = target.closest<HTMLElement>(".span-text-body[data-span-id], .span-mark[data-span-id]");
+  if (!hit) return null;
+  const half = hit.closest<HTMLElement>(".half-new");
+  const gutter = half ? _SPAN_GUTTERS.get(half) : undefined;
+  if (!gutter) return null;
+  const id = hit.dataset.spanId;
+  return gutter.blocks.find((b) => b.el.dataset.spanId === id && b.el.style.display !== "none") ?? null;
+}
+
+function _hoverBlock(block: SpanTextBlock | null): void {
+  if (block === _hoveredBlock) return;
+  if (_hoveredBlock) {
+    _hoveredBlock.hover = false;
+    _applyLift(_hoveredBlock);
+  }
+  _hoveredBlock = block;
+  if (block) {
+    block.hover = true;
+    _applyLift(block);
+  }
+}
+
+function _onGutterPointerOver(e: MouseEvent): void {
+  _hoverBlock(_blockAt(e.target));
+}
+
+/** The pointer leaving the document (no `relatedTarget`) ends a hover
+ *  that `mouseover` will not. */
+function _onGutterPointerOut(e: MouseEvent): void {
+  if (_hoveredBlock && _blockAt(e.relatedTarget) !== _hoveredBlock) _hoverBlock(null);
+}
+
+/** Overlays follow their blocks through any scroll — the document's or
+ *  a pane's; a block whose hunk was repainted is gone with it. */
+function _onScrollReanchor(): void {
+  for (const block of _OVERLAYS) {
+    if (!block.el.isConnected) { _OVERLAYS.delete(block); continue; }
+    _anchorOverlay(block);
   }
 }
 
@@ -1977,6 +2139,10 @@ function _wireInputs(): void {
   });
   document.addEventListener("keydown", _onKeydown);
   document.addEventListener("click", _onGutterClick);
+  document.addEventListener("mouseover", _onGutterPointerOver);
+  document.addEventListener("mouseout", _onGutterPointerOut);
+  // Capture: a pane's scroll does not bubble to the document.
+  document.addEventListener("scroll", _onScrollReanchor, { capture: true, passive: true });
   window.addEventListener("hashchange", () => {
     _state.overrides = Object.create(null);
     _restoreHash();

@@ -1624,6 +1624,121 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
       expect(collapsed()).toBe(false);
     });
   });
+
+  describe("the lift", () => {
+    const key = (k: string): void => { document.dispatchEvent(new KeyboardEvent("keydown", { key: k })); };
+    const bodyOf = (spanId: string): HTMLElement => textOf(spanId)!.querySelector<HTMLElement>(".span-text-body")!;
+    const over = (el: Element): void => { el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); };
+    const out = (el: Element, to: Element | null = null): void => {
+      el.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: to }));
+    };
+    /** The lift as the DOM shows it: the body out of the grid (`lifted`),
+     *  its clamp, and the block's z-order classes. */
+    const lift = (spanId: string): { lifted: boolean; maxHeight: string; hover: boolean; pinned: boolean } => ({
+      lifted: bodyOf(spanId).classList.contains("lifted"),
+      maxHeight: bodyOf(spanId).style.maxHeight,
+      hover: textOf(spanId)!.classList.contains("hover-lifted"),
+      pinned: textOf(spanId)!.classList.contains("pinned"),
+    });
+    /** A 130px parent over 4..8 cut at its child's row, and the 30px child
+     *  on 8 cut at the hunk's end — the config.py pair. */
+    const PAIR = [
+      span("H0_0:span:4-8", 4, 8, "the parent, at length", [{ tag: "dead-code", note: "" }]),
+      span("H0_0:span:8-8", 8, 8, "the child, longer still"),
+    ];
+    async function bootPair(): Promise<void> {
+      await bootViewer(makeData({ pending: false, files: [gutterFile(PAIR)], symbols: [] }));
+      fold("code");
+      await layoutGeometry({ "H0_0:span:4-8": 130, "H0_0:span:8-8": 30 });
+      expect(clamp("H0_0:span:4-8")).toEqual({ maxHeight: "80px", truncated: true });
+      expect(clamp("H0_0:span:8-8")).toEqual({ maxHeight: "20px", truncated: true });
+    }
+
+    test("hovering a block lifts its body to its natural height as an overlay; leaving settles it; no row moves", async () => {
+      await bootPair();
+      over(bodyOf("H0_0:span:4-8").querySelector(".span-text-intent")!);
+      expect(lift("H0_0:span:4-8")).toEqual({ lifted: true, maxHeight: "130px", hover: true, pinned: false });
+      expect(rowsUntouched()).toBe(true);
+      // The block below is untouched: its clamp stands, nothing pushed it.
+      expect(lift("H0_0:span:8-8")).toEqual({ lifted: false, maxHeight: "20px", hover: false, pinned: false });
+      out(bodyOf("H0_0:span:4-8"));
+      expect(lift("H0_0:span:4-8")).toEqual({ lifted: false, maxHeight: "80px", hover: false, pinned: false });
+      expect(rowsUntouched()).toBe(true);
+      // The pass, while a block is lifted, leaves its lift alone.
+      over(bodyOf("H0_0:span:8-8"));
+      await layoutGeometry({ "H0_0:span:4-8": 130, "H0_0:span:8-8": 30 });
+      expect(lift("H0_0:span:8-8")).toEqual({ lifted: true, maxHeight: "30px", hover: true, pinned: false });
+    });
+
+    test("hovering a span's mark lifts its block too — the way to a block a pinned neighbour covers", async () => {
+      await bootPair();
+      const mark = rowOfLine(8).querySelector<HTMLElement>('.span-mark[data-span-id="H0_0:span:8-8"]')!;
+      over(mark);
+      expect(lift("H0_0:span:8-8").lifted).toBe(true);
+      // Onto the block's own body from its mark: still the one hover.
+      out(mark, bodyOf("H0_0:span:8-8"));
+      over(bodyOf("H0_0:span:8-8"));
+      expect(lift("H0_0:span:8-8")).toEqual({ lifted: true, maxHeight: "30px", hover: true, pinned: false });
+      // Onto anything else ends it.
+      over(rowOfLine(5).querySelector(".cell-content")!);
+      expect(lift("H0_0:span:8-8").lifted).toBe(false);
+    });
+
+    test("a click pins the lift, a second unpins it; a hovered block draws above a pinned one", async () => {
+      await bootPair();
+      const parent = bodyOf("H0_0:span:4-8");
+      over(parent);
+      parent.click();
+      out(parent);
+      expect(lift("H0_0:span:4-8")).toEqual({ lifted: true, maxHeight: "130px", hover: false, pinned: true });
+      expect(rowsUntouched()).toBe(true);
+      // The covered child's bar lifts it; both classes are on, the
+      // hovered one outranking the pinned one in the stylesheet.
+      over(rowOfLine(8).querySelector('.span-mark[data-span-id="H0_0:span:8-8"]')!);
+      expect(lift("H0_0:span:8-8")).toEqual({ lifted: true, maxHeight: "30px", hover: true, pinned: false });
+      expect(lift("H0_0:span:4-8").pinned).toBe(true);
+      out(rowOfLine(8).querySelector('.span-mark[data-span-id="H0_0:span:8-8"]')!);
+      // Unpin: a click while hovered; leaving then settles it.
+      over(parent);
+      parent.click();
+      expect(lift("H0_0:span:4-8")).toEqual({ lifted: true, maxHeight: "130px", hover: true, pinned: false });
+      out(parent);
+      expect(lift("H0_0:span:4-8")).toEqual({ lifted: false, maxHeight: "80px", hover: false, pinned: false });
+    });
+
+    test("the block's controls are their own: + comment and a pill promote, and do not pin", async () => {
+      await bootPair();
+      const parent = bodyOf("H0_0:span:4-8");
+      over(parent);
+      const posts = (): number => fetchCalls.filter((c) => c.url === "/comments" && c.init?.method === "POST").length;
+      const before = posts();
+      parent.querySelector<HTMLElement>(".span-promote")!.click();
+      expect(posts()).toBe(before + 1);
+      expect(lift("H0_0:span:4-8").pinned).toBe(false);
+      parent.querySelector<HTMLElement>(".smell")!.click();
+      expect(posts()).toBe(before + 2);
+      expect(lift("H0_0:span:4-8").pinned).toBe(false);
+      // The body itself does pin.
+      parent.click();
+      expect(lift("H0_0:span:4-8").pinned).toBe(true);
+    });
+
+    test("g clears every pin: folded there is no block, no lift; unfolded the clamp is back", async () => {
+      await bootPair();
+      const parent = bodyOf("H0_0:span:4-8");
+      over(parent);
+      parent.click();
+      out(parent);
+      expect(lift("H0_0:span:4-8").pinned).toBe(true);
+      key("g");
+      expect(textOf("H0_0:span:4-8")!.style.display).toBe("none");
+      expect(lift("H0_0:span:4-8")).toEqual({ lifted: false, maxHeight: "130px", hover: false, pinned: false });
+      key("g");
+      expect(textOf("H0_0:span:4-8")!.style.display).toBe("");
+      expect(lift("H0_0:span:4-8")).toEqual({ lifted: false, maxHeight: "80px", hover: false, pinned: false });
+      expect(rowsUntouched()).toBe(true);
+    });
+  });
 });
 
 

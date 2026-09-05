@@ -871,6 +871,7 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   font-size: 11px;
   line-height: 1.35;
   color: var(--fg-muted);
+  cursor: pointer;
 }
 /* The bracket that ties a block to its mark: an L at the body's top-left
  * whose upright stands in the mark's own column (`--depth`, on the block)
@@ -916,6 +917,30 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   line-height: 22px;
   text-align: right;
   pointer-events: none;
+  transition: opacity 150ms ease-out;
+}
+/* The lift: a hovered or pinned block's body leaves the grid as a fixed
+ * overlay at the coordinates the renderer read off its block, and its
+ * clamp transitions to the natural height the renderer measured (to a
+ * px value, since `none` does not animate). Fixed, not absolute: the half
+ * is a scroll container, and a body running past the hunk's last row
+ * would otherwise be clipped there and give the half a scrollbar. The
+ * body is the text column's width, so it covers gutter text alone. The
+ * z-order is the block's: a hovered block above a pinned one, a pinned
+ * one above the rest. */
+.diff .span-text.pinned { z-index: 3; }
+.diff .span-text.hover-lifted { z-index: 4; }
+.diff .span-text-body.lifted {
+  position: fixed;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  transition: max-height 150ms ease-out;
+}
+.diff .span-text.pinned > .span-text-body.lifted {
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35), 0 0 0 1px color-mix(in srgb, var(--accent) 60%, var(--bg-alt));
+}
+.diff .span-text-body.lifted.truncated::after { opacity: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .diff .span-text-body.lifted, .diff .span-text-body.truncated::after { transition: none; }
 }
 /* An annotation row (or the placeholder for an old-side one) is built
  * without gutter cells; a sticky pseudo-item over the strip's two columns
