@@ -861,6 +861,7 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  * the half and sticks like the cells do. The body paints the strip's
  * background itself, since it may lie over rows with none. */
 .diff .span-text-body {
+  position: relative;
   margin: 0;
   padding: 2px 6px;
   background: var(--bg-alt);
@@ -869,6 +870,32 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   line-height: 1.35;
   color: var(--fg-muted);
 }
+/* The bracket that ties a block to its mark: an L at the body's top-left
+ * whose upright stands in the mark's own column (`--depth`, on the block)
+ * and whose arm runs a short fixed way along the body's top edge, above
+ * the pill row (which starts at the body's 2px padding). Over a bar the
+ * upright covers the row's first 6px — onto the bar's rounded start,
+ * which begins at 3px — so the two read as one stroke; it is painted
+ * opaque in the bar's rendered colour rather than at the bar's opacity,
+ * so the overlap is not darker. Over a dot (`.dot`) it runs down to the
+ * dot's top at the row's middle. On an inner span the arm crosses the
+ * outer bar. The arm is 24px, not `ch`: the body's font is the
+ * platform's and its `ch` is not one width, and the bars column is fixed
+ * px. Folded, the renderer hides the block and the bracket with it. */
+.diff .span-text-body::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: calc(-1 * (var(--depth, 0) * 6px + 4px));
+  width: calc(var(--depth, 0) * 6px + 4px + 24px);
+  height: 6px;
+  box-sizing: border-box;
+  border-top: 2px solid color-mix(in srgb, var(--accent) 75%, var(--bg-alt));
+  border-left: 2px solid color-mix(in srgb, var(--accent) 75%, var(--bg-alt));
+  border-top-left-radius: 4px;
+  pointer-events: none;
+}
+.diff .span-text-body.dot::before { height: 8px; }
 /* An annotation row (or the placeholder for an old-side one) is built
  * without gutter cells; a sticky pseudo-item over the strip's two columns
  * keeps its background continuous through the row, and the placement pass
@@ -893,6 +920,9 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 .diff .half-new .row-placeholder > .cell-gutter-bars { visibility: visible; }
 .diff .half-new .cell-annotation { grid-column: 1 / 3; }
 .diff .span-text-body.chained { padding-top: 4px; border-top: 1px dashed var(--border); }
+/* The chained block's bracket is at its own top — over its divider, not
+ * under it. */
+.diff .span-text-body.chained::before { top: -1px; }
 .diff .span-text-intent.empty { color: var(--fg-dim); font-style: italic; }
 /* The pill row leads the block, on its first line, so it sits beside the
  * row the span starts on rather than wherever its intent ends: the smell

@@ -1333,6 +1333,25 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
     expect(document.querySelector(".row-annotation, .annot-arrow")).toBeNull();
   });
 
+  test("a block carries its span's depth and mark kind, which its bracket to the mark is drawn from", async () => {
+    await bootViewer(makeData({ pending: false, files: [gutterFile(NESTED)], symbols: [] }));
+    fold("code");
+    // The block's `--depth` is the mark's: the bracket's upright stands
+    // in the same column, at any nesting.
+    for (const [id, depth] of [["H0_0:span:4-7", "0"], ["H0_0:span:6-7", "1"], ["H0_0:span:5-5", "1"], ["H0_0:span:8-8", "0"]]) {
+      const block = textOf(id)!;
+      expect(block.style.getPropertyValue("--depth")).toBe(depth);
+      expect(document.querySelector<HTMLElement>(`.span-mark[data-span-id="${id}"]`)!.style.getPropertyValue("--depth")).toBe(depth);
+    }
+    // A single-line span's block is marked `dot`, since its upright
+    // meets a dot at the row's middle and not a bar at its top.
+    const bodyOf = (id: string): HTMLElement => textOf(id)!.querySelector<HTMLElement>(".span-text-body")!;
+    expect(bodyOf("H0_0:span:5-5").classList.contains("dot")).toBe(true);
+    expect(bodyOf("H0_0:span:8-8").classList.contains("dot")).toBe(true);
+    expect(bodyOf("H0_0:span:4-7").classList.contains("dot")).toBe(false);
+    expect(bodyOf("H0_0:span:6-7").classList.contains("dot")).toBe(false);
+  });
+
   test("a single-line span's text joins the waterfall: it is pushed below its parent's, stretching the row before it", async () => {
     // config.py's +81 inside +76..+81: the parent's text runs down from 76
     // and the child's starts at 81 — inside the parent's — so the child

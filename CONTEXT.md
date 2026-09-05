@@ -317,7 +317,11 @@ with a pill row, so it sits beside the bar's first row — the span's
 smell pills, each promotable to a [[reviewer-comment]] by a click, and a
 `+ comment` affordance that promotes the span's intent the same way, by
 the one-click path (`Comments.promote`), as a comment on the span's
-first line — then the intent. The block is a zero-height grid item, so
+first line — then the intent. A bracket at the block's top-left (a CSS
+pseudo-element, drawn from the `--depth` and `dot` the renderer puts on
+the block) reaches back across the bars column to the span's own mark
+and runs 24px along the block's top, so the block reads as the mark's;
+folded, it hides with the block. The block is a zero-height grid item, so
 it sizes no row; the one placement rule is that blocks do not overlap. A
 downward pass over the half's rows (`render._layoutSpanTexts`) enforces
 it: where a block would start inside the one above, the nearest code row
