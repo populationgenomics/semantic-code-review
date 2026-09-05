@@ -927,18 +927,20 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  * would otherwise be clipped there and give the half a scrollbar. The
  * body is the text column's width, so it covers gutter text alone. The
  * z-order is the block's: a hovered block above a pinned one, a pinned
- * one above the rest. A 1px ring separates the overlay from what it
- * covers — inset, so its top row lies within the bracket's arm rather
- * than a pixel above it; pinned, it takes the bracket's colour. */
+ * one above the rest. The overlay keeps its block's top and left edge, so
+ * only its bottom edge lies over anything; a 1px line there (inset, so it
+ * adds no height) is the whole separation. A pinned block is marked by
+ * its bracket at full accent, not by a second frame around the body. */
 .diff .span-text.pinned { z-index: 3; }
 .diff .span-text.hover-lifted { z-index: 4; }
 .diff .span-text-body.lifted {
   position: fixed;
-  box-shadow: inset 0 0 0 1px var(--border);
+  box-shadow: inset 0 -1px 0 0 var(--border);
   transition: max-height 150ms ease-out;
 }
+.diff .span-text.pinned::before { border-color: var(--accent); }
 .diff .span-text.pinned > .span-text-body.lifted {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 75%, var(--bg-alt));
+  box-shadow: inset 0 -1px 0 0 var(--accent);
 }
 .diff .span-text-body.lifted.truncated::after { opacity: 0; }
 @media (prefers-reduced-motion: reduce) {
