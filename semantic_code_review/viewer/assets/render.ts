@@ -1299,7 +1299,12 @@ function _attachSpans(
     }
     const el = _el("div", "span-text");
     el.dataset.spanId = ps.span.id;
+    // The block's bracket reaches back across the bars cell to this
+    // span's own mark: the depth is its column, and on a dot the
+    // bracket's upright runs down to the dot rather than onto a bar.
+    el.style.setProperty("--depth", String(ps.depth));
     const body = _spanText(ps.span, filePath);
+    if (ps.first === ps.last) body.classList.add("dot");
     // A block starting where the one before it starts chains under it;
     // the class is the divider between the two.
     if (blocks.length && blocks[blocks.length - 1].row === rowElsNew[ps.first]) body.classList.add("chained");
