@@ -1230,13 +1230,22 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
   const gridRow = (el: HTMLElement): string => el.style.gridRow;
   const oldRows = (): HTMLElement[] =>
     Array.from(document.querySelectorAll<HTMLElement>(".half-old .row:not(.row-annotation):not(.row-placeholder)"));
-  const minHeights = (rows: HTMLElement[]): string[] => rows.map((r) => r.style.minHeight);
+  /** No row on either half is sized by the span layout: nothing writes a
+   *  `min-height` (or any height) on a row. */
+  const rowsUntouched = (): boolean =>
+    [...newRows(), ...oldRows()].every((r) => r.style.minHeight === "" && r.style.height === "");
+  /** What the pass gave a block's body: its clamp and whether it is cut. */
+  const clamp = (spanId: string): { maxHeight: string; truncated: boolean } => {
+    const body = textOf(spanId)!.querySelector<HTMLElement>(".span-text-body")!;
+    return { maxHeight: body.style.maxHeight, truncated: body.classList.contains("truncated") };
+  };
+  const chainOf = (spanId: string): string => textOf(spanId)!.style.getPropertyValue("--chain");
 
   /** Stand in for layout, which jsdom has none of: every visible new-half
-   *  row measures 20px tall, stacked from 0 in document order at its
-   *  natural height (a stretch shows only in `style.minHeight`); a text
-   *  block's body measures the height `heights` gives its span (0 if
-   *  unnamed). Then pokes a row so the placement pass runs. */
+   *  row measures 20px tall, stacked from 0 in document order; a text
+   *  block's body measures the natural height `heights` gives its span
+   *  (0 if unnamed) — its clamp shows only in `style.maxHeight`. Then
+   *  pokes a row so the placement pass runs. */
   async function layoutGeometry(heights: Record<string, number>): Promise<void> {
     const half = document.querySelector<HTMLElement>(".hunk .half-new")!;
     for (const row of Array.from(half.children) as HTMLElement[]) {
@@ -1352,23 +1361,24 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
     expect(bodyOf("H0_0:span:6-7").classList.contains("dot")).toBe(false);
   });
 
-  test("a single-line span's text joins the waterfall: it is pushed below its parent's, stretching the row before it", async () => {
+  test("a single-line span's text joins the waterfall: the parent's is cut at the child's row, the child's at the hunk's end", async () => {
     // config.py's +81 inside +76..+81: the parent's text runs down from 76
-    // and the child's starts at 81 — inside the parent's — so the child
-    // moves down by the overlap and line 80 grows by it.
+    // and the child's starts at 81 — inside the parent's — so the parent
+    // is clamped to the rows above the child, and the child to the rows
+    // to the hunk's end. No row grows.
     await bootViewer(makeData({ pending: false, files: [gutterFile([
       span("H0_0:span:4-8", 4, 8, "the parent, at length"),
       span("H0_0:span:8-8", 8, 8, "the child, longer still"),
     ])], symbols: [] }));
     fold("code");
     expect(marks("H0_0:span:8-8")).toEqual([[8, "span-dot"]]);
-    // Line 8 is 80..100; a 90px parent block from 0 ends at 90, so the
-    // child's block moves to 90 and line 7 grows by 10; its 30px then run
-    // 10 past the hunk's shifted bottom (110), so line 8 grows by 10 too.
+    // Line 8 is 80..100: the parent's slot is 0..80 and its 90px are cut;
+    // the child's slot is 80..100 and its 30px are cut too.
     await layoutGeometry({ "H0_0:span:4-8": 90, "H0_0:span:8-8": 30 });
     expect(textOf("H0_0:span:8-8")!.style.display).toBe("");
-    expect(minHeights(newRows())).toEqual(["", "", "", "30px", "30px"]);
-    expect(minHeights(oldRows())).toEqual(["", "", "", "30px", "30px"]);
+    expect(clamp("H0_0:span:4-8")).toEqual({ maxHeight: "80px", truncated: true });
+    expect(clamp("H0_0:span:8-8")).toEqual({ maxHeight: "20px", truncated: true });
+    expect(rowsUntouched()).toBe(true);
   });
 
   test("a row inserted later is placed too, and the text blocks move with the rows", async () => {
@@ -1388,54 +1398,55 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
     expect(gridRow(textOf("H0_0:span:6-7")!)).toBe("4");
   });
 
-  test("a rationale taller than the hunk stretches only the last row; the old half's pair follows", async () => {
+  test("a rationale taller than the hunk is cut at the hunk's last row; no row grows", async () => {
     await bootViewer(makeData({ pending: false, files: [gutterFile([span("H0_0:span:4-5", 4, 5, "six lines of text")])], symbols: [] }));
     fold("code");
-    // Five 20px rows; a 130px block from the top of line 4 runs 30px past
-    // the bottom of line 8, so line 8 — and only line 8 — grows by 30.
+    // Five 20px rows; a 130px block from the top of line 4 would run 30px
+    // past the bottom of line 8, so it is clamped to the hunk's 100px and
+    // marked cut. Both halves keep every row at its natural height.
     await layoutGeometry({ "H0_0:span:4-5": 130 });
-    expect(minHeights(newRows())).toEqual(["", "", "", "", "50px"]);
-    expect(minHeights(oldRows())).toEqual(["", "", "", "", "50px"]);
-    expect(textOf("H0_0:span:4-5")!.style.transform).toBe("");
-    // A block that fits leaves every row at its natural height.
+    expect(clamp("H0_0:span:4-5")).toEqual({ maxHeight: "100px", truncated: true });
+    expect(rowsUntouched()).toBe(true);
+    expect(chainOf("H0_0:span:4-5")).toBe("");
+    // A block that fits is clamped to the same slot but is not cut.
     await layoutGeometry({ "H0_0:span:4-5": 100 });
-    expect(minHeights(newRows())).toEqual(["", "", "", "", ""]);
-    expect(minHeights(oldRows())).toEqual(["", "", "", "", ""]);
+    expect(clamp("H0_0:span:4-5")).toEqual({ maxHeight: "100px", truncated: false });
+    expect(rowsUntouched()).toBe(true);
   });
 
-  test("a block that would start inside the one above pushes its row down by exactly the overlap", async () => {
+  test("a block whose text would run into the one below is cut at the block below's top", async () => {
     await bootViewer(makeData({ pending: false, files: [gutterFile([
       span("H0_0:span:4-5", 4, 5, "long"),
       span("H0_0:span:7-8", 7, 8, "short"),
     ])], symbols: [] }));
     fold("code");
-    // Line 7's top is 60px; the first block ends at 130px. The row above
-    // line 7 — line 6 — grows by the 70px overlap; the second block then
-    // ends at 140px, inside the hunk's now-170px height, so line 8 does
-    // not grow.
+    // Line 7's top is 60px: the first block's slot ends there and its
+    // 130px are cut; the second's slot is 60..100 and its 10px fit.
     await layoutGeometry({ "H0_0:span:4-5": 130, "H0_0:span:7-8": 10 });
-    expect(minHeights(newRows())).toEqual(["", "", "90px", "", ""]);
-    expect(minHeights(oldRows())).toEqual(["", "", "90px", "", ""]);
+    expect(clamp("H0_0:span:4-5")).toEqual({ maxHeight: "60px", truncated: true });
+    expect(clamp("H0_0:span:7-8")).toEqual({ maxHeight: "40px", truncated: false });
     expect(gridRow(textOf("H0_0:span:7-8")!)).toBe("4");
-    expect(textOf("H0_0:span:7-8")!.style.transform).toBe("");
+    expect(chainOf("H0_0:span:7-8")).toBe("");
+    expect(rowsUntouched()).toBe(true);
   });
 
-  test("a parent's text runs past its child's first row; the row before the child stretches", async () => {
+  test("a parent's text is cut at its child's first row", async () => {
     await bootViewer(makeData({ pending: false, files: [gutterFile([
       span("H0_0:span:4-8", 4, 8, "the parent, at length"),
       span("H0_0:span:6-8", 6, 8, "the child"),
     ])], symbols: [] }));
     fold("code");
-    // The parent's block is not cut off at line 5: it runs to 70px, and
-    // line 5 grows by 30 so the child's block starts clear of it at 70.
+    // The child starts on line 6, at 40px: the parent's 70px are clamped
+    // to 40 and shown cut; the child has the 60px to the hunk's end.
     await layoutGeometry({ "H0_0:span:4-8": 70, "H0_0:span:6-8": 10 });
     expect(textOf("H0_0:span:4-8")!.style.display).toBe("");
     expect(textOf("H0_0:span:6-8")!.style.display).toBe("");
-    expect(minHeights(newRows())).toEqual(["", "50px", "", "", ""]);
-    expect(minHeights(oldRows())).toEqual(["", "50px", "", "", ""]);
+    expect(clamp("H0_0:span:4-8")).toEqual({ maxHeight: "40px", truncated: true });
+    expect(clamp("H0_0:span:6-8")).toEqual({ maxHeight: "60px", truncated: false });
+    expect(rowsUntouched()).toBe(true);
   });
 
-  test("two spans starting on one row chain their blocks, outermost first, with no stretch between", async () => {
+  test("two spans starting on one row chain their blocks, outermost first, and share the slot", async () => {
     await bootViewer(makeData({ pending: false, files: [gutterFile([
       span("H0_0:span:4-7", 4, 7, "the whole thing"),
       span("H0_0:span:4-7:2", 4, 7, "the same rows, again"),
@@ -1449,22 +1460,37 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
     expect(gridRow(inner)).toBe("1");
     expect(outer.querySelector(".span-text-body")!.classList.contains("chained")).toBe(false);
     expect(inner.querySelector(".span-text-body")!.classList.contains("chained")).toBe(true);
+    // Both fit the 100px slot: the outer is clamped to its own 30px, the
+    // inner hangs under it and runs to the slot's end.
     await layoutGeometry({ "H0_0:span:4-7": 30, "H0_0:span:4-7:2": 20 });
-    expect(outer.style.transform).toBe("");
-    expect(inner.style.transform).toBe("translateY(30px)");
-    expect(minHeights(newRows())).toEqual(["", "", "", "", ""]);
+    expect(chainOf("H0_0:span:4-7")).toBe("");
+    expect(chainOf("H0_0:span:4-7:2")).toBe("30px");
+    expect(clamp("H0_0:span:4-7")).toEqual({ maxHeight: "30px", truncated: false });
+    expect(clamp("H0_0:span:4-7:2")).toEqual({ maxHeight: "70px", truncated: false });
+    expect(rowsUntouched()).toBe(true);
+    // Together too tall: the smaller takes what it needs, the larger the
+    // rest — the outer is cut at 80 and the inner, chained at 80, fits.
+    await layoutGeometry({ "H0_0:span:4-7": 130, "H0_0:span:4-7:2": 20 });
+    expect(chainOf("H0_0:span:4-7:2")).toBe("80px");
+    expect(clamp("H0_0:span:4-7")).toEqual({ maxHeight: "80px", truncated: true });
+    expect(clamp("H0_0:span:4-7:2")).toEqual({ maxHeight: "20px", truncated: false });
+    // Both too tall: an equal split, both cut.
+    await layoutGeometry({ "H0_0:span:4-7": 130, "H0_0:span:4-7:2": 90 });
+    expect(chainOf("H0_0:span:4-7:2")).toBe("50px");
+    expect(clamp("H0_0:span:4-7")).toEqual({ maxHeight: "50px", truncated: true });
+    expect(clamp("H0_0:span:4-7:2")).toEqual({ maxHeight: "50px", truncated: true });
+    expect(rowsUntouched()).toBe(true);
   });
 
-  test("hiding a block's first row hides the block and releases the rows it stretched", async () => {
+  test("hiding a block's first row hides the block", async () => {
     await bootViewer(makeData({ pending: false, files: [gutterFile([span("H0_0:span:4-5", 4, 5, "tall")])], symbols: [] }));
     fold("code");
     await layoutGeometry({ "H0_0:span:4-5": 130 });
-    expect(minHeights(oldRows())).toEqual(["", "", "", "", "50px"]);
+    expect(clamp("H0_0:span:4-5").truncated).toBe(true);
     rowOfLine(4).style.display = "none";
     await tick();
     expect(textOf("H0_0:span:4-5")!.style.display).toBe("none");
-    expect(minHeights(newRows())).toEqual(["", "", "", "", ""]);
-    expect(minHeights(oldRows())).toEqual(["", "", "", "", ""]);
+    expect(rowsUntouched()).toBe(true);
   });
 
   test("the marks survive a chip disclosing rows above them", async () => {
@@ -1519,32 +1545,32 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
   describe("the gutter fold", () => {
     const key = (k: string): void => { document.dispatchEvent(new KeyboardEvent("keydown", { key: k })); };
     const collapsed = (): boolean => document.documentElement.classList.contains("gutter-collapsed");
-    /** A tall block, so the expanded gutter stretches the hunk's last row. */
+    /** A tall block, so the expanded gutter cuts it at the hunk's end. */
     const TALL = [span("H0_0:span:4-5", 4, 5, "tall", [{ tag: "dead-code", note: "" }])];
 
-    test("g folds the gutter: blocks hide, no row is stretched, marks stay; g again restores both", async () => {
+    test("g folds the gutter: blocks hide, no row changes, marks stay; g again restores the blocks", async () => {
       await bootViewer(makeData({ pending: false, files: [gutterFile(TALL)], symbols: [] }));
       fold("code");
       await layoutGeometry({ "H0_0:span:4-5": 130 });
       expect(collapsed()).toBe(false);
-      expect(minHeights(newRows())).toEqual(["", "", "", "", "50px"]);
+      expect(clamp("H0_0:span:4-5")).toEqual({ maxHeight: "100px", truncated: true });
 
       key("g");
       expect(collapsed()).toBe(true);
       expect(textOf("H0_0:span:4-5")!.style.display).toBe("none");
-      expect(minHeights(newRows())).toEqual(["", "", "", "", ""]);
-      expect(minHeights(oldRows())).toEqual(["", "", "", "", ""]);
+      expect(rowsUntouched()).toBe(true);
       expect(marks("H0_0:span:4-5")).toEqual([[4, "span-bar-top"], [5, "span-bar-bottom"]]);
       expect(localStorage.getItem("scr-gutter-fold")).toBe("collapsed");
       // A pass the rows trigger while folded places nothing either.
       await layoutGeometry({ "H0_0:span:4-5": 130 });
-      expect(minHeights(newRows())).toEqual(["", "", "", "", ""]);
+      expect(textOf("H0_0:span:4-5")!.style.display).toBe("none");
+      expect(rowsUntouched()).toBe(true);
 
       key("g");
       expect(collapsed()).toBe(false);
       expect(textOf("H0_0:span:4-5")!.style.display).toBe("");
-      expect(minHeights(newRows())).toEqual(["", "", "", "", "50px"]);
-      expect(minHeights(oldRows())).toEqual(["", "", "", "", "50px"]);
+      expect(clamp("H0_0:span:4-5")).toEqual({ maxHeight: "100px", truncated: true });
+      expect(rowsUntouched()).toBe(true);
       expect(localStorage.getItem("scr-gutter-fold")).toBe("expanded");
     });
 
@@ -1596,6 +1622,121 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
       // A click on a block's own text is not a fold gesture.
       (textOf("H0_0:span:4-5")!.querySelector(".span-text-intent") as HTMLElement).click();
       expect(collapsed()).toBe(false);
+    });
+  });
+
+  describe("the lift", () => {
+    const key = (k: string): void => { document.dispatchEvent(new KeyboardEvent("keydown", { key: k })); };
+    const bodyOf = (spanId: string): HTMLElement => textOf(spanId)!.querySelector<HTMLElement>(".span-text-body")!;
+    const over = (el: Element): void => { el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); };
+    const out = (el: Element, to: Element | null = null): void => {
+      el.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: to }));
+    };
+    /** The lift as the DOM shows it: the body out of the grid (`lifted`),
+     *  its clamp, and the block's z-order classes. */
+    const lift = (spanId: string): { lifted: boolean; maxHeight: string; hover: boolean; pinned: boolean } => ({
+      lifted: bodyOf(spanId).classList.contains("lifted"),
+      maxHeight: bodyOf(spanId).style.maxHeight,
+      hover: textOf(spanId)!.classList.contains("hover-lifted"),
+      pinned: textOf(spanId)!.classList.contains("pinned"),
+    });
+    /** A 130px parent over 4..8 cut at its child's row, and the 30px child
+     *  on 8 cut at the hunk's end — the config.py pair. */
+    const PAIR = [
+      span("H0_0:span:4-8", 4, 8, "the parent, at length", [{ tag: "dead-code", note: "" }]),
+      span("H0_0:span:8-8", 8, 8, "the child, longer still"),
+    ];
+    async function bootPair(): Promise<void> {
+      await bootViewer(makeData({ pending: false, files: [gutterFile(PAIR)], symbols: [] }));
+      fold("code");
+      await layoutGeometry({ "H0_0:span:4-8": 130, "H0_0:span:8-8": 30 });
+      expect(clamp("H0_0:span:4-8")).toEqual({ maxHeight: "80px", truncated: true });
+      expect(clamp("H0_0:span:8-8")).toEqual({ maxHeight: "20px", truncated: true });
+    }
+
+    test("hovering a block lifts its body to its natural height as an overlay; leaving settles it; no row moves", async () => {
+      await bootPair();
+      over(bodyOf("H0_0:span:4-8").querySelector(".span-text-intent")!);
+      expect(lift("H0_0:span:4-8")).toEqual({ lifted: true, maxHeight: "130px", hover: true, pinned: false });
+      expect(rowsUntouched()).toBe(true);
+      // The block below is untouched: its clamp stands, nothing pushed it.
+      expect(lift("H0_0:span:8-8")).toEqual({ lifted: false, maxHeight: "20px", hover: false, pinned: false });
+      out(bodyOf("H0_0:span:4-8"));
+      expect(lift("H0_0:span:4-8")).toEqual({ lifted: false, maxHeight: "80px", hover: false, pinned: false });
+      expect(rowsUntouched()).toBe(true);
+      // The pass, while a block is lifted, leaves its lift alone.
+      over(bodyOf("H0_0:span:8-8"));
+      await layoutGeometry({ "H0_0:span:4-8": 130, "H0_0:span:8-8": 30 });
+      expect(lift("H0_0:span:8-8")).toEqual({ lifted: true, maxHeight: "30px", hover: true, pinned: false });
+    });
+
+    test("hovering a span's mark lifts its block too — the way to a block a pinned neighbour covers", async () => {
+      await bootPair();
+      const mark = rowOfLine(8).querySelector<HTMLElement>('.span-mark[data-span-id="H0_0:span:8-8"]')!;
+      over(mark);
+      expect(lift("H0_0:span:8-8").lifted).toBe(true);
+      // Onto the block's own body from its mark: still the one hover.
+      out(mark, bodyOf("H0_0:span:8-8"));
+      over(bodyOf("H0_0:span:8-8"));
+      expect(lift("H0_0:span:8-8")).toEqual({ lifted: true, maxHeight: "30px", hover: true, pinned: false });
+      // Onto anything else ends it.
+      over(rowOfLine(5).querySelector(".cell-content")!);
+      expect(lift("H0_0:span:8-8").lifted).toBe(false);
+    });
+
+    test("a click pins the lift, a second unpins it; a hovered block draws above a pinned one", async () => {
+      await bootPair();
+      const parent = bodyOf("H0_0:span:4-8");
+      over(parent);
+      parent.click();
+      out(parent);
+      expect(lift("H0_0:span:4-8")).toEqual({ lifted: true, maxHeight: "130px", hover: false, pinned: true });
+      expect(rowsUntouched()).toBe(true);
+      // The covered child's bar lifts it; both classes are on, the
+      // hovered one outranking the pinned one in the stylesheet.
+      over(rowOfLine(8).querySelector('.span-mark[data-span-id="H0_0:span:8-8"]')!);
+      expect(lift("H0_0:span:8-8")).toEqual({ lifted: true, maxHeight: "30px", hover: true, pinned: false });
+      expect(lift("H0_0:span:4-8").pinned).toBe(true);
+      out(rowOfLine(8).querySelector('.span-mark[data-span-id="H0_0:span:8-8"]')!);
+      // Unpin: a click while hovered; leaving then settles it.
+      over(parent);
+      parent.click();
+      expect(lift("H0_0:span:4-8")).toEqual({ lifted: true, maxHeight: "130px", hover: true, pinned: false });
+      out(parent);
+      expect(lift("H0_0:span:4-8")).toEqual({ lifted: false, maxHeight: "80px", hover: false, pinned: false });
+    });
+
+    test("the block's controls are their own: + comment and a pill promote, and do not pin", async () => {
+      await bootPair();
+      const parent = bodyOf("H0_0:span:4-8");
+      over(parent);
+      const posts = (): number => fetchCalls.filter((c) => c.url === "/comments" && c.init?.method === "POST").length;
+      const before = posts();
+      parent.querySelector<HTMLElement>(".span-promote")!.click();
+      expect(posts()).toBe(before + 1);
+      expect(lift("H0_0:span:4-8").pinned).toBe(false);
+      parent.querySelector<HTMLElement>(".smell")!.click();
+      expect(posts()).toBe(before + 2);
+      expect(lift("H0_0:span:4-8").pinned).toBe(false);
+      // The body itself does pin.
+      parent.click();
+      expect(lift("H0_0:span:4-8").pinned).toBe(true);
+    });
+
+    test("g clears every pin: folded there is no block, no lift; unfolded the clamp is back", async () => {
+      await bootPair();
+      const parent = bodyOf("H0_0:span:4-8");
+      over(parent);
+      parent.click();
+      out(parent);
+      expect(lift("H0_0:span:4-8").pinned).toBe(true);
+      key("g");
+      expect(textOf("H0_0:span:4-8")!.style.display).toBe("none");
+      expect(lift("H0_0:span:4-8")).toEqual({ lifted: false, maxHeight: "130px", hover: false, pinned: false });
+      key("g");
+      expect(textOf("H0_0:span:4-8")!.style.display).toBe("");
+      expect(lift("H0_0:span:4-8")).toEqual({ lifted: false, maxHeight: "80px", hover: false, pinned: false });
+      expect(rowsUntouched()).toBe(true);
     });
   });
 });
