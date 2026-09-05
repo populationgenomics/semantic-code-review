@@ -1633,10 +1633,10 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
     const out = (el: Element, to: Element | null = null): void => {
       el.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: to }));
     };
-    /** The lift as the DOM shows it: the body out of the grid (`lifted`),
-     *  its clamp, and the block's z-order classes. */
+    /** The lift as the DOM shows it: the block out of the grid (`lifted`),
+     *  the body's clamp, and the block's z-order classes. */
     const lift = (spanId: string): { lifted: boolean; maxHeight: string; hover: boolean; pinned: boolean } => ({
-      lifted: bodyOf(spanId).classList.contains("lifted"),
+      lifted: textOf(spanId)!.classList.contains("lifted"),
       maxHeight: bodyOf(spanId).style.maxHeight,
       hover: textOf(spanId)!.classList.contains("hover-lifted"),
       pinned: textOf(spanId)!.classList.contains("pinned"),
@@ -1693,6 +1693,10 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
       out(parent);
       expect(lift("H0_0:span:4-8")).toEqual({ lifted: true, maxHeight: "130px", hover: false, pinned: true });
       expect(rowsUntouched()).toBe(true);
+      // Pinned, the span's marks light with the bracket — every row's,
+      // and no other span's.
+      const lit = (): string[] => Array.from(document.querySelectorAll(".span-mark.lit")).map((m) => (m as HTMLElement).dataset.spanId!);
+      expect(lit()).toEqual(Array(5).fill("H0_0:span:4-8"));
       // The covered child's bar lifts it; both classes are on, the
       // hovered one outranking the pinned one in the stylesheet.
       over(rowOfLine(8).querySelector('.span-mark[data-span-id="H0_0:span:8-8"]')!);
@@ -1705,6 +1709,7 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
       expect(lift("H0_0:span:4-8")).toEqual({ lifted: true, maxHeight: "130px", hover: true, pinned: false });
       out(parent);
       expect(lift("H0_0:span:4-8")).toEqual({ lifted: false, maxHeight: "80px", hover: false, pinned: false });
+      expect(lit()).toEqual([]);
     });
 
     test("the block's controls are their own: + comment and a pill promote, and do not pin", async () => {

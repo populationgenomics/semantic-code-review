@@ -1680,35 +1680,38 @@ let _hoveredBlock: SpanTextBlock | null = null;
 /** Whether the block's body is out of the grid as a fixed overlay:
  *  lifted, or still retracting from a lift. */
 function _isOverlay(block: SpanTextBlock): boolean {
-  return block.body.classList.contains("lifted");
+  return block.el.classList.contains("lifted");
 }
 
-/** Put the overlay where its block is: the block is the zero-height grid
- *  item, still in place, so its rect (plus the chain offset) is where the
- *  body would be in the grid. */
+/** Fix the block at the coordinates it has in the grid, read before it
+ *  leaves. The body's chain offset is the stylesheet's, relative to the
+ *  block, so it carries over unchanged. */
 function _anchorOverlay(block: SpanTextBlock): void {
   const r = block.el.getBoundingClientRect();
-  block.body.style.top = `${r.top + block.chain}px`;
-  block.body.style.left = `${r.left}px`;
-  block.body.style.width = `${r.width}px`;
+  block.el.style.top = `${r.top}px`;
+  block.el.style.left = `${r.left}px`;
+  block.el.style.width = `${r.width}px`;
 }
 
-/** Apply a block's lift state. Lifting anchors the body as an overlay at
- *  the coordinates it has in the grid and sets its clamp to the natural
- *  height, which the stylesheet transitions; un-lifting sets the clamp
- *  back and returns the body to the grid once the transition has run.
- *  The classes on the block carry the z-order — a hovered block above a
- *  pinned one, a pinned one above the rest. */
+/** Apply a block's lift state. Lifting anchors the block — bracket and
+ *  body, one widget — as an overlay at the coordinates it has in the grid
+ *  and sets the body's clamp to the natural height, which the stylesheet
+ *  transitions; un-lifting sets the clamp back and returns the block to
+ *  the grid once the transition has run. The classes on the block carry
+ *  the z-order — a hovered block above a pinned one, a pinned one above
+ *  the rest — and the pinned state lights the span's marks, so bar and
+ *  bracket stay one stroke. */
 function _applyLift(block: SpanTextBlock): void {
   const lifted = block.hover || block.pinned;
   block.el.classList.toggle("hover-lifted", block.hover);
   block.el.classList.toggle("pinned", block.pinned);
+  for (const mark of _marksOf(block)) mark.classList.toggle("lit", block.pinned);
   if (lifted === block.lifted) return;
   block.lifted = lifted;
   if (lifted) {
     if (!_isOverlay(block)) {
       _anchorOverlay(block);
-      block.body.classList.add("lifted");
+      block.el.classList.add("lifted");
       _OVERLAYS.add(block);
     }
     block.body.style.maxHeight = `${block.natural}px`;
@@ -1718,13 +1721,19 @@ function _applyLift(block: SpanTextBlock): void {
   }
 }
 
-/** Return an overlay's body to the grid. */
+/** Return an overlay's block to the grid. */
 function _settleOverlay(block: SpanTextBlock): void {
   _OVERLAYS.delete(block);
-  block.body.classList.remove("lifted");
-  block.body.style.top = "";
-  block.body.style.left = "";
-  block.body.style.width = "";
+  block.el.classList.remove("lifted");
+  block.el.style.top = "";
+  block.el.style.left = "";
+  block.el.style.width = "";
+}
+
+/** A block's marks in the bars column — the half's, by span id. */
+function _marksOf(block: SpanTextBlock): NodeListOf<HTMLElement> {
+  const half = block.el.parentElement!;
+  return half.querySelectorAll<HTMLElement>(`.span-mark[data-span-id="${_cssEscape(block.body.dataset.spanId!)}"]`);
 }
 
 /** Clear a block's lift outright — it is being hidden. */
@@ -1733,6 +1742,7 @@ function _dropLift(block: SpanTextBlock): void {
   block.pinned = false;
   block.lifted = false;
   block.el.classList.remove("hover-lifted", "pinned");
+  for (const mark of _marksOf(block)) mark.classList.remove("lit");
   if (_isOverlay(block)) _settleOverlay(block);
   if (_hoveredBlock === block) _hoveredBlock = null;
 }
