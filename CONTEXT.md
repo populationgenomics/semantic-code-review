@@ -341,7 +341,7 @@ the renderer fits the card when it opens (`render._fitCard`) — downward
 from the ticket's top, or upward from the ticket's bottom (`.flipped`)
 when that does not fit and there is more room above, and capped to the
 room, scrolling inside, in a hunk too short either way. The bar gives way
-to the **brace** (`render._drawBrace`, an SVG in the edge, so it lifts
+to the **brace** (`render._drawBrace`, an SVG in the edge, so it moves
 with the card): a `}` over the span's rows whose spine projects 3px past
 the bars column, into the code cell's padding, tip on the span's middle, stem
 back across the bars to the card — straight when the card reaches the
