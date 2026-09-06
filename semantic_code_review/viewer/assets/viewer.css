@@ -809,59 +809,109 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   box-shadow: inset 1px 0 var(--border);
 }
 .diff .cell-gutter-text, .diff .span-text { grid-column: 4; right: 0; }
-/* A span's marks in the bars cell: a bar over its rows, a dot on a
- * single-line span's row. The outermost span's column is the one against
- * the text, and each level of nesting is one column further left, nearer
- * the code; the cell's spare 4px sit between the innermost bar and the
- * code. The mark is its column's full 6px for the row's height — the
- * hover and click target; the stroke it draws is 2px. */
-.diff .span-mark {
-  position: absolute;
-  top: 0; bottom: 0;
-  right: calc(var(--depth, 0) * 6px);
-  width: 6px;
-  cursor: pointer;
-}
-.diff .span-mark::before {
-  content: "";
-  position: absolute;
-  top: 0; bottom: 0; left: 2px;
-  width: 2px;
-  background: var(--accent);
-  opacity: 0.75;
-}
-.diff .span-mark:hover::before, .diff .span-mark.lit::before { opacity: 1; }
-.diff .span-bar-top::before { top: 3px; border-top-left-radius: 2px; border-top-right-radius: 2px; }
-.diff .span-bar-bottom::before { bottom: 3px; border-bottom-left-radius: 2px; border-bottom-right-radius: 2px; }
-.diff .span-dot::before {
-  top: 50%; bottom: auto; margin-top: -2px; left: 1px;
-  width: 4px; height: 4px; border-radius: 50%;
-}
 /* The empty strip is the fold's own affordance. */
-.diff .cell-gutter-text, .diff .cell-gutter-bars { cursor: pointer; }
-/* A span's text: a zero-height item on the span's first row (`grid-row`,
- * set by the renderer), so the row's size owes it nothing; the body hangs
- * downward over the strip. `--chain` is the renderer's offset for a block
- * that starts on the same row as the one above it: the body and the
- * bracket both sit that far down. The renderer hides every block while
- * the gutter is folded. */
+.diff .cell-gutter-bars, .diff .cell-gutter-text { cursor: pointer; }
+/* A span in the gutter is one grid item over its visible rows (`grid-row`,
+ * set by the renderer), in the text column and sticky with it. Nothing
+ * in it sizes a row: its one child, the widget, is absolute over it, and
+ * the item itself takes no pointer — the strip's cells under it keep the
+ * fold's click. The widget holds the edge and, behind nothing else, the
+ * body; lifted (`.lifted`, on the item), it leaves the grid as a fixed
+ * overlay at the coordinates the renderer read off the item, which stays
+ * behind as the anchor every scroll re-reads. */
 .diff .span-text {
   z-index: 2;
-  align-self: start;
-  height: 0;
   min-width: 0;
   overflow: visible;
   white-space: normal;
   overflow-wrap: anywhere;
+  pointer-events: none;
 }
-/* The size lives on the body, not the block: the block is a grid item of
- * the half and sticks like the cells do. The body paints the strip's
- * background itself, since it may lie over rows with none. Its height is
- * clamped to the slot the renderer measured for it (`max-height`, inline);
- * what does not fit is cut, and the cut is shown (`.truncated`). */
+.diff .span-widget { position: absolute; inset: 0; pointer-events: none; }
+.diff .span-text.lifted > .span-widget { position: fixed; right: auto; bottom: auto; }
+/* The edge: the one stroke a span has, drawn behind its body. Its line
+ * stands in the span's own bars column (`--depth`, on the item: the
+ * outermost span's column is against the text, each level of nesting one
+ * column nearer the code, the cell's spare 4px between the innermost and
+ * the code) for the item's height, and is the hover and click target a
+ * covered body is still reached by. With a body shown the line grows an
+ * arm — the bracket — that turns the pills' 10px radius at the body's top
+ * edge and runs a short fixed way along it; the body starts 2px down to
+ * leave the arm its room. The bar under an arm starts where the curve
+ * ends; under a branch (`.chained`: a body hanging beneath another on the
+ * same start row, its arm at `--chain`) it runs from the top and the arm
+ * forks off it with an inner fillet. Headless (folded gutter, or the
+ * span's first row hidden and the fold's tree carrying the text) there is
+ * no arm and the bar has its 3px caps. A span of one line (`.dot`) is a
+ * dot at its row's middle, with the arm's upright reaching down to it.
+ * The frame surrounds a lifted body, its top and left lying on the arm
+ * and the bar; `--body-h` is the body's height as the renderer set it.
+ * Pinned, the whole edge is the full accent. The arm is 24px, not `ch`:
+ * the body's font is the platform's and its `ch` is not one width, and
+ * the bars column is fixed px. */
+.diff .span-edge {
+  --edge: color-mix(in srgb, var(--accent) 75%, var(--bg-alt));
+  position: absolute;
+  top: 0; bottom: 0;
+  left: calc(-1 * (var(--depth, 0) * 6px + 4px));
+  right: -2px;
+  pointer-events: none;
+}
+.diff .span-text.pinned .span-edge { --edge: var(--accent); }
+.diff .span-edge-line {
+  position: absolute;
+  top: 0; bottom: 0; left: -2px;
+  width: 6px;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.diff .span-edge-line::before {
+  content: "";
+  position: absolute;
+  left: 2px; top: 10px; bottom: 3px;
+  width: 2px;
+  background: var(--edge);
+}
+.diff .span-text.chained .span-edge-line::before { top: 0; }
+.diff .span-text.headless .span-edge-line::before { top: 3px; }
+.diff .span-edge-line::after {
+  content: "";
+  position: absolute;
+  left: 2px; top: var(--chain, 0px);
+  width: calc(var(--depth, 0) * 6px + 4px + 24px);
+  height: 12px;
+  box-sizing: border-box;
+  border-top: 2px solid var(--edge);
+  border-left: 2px solid var(--edge);
+  border-top-left-radius: 10px;
+}
+.diff .span-text.headless .span-edge-line::after { display: none; }
+.diff .span-text.dot .span-edge-line::before {
+  top: 50%; bottom: auto; left: 1px;
+  width: 4px; height: 4px; margin-top: -2px;
+  border-radius: 50%;
+}
+.diff .span-text.dot .span-edge-line::after { height: 50%; }
+.diff .span-edge-frame {
+  position: absolute;
+  top: var(--chain, 0px); left: 0; right: 0;
+  height: calc(var(--body-h, 0px) + 4px);
+  box-sizing: border-box;
+  border: 2px solid var(--edge);
+  border-radius: 10px;
+  opacity: 0;
+  transition: height 150ms ease-out, opacity 150ms ease-out;
+}
+.diff .span-text.lifted .span-edge-frame { opacity: 1; }
+/* The body: the strip's background (it may lie over rows with none),
+ * clamped to the slot the renderer measured for it (`max-height`, inline)
+ * and cut where its text runs past — the cut shown (`.truncated`). It
+ * hangs 2px under the top of its item (or its chain offset), beneath the
+ * arm. A lifted body's clamp transitions to the natural height the
+ * renderer measured (to a px value, since `none` does not animate). */
 .diff .span-text-body {
   position: relative;
-  top: var(--chain, 0px);
+  top: calc(var(--chain, 0px) + 2px);
   box-sizing: border-box;
   margin: 0;
   padding: 2px 6px;
@@ -872,35 +922,10 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   line-height: 1.35;
   color: var(--fg-muted);
   cursor: pointer;
+  pointer-events: auto;
 }
-/* The bracket that ties a block to its mark: an L at the body's top-left
- * whose upright stands in the mark's own column (`--depth`, on the block)
- * and whose arm runs a short fixed way along the body's top edge, above
- * the pill row (which starts at the body's 2px padding). The corner's
- * radius is the pills'. The upright covers the row's first 12px — onto
- * a bar's rounded start (which begins at 3px) or down past a dot's top
- * at the row's middle — so the two read as one stroke; it is painted
- * opaque in the bar's rendered colour rather than at the bar's opacity,
- * so the overlap is not darker. On an inner span the arm crosses the
- * outer bar. The arm is 24px, not `ch`: the body's font is
- * the platform's and its `ch` is not one width, and the bars column is
- * fixed px. It is the block's pseudo-element, not the body's: the body
- * clips its overflow, and the bracket reaches outside it. Folded, the
- * renderer hides the block and the bracket with it. */
-.diff .span-text::before {
-  content: "";
-  position: absolute;
-  z-index: 1; /* over the body's top padding, which otherwise paints across the arm */
-  top: var(--chain, 0px);
-  left: calc(-1 * (var(--depth, 0) * 6px + 4px));
-  width: calc(var(--depth, 0) * 6px + 4px + 24px);
-  height: 12px;
-  box-sizing: border-box;
-  border-top: 2px solid color-mix(in srgb, var(--accent) 75%, var(--bg-alt));
-  border-left: 2px solid color-mix(in srgb, var(--accent) 75%, var(--bg-alt));
-  border-top-left-radius: 10px;
-  pointer-events: none;
-}
+.diff .span-text.headless .span-text-body { display: none; }
+.diff .span-text.lifted > .span-widget > .span-text-body { transition: max-height 150ms ease-out; }
 /* The cut, where a body's text runs past its clamp: a fade over the last
  * line and a bit, in the strip's own colour, with an ellipsis in its
  * corner. Inside the body, so the clamp puts it at the visible bottom. */
@@ -919,40 +944,20 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   pointer-events: none;
   transition: opacity 150ms ease-out;
 }
-/* The lift: a hovered or pinned block — bracket and body, one widget —
- * leaves the grid as a fixed overlay at the coordinates the renderer read
- * off it, and the body's clamp transitions to the natural height the
- * renderer measured (to a px value, since `none` does not animate).
- * Fixed, not absolute: the half is a scroll container, and a body running
- * past the hunk's last row would otherwise be clipped there and give the
- * half a scrollbar. The block is the text column's width, so it covers
- * gutter text alone. The z-order is the block's: a hovered block above a
- * pinned one, a pinned one above the rest. The overlay keeps its place's
- * top and left edge, so only its bottom edge lies over anything; a 1px
- * line there (inset, so it adds no height) is the whole separation. A
- * pinned block is marked by its bracket and bar at full accent, not by a
- * second frame around the body. */
+.diff .span-text.lifted .span-text-body.truncated::after { opacity: 0; }
+/* The z-order is the item's: a hovered block above a pinned one, a pinned
+ * one above the rest. */
 .diff .span-text.pinned { z-index: 3; }
 .diff .span-text.hover-lifted { z-index: 4; }
-.diff .span-text.lifted { position: fixed; right: auto; }
-.diff .span-text.lifted > .span-text-body {
-  box-shadow: inset 0 -1px 0 0 var(--border);
-  transition: max-height 150ms ease-out;
-}
-.diff .span-text.pinned::before { border-color: var(--accent); }
-.diff .span-text.pinned.lifted > .span-text-body {
-  box-shadow: inset 0 -1px 0 0 var(--accent);
-}
-.diff .span-text.lifted > .span-text-body.truncated::after { opacity: 0; }
 @media (prefers-reduced-motion: reduce) {
-  .diff .span-text.lifted > .span-text-body, .diff .span-text-body.truncated::after { transition: none; }
+  .diff .span-text.lifted > .span-widget > .span-text-body, .diff .span-text-body.truncated::after,
+  .diff .span-edge-frame { transition: none; }
 }
 /* An annotation row (or the placeholder for an old-side one) is built
  * without gutter cells; a sticky pseudo-item over the strip's two columns
- * keeps its background continuous through the row, and the placement pass
- * adds a bars cell to one that lies inside a span so the span's bar runs
- * through it too. The placeholder is `visibility: hidden`; its bars cell
- * shows regardless. The annotation cell takes the number and code columns
+ * keeps its background continuous through the row; a span's edge, an item
+ * over the rows, runs through it above that. The placeholder is
+ * `visibility: hidden`. The annotation cell takes the number and code columns
  * only, so its box wraps before the strip rather than under it (a row
  * wider than the half still lets the box run under the strip, as it ran
  * past the half's edge before; scrolling brings it out). */
@@ -968,12 +973,7 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   background: var(--bg-alt);
   box-shadow: inset 1px 0 var(--border);
 }
-.diff .half-new .row-placeholder > .cell-gutter-bars { visibility: visible; }
 .diff .half-new .cell-annotation { grid-column: 1 / 3; }
-.diff .span-text-body.chained { padding-top: 4px; border-top: 1px dashed var(--border); }
-/* The chained block's bracket is at its own top — over its divider, not
- * under it. */
-.diff .span-text:has(> .span-text-body.chained)::before { top: calc(var(--chain, 0px) - 1px); }
 .diff .span-text-intent.empty { color: var(--fg-dim); font-style: italic; }
 /* The pill row leads the block, on its first line, so it sits beside the
  * row the span starts on rather than wherever its intent ends: the smell
