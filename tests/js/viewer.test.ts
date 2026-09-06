@@ -286,6 +286,30 @@ function nudgeDivider(el: HTMLElement, key: string, shiftKey = false): void {
   el.dispatchEvent(new KeyboardEvent("keydown", { key, shiftKey, bubbles: true }));
 }
 
+/** Every thread label under `root` — a fold's label tree or a comment
+ *  manifest — as "range state text". */
+function threadLabels(root: ParentNode): string[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(".label-comment")).map((el) => {
+    const dot = el.querySelector<HTMLElement>(".thread-dot")!;
+    const state = dot.classList.contains("all-resolved") ? "resolved"
+      : dot.classList.contains("has-unresolved") ? "open" : "?";
+    return `${el.querySelector(".label-range")!.textContent} ${state} ${el.querySelector(".label-text")!.textContent}`;
+  });
+}
+
+/** Run `fn` recording every element `scrollIntoView` was called on. */
+function recordingScrolls(fn: () => void): Element[] {
+  const scrolled: Element[] = [];
+  const orig = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = function scrollIntoView(this: Element): void { scrolled.push(this); };
+  try {
+    fn();
+  } finally {
+    Element.prototype.scrollIntoView = orig;
+  }
+  return scrolled;
+}
+
 function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
   return {
     version: "1",
@@ -2890,15 +2914,6 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
   function comment(id: string, line: number, body: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
     return { id, file: "a.py", side: "new", line, body, created_at: 1, updated_at: 1, ...extra };
   }
-  /** Every thread label under `root`, as "range marker text". */
-  const threadLabels = (root: ParentNode): string[] =>
-    Array.from(root.querySelectorAll<HTMLElement>(".label-comment")).map((el) => {
-      const dot = el.querySelector<HTMLElement>(".thread-dot")!;
-      const state = dot.classList.contains("all-resolved") ? "resolved"
-        : dot.classList.contains("has-unresolved") ? "open" : "?";
-      return `${el.querySelector(".label-range")!.textContent} ${state} ${el.querySelector(".label-text")!.textContent}`;
-    });
-
   test("a collapsed definition lists the threads on the rows it hid, nested where they sit", async () => {
     await bootViewer(makeData({ pending: false, files: [labelledFile()], symbols: [] }), {
       comments: [
@@ -2939,14 +2954,7 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
     expect(document.querySelector<HTMLElement>('.row-annotation[data-thread-id="c-guard"]')!.style.display).toBe("none");
 
     // Clicking the label opens the fold and brings the thread into view.
-    const scrolled: Element[] = [];
-    const orig = Element.prototype.scrollIntoView;
-    Element.prototype.scrollIntoView = function scrollIntoView(this: Element): void { scrolled.push(this); };
-    try {
-      clickEl(tree.querySelector('.label-comment[data-thread-id="c-guard"]')!);
-    } finally {
-      Element.prototype.scrollIntoView = orig;
-    }
+    const scrolled = recordingScrolls(() => clickEl(tree.querySelector('.label-comment[data-thread-id="c-guard"]')!));
     expect(chevronOnLine(8).classList.contains("open")).toBe(true);
     const threadRow = document.querySelector<HTMLElement>('.row-annotation[data-thread-id="c-guard"]')!;
     expect(threadRow.style.display).toBe("");
@@ -3098,6 +3106,121 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
     (document.querySelector('.fold-slider button[data-fold="code"]') as HTMLElement).click();
     expect(chevrons()).toHaveLength(1);
     expect(document.querySelectorAll(".annot-box")).toHaveLength(1);
+  });
+});
+
+describe("hidden content is a manifest: a collapsed hunk or file lists its threads", () => {
+  /** `a.py`: three hunks with unchanged context between — a one-line
+   *  edit at 2, a hunk at 8 replacing two old lines (8, 9) with one new
+   *  (8), a one-line edit at 12; `b.py`: one hunk, no comments. */
+  function twoFileData(): ViewerData {
+    const hunk = (id: string, line: number): Record<string, unknown> => makeHunkBlock(id, `edit at ${line}`, {
+      header: `@@ -${line},1 +${line},1 @@`,
+      old_start: line, old_count: 1, new_start: line, new_count: 1,
+      rows: [{ kind: "pair", old_line: line, new_line: line, old_text: `l${line}`, new_text: `L${line}` }],
+    });
+    const squeeze = makeHunkBlock("H0_1", "two lines become one", {
+      header: "@@ -8,2 +8,1 @@",
+      old_start: 8, old_count: 2, new_start: 8, new_count: 1, adds: 1, dels: 2,
+      rows: [
+        { kind: "del", old_line: 8, new_line: null, old_text: "l8", new_text: "" },
+        { kind: "del", old_line: 9, new_line: null, old_text: "l9", new_text: "" },
+        { kind: "ins", old_line: null, new_line: 8, old_text: "", new_text: "L8" },
+      ],
+    });
+    return makeData({
+      pending: false,
+      files: [
+        {
+          id: "F0", path: "a.py", status: "modified", language: "python",
+          adds: 3, dels: 4, summary: "", head_line_count: 19,
+          symbols: { added: [], modified: [], removed: [] },
+          hunks: [hunk("H0_0", 2), squeeze, hunk("H0_2", 12)],
+        },
+        {
+          id: "F1", path: "b.py", status: "modified", language: "python",
+          adds: 1, dels: 1, summary: "", head_line_count: null,
+          symbols: { added: [], modified: [], removed: [] },
+          hunks: [makeHunkBlock("H1_0")],
+        },
+      ],
+    });
+  }
+  const COMMENTS = [
+    { id: "c-null", file: "a.py", side: "new", line: 2, body: "needs a null check\nand a test", created_at: 1, updated_at: 1 },
+    { id: "c-ctx", file: "a.py", side: "new", line: 5, body: "this loop is the hot path", created_at: 2, updated_at: 2 },
+    { id: "c-old", file: "a.py", side: "old", line: 9, body: "why was this dropped?", created_at: 3, updated_at: 3 },
+    { id: "gh-8", file: "a.py", side: "new", line: 8, body: "settled", created_at: 4, updated_at: 4,
+      source: "github", author: "alice", thread_resolved: true },
+  ];
+  const hunkEl = (id: string): HTMLElement => document.querySelector<HTMLElement>(`.hunk[data-id="${id}"]`)!;
+  const fileEl = (id: string): HTMLElement => document.querySelector<HTMLElement>(`.file[data-id="${id}"]`)!;
+  const setLevel = (level: string): void =>
+    (document.querySelector(`.fold-slider button[data-fold="${level}"]`) as HTMLElement).click();
+
+  test("a collapsed hunk lists the threads on its rows, either side; one with none shows no manifest", async () => {
+    await bootViewer(twoFileData(), { comments: COMMENTS });
+    await tick();
+    setLevel("hunks");
+
+    // One row per thread inside the hunk, in row order — the deleted
+    // line's thread before the inserted line's, whatever their numbers.
+    // The context comment (line 5) is in no hunk.
+    expect(threadLabels(hunkEl("H0_0"))).toEqual(["+2 open needs a null check"]);
+    expect(threadLabels(hunkEl("H0_1"))).toEqual(["-9 open why was this dropped?", "+8 resolved settled"]);
+    expect(hunkEl("H0_2").querySelector(".comment-manifest")).toBeNull();
+    expect(hunkEl("H1_0").querySelector(".comment-manifest")).toBeNull();
+    // The manifest is the header's neighbour, not part of it.
+    expect(hunkEl("H0_0").querySelector(":scope > .comment-manifest")).not.toBeNull();
+    expect(hunkEl("H0_0").querySelector(".hunk-header .comment-manifest")).toBeNull();
+    // Nothing about spans or definitions at this rung.
+    expect(hunkEl("H0_0").querySelector(".label-span, .label-definition, .label-tree")).toBeNull();
+
+    // Clicking a row opens that hunk alone and brings the thread into view.
+    const scrolled = recordingScrolls(() => hunkEl("H0_1").querySelector<HTMLElement>('.label-comment[data-thread-id="c-old"]')!.click());
+    expect(hunkEl("H0_1").classList.contains("folded")).toBe(false);
+    expect(hunkEl("H0_0").classList.contains("folded")).toBe(true);
+    const threadRow = hunkEl("H0_1").querySelector<HTMLElement>('.row-annotation[data-thread-id="c-old"]')!;
+    expect(threadRow).not.toBeNull();
+    expect(scrolled).toEqual([threadRow]);
+    // Open, the hunk carries its threads on their rows and no manifest.
+    expect(hunkEl("H0_1").querySelector(".comment-manifest")).toBeNull();
+  });
+
+  test("a collapsed file lists every thread on it; one with none shows no manifest", async () => {
+    await bootViewer(twoFileData(), { comments: COMMENTS });
+    await tick();
+    setLevel("files");
+
+    // Every thread on the file, by line.
+    expect(threadLabels(fileEl("F0"))).toEqual([
+      "+2 open needs a null check",
+      "+5 open this loop is the hot path",
+      "+8 resolved settled",
+      "-9 open why was this dropped?",
+    ]);
+    expect(fileEl("F0").querySelector(":scope > .comment-manifest")).not.toBeNull();
+    expect(fileEl("F1").querySelector(".comment-manifest")).toBeNull();
+
+    // Clicking a row opens the file and the hunk carrying the line; the
+    // other hunks stay at the level's default.
+    const scrolled = recordingScrolls(() => fileEl("F0").querySelector<HTMLElement>('.label-comment[data-thread-id="c-old"]')!.click());
+    expect(fileEl("F0").classList.contains("folded")).toBe(false);
+    expect(fileEl("F1").classList.contains("folded")).toBe(true);
+    expect(hunkEl("H0_1").classList.contains("folded")).toBe(false);
+    expect(hunkEl("H0_0").classList.contains("folded")).toBe(true);
+    expect(scrolled).toEqual([hunkEl("H0_1").querySelector('.row-annotation[data-thread-id="c-old"]')]);
+    // The still-folded hunk carries its own manifest now.
+    expect(threadLabels(hunkEl("H0_0"))).toEqual(["+2 open needs a null check"]);
+  });
+
+  test("the file header itself keeps toggling the file", async () => {
+    await bootViewer(twoFileData(), { comments: COMMENTS });
+    await tick();
+    setLevel("files");
+    (fileEl("F0").querySelector(".file-header") as HTMLElement).click();
+    expect(fileEl("F0").classList.contains("folded")).toBe(false);
+    expect(fileEl("F0").querySelector(":scope > .comment-manifest")).toBeNull();
   });
 });
 

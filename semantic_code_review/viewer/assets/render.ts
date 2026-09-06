@@ -597,7 +597,10 @@ function _renderFile(f: FileBlock, scope: PaneScope): HTMLElement | null {
   const folded = _fileFolded(scope, f);
   div.classList.toggle("folded", folded);
   div.appendChild(_renderFileHeader(f, folded, scope));
-  if (!folded) {
+  if (folded) {
+    const manifest = _renderCommentManifest(Comments.threadsFor(f.path), (t) => _revealThread(f, t, scope));
+    if (manifest) div.appendChild(manifest);
+  } else {
     const body = _el("div", "file-body");
     if (Rendered.isOn(scope.rendered, f.id)) {
       // Rendered markdown mode is a separate body renderer: no diff
@@ -925,7 +928,10 @@ function _renderHunk(h: HunkBlock, f: FileBlock, scope: PaneScope): HTMLElement 
   const folded = _hunkFolded(scope, h);
   div.classList.toggle("folded", folded);
   div.appendChild(_renderHunkHeader(h, folded, f, scope));
-  if (!folded) {
+  if (folded) {
+    const manifest = _renderCommentManifest(_hunkThreads(h, f), (t) => _revealThread(f, t, scope));
+    if (manifest) div.appendChild(manifest);
+  } else {
     div.appendChild(_renderHunkDiff(h, f, scope));
     if (h.context) {
       const c = _el("div", "context-note");
@@ -1210,6 +1216,50 @@ function _threadTarget(pane: ParentNode, thread: ThreadSummary): HTMLElement | n
   const row = pane.querySelector<HTMLElement>(`.row-annotation${sel}`);
   if (row && row.style.display !== "none") return row;
   return pane.querySelector<HTMLElement>(`.label-comment${sel}`);
+}
+
+// --- The manifest under a collapsed hunk or file ---------------------------
+//
+// The `files` and `hunks` rungs are one-line summaries and name no span
+// or definition (ADR 0008). The reviewer's threads are the exception:
+// a collapsed hunk lists the threads on its rows, a collapsed file every
+// thread on the file, each as the label row the tree uses. Nothing is
+// rendered when there are none.
+
+/** The threads on a hunk's rows, either side, in row order. */
+function _hunkThreads(h: HunkBlock, f: FileBlock): ThreadSummary[] {
+  const rows = h.rows || [];
+  const placed: { thread: ThreadSummary; idx: number }[] = [];
+  for (const thread of Comments.threadsFor(f.path)) {
+    const idx = rows.findIndex((r) => _rowCarries(r, thread));
+    if (idx >= 0) placed.push({ thread, idx });
+  }
+  return placed.sort((a, b) => a.idx - b.idx).map((p) => p.thread);
+}
+
+function _renderCommentManifest(
+  threads: ThreadSummary[], pick: (thread: ThreadSummary) => void,
+): HTMLElement | null {
+  if (!threads.length) return null;
+  const box = _el("div", "comment-manifest");
+  for (const thread of threads) box.appendChild(_renderCommentLabel(thread, () => pick(thread)));
+  return box;
+}
+
+/** A manifest row was clicked: open the file and the hunk carrying the
+ *  thread's line in this pane, repaint, and bring the thread into view —
+ *  its row, or the label a still-collapsed definition lists it under. A
+ *  thread on a line no hunk carries opens the file alone. */
+function _revealThread(f: FileBlock, thread: ThreadSummary, scope: PaneScope): void {
+  scope.overrides[f.id] = false;
+  const hunk = f.hunks.find((h) => (h.rows || []).some((r) => _rowCarries(r, thread)));
+  if (hunk) scope.overrides[hunk.id] = false;
+  scope.repaint();
+  // One pane holds `.file` nodes at a time: the panel's in overview mode,
+  // the diff's otherwise.
+  const fileEl = document.querySelector<HTMLElement>(`.file[data-id="${_cssEscape(f.id)}"]`);
+  const target = fileEl && _threadTarget(fileEl, thread);
+  if (target) target.scrollIntoView({ block: "nearest" });
 }
 
 // --- A collapsed fold's labels ---------------------------------------------

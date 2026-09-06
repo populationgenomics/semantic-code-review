@@ -689,6 +689,14 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 .label-comment .label-text {
   min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* The manifest under a collapsed hunk or file header: the threads inside
+ * it, one label row each, quiet and indented under the header's text. */
+.comment-manifest {
+  padding: 0 12px 4px 36px;
+  color: var(--fg-muted); font-size: 12px;
+}
+.comment-manifest .label-text { font-size: 12px; }
+.file > .comment-manifest { padding-left: 38px; background: var(--bg-alt); }
 /* A node's children sit indented beneath its row, with a hairline on the
  * left carrying the containment. */
 .label-children {
