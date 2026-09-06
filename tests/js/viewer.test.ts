@@ -2786,8 +2786,13 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
   const labelRows = (root: ParentNode): string[] =>
     Array.from(root.querySelectorAll<HTMLElement>(".label-row")).map((el) =>
       `${el.dataset.def ?? el.dataset.id}: ${el.querySelector(".label-text")!.textContent}`);
-  const foldBoxOf = (line: number): HTMLElement =>
-    rowOfLine(line).nextElementSibling!.querySelector<HTMLElement>(".annot-box")!;
+  /** The fold box hanging off the chevron row for `line` — past any
+   *  comment rows also hanging off it. */
+  const foldBoxOf = (line: number): HTMLElement => {
+    let el = rowOfLine(line).nextElementSibling;
+    while (el && !el.classList.contains("annot-fold")) el = el.nextElementSibling;
+    return el!.querySelector<HTMLElement>(".annot-box")!;
+  };
 
   test("collapsing a definition shows the labels it hid, beneath its summary line", async () => {
     await bootViewer(makeData({ pending: false, files: [labelledFile()], symbols: [] }));
@@ -2877,6 +2882,96 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
     expect(text.style.gridRow).toBe("2 / 3");
     expect(foldBoxOf(5).querySelector(".label-tree")).toBeNull();
     expect(foldBoxOf(5).querySelector(".fold-summary")!.textContent).toContain("method Foo.alpha — ");
+  });
+
+  // --- Hidden content is a manifest: the reviewer's threads are listed too ---
+
+  /** A comment on `a.py`, new side unless `extra` says otherwise. */
+  function comment(id: string, line: number, body: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return { id, file: "a.py", side: "new", line, body, created_at: 1, updated_at: 1, ...extra };
+  }
+  /** Every thread label under `root`, as "range marker text". */
+  const threadLabels = (root: ParentNode): string[] =>
+    Array.from(root.querySelectorAll<HTMLElement>(".label-comment")).map((el) => {
+      const dot = el.querySelector<HTMLElement>(".thread-dot")!;
+      const state = dot.classList.contains("all-resolved") ? "resolved"
+        : dot.classList.contains("has-unresolved") ? "open" : "?";
+      return `${el.querySelector(".label-range")!.textContent} ${state} ${el.querySelector(".label-text")!.textContent}`;
+    });
+
+  test("a collapsed definition lists the threads on the rows it hid, nested where they sit", async () => {
+    await bootViewer(makeData({ pending: false, files: [labelledFile()], symbols: [] }), {
+      comments: [
+        comment("c-guard", 10, "is this branch reachable?\nsecond line", {}),
+        comment("c-guard-reply", 10, "yes, via the CLI", { in_reply_to_id: "c-guard", created_at: 2 }),
+        comment("c-guard-2", 10, "also: rename this", { created_at: 3 }),
+        comment("gh-tail", 11, "settled", { source: "github", author: "alice", thread_resolved: true }),
+        comment("c-opener", 8, "on the chevron row"),
+        comment("c-alpha", 6, "outside this fold"),
+        comment("c-old", 10, "old line 10 is not among these rows", { side: "old" }),
+      ],
+    });
+    await tick();
+    expandHunk();
+    queueFetchResponse({ status: 500, body: {} });
+
+    clickEl(chevronOnLine(8));
+    const tree = foldBoxOf(8).querySelector(".label-tree")!;
+    // One row per thread (the reply adds nothing), the root's first line
+    // only, in row order; the thread on the opener row hangs off a row
+    // still on screen and alpha's thread is outside the fold. Shape
+    // carries the state: a filled dot while open, a ring once resolved.
+    expect(threadLabels(tree)).toEqual([
+      "+10 open is this branch reachable?",
+      "+10 open also: rename this",
+      "+11 resolved settled",
+    ]);
+    expect(tree.querySelector<HTMLElement>('.label-comment[data-thread-id="c-guard"] .thread-dot')!.title).toBe("unresolved thread");
+    expect(tree.querySelector<HTMLElement>('.label-comment[data-thread-id="gh-tail"] .thread-dot')!.title).toBe("resolved thread");
+    // The guard span (9..10) covers line 10, so its threads nest under
+    // it — beside the one-line callout and each other, not under them;
+    // line 11 is under no span, so its thread is a root.
+    const guard = tree.querySelector('.label-row[data-id="H0_0:span:9-10"]')!.parentElement!;
+    expect(Array.from(guard.querySelector(":scope > .label-children")!.children).map((el) => el.className))
+      .toEqual(["label-row label-span", "label-row label-comment", "label-row label-comment"]);
+    expect(tree.querySelector(':scope > .label-comment[data-thread-id="gh-tail"]')).not.toBeNull();
+    // The thread rows themselves folded with their lines.
+    expect(document.querySelector<HTMLElement>('.row-annotation[data-thread-id="c-guard"]')!.style.display).toBe("none");
+
+    // Clicking the label opens the fold and brings the thread into view.
+    const scrolled: Element[] = [];
+    const orig = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function scrollIntoView(this: Element): void { scrolled.push(this); };
+    try {
+      clickEl(tree.querySelector('.label-comment[data-thread-id="c-guard"]')!);
+    } finally {
+      Element.prototype.scrollIntoView = orig;
+    }
+    expect(chevronOnLine(8).classList.contains("open")).toBe(true);
+    const threadRow = document.querySelector<HTMLElement>('.row-annotation[data-thread-id="c-guard"]')!;
+    expect(threadRow.style.display).toBe("");
+    expect(scrolled).toEqual([threadRow]);
+  });
+
+  test("a promoted span's comment stands in the tree where the span's label was", async () => {
+    await bootViewer(makeData({ pending: false, files: [labelledFile()], symbols: [] }), {
+      comments: [
+        comment("c-from-span", 9, "beta's guard — promoted", { derived_from: "H0_0:span:9-10" }),
+        // The id a store written before spans recorded a one-line note under.
+        comment("c-from-note", 10, "callout — promoted", { derived_from: "H0_0:line_note:10" }),
+      ],
+    });
+    await tick();
+    expandHunk();
+    queueFetchResponse({ status: 500, body: {} });
+
+    clickEl(chevronOnLine(8));
+    const tree = foldBoxOf(8).querySelector(".label-tree")!;
+    expect(tree.querySelector(".label-span")).toBeNull();
+    expect(threadLabels(tree)).toEqual([
+      "+9 open beta's guard — promoted",
+      "+10 open callout — promoted",
+    ]);
   });
 
   test("a region with nothing labelled inside it shows its summary line alone", async () => {

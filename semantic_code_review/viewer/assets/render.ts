@@ -22,7 +22,7 @@
 //     chain collapses (render.ts → console.ts, as boot.ts wires it)
 
 import { Annotations } from "./annotations";
-import { Comments } from "./comments";
+import { Comments, type ThreadSummary } from "./comments";
 import { Console } from "./console";
 import { Explainer } from "./explainer";
 import { ExplainerPanel, type PanelHost } from "./explainer_panel";
@@ -1012,16 +1012,28 @@ function _renderHunkHeader(
 // --- The label tree: what a collapsed fold shows ----------------------------
 //
 // The labels on the rows a fold hid (ADR 0008: folding a region shows its
-// label): every definition touched within them (a `FileBlock.fold_regions`
-// entry with a name whose range holds a changed row) and every annotation
-// span with a row in them, nested by containment over row indices and
-// rendered as labelled rows. Row indices are the one coordinate both
-// kinds share: a deleted definition has only pre-image lines, a span only
-// post-image ones. Nothing is synthesised for rows with neither.
+// label; hidden content is a manifest): every definition touched within
+// them (a `FileBlock.fold_regions` entry with a name whose range holds a
+// changed row), every annotation span with a row in them, and every
+// reviewer comment thread on one of them, nested by containment over row
+// indices and rendered as labelled rows. Row indices are the one
+// coordinate all three share: a deleted definition has only pre-image
+// lines, a span only post-image ones, a thread one line on one side.
+// Nothing is synthesised for rows with none.
 
 type LabelNode =
   | { kind: "definition"; region: FoldRegion; first: number; last: number; children: LabelNode[] }
-  | { kind: "span"; span: AnnotationSpan; first: number; last: number; children: LabelNode[] };
+  | { kind: "span"; span: AnnotationSpan; first: number; last: number; children: LabelNode[] }
+  | { kind: "comment"; thread: ThreadSummary; first: number; last: number; children: LabelNode[] };
+
+// Siblings of one extent, in order: the definition, the spans over it,
+// the threads on it.
+const _LABEL_KIND_ORDER: Record<LabelNode["kind"], number> = { definition: 0, span: 1, comment: 2 };
+
+/** Whether `row` is the line a thread sits on, on the thread's side. */
+function _rowCarries(row: RowBlock, thread: ThreadSummary): boolean {
+  return thread.side === "new" ? row.new_line === thread.line : row.old_line === thread.line;
+}
 
 /** What the tree is being built for: the fold's chevron row, which stays
  *  visible above the rows it labels. A definition covering that row
@@ -1060,34 +1072,46 @@ function _touchedDefinitions(f: FileBlock, rows: RowBlock[], scope: LabelScope):
   return out;
 }
 
-/** Nest definitions and spans by containment. Sorted outermost first —
- *  `(first, -last)`, a definition before a span of the same extent — so a
- *  node is a child of the nearest open node that still covers it. Two
- *  spans of one extent are siblings (two notes on one line are two
- *  observations). A span is drawn from whichever hunk carries it; one
- *  with no row here is simply elsewhere, and one still covering the
- *  visible line has its bar and text on screen already. */
+/** Nest definitions, spans and threads by containment. Sorted outermost
+ *  first — `(first, -last)`, then definition, span, comment for one
+ *  extent — so a node is a child of the nearest open node that still
+ *  covers it. A span covers nothing of exactly its extent: two spans of
+ *  one extent are siblings (two notes on one line are two observations),
+ *  and so are a one-line span and the thread on its line; a thread is a
+ *  leaf. A span is drawn from
+ *  whichever hunk carries it; one with no row here is simply elsewhere,
+ *  and one still covering the visible line has its bar and text on
+ *  screen already. A span whose intent the reviewer promoted is replaced
+ *  by the comment, as its ticket is in the gutter. A thread is listed
+ *  when its row is among the hidden ones; one on the chevron row hangs
+ *  off a row still on screen. */
 function _labelTree(f: FileBlock, rows: RowBlock[], scope: LabelScope): LabelNode[] {
   const nodes: LabelNode[] = _touchedDefinitions(f, rows, scope);
   for (const h of f.hunks) {
     for (const span of h.spans || []) {
       const shown = scope.visibleRow.new_line;
       if (shown != null && span.start <= shown && shown <= span.end) continue;
+      if (_spanPromoted(span, h.id)) continue;
       const extent = _rowExtent(rows, (r) => r.new_line != null && span.start <= r.new_line && r.new_line <= span.end);
       if (extent === null) continue;
       nodes.push({ kind: "span", span, ...extent, children: [] });
     }
   }
+  for (const thread of Comments.threadsFor(f.path)) {
+    const extent = _rowExtent(rows, (r) => _rowCarries(r, thread));
+    if (extent === null) continue;
+    nodes.push({ kind: "comment", thread, ...extent, children: [] });
+  }
   nodes.sort((a, b) => a.first - b.first || b.last - a.last
-    || (a.kind === b.kind ? 0 : a.kind === "definition" ? -1 : 1));
+    || _LABEL_KIND_ORDER[a.kind] - _LABEL_KIND_ORDER[b.kind]);
   const roots: LabelNode[] = [];
   const open: LabelNode[] = [];
   for (const node of nodes) {
     while (open.length) {
       const top = open[open.length - 1];
       const same = top.first === node.first && top.last === node.last;
-      const covers = top.first <= node.first && node.last <= top.last
-        && !(same && top.kind === "span" && node.kind === "span");
+      const covers = top.kind !== "comment" && top.first <= node.first && node.last <= top.last
+        && !(same && top.kind === "span");
       if (covers) break;
       open.pop();
     }
@@ -1123,6 +1147,7 @@ function _renderLabelTree(f: FileBlock, rows: RowBlock[], scope: LabelScope, pic
 
 /** One labelled row, its children indented beneath. */
 function _renderLabelNode(node: LabelNode, f: FileBlock, rows: RowBlock[], pick: LabelPick): HTMLElement {
+  if (node.kind === "comment") return _renderCommentLabel(node.thread, () => pick(node));
   const row = _el("div", `label-row label-${node.kind}`);
   row.appendChild(_chev(true));
   if (node.kind === "definition") {
@@ -1154,13 +1179,46 @@ function _renderLabelNode(node: LabelNode, f: FileBlock, rows: RowBlock[], pick:
   return wrap;
 }
 
+/** A thread's label row — the one form a hidden thread takes, in a
+ *  fold's label tree and in the manifest under a collapsed hunk or file:
+ *  its line on its side, its state as the sidebar's dot draws it (filled
+ *  while open, hollow once resolved — never colour alone), the root's
+ *  first line cut with an ellipsis. `data-thread-id` is the rendered
+ *  thread row's. */
+function _renderCommentLabel(thread: ThreadSummary, pick: () => void): HTMLElement {
+  const row = _el("div", "label-row label-comment");
+  row.dataset.threadId = thread.id;
+  row.appendChild(_chev(true));
+  row.appendChild(_el("span", "label-range", `${thread.side === "new" ? "+" : "-"}${thread.line}`));
+  const dot = _el("span", `thread-dot ${thread.resolved ? "all-resolved" : "has-unresolved"}`);
+  dot.title = thread.resolved ? "resolved thread" : "unresolved thread";
+  row.appendChild(dot);
+  row.appendChild(_el("span", thread.text ? "label-text" : "label-text empty", thread.text || "(empty comment)"));
+  row.title = thread.text;
+  row.addEventListener("click", (e) => {
+    e.stopPropagation();
+    pick();
+  });
+  return row;
+}
+
+/** Where a thread is to be found within `pane`: its rendered row when
+ *  that is on screen, else the label standing in for it (a collapsed
+ *  definition's tree lists it), else null. */
+function _threadTarget(pane: ParentNode, thread: ThreadSummary): HTMLElement | null {
+  const sel = `[data-thread-id="${_cssEscape(thread.id)}"]`;
+  const row = pane.querySelector<HTMLElement>(`.row-annotation${sel}`);
+  if (row && row.style.display !== "none") return row;
+  return pane.querySelector<HTMLElement>(`.label-comment${sel}`);
+}
+
 // --- A collapsed fold's labels ---------------------------------------------
 
 /** The labels a collapsed region shows (the `FoldLabels` folds.ts asks
  *  for): the tree over the rows the fold hid. Clicking one opens the fold
- *  and lands on what it names — a span's text, a definition's first row
- *  — found within this pane's copy of the file, so the explainer panel
- *  never scrolls the diff pane. */
+ *  and lands on what it names — a span's text, a thread's row, a
+ *  definition's first row — found within this pane's copy of the file,
+ *  so the explainer panel never scrolls the diff pane. */
 function _foldLabels(f: FileBlock): FoldLabels {
   return (headerRow, bodyRows, open) => {
     const scope: LabelScope = { visibleRow: headerRow };
@@ -1168,10 +1226,16 @@ function _foldLabels(f: FileBlock): FoldLabels {
     const pick: LabelPick = (node) => {
       open();
       const pane = tree?.closest(".file") ?? document;
-      const target = node.kind === "span"
-        ? pane.querySelector<HTMLElement>(`.span-text[data-span-id="${_cssEscape(node.span.id)}"]`)
-        : (bodyRows[node.first].newEl.children[1].classList.contains("empty")
-          ? bodyRows[node.first].oldEl : bodyRows[node.first].newEl);
+      const rowOf = (side: "old" | "new"): HTMLElement =>
+        side === "new" ? bodyRows[node.first].newEl : bodyRows[node.first].oldEl;
+      let target: HTMLElement | null;
+      if (node.kind === "span") {
+        target = pane.querySelector<HTMLElement>(`.span-text[data-span-id="${_cssEscape(node.span.id)}"]`);
+      } else if (node.kind === "comment") {
+        target = _threadTarget(pane, node.thread) ?? rowOf(node.thread.side);
+      } else {
+        target = rowOf(bodyRows[node.first].newEl.children[1].classList.contains("empty") ? "old" : "new");
+      }
       if (target) target.scrollIntoView({ block: "nearest" });
     };
     tree = _renderLabelTree(f, bodyRows, scope, pick);
