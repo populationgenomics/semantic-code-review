@@ -1643,6 +1643,9 @@ let _PINNED: SpanTextBlock | null = null;
 let _hoveredBlock: SpanTextBlock | null = null;
 /** The gap an open card keeps from the half's edge. */
 const _CARD_MARGIN_PX = 4;
+/** The least room a card opens downward into before it turns upward
+ *  instead: three lines of its text and the padding round them. */
+const _CARD_MIN_PX = 52;
 
 /** Apply a block's state. A headless block has nothing to open; its edge
  *  still takes the pointer, to no effect. Opening (`.lifted`, on the
@@ -1675,10 +1678,12 @@ function _applyLift(block: SpanTextBlock): void {
 
 /** Keep an open card inside its half. The half is a scroll container:
  *  a card running past the hunk's last row would be cut there and give
- *  the half a scrollbar. The card unfolds downward from its ticket; when
- *  that does not fit and there is more room above, it unfolds upward
- *  instead (`.flipped`: its bottom stays on the ticket's), and in a hunk
- *  too short either way it is capped to the room and scrolls inside. */
+ *  the half a scrollbar. The card unfolds downward from its ticket, so
+ *  its first line stays where the ticket's was; past the room it is
+ *  capped to it and scrolls inside. Only when the room below is too
+ *  little to read (`_CARD_MIN_PX`) and there is more above does it unfold
+ *  upward instead (`.flipped`: its bottom stays on the ticket's), capped
+ *  the same way. */
 function _fitCard(block: SpanTextBlock): void {
   const half = block.el.parentElement!;
   const halfRect = half.getBoundingClientRect();
@@ -1689,8 +1694,9 @@ function _fitCard(block: SpanTextBlock): void {
   const below = halfRect.bottom - ticket - _CARD_MARGIN_PX;
   const above = ticket + _rowHeight(block) - halfRect.top - _CARD_MARGIN_PX;
   if (natural <= below) return;
-  const room = above > below ? above : below;
-  if (above > below) block.el.classList.add("flipped");
+  const flip = below < _CARD_MIN_PX && above > below;
+  if (flip) block.el.classList.add("flipped");
+  const room = flip ? above : below;
   if (natural > room) block.body.style.maxHeight = `${Math.max(0, room)}px`;
 }
 

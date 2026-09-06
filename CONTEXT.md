@@ -338,9 +338,10 @@ it is absolute in its block, so it scrolls with the rows and nothing
 keeps it up to date. Its bound is the half, a scroll container that would
 cut a card running past the hunk's last row and grow a scrollbar for it:
 the renderer fits the card when it opens (`render._fitCard`) — downward
-from the ticket's top, or upward from the ticket's bottom (`.flipped`)
-when that does not fit and there is more room above, and capped to the
-room, scrolling inside, in a hunk too short either way. The bar gives way
+from the ticket's top, so its first line stays where the ticket's was,
+capped to the room and scrolling inside when it runs past; only when the
+room below is too little to read (under three lines) and there is more
+above does it open upward from the ticket's bottom (`.flipped`). The bar gives way
 to the **brace** (`render._drawBrace`, an SVG in the edge, so it moves
 with the card): a `}` over the span's rows whose spine projects 3px past
 the bars column, into the code cell's padding, tip on the span's middle, stem

@@ -1679,10 +1679,10 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
       expect(lift("H0_0:span:8-8")).toEqual({ lifted: true, brace: true, hover: true, pinned: false });
     });
 
-    test("a card that would run past the half's end opens upward when there is more room above, and is capped in a hunk too short either way", async () => {
+    test("a card that would run past the half's end is capped there and scrolls inside; only with no room to read does it open upward", async () => {
       await bootPair();
-      // The child's ticket is on the last row: 16px below it, 96 above —
-      // the card unfolds upward, whole.
+      // The child's ticket is on the last row: 16px below it — too little
+      // to read — and 96 above: the card unfolds upward, whole.
       over(bodyOf("H0_0:span:8-8"));
       expect(fit("H0_0:span:8-8")).toEqual({ flipped: true, maxHeight: "" });
       out(bodyOf("H0_0:span:8-8"));
@@ -1694,6 +1694,13 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
       expect(fit("H0_0:span:4-8")).toEqual({ flipped: false, maxHeight: "26px" });
       out(bodyOf("H0_0:span:4-8"));
       expect(fit("H0_0:span:4-8")).toEqual({ flipped: false, maxHeight: "" });
+      // A 400px card on the parent, with the half at 400: 96px below is
+      // room to read, so it stays downward and is capped, though there is
+      // no less above — the first line does not move.
+      await bootPair();
+      bodyOf("H0_0:span:4-8").getBoundingClientRect = (): DOMRect => ({ top: 303, height: 400, bottom: 703 } as DOMRect);
+      over(bodyOf("H0_0:span:4-8"));
+      expect(fit("H0_0:span:4-8")).toEqual({ flipped: false, maxHeight: "96px" });
     });
 
     test("a one-line span's brace is a stem alone, from where the arms would reach to the body", async () => {
