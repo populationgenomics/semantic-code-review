@@ -586,22 +586,13 @@ function _refreshForAnchor(anchorRowEl: HTMLElement, anchor: Anchor): void {
   Annotations.reflow(anchorRowEl);
 }
 
-/** Walk the DOM and remove any LLM-annotation element whose stable id
- *  matches `derivedId`. Used right after a promotion save so the
- *  source observation visibly transitions into the comment.
- *
- *  Two shapes today: a span is its text block (`.span-text`) and marks
- *  (`.span-mark`) in the span gutter, both carrying `data-span-id`;
- *  smells render as inline `.smell` pills with `data-smell-id`. Of a
- *  span, the block and a dot go — the comment stands in their place —
- *  but a bar stays: it marks a range the comment, on one line, does
- *  not (the renderer draws a promoted span the same way). All are plain
- *  elements; the gutter's placement pass notices a removed block on its
- *  next run. */
+/** Remove the smell pills whose stable id (`data-smell-id`) is
+ *  `derivedId`, right after a promotion save, so the observation visibly
+ *  transitions into the comment. A span's block is not touched: the span
+ *  gutter's placement pass reads `isPromoted` itself, on every pass,
+ *  since the comment rows arriving (and, on a delete, leaving) is what
+ *  runs it — the ticket goes and comes back with the comment. */
 function _removeAnnotationByDerivedId(derivedId: string): void {
-  document.querySelectorAll<HTMLElement>(
-    `.span-text[data-span-id="${derivedId}"], .span-mark.span-dot[data-span-id="${derivedId}"]`,
-  ).forEach((el) => el.remove());
   document.querySelectorAll<HTMLElement>(
     `.smell[data-smell-id="${derivedId}"]`,
   ).forEach((el) => el.remove());

@@ -1195,38 +1195,40 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLE
 // The right half's grid has four columns — line number, code, bars, text —
 // the last two sticky to the half's right edge so they read as a fixed
 // strip at the diff's right edge while the code scrolls beneath. Every row
-// carries an empty bars and text cell for the gutter's background; a span
-// puts its marks in them. Every span takes one form: a mark in the bars
-// column — a bar over its rows, one column nearer the code per level of
-// nesting, or a dot on a span of one line — and its text block in the text
-// column, starting on its first row. Nothing of a span lives in the code
-// column.
+// carries an empty bars and text cell for the gutter's background. A span
+// is one grid item over its visible rows (`.span-text`, the block), in the
+// text column: it holds a widget with the span's edge — its bar down the
+// span's own bars column (one column nearer the code per level of nesting;
+// a dot for a span of one line) — and its body. Nothing of a span lives in
+// the code column, and no row is ever sized by a block: the widget is
+// absolute over the block.
 //
-// A text block is a zero-height grid item on its span's first row, so it
-// takes no part in the grid's row sizing: its body hangs down the strip
-// from the top of that row, past the end of the bar if it must. A span
-// never changes the shape of the code: no row is ever sized by a block.
-// The two invariants are that blocks do not overlap and that nothing of a
-// block lies below the hunk's last row. A downward pass over the rows
-// (`_layoutSpanTexts`) keeps them by cutting, not pushing: each block's
-// slot runs from its top to the next block's top in the half — or to the
-// last row's bottom when nothing follows — and its body is clamped to the
-// slot (`max-height`); one whose text does not fit is marked `truncated`
-// and shows the cut. Two blocks starting on one row chain, outermost
-// first, and share the slot. The pass is redone whenever the half's rows
-// change (an annotation inserted, a fold hiding rows) or its size does; it
-// measures once, writes once, and discards the mutation records its own
-// writes queue.
+// At rest the body is a ticket: one row tall, on the span's first row —
+// a chevron, the intent's opening words cut with an ellipsis, a dot per
+// smell. A ticket never wraps and never takes more than a row, so the only
+// placement question is two spans starting on one row: a ticket whose row
+// is taken goes to the next free row of its span (`--chain`, the offset
+// down from the block's top; `.chained`), and stacks under the last when
+// none is free. The pass (`_layoutSpanTexts`) runs whenever the half's
+// rows change (an annotation inserted, a fold hiding rows) or its size
+// does; it measures once, writes once, and discards the mutation records
+// its own writes queue. A block whose first row is hidden is headless —
+// the fold's label tree carries its text — and its bar alone marks the
+// rows still on screen; a folded gutter makes every block headless.
 //
-// The cut is read by lifting: hovering a block (its body or its marks)
-// lifts its body to its natural height as an overlay — `position: fixed`
-// at the coordinates it already has, since the half is a scroll container
-// and would otherwise clip the body at the hunk's end and grow a scrollbar
-// for it — over whatever gutter content is below it, never moving a row;
-// a click pins the lift, a second unpins. The overlay is re-anchored to
-// its block on every scroll and every pass, and released once its retract
-// has run. The lift is the block's alone: hovered draws above pinned,
-// pinned above the rest.
+// The ticket is read by opening it: hovering a block (its body or its
+// bar) unfolds the ticket in place into the card — the intent whole, the
+// smell pills, `+ comment` — over whatever gutter content is below it,
+// never moving a row, and its bar becomes a brace projecting over the
+// edge of the code it covers, with a stem back to the card. The card stays
+// in the grid, absolute in its block, so it scrolls with the rows and
+// nothing keeps it up to date; what that costs is that the half — a
+// scroll container — is its bound: a card that would run past the hunk's
+// last row unfolds upward instead when there is more room above, and is
+// capped to the room, scrolling inside, in a hunk too short either way.
+// A click pins the open state — one pin at a time; pinning a block
+// releases the one pinned before — and a second click unpins. Hovered
+// draws above pinned, pinned above the rest.
 
 /** A span placed on a hunk's rows: its row extent and nesting depth. */
 interface PlacedSpan {
@@ -1236,46 +1238,38 @@ interface PlacedSpan {
   depth: number;
 }
 
-/** A span's text block: the grid item, the body whose height is the
- *  block's, the span's first row; what the last pass measured and gave it
- *  — the body's natural height, the slot it is clamped to, the offset it
- *  hangs at under a block sharing its row; and its lift — whether the
- *  pointer is on it, whether a click pinned it, and whether the body is
+/** A span's block: the span and its hunk (what the pass asks the comment
+ *  store about), the grid item, the widget that lifts, the edge, the
+ *  body, the code rows the span covers; the offset the last pass placed
+ *  its ticket at under the block's top; and its state — whether the
+ *  pointer is on it, whether a click pinned it, and whether the widget is
  *  lifted now (the two's disjunction, applied). */
 interface SpanTextBlock {
+  span: AnnotationSpan;
+  hunkId: string;
   el: HTMLElement;
+  widget: HTMLElement;
+  edge: HTMLElement;
   body: HTMLElement;
-  row: HTMLElement;
-  natural: number;
-  available: number;
+  rows: HTMLElement[];
   chain: number;
   hover: boolean;
   pinned: boolean;
   lifted: boolean;
 }
 
-/** A multi-line span's bar: the code rows it runs from and to, and its
- *  column. The rows between them that are not code — a comment thread's
- *  row, a fold's label row — arrive after the bar is drawn, so the
- *  placement pass gives them their segment. */
-interface SpanBar {
-  span: AnnotationSpan;
-  first: HTMLElement;
-  last: HTMLElement;
-  depth: number;
-}
-
-/** A right half's gutter state: its text blocks and bars, and the
- *  observer whose records the pass discards. */
+/** A right half's gutter state: its blocks, and the observer whose
+ *  records the pass discards. */
 interface SpanGutter {
   blocks: SpanTextBlock[];
-  bars: SpanBar[];
   observer: MutationObserver | null;
 }
 
-/** Slack under which a body counts as fitting its slot: a cut of less
- *  than half a pixel is rounding, not text. */
-const _TRUNCATION_EPSILON_PX = 0.5;
+/** How far an open block's brace projects over the code, past the bars
+ *  column's edge — within the code cell's padding, so it covers no text. */
+const _BRACE_PROJECTION_PX = 3;
+/** The brace's width: its arms' reach from spine to tip. */
+const _BRACE_W = 8;
 
 /** Gutter state per right half. */
 const _SPAN_GUTTERS = new WeakMap<HTMLElement, SpanGutter>();
@@ -1289,15 +1283,14 @@ const _SPAN_TEXT_WIDTH = "26ch";
 const _SPAN_BAR_COLUMN_PX = 6;
 
 /** Spans on visible code — the one owner of the form a span takes when
- *  its rows are on screen: its marks in the bars column (a bar over its
- *  rows, or a dot for a span of one line) and its text block in the text
- *  column, whatever its length. A span whose rows are not in the hunk is
- *  warned about and left out. One the reviewer has turned into a comment
- *  loses its text block and, on one line, its dot — the comment stands
- *  in their place — but keeps its bar: the bar marks a range the comment
- *  does not. Everything hangs off the rows themselves, so it survives
- *  the hunk's `.diff` being reused across repaints and rows arriving
- *  above or below it from a chip. */
+ *  its rows are on screen: a block over its rows holding its edge (a bar
+ *  over the rows, or a dot for a span of one line) and its body. A span
+ *  whose rows are not in the hunk is warned about and left out. Every
+ *  span gets its block whole; that the reviewer has turned one into a
+ *  comment is the placement pass's to read, since the comment can be
+ *  deleted and the span must come back. The blocks are placed by row, so
+ *  they survive the hunk's `.diff` being reused across repaints and rows
+ *  arriving above or below it from a chip. */
 function _attachSpans(
   rowElsNew: HTMLElement[], rows: RowBlock[], spans: AnnotationSpan[],
   hunkId: string, filePath: string,
@@ -1308,41 +1301,26 @@ function _attachSpans(
   const half = rowElsNew[0].parentElement;
   if (!half) throw new Error(`${hunkId}: rows are not in a half`);
   const blocks: SpanTextBlock[] = [];
-  const bars: SpanBar[] = [];
   for (const ps of placed) {
-    const promoted = _spanPromoted(ps.span, hunkId);
-    if (ps.first === ps.last) {
-      if (promoted) continue;
-      _gutterBars(rowElsNew[ps.first]).appendChild(_spanMark(ps.span, ps.depth, "dot"));
-    } else {
-      for (let i = ps.first; i <= ps.last; i++) {
-        const pos = i === ps.first ? "bar-top" : i === ps.last ? "bar-bottom" : "bar";
-        _gutterBars(rowElsNew[i]).appendChild(_spanMark(ps.span, ps.depth, pos));
-      }
-      bars.push({ span: ps.span, first: rowElsNew[ps.first], last: rowElsNew[ps.last], depth: ps.depth });
-      if (promoted) continue;
-    }
     const el = _el("div", "span-text");
     el.dataset.spanId = ps.span.id;
-    // The block's bracket reaches back across the bars cell to this
-    // span's own mark: the depth is its column, and on a dot the
-    // bracket's upright runs down to the dot rather than onto a bar.
+    // The depth is the edge's bars column.
     el.style.setProperty("--depth", String(ps.depth));
+    if (ps.first === ps.last) el.classList.add("dot");
+    const widget = _el("div", "span-widget");
+    const edge = _spanEdge(ps.span);
+    widget.appendChild(edge);
     const body = _spanText(ps.span, filePath);
-    if (ps.first === ps.last) body.classList.add("dot");
-    // A block starting where the one before it starts chains under it;
-    // the class is the divider between the two.
-    if (blocks.length && blocks[blocks.length - 1].row === rowElsNew[ps.first]) body.classList.add("chained");
-    el.appendChild(body);
+    widget.appendChild(body);
+    el.appendChild(widget);
     half.appendChild(el);
     blocks.push({
-      el, body, row: rowElsNew[ps.first], natural: 0, available: 0, chain: 0, hover: false, pinned: false, lifted: false,
+      span: ps.span, hunkId, el, widget, edge, body, rows: rowElsNew.slice(ps.first, ps.last + 1),
+      chain: 0, hover: false, pinned: false, lifted: false,
     });
   }
-  // A bar with no block still needs the pass: it runs through the
-  // non-code rows that arrive inside it.
-  if (!blocks.length && !bars.length) return;
-  const gutter: SpanGutter = { blocks, bars, observer: null };
+  if (!blocks.length) return;
+  const gutter: SpanGutter = { blocks, observer: null };
   _SPAN_GUTTERS.set(half, gutter);
   _observeHalf(half, gutter);
   _layoutSpanTexts(half);
@@ -1421,9 +1399,9 @@ function _setGutterFold(collapsed: boolean): void {
 /** The strip's own affordances, delegated from the document so one
  *  listener covers every pane: a click on a block's body pins or unpins
  *  its lift — the body, not its controls, whose clicks are their own; a
- *  click on a span's mark expands the gutter (if folded) and brings that
+ *  click on a span's edge expands the gutter (if folded) and brings that
  *  span's text into view; a click on the strip's empty area — a gutter
- *  cell itself, not a block or mark on it — toggles the fold. */
+ *  cell itself, not a block on it — toggles the fold. */
 function _onGutterClick(e: MouseEvent): void {
   const target = e.target as HTMLElement | null;
   if (!target) return;
@@ -1433,16 +1411,14 @@ function _onGutterClick(e: MouseEvent): void {
     const block = _blockAt(body);
     if (!block) return;
     e.stopPropagation();
-    block.pinned = !block.pinned;
-    _applyLift(block);
+    _togglePin(block);
     return;
   }
-  const mark = target.closest<HTMLElement>(".span-mark[data-span-id]");
-  if (mark) {
+  const line = target.closest<HTMLElement>(".span-edge-line");
+  if (line) {
     e.stopPropagation();
     _setGutterFold(false);
-    const half = mark.closest<HTMLElement>(".half-new");
-    const body = half?.querySelector<HTMLElement>(`.span-text-body[data-span-id="${_cssEscape(mark.dataset.spanId!)}"]`);
+    const body = line.closest(".span-text")?.querySelector<HTMLElement>(".span-text-body");
     if (body) body.scrollIntoView({ block: "nearest" });
     return;
   }
@@ -1455,23 +1431,19 @@ function _onGutterClick(e: MouseEvent): void {
 /** What a gutter cell says on hover; the strip has no chrome of its own. */
 const _GUTTER_CELL_TITLE = "Click to fold or unfold the span gutter (g)";
 
-/** A row's bars cell (`children[2]`; `[3]` is its text cell). */
-function _gutterBars(rowEl: HTMLElement): HTMLElement {
-  const cell = rowEl.children[2] as HTMLElement | undefined;
-  if (!cell || !cell.classList.contains("cell-gutter-bars")) throw new Error("row has no gutter bars cell");
-  return cell;
-}
-
-/** A bar segment or dot in a row's bars cell, at its depth's column. Its
- *  tooltip is the span's rationale — what a folded gutter shows of it on
- *  hover; the native tooltip holds a 700-character intent whole. */
-function _spanMark(span: AnnotationSpan, depth: number, kind: "bar" | "bar-top" | "bar-bottom" | "dot"): HTMLElement {
-  const mark = _el("span", `span-mark span-${kind}`);
-  mark.dataset.spanId = span.id;
-  mark.style.setProperty("--depth", String(depth));
-  mark.setAttribute("aria-hidden", "true");
-  mark.title = _spanTooltip(span);
-  return mark;
+/** The edge beside a span's body: the line that is its bar (or dot) in
+ *  the bars column, and — while the block is open — the brace the lift
+ *  draws in. The line is the hover and click target that reaches a block
+ *  whose body an open neighbour covers, and carries the span's rationale
+ *  as its tooltip — what a folded gutter shows of it on hover; the native
+ *  tooltip holds a 700-character intent whole. */
+function _spanEdge(span: AnnotationSpan): HTMLElement {
+  const edge = _el("div", "span-edge");
+  edge.setAttribute("aria-hidden", "true");
+  const line = _el("span", "span-edge-line");
+  line.title = _spanTooltip(span);
+  edge.appendChild(line);
+  return edge;
 }
 
 function _spanTooltip(span: AnnotationSpan): string {
@@ -1489,20 +1461,31 @@ function _spanPromoted(span: AnnotationSpan, hunkId: string): boolean {
   return span.start === span.end && Comments.isPromoted(`${hunkId}:line_note:${span.start}`);
 }
 
-/** One span's text: a pill row on the block's first line — beside the
- *  bar's start, since it describes the span — holding its smells as
- *  promotable pills and the affordance that promotes its intent, then the
- *  intent, wrapping at the gutter's width. */
+/** One span's body: the ticket line — a chevron, the intent (one line
+ *  cut with an ellipsis at rest, whole when open), a dot per smell — and
+ *  the pill row the open card adds under it: the smells as promotable
+ *  pills and the affordance that promotes the intent. The stylesheet
+ *  shows the dots at rest and the pills open. */
 function _spanText(span: AnnotationSpan, filePath: string): HTMLElement {
   const el = _el("p", "span-text-body");
   el.dataset.spanId = span.id;
+  const line = _el("span", "span-text-line");
+  line.appendChild(_el("span", "span-text-chev", "\u25B8"));
+  line.appendChild(_el("span", span.intent ? "span-text-intent" : "span-text-intent empty", span.intent || "(no intent)"));
+  const dots = _el("span", "span-text-dots");
+  for (const sm of span.smells || []) {
+    const dot = _el("span", "span-text-dot");
+    dot.title = sm.tag;
+    dots.appendChild(dot);
+  }
+  line.appendChild(dots);
+  el.appendChild(line);
   const pills = _el("span", "span-text-pills");
   for (const sm of span.smells || []) pills.appendChild(_smellPill(sm, {
     smellId: `${span.id}:smell:${sm.tag}`, file: filePath, side: "new", line: span.start,
   }));
   if (span.intent) pills.appendChild(_spanPromoteButton(span, filePath));
   el.appendChild(pills);
-  el.appendChild(_el("span", span.intent ? "span-text-intent" : "span-text-intent empty", span.intent || "(no intent)"));
   return el;
 }
 
@@ -1524,7 +1507,7 @@ function _spanPromoteButton(span: AnnotationSpan, filePath: string): HTMLElement
 }
 
 /** Re-run the placement pass whenever the half's rows change or its
- *  size (or a text body's) does. One pair of observers per half; the
+ *  size does. One pair of observers per half; the
  *  WeakMap entry outlives them. A row mutation runs the pass after the
  *  burst that caused it settles; a resize runs it on the next frame, so
  *  the pass's own writes never land inside the resize loop. */
@@ -1552,58 +1535,63 @@ function _observeHalf(half: HTMLElement, gutter: SpanGutter): void {
       requestAnimationFrame(() => { frame = false; _layoutSpanTexts(half); });
     });
     ro.observe(half);
-    for (const block of gutter.blocks) ro.observe(block.body);
   }
 }
 
-/** Place a half's text blocks: give every visible row its grid row, put
- *  each block on its span's first row (hidden while that row is hidden —
- *  the fold's label tree carries it then), then run the waterfall over
- *  the blocks' measured heights: each is clamped to its slot, and one
- *  whose text runs past the slot is marked `truncated`. No row is sized
+/** Place a half's blocks: give every visible row its grid row, put each
+ *  block over its span's visible rows (none on screen: hidden) with its
+ *  body shown when the gutter is unfolded, the span's first row is on
+ *  screen and the span is not a comment (headless otherwise — the fold's
+ *  label tree carries the text, or the comment stands in its place; a
+ *  promoted span of one line has nothing left to show and hides whole),
+ *  then give every shown ticket a row: its span's first, or the next free
+ *  row of its span when that one is taken, stacking under the last when
+ *  none is. Promotion is read here, on every pass, because a comment's
+ *  rows arriving or leaving is what runs the pass: the ticket goes when
+ *  the comment is made and comes back when it is deleted. No row is sized
  *  by any of it. The writes happen before and after a single measurement;
  *  the mutation records they queue are discarded, so the pass does not
  *  re-run itself. */
 function _layoutSpanTexts(half: HTMLElement): void {
   const gutter = _SPAN_GUTTERS.get(half);
   if (!gutter) return;
-  // A span promoted to a comment after the attach has had its block
-  // removed from the half (comments.ts's sweep); it places nothing from
-  // then on. Not `isConnected`: the first pass runs before the hunk's
-  // `.diff` is in the document.
+  // A block removed from the half places nothing from then on. Not
+  // `isConnected`: the first pass runs before the hunk's `.diff` is in
+  // the document.
   gutter.blocks = gutter.blocks.filter((block) => block.el.parentElement === half);
   const track = new Map<Element, number>();
   const visible: HTMLElement[] = [];
-  const rows: HTMLElement[] = [];
   let n = 0;
   for (const child of Array.from(half.children) as HTMLElement[]) {
     if (!child.classList.contains("row")) continue;
-    rows.push(child);
     if (child.style.display === "none") { child.style.gridRow = ""; continue; }
     n++;
     child.style.gridRow = String(n);
     track.set(child, n);
     visible.push(child);
   }
-  _barNonCodeRows(gutter.bars, rows);
   const shown: SpanTextBlock[] = [];
+  const startOf = new Map<SpanTextBlock, HTMLElement>();
   for (const block of gutter.blocks) {
-    const start = track.get(block.row);
-    // Folded, the gutter has no text to place: every block hides — the
-    // compact view is the undistorted diff.
-    if (start === undefined || _gutterCollapsed) {
+    const rows = block.rows.filter((r) => track.has(r));
+    const promoted = _spanPromoted(block.span, block.hunkId);
+    if (!rows.length || (promoted && block.rows.length === 1)) {
       _dropLift(block);
       block.el.style.display = "none";
       block.el.style.removeProperty("--chain");
       continue;
     }
     block.el.style.display = "";
-    block.el.style.gridRow = String(start);
-    // Released so the body measures at its natural height — unless it is
-    // an overlay (lifted, or retracting), whose clamp is in transition
-    // and whose natural height is the one it was lifted to.
-    if (!_isOverlay(block)) block.body.style.maxHeight = "";
+    block.el.style.gridRow = `${track.get(rows[0])} / ${track.get(rows[rows.length - 1])! + 1}`;
+    const headed = !promoted && !_gutterCollapsed && rows[0] === block.rows[0];
+    block.el.classList.toggle("headless", !headed);
+    if (!headed) {
+      _dropLift(block);
+      block.el.style.removeProperty("--chain");
+      continue;
+    }
     shown.push(block);
+    startOf.set(block, rows[0]);
   }
   if (!shown.length) {
     gutter.observer?.takeRecords();
@@ -1612,147 +1600,199 @@ function _layoutSpanTexts(half: HTMLElement): void {
   // The one measurement.
   const rects = new Map<HTMLElement, DOMRect>();
   for (const row of visible) rects.set(row, row.getBoundingClientRect());
+  // Tickets take rows in start order. A block's ticket goes on its start
+  // row; taken, on the first free row of its span that is no other
+  // block's start (that block has the better claim, whenever it comes),
+  // else stacked under its last row — one ticket height per block already
+  // stacked there.
+  shown.sort((a, b) => track.get(startOf.get(a)!)! - track.get(startOf.get(b)!)!);
+  const starts = new Set(shown.map((b) => track.get(startOf.get(b)!)!));
+  const taken = new Map<number, number>();
   for (const block of shown) {
-    if (!_isOverlay(block)) block.natural = block.body.getBoundingClientRect().height;
-  }
-  const bottom = rects.get(visible[visible.length - 1])!.bottom;
-  // The waterfall: the blocks starting on one row are a chain that
-  // shares the slot from that row's top to the next chain's top (or the
-  // last row's bottom).
-  shown.sort((a, b) => track.get(a.row)! - track.get(b.row)!);
-  for (let i = 0; i < shown.length;) {
-    const row = shown[i].row;
-    const chain: SpanTextBlock[] = [];
-    for (; i < shown.length && shown[i].row === row; i++) chain.push(shown[i]);
-    const top = rects.get(row)!.top;
-    const end = i < shown.length ? rects.get(shown[i].row)!.top : bottom;
-    _placeChain(chain, end - top);
+    const start = startOf.get(block)!;
+    const own = block.rows.filter((r) => track.has(r));
+    const row = own.find((r) => !taken.has(track.get(r)!) && (r === start || !starts.has(track.get(r)!)))
+      ?? own[own.length - 1];
+    const stacked = taken.get(track.get(row)!) ?? 0;
+    taken.set(track.get(row)!, stacked + 1);
+    const rowRect = rects.get(row)!;
+    _placeTicket(block, rowRect.top - rects.get(start)!.top + stacked * rowRect.height);
   }
   gutter.observer?.takeRecords();
 }
 
-/** Clamp a chain's blocks into a slot `space` tall. Every block but the
- *  last is clamped to its share — its natural height, or an equal split
- *  of what the smaller blocks leave when the chain does not fit — and
- *  the last runs to the slot's end; each hangs under the one before it
- *  (`--chain`, the offset the stylesheet places its body and bracket by).
- *  A block whose text runs past its clamp is `truncated`. */
-function _placeChain(chain: SpanTextBlock[], space: number): void {
-  const share = new Map<SpanTextBlock, number>();
-  let remaining = space;
-  const bySize = [...chain].sort((a, b) => a.natural - b.natural);
-  for (let left = bySize.length; left > 0; left--) {
-    const block = bySize[bySize.length - left];
-    const portion = Math.min(block.natural, remaining / left);
-    share.set(block, portion);
-    remaining -= portion;
-  }
-  let offset = 0;
-  for (let i = 0; i < chain.length; i++) {
-    const block = chain[i];
-    const last = i === chain.length - 1;
-    block.available = Math.max(0, last ? space - offset : share.get(block)!);
-    block.chain = offset;
-    if (offset > 0) block.el.style.setProperty("--chain", `${offset}px`);
-    else block.el.style.removeProperty("--chain");
-    // A lifted body keeps its lift; a retracting one is already headed
-    // for the clamp, and an overlay's coordinates follow its block.
-    if (!block.lifted) block.body.style.maxHeight = `${block.available}px`;
-    if (_isOverlay(block)) _anchorOverlay(block);
-    block.body.classList.toggle("truncated", block.natural > block.available + _TRUNCATION_EPSILON_PX);
-    offset += block.available;
+/** Set a ticket's offset under its block's top: on the block's own first
+ *  row it is none (and the ticket unchained). An open card is fitted and
+ *  its brace drawn again, since its rows may have moved. */
+function _placeTicket(block: SpanTextBlock, offset: number): void {
+  block.chain = offset;
+  block.el.classList.toggle("chained", offset > 0);
+  if (offset > 0) block.el.style.setProperty("--chain", `${offset}px`);
+  else block.el.style.removeProperty("--chain");
+  if (block.lifted) {
+    _fitCard(block);
+    _drawBrace(block);
   }
 }
 
 // --- The lift ----------------------------------------------------------------
 
-/** The blocks whose bodies are overlays now, for re-anchoring on scroll. */
-const _OVERLAYS = new Set<SpanTextBlock>();
-/** The block under the pointer, if it is on a block's body or marks. */
+/** The one pinned block, if any. */
+let _PINNED: SpanTextBlock | null = null;
+/** The block under the pointer, if it is on a block's body or edge. */
 let _hoveredBlock: SpanTextBlock | null = null;
+/** The gap an open card keeps from the half's edge. */
+const _CARD_MARGIN_PX = 4;
+/** The least room a card opens downward into before it turns upward
+ *  instead: three lines of its text and the padding round them. */
+const _CARD_MIN_PX = 52;
 
-/** Whether the block's body is out of the grid as a fixed overlay:
- *  lifted, or still retracting from a lift. */
-function _isOverlay(block: SpanTextBlock): boolean {
-  return block.body.classList.contains("lifted");
-}
-
-/** Put the overlay where its block is: the block is the zero-height grid
- *  item, still in place, so its rect (plus the chain offset) is where the
- *  body would be in the grid. */
-function _anchorOverlay(block: SpanTextBlock): void {
-  const r = block.el.getBoundingClientRect();
-  block.body.style.top = `${r.top + block.chain}px`;
-  block.body.style.left = `${r.left}px`;
-  block.body.style.width = `${r.width}px`;
-}
-
-/** Apply a block's lift state. Lifting anchors the body as an overlay at
- *  the coordinates it has in the grid and sets its clamp to the natural
- *  height, which the stylesheet transitions; un-lifting sets the clamp
- *  back and returns the body to the grid once the transition has run.
- *  The classes on the block carry the z-order — a hovered block above a
- *  pinned one, a pinned one above the rest. */
+/** Apply a block's state. A headless block has nothing to open; its edge
+ *  still takes the pointer, to no effect. Opening (`.lifted`, on the
+ *  block) has the stylesheet unfold the ticket into the card in place,
+ *  fits the card to the half, and draws the brace; closing takes the
+ *  brace down. The card never leaves the grid — it is absolute in its
+ *  block, so it scrolls with the rows and needs no keeping-up. The classes
+ *  on the block carry the z-order — a hovered block above a pinned one, a
+ *  pinned one above the rest — and the pinned state, which the brace
+ *  takes its full colour from. */
 function _applyLift(block: SpanTextBlock): void {
-  const lifted = block.hover || block.pinned;
-  block.el.classList.toggle("hover-lifted", block.hover);
-  block.el.classList.toggle("pinned", block.pinned);
+  const liftable = !block.el.classList.contains("headless");
+  const lifted = liftable && (block.hover || block.pinned);
+  block.el.classList.toggle("hover-lifted", liftable && block.hover);
+  block.el.classList.toggle("pinned", liftable && block.pinned);
   if (lifted === block.lifted) return;
   block.lifted = lifted;
   if (lifted) {
-    if (!_isOverlay(block)) {
-      _anchorOverlay(block);
-      block.body.classList.add("lifted");
-      _OVERLAYS.add(block);
-    }
-    block.body.style.maxHeight = `${block.natural}px`;
+    // The class first: the card's height, which the fit reads and the
+    // brace's stem is drawn to, is the open body's.
+    block.el.classList.add("lifted");
+    _fitCard(block);
+    _drawBrace(block);
   } else {
-    block.body.style.maxHeight = `${block.available}px`;
-    _afterTransition(block.body, () => { if (!block.lifted) _settleOverlay(block); });
+    block.el.classList.remove("lifted", "flipped");
+    block.body.style.maxHeight = "";
+    block.edge.querySelector(".span-brace")?.remove();
   }
 }
 
-/** Return an overlay's body to the grid. */
-function _settleOverlay(block: SpanTextBlock): void {
-  _OVERLAYS.delete(block);
-  block.body.classList.remove("lifted");
-  block.body.style.top = "";
-  block.body.style.left = "";
-  block.body.style.width = "";
+/** Keep an open card inside its half. The half is a scroll container:
+ *  a card running past the hunk's last row would be cut there and give
+ *  the half a scrollbar. The card unfolds downward from its ticket, so
+ *  its first line stays where the ticket's was; past the room it is
+ *  capped to it and scrolls inside. Only when the room below is too
+ *  little to read (`_CARD_MIN_PX`) and there is more above does it unfold
+ *  upward instead (`.flipped`: its bottom stays on the ticket's), capped
+ *  the same way. */
+function _fitCard(block: SpanTextBlock): void {
+  const half = block.el.parentElement!;
+  const halfRect = half.getBoundingClientRect();
+  block.el.classList.remove("flipped");
+  block.body.style.maxHeight = "";
+  const ticket = block.el.getBoundingClientRect().top + block.chain;
+  const natural = block.body.getBoundingClientRect().height;
+  const below = halfRect.bottom - ticket - _CARD_MARGIN_PX;
+  const above = ticket + _rowHeight(block) - halfRect.top - _CARD_MARGIN_PX;
+  if (natural <= below) return;
+  const flip = below < _CARD_MIN_PX && above > below;
+  if (flip) block.el.classList.add("flipped");
+  const room = flip ? above : below;
+  if (natural > room) block.body.style.maxHeight = `${Math.max(0, room)}px`;
+}
+
+/** One code row's height, off the block's first visible row. */
+function _rowHeight(block: SpanTextBlock): number {
+  const first = block.rows.find((r) => r.style.display !== "none");
+  return first ? first.getBoundingClientRect().height : 0;
+}
+
+/** Pin a block — releasing the one pinned before, there being one pin at
+ *  a time — or unpin it. */
+function _togglePin(block: SpanTextBlock): void {
+  if (!block.pinned && _PINNED && _PINNED !== block) {
+    _PINNED.pinned = false;
+    _applyLift(_PINNED);
+  }
+  block.pinned = !block.pinned;
+  _PINNED = block.pinned ? block : null;
+  _applyLift(block);
+}
+
+/** The brace an open block wears: a `}` over its rows, its spine
+ *  projecting past the bars column over the edge of the code, tip on the
+ *  span's middle, stem back across the bars to the card — straight when
+ *  the card reaches the tip's level, elbowed to the card's nearest corner
+ *  otherwise. A span of one line has a stem alone, from where the brace's
+ *  arms would reach. Drawn in the widget's coordinates, so it lifts with
+ *  the card and needs no redraw on a scroll; measured off the block and
+ *  its first row's bars cell. */
+function _drawBrace(block: SpanTextBlock): void {
+  block.edge.querySelector(".span-brace")?.remove();
+  const first = block.rows.find((r) => r.style.display !== "none");
+  if (!first) return;
+  const blockRect = block.el.getBoundingClientRect();
+  const barsRect = (first.children[2] as HTMLElement).getBoundingClientRect();
+  const bodyRect = block.body.getBoundingClientRect();
+  const x0 = barsRect.left - blockRect.left - _BRACE_PROJECTION_PX;
+  const h = Math.max(_BRACE_W, blockRect.height - 6);
+  const x1 = -x0;
+  const tipY = h / 2;
+  const cardTop = bodyRect.top - blockRect.top - 3;
+  const cardBottom = bodyRect.bottom - blockRect.top - 3;
+  const y1 = tipY >= cardTop + 6 && tipY <= cardBottom - 6 ? tipY : (tipY < cardTop ? cardTop + 8 : cardBottom - 8);
+  const d = block.rows.length === 1 ? `M0 ${tipY} L${x1} ${tipY}` : _bracePath(h, _BRACE_W, x1, y1);
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "span-brace");
+  svg.setAttribute("aria-hidden", "true");
+  svg.style.left = `${x0}px`;
+  svg.style.top = "3px";
+  svg.style.width = `${_BRACE_W}px`;
+  svg.style.height = `${h}px`;
+  for (const cls of ["halo", "ink"]) {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("class", cls);
+    path.setAttribute("d", d);
+    svg.appendChild(path);
+  }
+  block.edge.appendChild(svg);
+}
+
+/** A `}` of height `h` and width `w` with its tip at `(w, h/2)`, then a
+ *  stem to `(x1, y1)`: straight when level with the tip, else out, up or
+ *  down, and in. */
+function _bracePath(h: number, w: number, x1: number, y1: number): string {
+  const m = h / 2;
+  const r = Math.min(4, h / 4);
+  const c = w / 2;
+  const brace = `M0 0 Q${c} 0 ${c} ${r} L${c} ${m - r} Q${c} ${m} ${w} ${m} Q${c} ${m} ${c} ${m + r} L${c} ${h - r} Q${c} ${h} 0 ${h}`;
+  const stem = Math.abs(y1 - m) < 1 ? `M${w} ${m} L${x1} ${m}` : `M${w} ${m} L${x1 - 6} ${m} L${x1 - 6} ${y1} L${x1} ${y1}`;
+  return `${brace} ${stem}`;
 }
 
 /** Clear a block's lift outright — it is being hidden. */
 function _dropLift(block: SpanTextBlock): void {
   block.hover = false;
   block.pinned = false;
+  if (_PINNED === block) _PINNED = null;
   block.lifted = false;
-  block.el.classList.remove("hover-lifted", "pinned");
-  if (_isOverlay(block)) _settleOverlay(block);
+  block.el.classList.remove("hover-lifted", "pinned", "lifted", "flipped");
+  block.body.style.maxHeight = "";
+  block.edge.querySelector(".span-brace")?.remove();
   if (_hoveredBlock === block) _hoveredBlock = null;
 }
 
-/** Run `fn` once the element's running transitions have ended — or at
- *  once when there are none (`prefers-reduced-motion`, or a document
- *  without animations). A cancelled transition counts as ended; `fn`
- *  re-checks the state it acts on. */
-function _afterTransition(el: HTMLElement, fn: () => void): void {
-  const anims = typeof el.getAnimations === "function" ? el.getAnimations() : [];
-  if (!anims.length) { fn(); return; }
-  void Promise.allSettled(anims.map((a) => a.finished)).then(fn);
-}
-
-/** The block a pointer event is on: the target's block body, or one of
- *  its marks in the bars column (the marks stay reachable when a pinned
- *  neighbour covers the body). Nothing for a hidden block. */
+/** The block a pointer event is on: the target's block body, or its
+ *  edge's line (which stays reachable when a pinned neighbour covers the
+ *  body). Nothing for a hidden block. */
 function _blockAt(target: EventTarget | null): SpanTextBlock | null {
   if (!(target instanceof Element)) return null;
-  const hit = target.closest<HTMLElement>(".span-text-body[data-span-id], .span-mark[data-span-id]");
-  if (!hit) return null;
-  const half = hit.closest<HTMLElement>(".half-new");
+  const hit = target.closest<HTMLElement>(".span-text-body, .span-edge-line");
+  const el = hit?.closest<HTMLElement>(".span-text[data-span-id]");
+  if (!el) return null;
+  const half = el.closest<HTMLElement>(".half-new");
   const gutter = half ? _SPAN_GUTTERS.get(half) : undefined;
   if (!gutter) return null;
-  const id = hit.dataset.spanId;
-  return gutter.blocks.find((b) => b.el.dataset.spanId === id && b.el.style.display !== "none") ?? null;
+  return gutter.blocks.find((b) => b.el === el && b.el.style.display !== "none") ?? null;
 }
 
 function _hoverBlock(block: SpanTextBlock | null): void {
@@ -1776,42 +1816,6 @@ function _onGutterPointerOver(e: MouseEvent): void {
  *  that `mouseover` will not. */
 function _onGutterPointerOut(e: MouseEvent): void {
   if (_hoveredBlock && _blockAt(e.relatedTarget) !== _hoveredBlock) _hoverBlock(null);
-}
-
-/** Overlays follow their blocks through any scroll — the document's or
- *  a pane's; a block whose hunk was repainted is gone with it. */
-function _onScrollReanchor(): void {
-  for (const block of _OVERLAYS) {
-    if (!block.el.isConnected) { _OVERLAYS.delete(block); continue; }
-    _anchorOverlay(block);
-  }
-}
-
-/** Give every non-code row lying inside a bar — a comment thread's row,
- *  a fold's label row, the placeholder for an old-side thread — a bars
- *  cell with a segment per enclosing bar at its depth, so a bar runs
- *  unbroken through them. `rows` is the half's rows in DOM order, hidden
- *  ones included (a bar may open on a hidden row); a hidden row is left
- *  alone. Idempotent: a cell already carrying the right segments stays. */
-function _barNonCodeRows(bars: SpanBar[], rows: HTMLElement[]): void {
-  if (!bars.length) return;
-  const open = new Set<SpanBar>();
-  for (const row of rows) {
-    for (const bar of bars) if (bar.first === row) open.add(bar);
-    const code = !row.classList.contains("row-annotation") && !row.classList.contains("row-placeholder");
-    if (!code && row.style.display !== "none") {
-      const key = Array.from(open, (b) => b.span.id).join("\n");
-      let cell = row.querySelector<HTMLElement>(":scope > .cell-gutter-bars");
-      if (cell && cell.dataset.spans !== key) { cell.remove(); cell = null; }
-      if (!cell && open.size) {
-        cell = _el("span", "cell-gutter-bars");
-        cell.dataset.spans = key;
-        for (const bar of open) cell.appendChild(_spanMark(bar.span, bar.depth, "bar"));
-        row.appendChild(cell);
-      }
-    }
-    for (const bar of bars) if (bar.last === row) open.delete(bar);
-  }
 }
 
 function _renderRow(
@@ -2142,7 +2146,6 @@ function _wireInputs(): void {
   document.addEventListener("mouseover", _onGutterPointerOver);
   document.addEventListener("mouseout", _onGutterPointerOut);
   // Capture: a pane's scroll does not bubble to the document.
-  document.addEventListener("scroll", _onScrollReanchor, { capture: true, passive: true });
   window.addEventListener("hashchange", () => {
     _state.overrides = Object.create(null);
     _restoreHash();
