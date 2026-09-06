@@ -309,69 +309,54 @@ code they mark, the text outside them. Every span takes one form,
 whatever its length: a **block** (`.span-text`) — one grid item in the
 text column over exactly the span's visible rows (`grid-row`, written by
 the renderer), holding a widget with the span's **edge** and its
-**body**. The edge is the span's one stroke, drawn behind the body: a
-line down the span's own bars column (`--depth` on the block; the
-outermost span's column is against the text and each level of nesting is
-one column nearer the code) — a bar over the rows, or a dot at the row's
-middle for a span of one line (`.dot`) — that, while the body shows,
-turns into a bracket: it rounds at the pills' radius into an arm 24px
-along the body's top edge, the body starting 2px down to leave the arm
-its room. The body, at a smaller size and wrapping at the gutter's width,
-hangs from the block's top down for as long as it needs — past the end
-of the rows if it must; nothing is clipped, and nothing of a span is in
-the code column. It leads with the `+ comment` affordance, which promotes
-the span's intent to a [[reviewer-comment]] by the one-click path
-(`Comments.promote`), as a comment on the span's first line; then the
-intent; then the span's smell pills, each promotable the same way. A span
-never changes the shape of the code: the widget is absolute over the
-block, so the block sizes no row, and no row is ever sized for it — not
-mid-hunk, not at the hunk's end. The placement rules are that bodies do
-not overlap and nothing of a block lies below the hunk's last row, and a
-downward pass over the half's rows (`render._layoutSpanTexts`) enforces
-them by cutting, not pushing: each block's **slot** runs from its top to
-the next block's top in the half, or to the last row's bottom when
-nothing follows; its body is clamped to the slot less the arm
-(`max-height`, inline, always written) and, when its measured natural
-height exceeds the slot, marked `truncated` — a fade to the strip's
-colour over the last line and an ellipsis in its corner, so a cut is
-never silent. Two spans starting on one row chain their blocks, outermost
-first, and share the one slot: the smaller block takes its natural
-height, the rest is split equally among those that do not fit, and the
-last block in the chain runs to the slot's end; the offset each hangs at
-is `--chain` on the block, which places its body and its arm (a chained
-block's bar runs from the top and its arm forks off it). A block's edge
-runs through the non-code rows inside its span — a comment thread's row,
-a fold's label row — since they are tracks the block spans. The pass runs
-when the half's rows change (an annotation inserted, a fold hiding rows —
-a `MutationObserver`) or its size does (a `ResizeObserver`, on the next
-frame); it measures once, writes once, and discards the mutation records
-its own writes queue.
+**body**. The edge is the span's bar in its own bars column (`--depth` on
+the block; the outermost span's column is against the text and each level
+of nesting is one column nearer the code) — a bar over the rows, or a dot
+at the row's middle for a span of one line (`.dot`) — and, while the block
+is open, the brace. The body at rest is a **ticket**: one code row tall,
+on the span's first row — a chevron, the intent on one line cut with an
+ellipsis, a dot per smell. A ticket never wraps and never takes more than
+a row, so no row is ever sized for a span (the widget is absolute over
+the block) and the only placement question is two spans starting on one
+row: the pass (`render._layoutSpanTexts`, run whenever the half's rows
+change — an annotation inserted, a fold hiding rows, a `MutationObserver`
+— or its size does, a `ResizeObserver` on the next frame; it measures
+once, writes once, and discards the mutation records its own writes
+queue) gives a ticket whose start row is taken the first free row of its
+span that is no other block's start, and stacks it a ticket's height
+under the span's last row when there is none; the offset is `--chain` on
+the block (`.chained`). Nothing of a span is in the code column.
 
-A cut block is read by **lifting** it: hovering its body or its edge
-lifts the widget so the body is at its measured natural height, over
-whatever gutter content lies below — never moving a row — with the
-edge's frame round it, and leaving settles it back; a click on the body
-**pins** the lift (the edge at full accent), a second click unpins, and
-the block's controls (the pills, `+ comment`) are their own targets, not
-the pin's. The lifted widget is a `position: fixed` overlay at the
-coordinates its block has (the half is a scroll container, so a body in
-the grid running past the hunk's last row would be clipped there and give
-the half a scrollbar); the block stays in the grid as the anchor the
-widget is re-fixed to on every scroll (captured at the document, so a
-pane's scroll counts) and every pass. The body's `max-height` — and the
-frame's height, `--body-h` on the block — transitions to the measured px
-(150ms, none under `prefers-reduced-motion`), and the widget returns to
-the grid when the retract's transition has run
-(`getAnimations().finished`). While it is an overlay the pass neither
-measures nor re-clamps it. It is the text column's width, so it covers
-gutter text alone within the hunk; past the hunk's last row it covers
-whatever is there (the context note, the next hunk), and the viewport is
-the only thing that clips it. Z-order is the block's: hovered above
-pinned above the rest, so hovering the edge of a block a pinned neighbour
-covers brings it up. Pins live in memory on the block, so a repainted
-hunk's new blocks start unpinned, and folding the gutter clears them.
-When a fold hides a span's first row the block goes **headless**: its
-text hides, the fold's label tree lists it ([[fold-region]]), and its
+A ticket is read by **opening** it: hovering the body or the edge
+**lifts** the widget — `position: fixed` at the coordinates the block has
+(the half is a scroll container, so a card in the grid running past the
+hunk's last row would be clipped there and give the half a scrollbar);
+the block stays in the grid as the anchor the widget is re-fixed to on
+every scroll (captured at the document, so a pane's scroll counts) and
+every pass — and the stylesheet unfolds the ticket in place into the
+**card**: the chevron turns, the intent wraps whole, the dots give way to
+the pill row — the smell pills, each promotable to a [[reviewer-comment]]
+by a click, and `+ comment`, which promotes the intent the same way, by
+the one-click path (`Comments.promote`), as a comment on the span's first
+line — with a ring separating it from what it covers. The bar gives way
+to the **brace** (`render._drawBrace`, an SVG in the edge, so it lifts
+with the card): a `}` over the span's rows whose spine projects 6px past
+the bars column over the edge of the code, tip on the span's middle, stem
+back across the bars to the card — straight when the card reaches the
+tip's level, elbowed to the card's nearest corner otherwise; a one-line
+span has the stem alone, from where the arms would reach. Inked in the
+bar's colour, or the full accent when pinned, on a dark halo. Leaving
+closes; a click on the body **pins** — one pin at a time, pinning a block
+releases the one pinned before — and a second click unpins; the block's
+controls (the pills, `+ comment`) are their own targets, not the pin's.
+The card is the text column's width, so it covers gutter tickets alone
+within the hunk; past the hunk's last row it covers whatever is there,
+and the viewport is the only thing that clips it. Z-order is the block's:
+hovered above pinned above the rest, so hovering the edge of a block an
+open neighbour covers brings it up. The pin lives in memory, so a
+repainted hunk's new blocks start unpinned, and folding the gutter clears
+it. When a fold hides a span's first row the block goes **headless**: its
+ticket hides, the fold's label tree lists it ([[fold-region]]), and its
 bar alone stands over the rows still on screen; every row hidden, the
 block hides. A span whose intent the reviewer has turned into a
 [[reviewer-comment]] (a local comment `derived_from` its id, or the

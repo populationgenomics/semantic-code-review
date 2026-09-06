@@ -730,9 +730,8 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  * sides is exactly one line tall. Annotation rows break that symmetry
  * (prose wraps); the JS inserts an invisible placeholder row on the
  * opposite side and syncs its height to the real annotation via a
- * ResizeObserver. A span's text block hangs down the strip from its first
- * row without sizing any row; where it would run into the next block, or
- * past the last row, the JS clamps it (`max-height`) and marks the cut.
+ * ResizeObserver. A span's ticket is one code row tall on a row of its
+ * span; opened, it lifts out of the grid as a card, sizing no row.
  *
  * The gutter's width (`--span-bars-w` + `--gutter-text-w`; 0 for a file
  * with no span) is split between the halves, so the new half is wider by
@@ -745,6 +744,7 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 .file-body { --gutter-text-w: var(--span-text-w, 0px); }
 .gutter-collapsed .file-body { --gutter-text-w: 0px; }
 .diff {
+  --code-row-h: 18.75px; /* 12.5px × 1.5: one code row, which a ticket matches */
   display: grid;
   grid-template-columns:
     minmax(0, calc(50% - (var(--span-bars-w, 0px) + var(--gutter-text-w, 0px)) / 2))
@@ -815,10 +815,10 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  * set by the renderer), in the text column and sticky with it. Nothing
  * in it sizes a row: its one child, the widget, is absolute over it, and
  * the item itself takes no pointer — the strip's cells under it keep the
- * fold's click. The widget holds the edge and, behind nothing else, the
- * body; lifted (`.lifted`, on the item), it leaves the grid as a fixed
- * overlay at the coordinates the renderer read off the item, which stays
- * behind as the anchor every scroll re-reads. */
+ * fold's click. The widget holds the edge and the body; lifted
+ * (`.lifted`, on the item), it leaves the grid as a fixed overlay at the
+ * coordinates the renderer read off the item, which stays behind as the
+ * anchor every scroll re-reads. */
 .diff .span-text {
   z-index: 2;
   min-width: 0;
@@ -829,32 +829,21 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 }
 .diff .span-widget { position: absolute; inset: 0; pointer-events: none; }
 .diff .span-text.lifted > .span-widget { position: fixed; right: auto; bottom: auto; }
-/* The edge: the one stroke a span has, drawn behind its body. Its line
- * stands in the span's own bars column (`--depth`, on the item: the
- * outermost span's column is against the text, each level of nesting one
- * column nearer the code, the cell's spare 4px between the innermost and
- * the code) for the item's height, and is the hover and click target a
- * covered body is still reached by. With a body shown the line grows an
- * arm — the bracket — that turns the pills' 10px radius at the body's top
- * edge and runs a short fixed way along it; the body starts 2px down to
- * leave the arm its room. The bar under an arm starts where the curve
- * ends; under a branch (`.chained`: a body hanging beneath another on the
- * same start row, its arm at `--chain`) it runs from the top and the arm
- * forks off it with an inner fillet. Headless (folded gutter, or the
- * span's first row hidden and the fold's tree carrying the text) there is
- * no arm and the bar has its 3px caps. A span of one line (`.dot`) is a
- * dot at its row's middle, with the arm's upright reaching down to it.
- * The frame surrounds a lifted body, its top and left lying on the arm
- * and the bar; `--body-h` is the body's height as the renderer set it.
- * Pinned, the whole edge is the full accent. The arm is 24px, not `ch`:
- * the body's font is the platform's and its `ch` is not one width, and
- * the bars column is fixed px. */
+/* The edge: the span's bar (or dot) in its own bars column (`--depth`, on
+ * the item: the outermost span's column is against the text, each level
+ * of nesting one column nearer the code, the cell's spare 4px between the
+ * innermost and the code), for the item's height with 3px caps. Its line
+ * is the hover and click target a covered body is still reached by. Open,
+ * the bar gives way to the brace the renderer draws into the edge — an
+ * SVG in the widget's coordinates, so it lifts with the card — inked in
+ * the bar's colour, or the full accent when pinned, on a dark halo so it
+ * reads over the code it projects onto. */
 .diff .span-edge {
   --edge: color-mix(in srgb, var(--accent) 75%, var(--bg-alt));
   position: absolute;
   top: 0; bottom: 0;
   left: calc(-1 * (var(--depth, 0) * 6px + 4px));
-  right: -2px;
+  width: 0;
   pointer-events: none;
 }
 .diff .span-text.pinned .span-edge { --edge: var(--accent); }
@@ -868,94 +857,85 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 .diff .span-edge-line::before {
   content: "";
   position: absolute;
-  left: 2px; top: 10px; bottom: 3px;
+  left: 2px; top: 3px; bottom: 3px;
   width: 2px;
+  border-radius: 1px;
   background: var(--edge);
 }
-.diff .span-text.chained .span-edge-line::before { top: 0; }
-.diff .span-text.headless .span-edge-line::before { top: 3px; }
-.diff .span-edge-line::after {
-  content: "";
-  position: absolute;
-  left: 2px; top: var(--chain, 0px);
-  width: calc(var(--depth, 0) * 6px + 4px + 24px);
-  height: 12px;
-  box-sizing: border-box;
-  border-top: 2px solid var(--edge);
-  border-left: 2px solid var(--edge);
-  border-top-left-radius: 10px;
-}
-.diff .span-text.headless .span-edge-line::after { display: none; }
 .diff .span-text.dot .span-edge-line::before {
   top: 50%; bottom: auto; left: 1px;
   width: 4px; height: 4px; margin-top: -2px;
   border-radius: 50%;
 }
-.diff .span-text.dot .span-edge-line::after { height: 50%; }
-.diff .span-edge-frame {
-  position: absolute;
-  top: var(--chain, 0px); left: 0; right: 0;
-  height: calc(var(--body-h, 0px) + 4px);
-  box-sizing: border-box;
-  border: 2px solid var(--edge);
-  border-radius: 10px;
-  background: var(--bg-alt); /* filled: what the lift covers must not show between frame and body */
-  opacity: 0;
-  transition: height 150ms ease-out, opacity 150ms ease-out;
-}
-.diff .span-text.lifted .span-edge-frame { opacity: 1; }
-/* The body: the strip's background (it may lie over rows with none),
- * clamped to the slot the renderer measured for it (`max-height`, inline)
- * and cut where its text runs past — the cut shown (`.truncated`). It
- * hangs 2px under the top of its item (or its chain offset), beneath the
- * arm. Its corners are the frame's inner radius, so it sits inside the
- * frame when lifted; unlifted, on the strip's own colour, they do not
- * show. A lifted body's clamp transitions to the natural height the
- * renderer measured (to a px value, since `none` does not animate). */
+.diff .span-text.lifted .span-edge-line::before { opacity: 0; }
+.diff .span-brace { position: absolute; overflow: visible; pointer-events: none; z-index: 4; }
+.diff .span-brace path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.diff .span-brace .halo { stroke: color-mix(in srgb, var(--bg) 80%, transparent); stroke-width: 5; }
+.diff .span-brace .ink { stroke: var(--edge); stroke-width: 2; }
+/* The body: at rest a ticket, one code row tall on the row the renderer
+ * placed it (`--chain`, the offset under the item's top) — the chevron,
+ * the intent on one line cut with an ellipsis, a dot per smell. Open
+ * (the item `.lifted`), it is the card: the chevron turns, the intent
+ * wraps whole, the dots give way to the pill row, and a ring separates it
+ * from what it covers. The strip's background is its own, since it may
+ * lie over rows with none. A headless item shows no body. */
 .diff .span-text-body {
   position: relative;
-  top: calc(var(--chain, 0px) + 2px);
+  top: var(--chain, 0px);
   box-sizing: border-box;
   margin: 0;
-  padding: 2px 6px;
-  border-radius: 8px;
+  height: var(--code-row-h);
+  padding: 0 6px 0 4px;
   overflow: hidden;
   background: var(--bg-alt);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 11px;
-  line-height: 1.35;
+  line-height: var(--code-row-h);
   color: var(--fg-muted);
   cursor: pointer;
   pointer-events: auto;
 }
 .diff .span-text.headless .span-text-body { display: none; }
-.diff .span-text.lifted > .span-widget > .span-text-body { transition: max-height 150ms ease-out; }
-/* The cut, where a body's text runs past its clamp: a fade over the last
- * line and a bit, in the strip's own colour, with an ellipsis in its
- * corner. Inside the body, so the clamp puts it at the visible bottom. */
-.diff .span-text-body.truncated::after {
-  content: "\2026";
-  position: absolute;
-  left: 0; right: 0; bottom: 0;
-  height: 18px;
-  padding-right: 6px;
-  box-sizing: border-box;
-  background: linear-gradient(to bottom, transparent, var(--bg-alt) 65%);
-  color: var(--fg-dim);
-  font-size: 11px;
-  line-height: 22px;
-  text-align: right;
-  pointer-events: none;
-  transition: opacity 150ms ease-out;
+.diff .span-text-line { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.diff .span-text-chev { flex: none; color: var(--fg-dim); font-size: 9px; transition: transform 120ms ease-out; }
+.diff .span-text-intent { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.diff .span-text-intent.empty { color: var(--fg-dim); font-style: italic; }
+.diff .span-text-dots { flex: none; display: flex; gap: 3px; }
+.diff .span-text-dot { width: 6px; height: 6px; border-radius: 50%; background: #3b82f6; }
+.diff .span-text-pills { display: none; }
+.diff .span-text.lifted .span-text-body {
+  height: auto;
+  padding: 4px 7px 5px 6px;
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px var(--border);
+  line-height: 1.35;
 }
-.diff .span-text.lifted .span-text-body.truncated::after { opacity: 0; }
+.diff .span-text.pinned .span-text-body { box-shadow: 0 0 0 1px var(--accent); }
+.diff .span-text.lifted .span-text-line { align-items: flex-start; }
+.diff .span-text.lifted .span-text-chev { transform: rotate(90deg); margin-top: 3px; }
+.diff .span-text.lifted .span-text-intent { white-space: normal; overflow: visible; }
+.diff .span-text.lifted .span-text-dots { display: none; }
+/* The pill row of the open card: the smell pills, then the promote
+ * affordance at the row's far end — an outlined pill, dim until hovered,
+ * so it reads as a control and not a smell. */
+.diff .span-text.lifted .span-text-pills { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-top: 4px; }
+.diff .span-text .smell { font-size: 10px; padding: 0 6px; margin-left: 0; }
+.diff .span-promote {
+  margin-left: auto;
+  padding: 0 6px;
+  font: inherit; font-size: 10px; line-height: 14px;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: transparent; color: var(--fg-dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.diff .span-promote:hover { color: var(--accent); border-color: var(--accent); }
 /* The z-order is the item's: a hovered block above a pinned one, a pinned
  * one above the rest. */
 .diff .span-text.pinned { z-index: 3; }
 .diff .span-text.hover-lifted { z-index: 4; }
 @media (prefers-reduced-motion: reduce) {
-  .diff .span-text.lifted > .span-widget > .span-text-body, .diff .span-text-body.truncated::after,
-  .diff .span-edge-frame { transition: none; }
+  .diff .span-text-chev { transition: none; }
 }
 /* An annotation row (or the placeholder for an old-side one) is built
  * without gutter cells; a sticky pseudo-item over the strip's two columns
@@ -978,23 +958,6 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   box-shadow: inset 1px 0 var(--border);
 }
 .diff .half-new .cell-annotation { grid-column: 1 / 3; }
-.diff .span-text-intent.empty { color: var(--fg-dim); font-style: italic; }
-/* The pill row leads the block, on its first line, so it sits beside the
- * row the span starts on rather than wherever its intent ends: the smell
- * pills, then the promote affordance at the row's far end — an outlined
- * pill, dim until hovered, so it reads as a control and not a smell. */
-.diff .span-text-head { display: flex; align-items: center; gap: 3px; margin-bottom: 2px; }
-.diff .span-text-pills { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-top: 3px; }
-.diff .span-text .smell { font-size: 10px; padding: 0 6px; margin-left: 0; }
-.diff .span-promote {
-  padding: 0 6px;
-  font: inherit; font-size: 10px; line-height: 14px;
-  border: 1px solid var(--border); border-radius: 10px;
-  background: transparent; color: var(--fg-dim);
-  cursor: pointer;
-  white-space: nowrap;
-}
-.diff .span-promote:hover { color: var(--accent); border-color: var(--accent); }
 
 /* Each `.row` is a real grid box spanning both of `.half`'s columns,
  * and uses `subgrid` so its two cells land in `.half`'s column tracks

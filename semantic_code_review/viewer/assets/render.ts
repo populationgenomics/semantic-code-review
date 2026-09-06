@@ -1197,38 +1197,38 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLE
 // strip at the diff's right edge while the code scrolls beneath. Every row
 // carries an empty bars and text cell for the gutter's background. A span
 // is one grid item over its visible rows (`.span-text`, the block), in the
-// text column: it holds a widget with the span's edge — one stroke, a bar
-// down the span's own bars column (one column nearer the code per level of
-// nesting; a dot for a span of one line) that, with the text shown, turns
-// into a bracket along the body's top edge, and a frame round a lifted
-// body — and the body itself, hanging from the block's top down the strip,
-// past the end of the rows if it must. Nothing of a span lives in the code
-// column, and no row is ever sized by a block: the widget is absolute over
-// the block.
+// text column: it holds a widget with the span's edge — its bar down the
+// span's own bars column (one column nearer the code per level of nesting;
+// a dot for a span of one line) — and its body. Nothing of a span lives in
+// the code column, and no row is ever sized by a block: the widget is
+// absolute over the block.
 //
-// The two invariants are that bodies do not overlap and that nothing of a
-// block lies below the hunk's last row. A downward pass over the rows
-// (`_layoutSpanTexts`) keeps them by cutting, not pushing: each block's
-// slot runs from its top to the next block's top in the half — or to the
-// last row's bottom when nothing follows — and its body is clamped to the
-// slot (`max-height`); one whose text does not fit is marked `truncated`
-// and shows the cut. Two blocks starting on one row chain, outermost
-// first, and share the slot. The pass is redone whenever the half's rows
-// change (an annotation inserted, a fold hiding rows) or its size does; it
-// measures once, writes once, and discards the mutation records its own
-// writes queue. A block whose first row is hidden is headless — the fold's
-// label tree carries its text — and its bar alone marks the rows still on
-// screen; a folded gutter makes every block headless.
+// At rest the body is a ticket: one row tall, on the span's first row —
+// a chevron, the intent's opening words cut with an ellipsis, a dot per
+// smell. A ticket never wraps and never takes more than a row, so the only
+// placement question is two spans starting on one row: a ticket whose row
+// is taken goes to the next free row of its span (`--chain`, the offset
+// down from the block's top; `.chained`), and stacks under the last when
+// none is free. The pass (`_layoutSpanTexts`) runs whenever the half's
+// rows change (an annotation inserted, a fold hiding rows) or its size
+// does; it measures once, writes once, and discards the mutation records
+// its own writes queue. A block whose first row is hidden is headless —
+// the fold's label tree carries its text — and its bar alone marks the
+// rows still on screen; a folded gutter makes every block headless.
 //
-// The cut is read by lifting: hovering a block (its body or its edge)
-// lifts its widget to the body's natural height as an overlay — `position:
-// fixed` at the coordinates the block has, since the half is a scroll
-// container and would otherwise clip the body at the hunk's end and grow a
-// scrollbar for it — over whatever gutter content is below it, never
-// moving a row; a click pins the lift, a second unpins. The block stays in
-// the grid as the anchor: the overlay is re-anchored to it on every scroll
-// and every pass, and released once its retract has run. The lift is the
-// block's alone: hovered draws above pinned, pinned above the rest.
+// The ticket is read by opening it: hovering a block (its body or its
+// bar) unfolds the ticket in place into the card — the intent whole, the
+// smell pills, `+ comment` — over whatever gutter content is below it,
+// never moving a row, and its bar becomes a brace projecting over the
+// edge of the code it covers, with a stem back to the card. The widget is
+// lifted for it: `position: fixed` at the coordinates the block has,
+// since the half is a scroll container and would otherwise clip the card
+// at the hunk's end and grow a scrollbar for it. The block stays in the
+// grid as the anchor: the overlay is re-anchored to it on every scroll
+// and every pass, and released when the block closes. A click pins the
+// open state — one pin at a time; pinning a block releases the one pinned
+// before — and a second click unpins. Hovered draws above pinned, pinned
+// above the rest.
 
 /** A span placed on a hunk's rows: its row extent and nesting depth. */
 interface PlacedSpan {
@@ -1238,21 +1238,18 @@ interface PlacedSpan {
   depth: number;
 }
 
-/** A span's block: the grid item, the widget that lifts, the body (none
- *  once the span is a comment — the edge stays, marking the range the
- *  comment does not), the code rows the span covers; what the last pass
- *  measured and gave it — the body's natural height, the slot it is
- *  clamped to, the offset it hangs at under a block sharing its start row;
- *  and its lift — whether the pointer is on it, whether a click pinned
- *  it, and whether the widget is lifted now (the two's disjunction,
- *  applied). */
+/** A span's block: the grid item, the widget that lifts, the edge, the
+ *  body (none once the span is a comment — the edge stays, marking the
+ *  range the comment does not), the code rows the span covers; the offset
+ *  the last pass placed its ticket at under the block's top; and its
+ *  state — whether the pointer is on it, whether a click pinned it, and
+ *  whether the widget is lifted now (the two's disjunction, applied). */
 interface SpanTextBlock {
   el: HTMLElement;
   widget: HTMLElement;
+  edge: HTMLElement;
   body: HTMLElement | null;
   rows: HTMLElement[];
-  natural: number;
-  available: number;
   chain: number;
   hover: boolean;
   pinned: boolean;
@@ -1266,12 +1263,11 @@ interface SpanGutter {
   observer: MutationObserver | null;
 }
 
-/** Slack under which a body counts as fitting its slot: a cut of less
- *  than half a pixel is rounding, not text. */
-const _TRUNCATION_EPSILON_PX = 0.5;
-/** The edge's arm runs along the top of a body, which starts this far
- *  below the top of its block (or its chain offset) to leave it room. */
-const _EDGE_ARM_PX = 2;
+/** How far an open block's brace projects over the code, past the bars
+ *  column's edge. */
+const _BRACE_PROJECTION_PX = 6;
+/** The brace's width: its arms' reach from spine to tip. */
+const _BRACE_W = 8;
 
 /** Gutter state per right half. */
 const _SPAN_GUTTERS = new WeakMap<HTMLElement, SpanGutter>();
@@ -1312,14 +1308,15 @@ function _attachSpans(
     el.style.setProperty("--depth", String(ps.depth));
     if (ps.first === ps.last) el.classList.add("dot");
     const widget = _el("div", "span-widget");
-    widget.appendChild(_spanEdge(ps.span));
+    const edge = _spanEdge(ps.span);
+    widget.appendChild(edge);
     const body = promoted ? null : _spanText(ps.span, filePath);
     if (body) widget.appendChild(body);
     el.appendChild(widget);
     half.appendChild(el);
     blocks.push({
-      el, widget, body, rows: rowElsNew.slice(ps.first, ps.last + 1),
-      natural: 0, available: 0, chain: 0, hover: false, pinned: false, lifted: false,
+      el, widget, edge, body, rows: rowElsNew.slice(ps.first, ps.last + 1),
+      chain: 0, hover: false, pinned: false, lifted: false,
     });
   }
   if (!blocks.length) return;
@@ -1414,8 +1411,7 @@ function _onGutterClick(e: MouseEvent): void {
     const block = _blockAt(body);
     if (!block) return;
     e.stopPropagation();
-    block.pinned = !block.pinned;
-    _applyLift(block);
+    _togglePin(block);
     return;
   }
   const line = target.closest<HTMLElement>(".span-edge-line");
@@ -1435,10 +1431,10 @@ function _onGutterClick(e: MouseEvent): void {
 /** What a gutter cell says on hover; the strip has no chrome of its own. */
 const _GUTTER_CELL_TITLE = "Click to fold or unfold the span gutter (g)";
 
-/** The edge behind a span's body: the line that is its bar (or dot) and,
- *  with the body shown, the bracket into it; and the frame round a lifted
- *  body. The line is the hover and click target that reaches a block
- *  whose body a pinned neighbour covers, and carries the span's rationale
+/** The edge beside a span's body: the line that is its bar (or dot) in
+ *  the bars column, and — while the block is open — the brace the lift
+ *  draws in. The line is the hover and click target that reaches a block
+ *  whose body an open neighbour covers, and carries the span's rationale
  *  as its tooltip — what a folded gutter shows of it on hover; the native
  *  tooltip holds a 700-character intent whole. */
 function _spanEdge(span: AnnotationSpan): HTMLElement {
@@ -1447,7 +1443,6 @@ function _spanEdge(span: AnnotationSpan): HTMLElement {
   const line = _el("span", "span-edge-line");
   line.title = _spanTooltip(span);
   edge.appendChild(line);
-  edge.appendChild(_el("span", "span-edge-frame"));
   return edge;
 }
 
@@ -1466,26 +1461,31 @@ function _spanPromoted(span: AnnotationSpan, hunkId: string): boolean {
   return span.start === span.end && Comments.isPromoted(`${hunkId}:line_note:${span.start}`);
 }
 
-/** One span's text: a pill row on the block's first line — beside the
- *  bar's start, since it describes the span — holding its smells as
- *  promotable pills and the affordance that promotes its intent, then the
- *  intent, wrapping at the gutter's width. */
+/** One span's body: the ticket line — a chevron, the intent (one line
+ *  cut with an ellipsis at rest, whole when open), a dot per smell — and
+ *  the pill row the open card adds under it: the smells as promotable
+ *  pills and the affordance that promotes the intent. The stylesheet
+ *  shows the dots at rest and the pills open. */
 function _spanText(span: AnnotationSpan, filePath: string): HTMLElement {
   const el = _el("p", "span-text-body");
   el.dataset.spanId = span.id;
-  // The affordance leads, beside the bar's first row; the smells trail the
-  // intent, so a wide pill never pushes the text down a line.
-  const head = _el("span", "span-text-head");
-  if (span.intent) head.appendChild(_spanPromoteButton(span, filePath));
-  el.appendChild(head);
-  el.appendChild(_el("span", span.intent ? "span-text-intent" : "span-text-intent empty", span.intent || "(no intent)"));
-  if (span.smells && span.smells.length) {
-    const pills = _el("span", "span-text-pills");
-    for (const sm of span.smells) pills.appendChild(_smellPill(sm, {
-      smellId: `${span.id}:smell:${sm.tag}`, file: filePath, side: "new", line: span.start,
-    }));
-    el.appendChild(pills);
+  const line = _el("span", "span-text-line");
+  line.appendChild(_el("span", "span-text-chev", "\u25B8"));
+  line.appendChild(_el("span", span.intent ? "span-text-intent" : "span-text-intent empty", span.intent || "(no intent)"));
+  const dots = _el("span", "span-text-dots");
+  for (const sm of span.smells || []) {
+    const dot = _el("span", "span-text-dot");
+    dot.title = sm.tag;
+    dots.appendChild(dot);
   }
+  line.appendChild(dots);
+  el.appendChild(line);
+  const pills = _el("span", "span-text-pills");
+  for (const sm of span.smells || []) pills.appendChild(_smellPill(sm, {
+    smellId: `${span.id}:smell:${sm.tag}`, file: filePath, side: "new", line: span.start,
+  }));
+  if (span.intent) pills.appendChild(_spanPromoteButton(span, filePath));
+  el.appendChild(pills);
   return el;
 }
 
@@ -1507,7 +1507,7 @@ function _spanPromoteButton(span: AnnotationSpan, filePath: string): HTMLElement
 }
 
 /** Re-run the placement pass whenever the half's rows change or its
- *  size (or a text body's) does. One pair of observers per half; the
+ *  size does. One pair of observers per half; the
  *  WeakMap entry outlives them. A row mutation runs the pass after the
  *  burst that caused it settles; a resize runs it on the next frame, so
  *  the pass's own writes never land inside the resize loop. */
@@ -1535,7 +1535,6 @@ function _observeHalf(half: HTMLElement, gutter: SpanGutter): void {
       requestAnimationFrame(() => { frame = false; _layoutSpanTexts(half); });
     });
     ro.observe(half);
-    for (const block of gutter.blocks) if (block.body) ro.observe(block.body);
   }
 }
 
@@ -1543,9 +1542,9 @@ function _observeHalf(half: HTMLElement, gutter: SpanGutter): void {
  *  block over its span's visible rows (none on screen: hidden) with its
  *  body shown when the gutter is unfolded and the span's first row is on
  *  screen (headless otherwise — the fold's label tree carries the text
- *  then), then run the waterfall over the shown bodies' measured heights:
- *  each is clamped to its slot, and one whose text runs past the slot is
- *  marked `truncated`. No row is sized by any of it. The writes happen
+ *  then), then give every shown ticket a row: its span's first, or the
+ *  next free row of its span when that one is taken, stacking under the
+ *  last when none is. No row is sized by any of it. The writes happen
  *  before and after a single measurement; the mutation records they queue
  *  are discarded, so the pass does not re-run itself. */
 function _layoutSpanTexts(half: HTMLElement): void {
@@ -1587,10 +1586,6 @@ function _layoutSpanTexts(half: HTMLElement): void {
       block.el.style.removeProperty("--chain");
       continue;
     }
-    // Released so the body measures at its natural height — unless it is
-    // an overlay (lifted, or retracting), whose clamp is in transition
-    // and whose natural height is the one it was lifted to.
-    if (!_isOverlay(block)) block.body!.style.maxHeight = "";
     shown.push(block);
     startOf.set(block, rows[0]);
   }
@@ -1601,77 +1596,51 @@ function _layoutSpanTexts(half: HTMLElement): void {
   // The one measurement.
   const rects = new Map<HTMLElement, DOMRect>();
   for (const row of visible) rects.set(row, row.getBoundingClientRect());
-  for (const block of shown) {
-    if (!_isOverlay(block)) block.natural = block.body!.getBoundingClientRect().height;
-  }
-  const bottom = rects.get(visible[visible.length - 1])!.bottom;
-  // The waterfall: the blocks starting on one row are a chain that
-  // shares the slot from that row's top to the next chain's top (or the
-  // last row's bottom).
+  // Tickets take rows in start order. A block's ticket goes on its start
+  // row; taken, on the first free row of its span that is no other
+  // block's start (that block has the better claim, whenever it comes),
+  // else stacked under its last row — one ticket height per block already
+  // stacked there.
   shown.sort((a, b) => track.get(startOf.get(a)!)! - track.get(startOf.get(b)!)!);
-  for (let i = 0; i < shown.length;) {
-    const row = startOf.get(shown[i])!;
-    const chain: SpanTextBlock[] = [];
-    for (; i < shown.length && startOf.get(shown[i]) === row; i++) chain.push(shown[i]);
-    const top = rects.get(row)!.top;
-    const end = i < shown.length ? rects.get(startOf.get(shown[i])!)!.top : bottom;
-    _placeChain(chain, end - top);
+  const starts = new Set(shown.map((b) => track.get(startOf.get(b)!)!));
+  const taken = new Map<number, number>();
+  for (const block of shown) {
+    const start = startOf.get(block)!;
+    const own = block.rows.filter((r) => track.has(r));
+    const row = own.find((r) => !taken.has(track.get(r)!) && (r === start || !starts.has(track.get(r)!)))
+      ?? own[own.length - 1];
+    const stacked = taken.get(track.get(row)!) ?? 0;
+    taken.set(track.get(row)!, stacked + 1);
+    const rowRect = rects.get(row)!;
+    _placeTicket(block, rowRect.top - rects.get(start)!.top + stacked * rowRect.height);
   }
   gutter.observer?.takeRecords();
 }
 
-/** Clamp a chain's blocks into a slot `space` tall. Each block's body
- *  sits under the edge's arm, so a block takes the arm's height plus its
- *  body's. Every block but the last is clamped to its share — its natural
- *  height, or an equal split of what the smaller blocks leave when the
- *  chain does not fit — and the last runs to the slot's end; each hangs
- *  under the one before it (`--chain`, the offset the stylesheet places
- *  its body and arm by; `.chained`, on every block but the first). A
- *  block whose text runs past its clamp is `truncated`. */
-function _placeChain(chain: SpanTextBlock[], space: number): void {
-  const share = new Map<SpanTextBlock, number>();
-  let remaining = Math.max(0, space - _EDGE_ARM_PX * chain.length);
-  const bySize = [...chain].sort((a, b) => a.natural - b.natural);
-  for (let left = bySize.length; left > 0; left--) {
-    const block = bySize[bySize.length - left];
-    const portion = Math.min(block.natural, remaining / left);
-    share.set(block, portion);
-    remaining -= portion;
+/** Set a ticket's offset under its block's top: on the block's own first
+ *  row it is none (and the ticket unchained). An overlay's coordinates
+ *  follow its block. */
+function _placeTicket(block: SpanTextBlock, offset: number): void {
+  block.chain = offset;
+  block.el.classList.toggle("chained", offset > 0);
+  if (offset > 0) block.el.style.setProperty("--chain", `${offset}px`);
+  else block.el.style.removeProperty("--chain");
+  if (_isOverlay(block)) {
+    _anchorOverlay(block);
+    _drawBrace(block);
   }
-  let offset = 0;
-  for (let i = 0; i < chain.length; i++) {
-    const block = chain[i];
-    const body = block.body!;
-    const last = i === chain.length - 1;
-    block.available = Math.max(0, last ? space - offset - _EDGE_ARM_PX : share.get(block)!);
-    block.chain = offset;
-    block.el.classList.toggle("chained", i > 0);
-    if (offset > 0) block.el.style.setProperty("--chain", `${offset}px`);
-    else block.el.style.removeProperty("--chain");
-    // A lifted body keeps its lift; a retracting one is already headed
-    // for the clamp, and an overlay's coordinates follow its block.
-    if (!block.lifted) _clampBody(block, block.available);
-    if (_isOverlay(block)) _anchorOverlay(block);
-    body.classList.toggle("truncated", block.natural > block.available + _TRUNCATION_EPSILON_PX);
-    offset += _EDGE_ARM_PX + block.available;
-  }
-}
-
-/** Set a body's clamp, and the edge's frame with it. */
-function _clampBody(block: SpanTextBlock, height: number): void {
-  block.body!.style.maxHeight = `${height}px`;
-  block.el.style.setProperty("--body-h", `${height}px`);
 }
 
 // --- The lift ----------------------------------------------------------------
 
 /** The blocks whose widgets are overlays now, for re-anchoring on scroll. */
 const _OVERLAYS = new Set<SpanTextBlock>();
+/** The one pinned block, if any. */
+let _PINNED: SpanTextBlock | null = null;
 /** The block under the pointer, if it is on a block's body or edge. */
 let _hoveredBlock: SpanTextBlock | null = null;
 
-/** Whether the block's widget is out of the grid as a fixed overlay:
- *  lifted, or still retracting from a lift. */
+/** Whether the block's widget is out of the grid as a fixed overlay. */
 function _isOverlay(block: SpanTextBlock): boolean {
   return block.el.classList.contains("lifted");
 }
@@ -1687,15 +1656,14 @@ function _anchorOverlay(block: SpanTextBlock): void {
   block.widget.style.height = `${r.height}px`;
 }
 
-/** Apply a block's lift state. A headless block has nothing to lift; its
- *  edge still takes the pointer, to no effect. Lifting anchors the widget
- *  as an overlay at the coordinates the block has in the grid and sets
- *  the body's clamp to the natural height, which the stylesheet
- *  transitions (the edge's frame with it); un-lifting sets the clamp back
- *  and returns the widget to the grid once the transition has run. The
+/** Apply a block's state. A headless block has nothing to open; its edge
+ *  still takes the pointer, to no effect. Opening lifts the widget as an
+ *  overlay at the coordinates the block has in the grid (the stylesheet
+ *  unfolds the ticket into the card by the class) and draws the brace;
+ *  closing returns the widget to the grid and takes the brace down. The
  *  classes on the block carry the z-order — a hovered block above a
  *  pinned one, a pinned one above the rest — and the pinned state, which
- *  the edge takes its full colour from. */
+ *  the brace takes its full colour from. */
 function _applyLift(block: SpanTextBlock): void {
   const liftable = block.body !== null && !block.el.classList.contains("headless");
   const lifted = liftable && (block.hover || block.pinned);
@@ -1704,15 +1672,14 @@ function _applyLift(block: SpanTextBlock): void {
   if (lifted === block.lifted) return;
   block.lifted = lifted;
   if (lifted) {
-    if (!_isOverlay(block)) {
-      _anchorOverlay(block);
-      block.el.classList.add("lifted");
-      _OVERLAYS.add(block);
-    }
-    _clampBody(block, block.natural);
+    // The class first: the card's height, which the brace's stem is
+    // drawn to, is the open body's.
+    block.el.classList.add("lifted");
+    _anchorOverlay(block);
+    _drawBrace(block);
+    _OVERLAYS.add(block);
   } else {
-    _clampBody(block, block.available);
-    _afterTransition(block.body!, () => { if (!block.lifted) _settleOverlay(block); });
+    _settleOverlay(block);
   }
 }
 
@@ -1724,26 +1691,81 @@ function _settleOverlay(block: SpanTextBlock): void {
   block.widget.style.left = "";
   block.widget.style.width = "";
   block.widget.style.height = "";
+  block.edge.querySelector(".span-brace")?.remove();
+}
+
+/** Pin a block — releasing the one pinned before, there being one pin at
+ *  a time — or unpin it. */
+function _togglePin(block: SpanTextBlock): void {
+  if (!block.pinned && _PINNED && _PINNED !== block) {
+    _PINNED.pinned = false;
+    _applyLift(_PINNED);
+  }
+  block.pinned = !block.pinned;
+  _PINNED = block.pinned ? block : null;
+  _applyLift(block);
+}
+
+/** The brace an open block wears: a `}` over its rows, its spine
+ *  projecting past the bars column over the edge of the code, tip on the
+ *  span's middle, stem back across the bars to the card — straight when
+ *  the card reaches the tip's level, elbowed to the card's nearest corner
+ *  otherwise. A span of one line has a stem alone, from where the brace's
+ *  arms would reach. Drawn in the widget's coordinates, so it lifts with
+ *  the card and needs no redraw on a scroll; measured off the block and
+ *  its first row's bars cell. */
+function _drawBrace(block: SpanTextBlock): void {
+  block.edge.querySelector(".span-brace")?.remove();
+  const first = block.rows.find((r) => r.style.display !== "none");
+  if (!first || !block.body) return;
+  const blockRect = block.el.getBoundingClientRect();
+  const barsRect = (first.children[2] as HTMLElement).getBoundingClientRect();
+  const bodyRect = block.body.getBoundingClientRect();
+  const x0 = barsRect.left - blockRect.left - _BRACE_PROJECTION_PX;
+  const h = Math.max(_BRACE_W, blockRect.height - 6);
+  const x1 = -x0;
+  const tipY = h / 2;
+  const cardTop = bodyRect.top - blockRect.top - 3;
+  const cardBottom = bodyRect.bottom - blockRect.top - 3;
+  const y1 = tipY >= cardTop + 6 && tipY <= cardBottom - 6 ? tipY : (tipY < cardTop ? cardTop + 8 : cardBottom - 8);
+  const d = block.rows.length === 1 ? `M0 ${tipY} L${x1} ${tipY}` : _bracePath(h, _BRACE_W, x1, y1);
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "span-brace");
+  svg.setAttribute("aria-hidden", "true");
+  svg.style.left = `${x0}px`;
+  svg.style.top = "3px";
+  svg.style.width = `${_BRACE_W}px`;
+  svg.style.height = `${h}px`;
+  for (const cls of ["halo", "ink"]) {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("class", cls);
+    path.setAttribute("d", d);
+    svg.appendChild(path);
+  }
+  block.edge.appendChild(svg);
+}
+
+/** A `}` of height `h` and width `w` with its tip at `(w, h/2)`, then a
+ *  stem to `(x1, y1)`: straight when level with the tip, else out, up or
+ *  down, and in. */
+function _bracePath(h: number, w: number, x1: number, y1: number): string {
+  const m = h / 2;
+  const r = Math.min(4, h / 4);
+  const c = w / 2;
+  const brace = `M0 0 Q${c} 0 ${c} ${r} L${c} ${m - r} Q${c} ${m} ${w} ${m} Q${c} ${m} ${c} ${m + r} L${c} ${h - r} Q${c} ${h} 0 ${h}`;
+  const stem = Math.abs(y1 - m) < 1 ? `M${w} ${m} L${x1} ${m}` : `M${w} ${m} L${x1 - 6} ${m} L${x1 - 6} ${y1} L${x1} ${y1}`;
+  return `${brace} ${stem}`;
 }
 
 /** Clear a block's lift outright — it is being hidden. */
 function _dropLift(block: SpanTextBlock): void {
   block.hover = false;
   block.pinned = false;
+  if (_PINNED === block) _PINNED = null;
   block.lifted = false;
   block.el.classList.remove("hover-lifted", "pinned");
   if (_isOverlay(block)) _settleOverlay(block);
   if (_hoveredBlock === block) _hoveredBlock = null;
-}
-
-/** Run `fn` once the element's running transitions have ended — or at
- *  once when there are none (`prefers-reduced-motion`, or a document
- *  without animations). A cancelled transition counts as ended; `fn`
- *  re-checks the state it acts on. */
-function _afterTransition(el: HTMLElement, fn: () => void): void {
-  const anims = typeof el.getAnimations === "function" ? el.getAnimations() : [];
-  if (!anims.length) { fn(); return; }
-  void Promise.allSettled(anims.map((a) => a.finished)).then(fn);
 }
 
 /** The block a pointer event is on: the target's block body, or its
