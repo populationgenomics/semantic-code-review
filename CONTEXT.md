@@ -327,18 +327,20 @@ span that is no other block's start, and stacks it a ticket's height
 under the span's last row when there is none; the offset is `--chain` on
 the block (`.chained`). Nothing of a span is in the code column.
 
-A ticket is read by **opening** it: hovering the body or the edge
-**lifts** the widget — `position: fixed` at the coordinates the block has
-(the half is a scroll container, so a card in the grid running past the
-hunk's last row would be clipped there and give the half a scrollbar);
-the block stays in the grid as the anchor the widget is re-fixed to on
-every scroll (captured at the document, so a pane's scroll counts) and
-every pass — and the stylesheet unfolds the ticket in place into the
-**card**: the chevron turns, the intent wraps whole, the dots give way to
-the pill row — the smell pills, each promotable to a [[reviewer-comment]]
-by a click, and `+ comment`, which promotes the intent the same way, by
-the one-click path (`Comments.promote`), as a comment on the span's first
-line — with a ring separating it from what it covers. The bar gives way
+A ticket is read by **opening** it: hovering the body or the edge has
+the stylesheet unfold the ticket in place into the **card**: the chevron
+turns, the intent wraps whole, the dots give way to the pill row — the
+smell pills, each promotable to a [[reviewer-comment]] by a click, and
+`+ comment`, which promotes the intent the same way, by the one-click
+path (`Comments.promote`), as a comment on the span's first line — with a
+ring separating it from what it covers. The card never leaves the grid:
+it is absolute in its block, so it scrolls with the rows and nothing
+keeps it up to date. Its bound is the half, a scroll container that would
+cut a card running past the hunk's last row and grow a scrollbar for it:
+the renderer fits the card when it opens (`render._fitCard`) — downward
+from the ticket's top, or upward from the ticket's bottom (`.flipped`)
+when that does not fit and there is more room above, and capped to the
+room, scrolling inside, in a hunk too short either way. The bar gives way
 to the **brace** (`render._drawBrace`, an SVG in the edge, so it lifts
 with the card): a `}` over the span's rows whose spine projects 3px past
 the bars column, into the code cell's padding, tip on the span's middle, stem
@@ -349,9 +351,8 @@ bar's colour, or the full accent when pinned, on a dark halo. Leaving
 closes; a click on the body **pins** — one pin at a time, pinning a block
 releases the one pinned before — and a second click unpins; the block's
 controls (the pills, `+ comment`) are their own targets, not the pin's.
-The card is the text column's width, so it covers gutter tickets alone
-within the hunk; past the hunk's last row it covers whatever is there,
-and the viewport is the only thing that clips it. Z-order is the block's:
+The card is the text column's width, so it covers gutter tickets alone,
+within the hunk. Z-order is the block's:
 hovered above pinned above the rest, so hovering the edge of a block an
 open neighbour covers brings it up. The pin lives in memory, so a
 repainted hunk's new blocks start unpinned, and folding the gutter clears

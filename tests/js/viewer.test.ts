@@ -1620,13 +1620,17 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
       span("H0_0:span:4-8", 4, 8, "the parent, at length", [{ tag: "dead-code", note: "" }]),
       span("H0_0:span:8-8", 8, 8, "the child, longer still"),
     ];
-    /** Boot the pair with geometry the brace can be drawn from: the block
-     *  at (700, 300), 200 wide and its rows tall; the bars cell 16px wide
-     *  just left of it; the body one row at the block's top. */
-    async function bootPair(): Promise<void> {
+    /** Boot the pair with geometry the fit and the brace can be read
+     *  from: the half from 300 to `halfBottom` (its five rows' 400 unless
+     *  said otherwise); the parent's block at (700, 300), the child's at
+     *  380, 200 wide and their rows tall; the bars cell 16px wide just
+     *  left of them; each body 40px tall at its block's top. */
+    async function bootPair(halfBottom = 400): Promise<void> {
       await bootViewer(makeData({ pending: false, files: [gutterFile(PAIR)], symbols: [] }));
       fold("code");
       await layoutGeometry();
+      document.querySelector<HTMLElement>(".hunk .half-new")!.getBoundingClientRect =
+        (): DOMRect => ({ top: 300, bottom: halfBottom, height: halfBottom - 300 } as DOMRect);
       for (const [id, top, rows] of [["H0_0:span:4-8", 300, 5], ["H0_0:span:8-8", 380, 1]] as const) {
         textOf(id)!.getBoundingClientRect = (): DOMRect => ({ top, left: 700, width: 200, height: rows * 20, bottom: top + rows * 20 } as DOMRect);
         bodyOf(id).getBoundingClientRect = (): DOMRect => ({ top: top + 3, left: 700, width: 200, height: 40, bottom: top + 43 } as DOMRect);
@@ -1635,16 +1639,18 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
         (row.children[2] as HTMLElement).getBoundingClientRect = (): DOMRect => ({ left: 684, width: 16, right: 700 } as DOMRect);
       }
     }
-    const widgetOf = (spanId: string): HTMLElement => textOf(spanId)!.querySelector<HTMLElement>(".span-widget")!;
+    const fit = (spanId: string): { flipped: boolean; maxHeight: string } =>
+      ({ flipped: textOf(spanId)!.classList.contains("flipped"), maxHeight: bodyOf(spanId).style.maxHeight });
 
-    test("hovering a block lifts its widget as an overlay and draws its brace; leaving settles it; no row moves", async () => {
+    test("hovering a block opens its card in place and draws its brace; leaving closes it; no row moves", async () => {
       await bootPair();
       over(bodyOf("H0_0:span:4-8").querySelector(".span-text-intent")!);
       expect(lift("H0_0:span:4-8")).toEqual({ lifted: true, brace: true, hover: true, pinned: false });
-      // The widget is fixed where the block is; the block stays in the grid.
-      const w = widgetOf("H0_0:span:4-8");
-      expect([w.style.top, w.style.left, w.style.width, w.style.height]).toEqual(["300px", "700px", "200px", "100px"]);
-      expect(textOf("H0_0:span:4-8")!.style.position).toBe("");
+      // Nothing leaves the grid: no element is positioned by hand.
+      const w = textOf("H0_0:span:4-8")!.querySelector<HTMLElement>(".span-widget")!;
+      expect([w.style.top, w.style.left, w.style.width, w.style.height]).toEqual(["", "", "", ""]);
+      // The 40px card fits under its ticket in the 96px to the half's end.
+      expect(fit("H0_0:span:4-8")).toEqual({ flipped: false, maxHeight: "" });
       expect(rowsUntouched()).toBe(true);
       // The brace: in the edge, 8 wide, the block's height less its caps,
       // its spine 3px past the bars column's left edge (the column is at
@@ -1664,18 +1670,30 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
       expect(d.endsWith("M8 47 L13 47 L13 32 L19 32")).toBe(true);
       // The block below is untouched.
       expect(lift("H0_0:span:8-8")).toEqual(CLOSED);
-      // A scroll re-reads the block, which stayed in the grid.
-      textOf("H0_0:span:4-8")!.getBoundingClientRect = (): DOMRect => ({ top: 250, left: 700, width: 200, height: 100, bottom: 350 } as DOMRect);
-      document.dispatchEvent(new Event("scroll"));
-      expect(w.style.top).toBe("250px");
       out(bodyOf("H0_0:span:4-8"));
       expect(lift("H0_0:span:4-8")).toEqual(CLOSED);
-      expect([w.style.top, w.style.left, w.style.width, w.style.height]).toEqual(["", "", "", ""]);
       expect(rowsUntouched()).toBe(true);
       // The pass, while a block is lifted, leaves its lift alone.
       over(bodyOf("H0_0:span:8-8"));
       await layoutGeometry();
       expect(lift("H0_0:span:8-8")).toEqual({ lifted: true, brace: true, hover: true, pinned: false });
+    });
+
+    test("a card that would run past the half's end opens upward when there is more room above, and is capped in a hunk too short either way", async () => {
+      await bootPair();
+      // The child's ticket is on the last row: 16px below it, 96 above —
+      // the card unfolds upward, whole.
+      over(bodyOf("H0_0:span:8-8"));
+      expect(fit("H0_0:span:8-8")).toEqual({ flipped: true, maxHeight: "" });
+      out(bodyOf("H0_0:span:8-8"));
+      expect(fit("H0_0:span:8-8")).toEqual({ flipped: false, maxHeight: "" });
+      // A half ending at 330: the parent's card has 26px below and 16
+      // above — downward, capped to the 26.
+      await bootPair(330);
+      over(bodyOf("H0_0:span:4-8"));
+      expect(fit("H0_0:span:4-8")).toEqual({ flipped: false, maxHeight: "26px" });
+      out(bodyOf("H0_0:span:4-8"));
+      expect(fit("H0_0:span:4-8")).toEqual({ flipped: false, maxHeight: "" });
     });
 
     test("a one-line span's brace is a stem alone, from where the arms would reach to the body", async () => {

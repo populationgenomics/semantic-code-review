@@ -1220,15 +1220,15 @@ function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLE
 // bar) unfolds the ticket in place into the card — the intent whole, the
 // smell pills, `+ comment` — over whatever gutter content is below it,
 // never moving a row, and its bar becomes a brace projecting over the
-// edge of the code it covers, with a stem back to the card. The widget is
-// lifted for it: `position: fixed` at the coordinates the block has,
-// since the half is a scroll container and would otherwise clip the card
-// at the hunk's end and grow a scrollbar for it. The block stays in the
-// grid as the anchor: the overlay is re-anchored to it on every scroll
-// and every pass, and released when the block closes. A click pins the
-// open state — one pin at a time; pinning a block releases the one pinned
-// before — and a second click unpins. Hovered draws above pinned, pinned
-// above the rest.
+// edge of the code it covers, with a stem back to the card. The card stays
+// in the grid, absolute in its block, so it scrolls with the rows and
+// nothing keeps it up to date; what that costs is that the half — a
+// scroll container — is its bound: a card that would run past the hunk's
+// last row unfolds upward instead when there is more room above, and is
+// capped to the room, scrolling inside, in a hunk too short either way.
+// A click pins the open state — one pin at a time; pinning a block
+// releases the one pinned before — and a second click unpins. Hovered
+// draws above pinned, pinned above the rest.
 
 /** A span placed on a hunk's rows: its row extent and nesting depth. */
 interface PlacedSpan {
@@ -1622,52 +1622,37 @@ function _layoutSpanTexts(half: HTMLElement): void {
 }
 
 /** Set a ticket's offset under its block's top: on the block's own first
- *  row it is none (and the ticket unchained). An overlay's coordinates
- *  follow its block. */
+ *  row it is none (and the ticket unchained). An open card is fitted and
+ *  its brace drawn again, since its rows may have moved. */
 function _placeTicket(block: SpanTextBlock, offset: number): void {
   block.chain = offset;
   block.el.classList.toggle("chained", offset > 0);
   if (offset > 0) block.el.style.setProperty("--chain", `${offset}px`);
   else block.el.style.removeProperty("--chain");
-  if (_isOverlay(block)) {
-    _anchorOverlay(block);
+  if (block.lifted) {
+    _fitCard(block);
     _drawBrace(block);
   }
 }
 
 // --- The lift ----------------------------------------------------------------
 
-/** The blocks whose widgets are overlays now, for re-anchoring on scroll. */
-const _OVERLAYS = new Set<SpanTextBlock>();
 /** The one pinned block, if any. */
 let _PINNED: SpanTextBlock | null = null;
 /** The block under the pointer, if it is on a block's body or edge. */
 let _hoveredBlock: SpanTextBlock | null = null;
-
-/** Whether the block's widget is out of the grid as a fixed overlay. */
-function _isOverlay(block: SpanTextBlock): boolean {
-  return block.el.classList.contains("lifted");
-}
-
-/** Fix the widget at the coordinates its block has in the grid — the
- *  block stays there as the anchor. The chain offset is the stylesheet's,
- *  relative to the widget, so it carries over unchanged. */
-function _anchorOverlay(block: SpanTextBlock): void {
-  const r = block.el.getBoundingClientRect();
-  block.widget.style.top = `${r.top}px`;
-  block.widget.style.left = `${r.left}px`;
-  block.widget.style.width = `${r.width}px`;
-  block.widget.style.height = `${r.height}px`;
-}
+/** The gap an open card keeps from the half's edge. */
+const _CARD_MARGIN_PX = 4;
 
 /** Apply a block's state. A headless block has nothing to open; its edge
- *  still takes the pointer, to no effect. Opening lifts the widget as an
- *  overlay at the coordinates the block has in the grid (the stylesheet
- *  unfolds the ticket into the card by the class) and draws the brace;
- *  closing returns the widget to the grid and takes the brace down. The
- *  classes on the block carry the z-order — a hovered block above a
- *  pinned one, a pinned one above the rest — and the pinned state, which
- *  the brace takes its full colour from. */
+ *  still takes the pointer, to no effect. Opening (`.lifted`, on the
+ *  block) has the stylesheet unfold the ticket into the card in place,
+ *  fits the card to the half, and draws the brace; closing takes the
+ *  brace down. The card never leaves the grid — it is absolute in its
+ *  block, so it scrolls with the rows and needs no keeping-up. The classes
+ *  on the block carry the z-order — a hovered block above a pinned one, a
+ *  pinned one above the rest — and the pinned state, which the brace
+ *  takes its full colour from. */
 function _applyLift(block: SpanTextBlock): void {
   const liftable = !block.el.classList.contains("headless");
   const lifted = liftable && (block.hover || block.pinned);
@@ -1676,26 +1661,43 @@ function _applyLift(block: SpanTextBlock): void {
   if (lifted === block.lifted) return;
   block.lifted = lifted;
   if (lifted) {
-    // The class first: the card's height, which the brace's stem is
-    // drawn to, is the open body's.
+    // The class first: the card's height, which the fit reads and the
+    // brace's stem is drawn to, is the open body's.
     block.el.classList.add("lifted");
-    _anchorOverlay(block);
+    _fitCard(block);
     _drawBrace(block);
-    _OVERLAYS.add(block);
   } else {
-    _settleOverlay(block);
+    block.el.classList.remove("lifted", "flipped");
+    block.body.style.maxHeight = "";
+    block.edge.querySelector(".span-brace")?.remove();
   }
 }
 
-/** Return an overlay's widget to the grid. */
-function _settleOverlay(block: SpanTextBlock): void {
-  _OVERLAYS.delete(block);
-  block.el.classList.remove("lifted");
-  block.widget.style.top = "";
-  block.widget.style.left = "";
-  block.widget.style.width = "";
-  block.widget.style.height = "";
-  block.edge.querySelector(".span-brace")?.remove();
+/** Keep an open card inside its half. The half is a scroll container:
+ *  a card running past the hunk's last row would be cut there and give
+ *  the half a scrollbar. The card unfolds downward from its ticket; when
+ *  that does not fit and there is more room above, it unfolds upward
+ *  instead (`.flipped`: its bottom stays on the ticket's), and in a hunk
+ *  too short either way it is capped to the room and scrolls inside. */
+function _fitCard(block: SpanTextBlock): void {
+  const half = block.el.parentElement!;
+  const halfRect = half.getBoundingClientRect();
+  block.el.classList.remove("flipped");
+  block.body.style.maxHeight = "";
+  const ticket = block.el.getBoundingClientRect().top + block.chain;
+  const natural = block.body.getBoundingClientRect().height;
+  const below = halfRect.bottom - ticket - _CARD_MARGIN_PX;
+  const above = ticket + _rowHeight(block) - halfRect.top - _CARD_MARGIN_PX;
+  if (natural <= below) return;
+  const room = above > below ? above : below;
+  if (above > below) block.el.classList.add("flipped");
+  if (natural > room) block.body.style.maxHeight = `${Math.max(0, room)}px`;
+}
+
+/** One code row's height, off the block's first visible row. */
+function _rowHeight(block: SpanTextBlock): number {
+  const first = block.rows.find((r) => r.style.display !== "none");
+  return first ? first.getBoundingClientRect().height : 0;
 }
 
 /** Pin a block — releasing the one pinned before, there being one pin at
@@ -1767,8 +1769,9 @@ function _dropLift(block: SpanTextBlock): void {
   block.pinned = false;
   if (_PINNED === block) _PINNED = null;
   block.lifted = false;
-  block.el.classList.remove("hover-lifted", "pinned");
-  if (_isOverlay(block)) _settleOverlay(block);
+  block.el.classList.remove("hover-lifted", "pinned", "lifted", "flipped");
+  block.body.style.maxHeight = "";
+  block.edge.querySelector(".span-brace")?.remove();
   if (_hoveredBlock === block) _hoveredBlock = null;
 }
 
@@ -1807,15 +1810,6 @@ function _onGutterPointerOver(e: MouseEvent): void {
  *  that `mouseover` will not. */
 function _onGutterPointerOut(e: MouseEvent): void {
   if (_hoveredBlock && _blockAt(e.relatedTarget) !== _hoveredBlock) _hoverBlock(null);
-}
-
-/** Overlays follow their blocks through any scroll — the document's or
- *  a pane's; a block whose hunk was repainted is gone with it. */
-function _onScrollReanchor(): void {
-  for (const block of _OVERLAYS) {
-    if (!block.el.isConnected) { _OVERLAYS.delete(block); continue; }
-    _anchorOverlay(block);
-  }
 }
 
 function _renderRow(
@@ -2146,7 +2140,6 @@ function _wireInputs(): void {
   document.addEventListener("mouseover", _onGutterPointerOver);
   document.addEventListener("mouseout", _onGutterPointerOut);
   // Capture: a pane's scroll does not bubble to the document.
-  document.addEventListener("scroll", _onScrollReanchor, { capture: true, passive: true });
   window.addEventListener("hashchange", () => {
     _state.overrides = Object.create(null);
     _restoreHash();

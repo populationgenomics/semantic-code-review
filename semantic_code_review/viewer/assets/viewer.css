@@ -815,10 +815,8 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  * set by the renderer), in the text column and sticky with it. Nothing
  * in it sizes a row: its one child, the widget, is absolute over it, and
  * the item itself takes no pointer — the strip's cells under it keep the
- * fold's click. The widget holds the edge and the body; lifted
- * (`.lifted`, on the item), it leaves the grid as a fixed overlay at the
- * coordinates the renderer read off the item, which stays behind as the
- * anchor every scroll re-reads. */
+ * fold's click. The widget holds the edge and the body, and never leaves
+ * the grid: an open card scrolls with its rows. */
 .diff .span-text {
   z-index: 2;
   min-width: 0;
@@ -828,7 +826,6 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   pointer-events: none;
 }
 .diff .span-widget { position: absolute; inset: 0; pointer-events: none; }
-.diff .span-text.lifted > .span-widget { position: fixed; right: auto; bottom: auto; }
 /* The edge: the span's bar (or dot) in its own bars column (`--depth`, on
  * the item: the outermost span's column is against the text, each level
  * of nesting one column nearer the code, the cell's spare 4px between the
@@ -877,8 +874,11 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  * the intent on one line cut with an ellipsis, a dot per smell. Open
  * (the item `.lifted`), it is the card: the chevron turns, the intent
  * wraps whole, the dots give way to the pill row, and a ring separates it
- * from what it covers. The strip's background is its own, since it may
- * lie over rows with none. A headless item shows no body. */
+ * from what it covers. It unfolds downward from the ticket's top, or —
+ * where the renderer found more room above (`.flipped`) — upward from the
+ * ticket's bottom; capped (`max-height`, inline) it scrolls inside. The
+ * strip's background is its own, since it may lie over rows with none. A
+ * headless item shows no body. */
 .diff .span-text-body {
   position: relative;
   top: var(--chain, 0px);
@@ -909,6 +909,13 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   border-radius: 6px;
   box-shadow: 0 0 0 1px var(--border);
   line-height: 1.35;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.diff .span-text.lifted.flipped .span-text-body {
+  position: absolute;
+  top: auto; left: 0; right: 0;
+  bottom: calc(100% - var(--chain, 0px) - var(--code-row-h));
 }
 .diff .span-text.pinned .span-text-body { box-shadow: 0 0 0 1px var(--accent); }
 .diff .span-text.lifted .span-text-line { align-items: flex-start; }
