@@ -878,37 +878,40 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  * where the renderer found more room above (`.flipped`) — upward from the
  * ticket's bottom; capped (`max-height`, inline) it scrolls inside. The
  * strip's background is its own, since it may lie over rows with none. A
- * headless item shows no body. */
+ * headless item shows no body. The first line does not move when the
+ * card opens: both states share the line height (`--card-lh`) and the
+ * top and left padding — at rest the one line is centred in the row by
+ * that padding, not by a taller line — and the chevron turns in place. */
 .diff .span-text-body {
+  --card-lh: 14.85px; /* 11px × 1.35 */
   position: relative;
   top: var(--chain, 0px);
   box-sizing: border-box;
   margin: 0;
   height: var(--code-row-h);
-  padding: 0 6px 0 4px;
+  padding: calc((var(--code-row-h) - var(--card-lh)) / 2) 6px 0 4px;
   overflow: hidden;
   background: var(--bg-alt);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 11px;
-  line-height: var(--code-row-h);
+  line-height: var(--card-lh);
   color: var(--fg-muted);
   cursor: pointer;
   pointer-events: auto;
 }
 .diff .span-text.headless .span-text-body { display: none; }
-.diff .span-text-line { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.diff .span-text-chev { flex: none; color: var(--fg-dim); font-size: 9px; transition: transform 120ms ease-out; }
+.diff .span-text-line { display: flex; align-items: flex-start; gap: 4px; min-width: 0; }
+.diff .span-text-chev { flex: none; color: var(--fg-dim); font-size: 9px; line-height: var(--card-lh); transition: transform 120ms ease-out; }
 .diff .span-text-intent { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .diff .span-text-intent.empty { color: var(--fg-dim); font-style: italic; }
-.diff .span-text-dots { flex: none; display: flex; gap: 3px; }
+.diff .span-text-dots { flex: none; display: flex; align-items: center; gap: 3px; height: var(--card-lh); }
 .diff .span-text-dot { width: 6px; height: 6px; border-radius: 50%; background: #3b82f6; }
 .diff .span-text-pills { display: none; }
 .diff .span-text.lifted .span-text-body {
   height: auto;
-  padding: 4px 7px 5px 6px;
+  padding-bottom: 5px;
   border-radius: 6px;
   box-shadow: 0 0 0 1px var(--border);
-  line-height: 1.35;
   overflow-x: hidden;
   overflow-y: auto;
 }
@@ -918,8 +921,7 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   bottom: calc(100% - var(--chain, 0px) - var(--code-row-h));
 }
 .diff .span-text.pinned .span-text-body { box-shadow: 0 0 0 1px var(--accent); }
-.diff .span-text.lifted .span-text-line { align-items: flex-start; }
-.diff .span-text.lifted .span-text-chev { transform: rotate(90deg); margin-top: 3px; }
+.diff .span-text.lifted .span-text-chev { transform: rotate(90deg); }
 .diff .span-text.lifted .span-text-intent { white-space: normal; overflow: visible; }
 .diff .span-text.lifted .span-text-dots { display: none; }
 /* The pill row of the open card: the smell pills, then the promote
