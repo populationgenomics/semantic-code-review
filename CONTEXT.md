@@ -340,8 +340,8 @@ by a click, and `+ comment`, which promotes the intent the same way, by
 the one-click path (`Comments.promote`), as a comment on the span's first
 line — with a ring separating it from what it covers. The bar gives way
 to the **brace** (`render._drawBrace`, an SVG in the edge, so it lifts
-with the card): a `}` over the span's rows whose spine projects 6px past
-the bars column over the edge of the code, tip on the span's middle, stem
+with the card): a `}` over the span's rows whose spine projects 3px past
+the bars column, into the code cell's padding, tip on the span's middle, stem
 back across the bars to the card — straight when the card reaches the
 tip's level, elbowed to the card's nearest corner otherwise; a one-line
 span has the stem alone, from where the arms would reach. Inked in the
@@ -360,11 +360,14 @@ ticket hides, the fold's label tree lists it ([[fold-region]]), and its
 bar alone stands over the rows still on screen; every row hidden, the
 block hides. A span whose intent the reviewer has turned into a
 [[reviewer-comment]] (a local comment `derived_from` its id, or the
-`line_note` id a store written before spans used) has no body — headless
-for good — and, on one line, no block at all — the comment stands in
-their place; a multi-line span keeps its bar, which marks a range the
-comment does not. `render._attachSpans` owns all of this; the explicit
-`grid-row` on every row of a half with spans is what places the blocks.
+`line_note` id a store written before spans used) is headless too — the
+comment stands in the ticket's place; a multi-line span keeps its bar,
+which marks a range the comment does not, and a span of one line hides
+whole. The pass reads promotion from the comment store on every run, and
+the comment's rows arriving or leaving is what runs it, so deleting the
+comment brings the ticket back. `render._attachSpans` owns all of this;
+the explicit `grid-row` on every row of a half with spans is what places
+the blocks.
 
 The gutter **folds**, globally: folded, it is the bars alone at the
 right edge — the text column zero wide, every block headless, the bars

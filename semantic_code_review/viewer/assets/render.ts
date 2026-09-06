@@ -1238,17 +1238,19 @@ interface PlacedSpan {
   depth: number;
 }
 
-/** A span's block: the grid item, the widget that lifts, the edge, the
- *  body (none once the span is a comment — the edge stays, marking the
- *  range the comment does not), the code rows the span covers; the offset
- *  the last pass placed its ticket at under the block's top; and its
- *  state — whether the pointer is on it, whether a click pinned it, and
- *  whether the widget is lifted now (the two's disjunction, applied). */
+/** A span's block: the span and its hunk (what the pass asks the comment
+ *  store about), the grid item, the widget that lifts, the edge, the
+ *  body, the code rows the span covers; the offset the last pass placed
+ *  its ticket at under the block's top; and its state — whether the
+ *  pointer is on it, whether a click pinned it, and whether the widget is
+ *  lifted now (the two's disjunction, applied). */
 interface SpanTextBlock {
+  span: AnnotationSpan;
+  hunkId: string;
   el: HTMLElement;
   widget: HTMLElement;
   edge: HTMLElement;
-  body: HTMLElement | null;
+  body: HTMLElement;
   rows: HTMLElement[];
   chain: number;
   hover: boolean;
@@ -1264,8 +1266,8 @@ interface SpanGutter {
 }
 
 /** How far an open block's brace projects over the code, past the bars
- *  column's edge. */
-const _BRACE_PROJECTION_PX = 6;
+ *  column's edge — within the code cell's padding, so it covers no text. */
+const _BRACE_PROJECTION_PX = 3;
 /** The brace's width: its arms' reach from spine to tip. */
 const _BRACE_W = 8;
 
@@ -1283,12 +1285,12 @@ const _SPAN_BAR_COLUMN_PX = 6;
 /** Spans on visible code — the one owner of the form a span takes when
  *  its rows are on screen: a block over its rows holding its edge (a bar
  *  over the rows, or a dot for a span of one line) and its body. A span
- *  whose rows are not in the hunk is warned about and left out. One the
- *  reviewer has turned into a comment has no body and, on one line, no
- *  block at all — the comment stands in their place — but keeps its bar:
- *  the bar marks a range the comment does not. The blocks are placed by
- *  row, so they survive the hunk's `.diff` being reused across repaints
- *  and rows arriving above or below it from a chip. */
+ *  whose rows are not in the hunk is warned about and left out. Every
+ *  span gets its block whole; that the reviewer has turned one into a
+ *  comment is the placement pass's to read, since the comment can be
+ *  deleted and the span must come back. The blocks are placed by row, so
+ *  they survive the hunk's `.diff` being reused across repaints and rows
+ *  arriving above or below it from a chip. */
 function _attachSpans(
   rowElsNew: HTMLElement[], rows: RowBlock[], spans: AnnotationSpan[],
   hunkId: string, filePath: string,
@@ -1300,8 +1302,6 @@ function _attachSpans(
   if (!half) throw new Error(`${hunkId}: rows are not in a half`);
   const blocks: SpanTextBlock[] = [];
   for (const ps of placed) {
-    const promoted = _spanPromoted(ps.span, hunkId);
-    if (promoted && ps.first === ps.last) continue;
     const el = _el("div", "span-text");
     el.dataset.spanId = ps.span.id;
     // The depth is the edge's bars column.
@@ -1310,12 +1310,12 @@ function _attachSpans(
     const widget = _el("div", "span-widget");
     const edge = _spanEdge(ps.span);
     widget.appendChild(edge);
-    const body = promoted ? null : _spanText(ps.span, filePath);
-    if (body) widget.appendChild(body);
+    const body = _spanText(ps.span, filePath);
+    widget.appendChild(body);
     el.appendChild(widget);
     half.appendChild(el);
     blocks.push({
-      el, widget, edge, body, rows: rowElsNew.slice(ps.first, ps.last + 1),
+      span: ps.span, hunkId, el, widget, edge, body, rows: rowElsNew.slice(ps.first, ps.last + 1),
       chain: 0, hover: false, pinned: false, lifted: false,
     });
   }
@@ -1540,22 +1540,25 @@ function _observeHalf(half: HTMLElement, gutter: SpanGutter): void {
 
 /** Place a half's blocks: give every visible row its grid row, put each
  *  block over its span's visible rows (none on screen: hidden) with its
- *  body shown when the gutter is unfolded and the span's first row is on
- *  screen (headless otherwise — the fold's label tree carries the text
- *  then), then give every shown ticket a row: its span's first, or the
- *  next free row of its span when that one is taken, stacking under the
- *  last when none is. No row is sized by any of it. The writes happen
- *  before and after a single measurement; the mutation records they queue
- *  are discarded, so the pass does not re-run itself. */
+ *  body shown when the gutter is unfolded, the span's first row is on
+ *  screen and the span is not a comment (headless otherwise — the fold's
+ *  label tree carries the text, or the comment stands in its place; a
+ *  promoted span of one line has nothing left to show and hides whole),
+ *  then give every shown ticket a row: its span's first, or the next free
+ *  row of its span when that one is taken, stacking under the last when
+ *  none is. Promotion is read here, on every pass, because a comment's
+ *  rows arriving or leaving is what runs the pass: the ticket goes when
+ *  the comment is made and comes back when it is deleted. No row is sized
+ *  by any of it. The writes happen before and after a single measurement;
+ *  the mutation records they queue are discarded, so the pass does not
+ *  re-run itself. */
 function _layoutSpanTexts(half: HTMLElement): void {
   const gutter = _SPAN_GUTTERS.get(half);
   if (!gutter) return;
-  // A block removed from the half places nothing from then on; a body
-  // removed from its widget (comments.ts's sweep, on a promotion) leaves
-  // the block headless. Not `isConnected`: the first pass runs before the
-  // hunk's `.diff` is in the document.
+  // A block removed from the half places nothing from then on. Not
+  // `isConnected`: the first pass runs before the hunk's `.diff` is in
+  // the document.
   gutter.blocks = gutter.blocks.filter((block) => block.el.parentElement === half);
-  for (const block of gutter.blocks) if (block.body && block.body.parentElement !== block.widget) block.body = null;
   const track = new Map<Element, number>();
   const visible: HTMLElement[] = [];
   let n = 0;
@@ -1571,7 +1574,8 @@ function _layoutSpanTexts(half: HTMLElement): void {
   const startOf = new Map<SpanTextBlock, HTMLElement>();
   for (const block of gutter.blocks) {
     const rows = block.rows.filter((r) => track.has(r));
-    if (!rows.length) {
+    const promoted = _spanPromoted(block.span, block.hunkId);
+    if (!rows.length || (promoted && block.rows.length === 1)) {
       _dropLift(block);
       block.el.style.display = "none";
       block.el.style.removeProperty("--chain");
@@ -1579,7 +1583,7 @@ function _layoutSpanTexts(half: HTMLElement): void {
     }
     block.el.style.display = "";
     block.el.style.gridRow = `${track.get(rows[0])} / ${track.get(rows[rows.length - 1])! + 1}`;
-    const headed = block.body !== null && !_gutterCollapsed && rows[0] === block.rows[0];
+    const headed = !promoted && !_gutterCollapsed && rows[0] === block.rows[0];
     block.el.classList.toggle("headless", !headed);
     if (!headed) {
       _dropLift(block);
@@ -1665,7 +1669,7 @@ function _anchorOverlay(block: SpanTextBlock): void {
  *  pinned one, a pinned one above the rest — and the pinned state, which
  *  the brace takes its full colour from. */
 function _applyLift(block: SpanTextBlock): void {
-  const liftable = block.body !== null && !block.el.classList.contains("headless");
+  const liftable = !block.el.classList.contains("headless");
   const lifted = liftable && (block.hover || block.pinned);
   block.el.classList.toggle("hover-lifted", liftable && block.hover);
   block.el.classList.toggle("pinned", liftable && block.pinned);
@@ -1717,7 +1721,7 @@ function _togglePin(block: SpanTextBlock): void {
 function _drawBrace(block: SpanTextBlock): void {
   block.edge.querySelector(".span-brace")?.remove();
   const first = block.rows.find((r) => r.style.display !== "none");
-  if (!first || !block.body) return;
+  if (!first) return;
   const blockRect = block.el.getBoundingClientRect();
   const barsRect = (first.children[2] as HTMLElement).getBoundingClientRect();
   const bodyRect = block.body.getBoundingClientRect();

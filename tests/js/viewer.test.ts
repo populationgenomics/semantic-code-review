@@ -1647,12 +1647,12 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
       expect(textOf("H0_0:span:4-8")!.style.position).toBe("");
       expect(rowsUntouched()).toBe(true);
       // The brace: in the edge, 8 wide, the block's height less its caps,
-      // its spine 6px past the bars column's left edge (the column is at
-      // -16..0 from the block, so at -22); one halo path and one ink path
+      // its spine 3px past the bars column's left edge (the column is at
+      // -16..0 from the block, so at -19); one halo path and one ink path
       // sharing a `}` that ends in a stem back to the body's left edge.
       const brace = braceOf("H0_0:span:4-8")!;
       expect(brace.parentElement!.className).toBe("span-edge");
-      expect([brace.style.left, brace.style.top, brace.style.width, brace.style.height]).toEqual(["-22px", "3px", "8px", "94px"]);
+      expect([brace.style.left, brace.style.top, brace.style.width, brace.style.height]).toEqual(["-19px", "3px", "8px", "94px"]);
       const paths = Array.from(brace.querySelectorAll("path"));
       expect(paths.map((p) => p.getAttribute("class"))).toEqual(["halo", "ink"]);
       expect(paths[0].getAttribute("d")).toBe(paths[1].getAttribute("d"));
@@ -1660,8 +1660,8 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
       expect(d.startsWith("M0 0 Q4 0 4 4 L4 43 Q4 47 8 47 Q4 47 4 51 L4 90 Q4 94 0 94")).toBe(true);
       // The tip is at the span's middle (47); the body (rows 0..40 of the
       // block) does not reach it, so the stem elbows up to the body's
-      // bottom corner, 22px in at the body's left edge.
-      expect(d.endsWith("M8 47 L16 47 L16 32 L22 32")).toBe(true);
+      // bottom corner, 19px in at the body's left edge.
+      expect(d.endsWith("M8 47 L13 47 L13 32 L19 32")).toBe(true);
       // The block below is untouched.
       expect(lift("H0_0:span:8-8")).toEqual(CLOSED);
       // A scroll re-reads the block, which stayed in the grid.
@@ -1682,10 +1682,10 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
       await bootPair();
       over(bodyOf("H0_0:span:8-8"));
       const brace = braceOf("H0_0:span:8-8")!;
-      // One row: 20px tall less the caps is 14, under the brace's own 8
-      // minimum — no; 14 stands. The stem runs from x=0 at mid-height.
-      expect([brace.style.left, brace.style.height]).toEqual(["-22px", "14px"]);
-      expect(brace.querySelector(".ink")!.getAttribute("d")).toBe("M0 7 L22 7");
+      // One row: 20px tall less the caps is 14. The stem runs from x=0,
+      // where the arms would reach, at mid-height.
+      expect([brace.style.left, brace.style.height]).toEqual(["-19px", "14px"]);
+      expect(brace.querySelector(".ink")!.getAttribute("d")).toBe("M0 7 L19 7");
     });
 
     test("hovering a span's edge lifts its block too — the way to a block an open neighbour covers", async () => {
@@ -1857,9 +1857,9 @@ describe("LLM observation → comment promotion", () => {
     });
     await new Promise<void>((r) => setTimeout(r, 0));
 
-    // The span is gone from the gutter — block and dot — because a local
+    // The span's block is hidden — dot and ticket — because a local
     // comment derived from it exists; the comment stands in its place.
-    expect(document.querySelector('[data-span-id="H0_0:span:1-1"]')).toBeNull();
+    expect(document.querySelector<HTMLElement>('.span-text[data-span-id="H0_0:span:1-1"]')!.style.display).toBe("none");
     expect(document.querySelector(
       '.comment-thread-entry[data-comment-id="local-1"]',
     )).not.toBeNull();
@@ -1895,11 +1895,11 @@ describe("LLM observation → comment promotion", () => {
     return () => posted;
   }
   /** A span's block as the gutter shows it: the grid rows it stands over,
-   *  whether it has a body, and whether it is headless (a bar alone). */
-  const blockOf = (spanId: string): { rows: string; body: boolean; headless: boolean } | null => {
+   *  whether it is shown at all, and whether it is headless (a bar alone). */
+  const blockOf = (spanId: string): { rows: string; shown: boolean; headless: boolean } | null => {
     const el = document.querySelector<HTMLElement>(`.half-new > .span-text[data-span-id="${spanId}"]`);
     if (!el) return null;
-    return { rows: el.style.gridRow, body: el.querySelector(".span-text-body") !== null, headless: el.classList.contains("headless") };
+    return { rows: el.style.gridRow, shown: el.style.display !== "none", headless: el.classList.contains("headless") };
   };
   /** Whether a span's block stands over a row, by its grid row. */
   const covers = (spanId: string, row: HTMLElement): boolean => {
@@ -1930,14 +1930,14 @@ describe("LLM observation → comment promotion", () => {
     expect(btn("H0_0:span:7-7")).toBeNull();
   });
 
-  test("promoting a multi-line span's intent saves a comment on its first line, removes its body and keeps its bar", async () => {
+  test("promoting a multi-line span's intent saves a comment on its first line, folds its ticket away and keeps its bar; deleting the comment brings the ticket back", async () => {
     window.location.hash = "#fold=code";
     await bootViewer(makeData({ pending: false, files: [spanFile([
       span("H0_0:span:4-7", 4, 7, "the outer edit", [{ tag: "dead-code", note: "" }]),
       span("H0_0:span:6-7", 6, 7, "the inner edit"),
     ])] }));
     await new Promise<void>((r) => setTimeout(r, 0));
-    expect(blockOf("H0_0:span:4-7")).toEqual({ rows: "1 / 5", body: true, headless: false });
+    expect(blockOf("H0_0:span:4-7")).toEqual({ rows: "1 / 5", shown: true, headless: false });
     const posted = capturePost();
 
     document.querySelector<HTMLElement>('.span-text[data-span-id="H0_0:span:4-7"] .span-promote')!.click();
@@ -1951,20 +1951,28 @@ describe("LLM observation → comment promotion", () => {
     expect(c.file).toBe("a.py");
     expect(c.side).toBe("new");
     expect(c.line).toBe(4);
-    // The body (pills and intent) is gone and the block is headless; its
-    // bar still marks the range the comment, on one line, does not — over
-    // the thread under line 4 too, which took a track of its own.
-    expect(blockOf("H0_0:span:4-7")).toEqual({ rows: "1 / 6", body: false, headless: true });
+    // The block is headless — the ticket hidden, the comment in its place;
+    // its bar still marks the range the comment, on one line, does not —
+    // over the thread under line 4 too, which took a track of its own.
+    expect(blockOf("H0_0:span:4-7")).toEqual({ rows: "1 / 6", shown: true, headless: true });
     const row4 = Array.from(document.querySelectorAll<HTMLElement>(".half-new .row"))
       .find((r) => r.querySelector(".cell-lineno")!.textContent === "4")!;
     const thread = row4.nextElementSibling as HTMLElement;
     expect(thread.classList.contains("annot-comment")).toBe(true);
     expect(covers("H0_0:span:4-7", thread)).toBe(true);
     // The nested span is untouched.
-    expect(blockOf("H0_0:span:6-7")).toEqual({ rows: "4 / 6", body: true, headless: false });
+    expect(blockOf("H0_0:span:6-7")).toEqual({ rows: "4 / 6", shown: true, headless: false });
+
+    // Deleting the comment: the thread row goes, the pass runs, and the
+    // span is no longer promoted — its ticket is back on its rows.
+    thread.querySelector<HTMLElement>(".comment-btn-del")!.click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(row4.nextElementSibling!.classList.contains("annot-comment")).toBe(false);
+    expect(blockOf("H0_0:span:4-7")).toEqual({ rows: "1 / 5", shown: true, headless: false });
   });
 
-  test("promoting a single-line span's intent removes its dot with its block", async () => {
+  test("promoting a single-line span's intent hides its block, dot and all; deleting the comment shows it again", async () => {
     window.location.hash = "#fold=code";
     await bootViewer(makeData({ pending: false, files: [spanFile([span("H0_0:span:5-5", 5, 5, "a callout")])] }));
     await new Promise<void>((r) => setTimeout(r, 0));
@@ -1975,7 +1983,13 @@ describe("LLM observation → comment promotion", () => {
     await new Promise<void>((r) => setTimeout(r, 0));
     expect(posted()!.line).toBe(5);
     expect(posted()!.derived_from).toBe("H0_0:span:5-5");
-    expect(document.querySelector('[data-span-id="H0_0:span:5-5"]')).toBeNull();
+    expect(blockOf("H0_0:span:5-5")).toMatchObject({ shown: false });
+    const row5 = Array.from(document.querySelectorAll<HTMLElement>(".half-new .row"))
+      .find((r) => r.querySelector(".cell-lineno")!.textContent === "5")!;
+    row5.nextElementSibling!.querySelector<HTMLElement>(".comment-btn-del")!.click();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(blockOf("H0_0:span:5-5")).toEqual({ rows: "2 / 3", shown: true, headless: false });
   });
 
   test("a multi-line span promoted in an earlier session draws its bar and no body, on load and after a re-augment", async () => {
@@ -1997,9 +2011,9 @@ describe("LLM observation → comment promotion", () => {
         .filter((r) => covers(spanId, r))
         .map((r) => Number(r.querySelector(".cell-lineno")!.textContent));
     const check = (): void => {
-      expect(blockOf("H0_0:span:4-7")).toMatchObject({ body: false, headless: true });
+      expect(blockOf("H0_0:span:4-7")).toMatchObject({ shown: true, headless: true });
       expect(codeLines("H0_0:span:4-7")).toEqual([4, 5, 6, 7]);
-      expect(blockOf("H0_0:span:6-7")).toMatchObject({ body: true, headless: false });
+      expect(blockOf("H0_0:span:6-7")).toMatchObject({ shown: true, headless: false });
       expect(codeLines("H0_0:span:6-7")).toEqual([6, 7]);
     };
     check();
@@ -2049,8 +2063,8 @@ describe("LLM observation → comment promotion", () => {
     lastEventSource().dispatch("hunk", {
       file_idx: 0, hunk_idx: 0, ok: true, block: makeHunkBlock("H0_0", "re-run", { spans }),
     });
-    expect(document.querySelector('[data-span-id="H0_0:span:1-1"]')).toBeNull();
-    expect(document.querySelector('.span-text[data-span-id="H0_0:span:1-2"]')).not.toBeNull();
+    expect(document.querySelector<HTMLElement>('.span-text[data-span-id="H0_0:span:1-1"]')!.style.display).toBe("none");
+    expect(document.querySelector<HTMLElement>('.span-text[data-span-id="H0_0:span:1-2"]')!.style.display).toBe("");
   });
 });
 
