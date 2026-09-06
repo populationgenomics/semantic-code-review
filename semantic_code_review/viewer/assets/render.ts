@@ -298,17 +298,23 @@ function _defaultFileFolded(): boolean    { return _state.fold === "files"; }
 /** An open hunk is its code; only `code` opens hunks. */
 function _defaultHunkFolded(): boolean    { return _state.fold !== "code"; }
 
-/** A hunk's visible fold state. A focus opens the hunk to its code below
- *  the level's default; an explicit override the reviewer set still wins
- *  over both. */
-function _hunkFolded(scope: PaneScope, h: HunkBlock): boolean {
-  return _isFolded(scope, h.id, _isFocused(scope, h.id) ? false : _defaultHunkFolded());
+/** A hunk's fold state before any override: the level's default, or open
+ *  when a focus asks for its code. */
+function _hunkBaseline(scope: PaneScope, h: HunkBlock): boolean {
+  return _isFocused(scope, h.id) ? false : _defaultHunkFolded();
 }
-/** A file opens for a focused hunk in it: the code asked for must be on
- *  screen at `files` too. */
+/** A file's: the level's default, or open for a focused hunk in it — the
+ *  code asked for must be on screen at `files` too. */
+function _fileBaseline(scope: PaneScope, f: FileBlock): boolean {
+  return f.hunks.some((h) => _isFocused(scope, h.id)) ? false : _defaultFileFolded();
+}
+/** A hunk's visible fold state: an override the reviewer set wins over
+ *  the baseline. */
+function _hunkFolded(scope: PaneScope, h: HunkBlock): boolean {
+  return _isFolded(scope, h.id, _hunkBaseline(scope, h));
+}
 function _fileFolded(scope: PaneScope, f: FileBlock): boolean {
-  const focused = f.hunks.some((h) => _isFocused(scope, h.id));
-  return _isFolded(scope, f.id, focused ? false : _defaultFileFolded());
+  return _isFolded(scope, f.id, _fileBaseline(scope, f));
 }
 
 function _isFolded(scope: PaneScope, id: string, fallback: boolean): boolean {
@@ -316,13 +322,22 @@ function _isFolded(scope: PaneScope, id: string, fallback: boolean): boolean {
     ? scope.overrides[id] : fallback;
 }
 
-function _toggleFold(scope: PaneScope, id: string, currentDefault: boolean): void {
-  const current = _isFolded(scope, id, currentDefault);
-  scope.overrides[id] = !current;
+/** Flip an item's fold. An override records a departure from the
+ *  baseline, not a state: toggling back to it drops the override, so an
+ *  item the reviewer merely opened and closed again is the level's to
+ *  fold. */
+function _toggleFold(scope: PaneScope, id: string, baseline: boolean): void {
+  const next = !_isFolded(scope, id, baseline);
+  if (next === baseline) delete scope.overrides[id];
+  else scope.overrides[id] = next;
   scope.repaint();
 }
 
-/** Pick a collapse level, from the slider or keys 1-3.
+/** Pick a collapse level, from the slider or keys 1-3. A bulk action, not
+ *  a reset: the reviewer's hand-set folds stand — a file folded away
+ *  because it will not be read stays shut when the rest opens to code.
+ *  Reset is the one control that retracts them. The focus does clear:
+ *  the slider says what every hunk, focused or not, folds to.
  *
  *  In overview mode this also leaves the mode: the document is not shown
  *  at a collapse level, so a reviewer reaching for the zoom while reading
@@ -331,9 +346,6 @@ function _toggleFold(scope: PaneScope, id: string, currentDefault: boolean): voi
  *  Overview button runs, and it repaints. */
 function _setGlobalFold(fold: FoldMode): void {
   _state.fold = fold;
-  _state.overrides = Object.create(null);
-  // The slider is authoritative: every hunk, focused or not, folds to
-  // this level.
   _state.focus = null;
   if (_state.mode === "overview") {
     setMode("diff");
@@ -656,7 +668,7 @@ function _renderFileHeader(f: FileBlock, folded: boolean, scope: PaneScope): HTM
     hdr.appendChild(badge);
   }
   if (Rendered.isMarkdown(f)) hdr.appendChild(_renderMdToggle(f, scope));
-  hdr.addEventListener("click", () => _toggleFold(scope, f.id, folded));
+  hdr.addEventListener("click", () => _toggleFold(scope, f.id, _fileBaseline(scope, f)));
   return hdr;
 }
 
@@ -992,9 +1004,7 @@ function _renderHunkHeader(
   hdr.appendChild(meta);
   hdr.addEventListener("click", (e) => {
     e.stopPropagation();
-    // Flip the visible state — `folded` is the actual current state
-    // (respecting focus + overrides), not just the level default.
-    _toggleFold(scope, h.id, folded);
+    _toggleFold(scope, h.id, _hunkBaseline(scope, h));
   });
   return hdr;
 }

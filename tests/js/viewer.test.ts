@@ -1147,6 +1147,49 @@ describe("streaming events", () => {
     expect(document.querySelector('.hunk[data-id="H0"]')).toBeNull();
   });
 
+  test("picking a level is a bulk action, not a reset: a file folded away stays shut when the rest opens", async () => {
+    // The reviewer folds a lockfile away because they do not intend to
+    // read it, then opens everything else to code. The fold-away must not
+    // blow back open.
+    await bootViewer(makeData({
+      pending: false,
+      files: [
+        foldFile(),
+        {
+          id: "F1", path: "uv.lock", status: "modified", language: "",
+          adds: 1, dels: 1, summary: "", head_line_count: 9,
+          symbols: { added: [], modified: [], removed: [] },
+          hunks: [makeHunkBlock("H1_0", "regenerated")],
+        },
+      ],
+      symbols: [],
+    }));
+    const fileEl = (id: string): HTMLElement => document.querySelector<HTMLElement>(`.file[data-id="${id}"]`)!;
+    expect(window.location.hash).toContain("fold=hunks");
+    (fileEl("F1").querySelector(".file-header") as HTMLElement).click();
+    expect(fileEl("F1").classList.contains("folded")).toBe(true);
+
+    fold("code");
+    expect(codeRows('.file[data-id="F0"] .hunk')).toBe(3);
+    expect(fileEl("F1").classList.contains("folded")).toBe(true);
+    expect(codeRows('.file[data-id="F1"] .hunk')).toBe(0);
+
+    // A fold that only went back to the level's default records nothing:
+    // a hunk folded then unfolded at 'code' is the level's again, and
+    // 'hunks' folds it.
+    (document.querySelector('.hunk[data-id="H1"] .hunk-header') as HTMLElement).click();
+    expect(codeRows('.hunk[data-id="H1"]')).toBe(0);
+    (document.querySelector('.hunk[data-id="H1"] .hunk-header') as HTMLElement).click();
+    expect(codeRows('.hunk[data-id="H1"]')).toBe(1);
+    expect(window.location.hash).not.toContain("H1=");
+    fold("hunks");
+    expect(codeRows('.hunk[data-id="H1"]')).toBe(0);
+    // The lockfile is still shut, and Reset is what opens it.
+    expect(fileEl("F1").classList.contains("folded")).toBe(true);
+    (document.getElementById("reset-btn") as HTMLElement).click();
+    expect(fileEl("F1").classList.contains("folded")).toBe(false);
+  });
+
   test("a filter restored at boot is not a focus: the diff opens filtered, at its level", async () => {
     localStorage.setItem("scr-active-group:local", "symbols:SY0");
     await bootViewer(makeData({
