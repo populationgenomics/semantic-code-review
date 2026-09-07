@@ -1,10 +1,11 @@
 // Semantic Code Review — viewer boot.
 //
-// Loads DATA from the inline scr-data <script>, wires the modules
-// together in the right order, and handles the few session-level
-// pieces that don't naturally belong to any single module: the Done
-// button, SSE → patch dispatch, and the per-event mutators that
-// update DATA before delegating to the right module.
+// Loads DATA from /data.json, wires the modules together in the right
+// order, and handles the few session-level pieces that don't naturally
+// belong to any single module: the counterpart's surface (the send bar
+// for Claude, the Done button for GitHub), SSE → patch dispatch, and
+// the per-event mutators that update DATA before delegating to the
+// right module.
 
 import { Annotations } from "./annotations";
 import { Comments } from "./comments";
@@ -18,6 +19,7 @@ import { PostModal } from "./post_modal";
 import { Prefs } from "./prefs";
 import { Progress } from "./progress";
 import { Render } from "./render";
+import { SendBar } from "./send_bar";
 import { Sidebar } from "./sidebar";
 import { Sse } from "./sse";
 import { ViewState } from "./view_state";
@@ -61,17 +63,23 @@ async function boot(): Promise<void> {
   if (typeof DATA.run_id !== "string" || DATA.run_id === "") {
     throw new Error("/data.json carries no run_id");
   }
+  if (DATA.counterpart !== "claude" && DATA.counterpart !== "github") {
+    throw new Error("/data.json carries no counterpart");
+  }
   ViewState.init(DATA.run_id);
   Comments.init({
-    // Whenever the store changes (initial load, save, delete, promotion):
-    // the sidebar pills' per-file counts, and the manifests hidden
-    // content carries — a collapsed hunk's or file's, a fold box's tree.
+    counterpart: DATA.counterpart,
+    // Whenever the store changes (initial load, save, delete, promotion,
+    // Send, a frame from the server): the sidebar pills' per-file counts,
+    // the manifests hidden content carries — a collapsed hunk's or
+    // file's, a fold box's tree — and the send bar's draft count.
     onChange: () => {
       Sidebar.refreshFileCommentCounts();
       Render.refreshCommentManifests();
+      SendBar.refresh();
     },
   });
-  installDoneButton();
+  installCounterpartSurface(DATA);
   // The sidebar's edge is the reader's in both modes, so its divider
   // belongs to the shell rather than to either pane's renderer.
   LayoutDividers.installSidebar();
@@ -164,15 +172,32 @@ function installPrHeader(data: ViewerData): void {
   }
 }
 
-// --- Done button ---------------------------------------------------------
+// --- The counterpart's surface ------------------------------------------
+// One fixed place in the `.pr-bar`, decided by who the comments are for
+// (ADR 0009). Claude: the send bar — Send all drafts and the listening
+// indicator; the session ends when the tab has been gone for the idle
+// period, so there is no Done. GitHub: Done and the post modal, until
+// slice 2 replaces them with Submit.
+
+function installCounterpartSurface(data: ViewerData): void {
+  const bar = document.querySelector(".pr-bar");
+  if (!bar) return;
+  if (data.counterpart === "claude") {
+    SendBar.install(bar, {
+      listening: data.listening,
+      draftCount: () => Comments.draftCount(),
+      sendAll: () => Comments.sendAll(),
+    });
+    return;
+  }
+  installDoneButton(bar);
+}
+
 // Tells the review server we're finished. The server exits after this
 // fires; comments accumulated via Comments have already round-tripped on
 // each mutation. Single fetch, kept here rather than in comments.ts to
 // avoid coupling "I'm done" to the comment storage layer.
-
-function installDoneButton(): void {
-  const bar = document.querySelector(".pr-bar");
-  if (!bar) return;
+function installDoneButton(bar: Element): void {
   const endpoint = SESSION_ENDPOINT;
   const btn = document.createElement("button");
   btn.className = "done-btn";
@@ -268,6 +293,12 @@ function installSessionEvents(): void {
     // Only fires when the server is in --debug mode (it emits no
     // `debug-log` frames otherwise); the drawer is mounted above.
     debugLog: (payload) => DebugDrawer.onLog(payload),
+    // The comment lifecycle (ADR 0009): every store change the session
+    // makes — another tab's edit, a Send landing as delivered, Claude's
+    // reply, a withdrawal — and whether a `--wait` is attached.
+    comment: (payload) => Comments.onRemote(payload),
+    commentDeleted: (payload) => Comments.onRemoved(payload.id),
+    listening: (payload) => SendBar.setListening(payload.listening),
   });
 }
 

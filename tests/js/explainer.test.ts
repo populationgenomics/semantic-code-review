@@ -21,6 +21,8 @@ function data(overrides: Partial<ViewerData> = {}): ViewerData {
   return {
     version: "1",
     run_id: RUN,
+    counterpart: "claude",
+    listening: false,
     pr: { head_sha: "head5678" } as PRBlock,
     smells_catalogue: {},
     files: [

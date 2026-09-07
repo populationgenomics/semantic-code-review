@@ -1,12 +1,14 @@
 // Reviewer comments — line-anchored, round-tripped via the live
-// review server's `/comments` route. Storage strategy lives
+// review server's `/comments` routes. Storage strategy lives
 // in `comment_store.ts`; this module owns the gutter, the editor,
-// and the DOM re-attach pass.
+// the per-comment lifecycle chrome (ADR 0009: badge and Send), and
+// the DOM re-attach pass.
 //
 // Each comment is anchored to {file, side, line}; the gutter
 // click-handler opens an inline editor, save persists the comment
 // through the store, re-rendering re-attaches the existing rows via
-// renderAll().
+// renderAll(). A `comment` / `comment-deleted` SSE frame arrives
+// through `onRemote` / `onRemoved`, so every tab follows the store.
 //
 import { Annotations, type AnnotationHandle } from "./annotations";
 import { type CommentStore, makeNoopStore, makeServerStore } from "./comment_store";
@@ -17,6 +19,12 @@ import { type CommentStore, makeNoopStore, makeServerStore } from "./comment_sto
 // op short-circuits to a no-op store so jsdom unit tests that don't
 // bother to init() don't crash on stray click-handlers.
 let _store: CommentStore = makeNoopStore();
+
+// Who the comments are for. Set at init from /data.json. With Claude as
+// the counterpart every local comment carries its lifecycle badge and a
+// draft carries Send; with GitHub, Done and the post modal post
+// everything, so neither is shown.
+let _counterpart: Counterpart | null = null;
 
 // Per-session override of resolved-thread collapse state. Thread ids
 // the user has manually expanded sit here; clicking the header again
@@ -48,15 +56,19 @@ function _el(tag: string, className: string | null, text?: string): HTMLElement 
 // --- Public API ----------------------------------------------------------
 
 interface InitOptions {
+  /** Who the comments are for — `/data.json`'s `counterpart`. */
+  counterpart: Counterpart;
   /** Notified after the initial load completes and after every
-   *  user-driven save/delete/promotion. The sidebar refreshes its
-   *  per-file counts and the renderer the manifests hidden content
-   *  carries, without comments.ts importing either. */
+   *  store change — a save, delete, promotion or Send here, or a frame
+   *  from the server. The sidebar refreshes its per-file counts, the
+   *  renderer the manifests hidden content carries, and the send bar
+   *  its draft count, without comments.ts importing any of them. */
   onChange?: () => void;
 }
 
-function init(opts: InitOptions = {}): void {
+function init(opts: InitOptions): void {
   _onChange = opts.onChange ?? null;
+  _counterpart = opts.counterpart;
   _store = makeServerStore(_sessionEndpoint());
   const app = document.getElementById("app");
   if (app) _installGutter(app);
@@ -71,6 +83,60 @@ function init(opts: InitOptions = {}): void {
  *  as immutable. */
 function getAll(): ReviewerComment[] {
   return _store.getAll();
+}
+
+// --- The lifecycle (ADR 0009) -------------------------------------------
+
+/** A local comment's state towards the counterpart. A comment the viewer
+ *  built itself and the server has not yet answered for is a draft. */
+function _deliveryOf(c: ReviewerComment): Delivery {
+  return c.delivery ?? "draft";
+}
+
+function _isDraft(c: ReviewerComment): boolean {
+  return !_isIngested(c) && _deliveryOf(c) === "draft";
+}
+
+/** How many drafts await a Send — the count beside *Send all*. */
+function draftCount(): number {
+  return _store.getAll().filter(_isDraft).length;
+}
+
+/** Send every draft as one batch. */
+function sendAll(): Promise<void> {
+  return _store.sendAll().then(() => {
+    renderAll();
+    _onChange?.();
+  });
+}
+
+/** The server states a comment (a `comment` SSE frame): another tab's
+ *  edit, a Send landing as delivered, Claude's reply. */
+function onRemote(c: ReviewerComment): void {
+  _store.apply(c);
+  renderAll();
+  _onChange?.();
+}
+
+/** The server says a comment is gone (a `comment-deleted` frame). */
+function onRemoved(id: string): void {
+  const gone = _store.getAll().find((c) => c.id === id);
+  _store.remove(id);
+  if (gone) {
+    const ln = _displayLine(gone);
+    // Its anchor may now hold nothing, which renderAll would not touch.
+    if (ln != null) _removeReviewerCommentRowsFor({ file: gone.file, side: gone.side, line: ln });
+  }
+  renderAll();
+  _onChange?.();
+}
+
+/** The badge's text, and the class that shapes it. Text carries the
+ *  state; colour only reinforces it (never colour alone). */
+function _badgeFor(c: ReviewerComment): { label: string; state: string } {
+  const delivery = _deliveryOf(c);
+  if (delivery === "draft" && (c.deliveries ?? 0) > 0) return { label: "needs re-send", state: "resend" };
+  return { label: delivery, state: delivery };
 }
 
 /** One thread as a fold's manifest lists it (ADR 0008: hidden content
@@ -372,8 +438,14 @@ function attachBlockThreads(opts: {
   }
 }
 
+/** Not the reviewer's: ingested from GitHub, or Claude's reply. Read-only
+ *  either way, and outside the lifecycle. */
 function _isIngested(comment: ReviewerComment): boolean {
   return (comment.source || "local") !== "local";
+}
+
+function _isClaude(comment: ReviewerComment): boolean {
+  return comment.source === "claude";
 }
 
 // --- Thread building ----------------------------------------------------
@@ -452,7 +524,10 @@ function _buildEntryHeader(c: ReviewerComment, isRoot: boolean): HTMLElement | n
     avatar.referrerPolicy = "no-referrer";
     header.appendChild(avatar);
   }
-  if (c.author) {
+  if (_isClaude(c)) {
+    // Claude's label is the name, not a handle: there is no account behind it.
+    header.appendChild(_el("span", "comment-author comment-author-claude", c.author || "claude"));
+  } else if (c.author) {
     header.appendChild(_el("span", "comment-author", `@${c.author}`));
   }
   if (chipText && c.anchor_status) {
@@ -483,15 +558,17 @@ function _buildEntryBody(c: ReviewerComment): HTMLElement {
   return body;
 }
 
-function _buildEntry(
-  c: ReviewerComment,
-  isReply: boolean,
-  onEdit: () => void,
-  onDelete: () => void,
-): HTMLElement {
+interface EntryActions {
+  onEdit: () => void;
+  onDelete: () => void;
+  onSend: () => void;
+}
+
+function _buildEntry(c: ReviewerComment, isReply: boolean, actions: EntryActions): HTMLElement {
   const entry = _el("div", "comment-thread-entry");
   if (isReply) entry.classList.add("comment-thread-reply");
   if (_isIngested(c)) entry.classList.add("comment-thread-entry-ingested");
+  if (_isClaude(c)) entry.classList.add("comment-thread-entry-claude");
   entry.dataset.commentId = c.id;
 
   // Anchor chip is only meaningful on the thread root — every entry
@@ -503,12 +580,29 @@ function _buildEntry(
 
   if (!_isIngested(c)) {
     const bar = _el("div", "comment-actions");
+    if (_counterpart === "claude") {
+      // The lifecycle chrome: where the comment stands towards Claude,
+      // and Send while it is a draft. The badge sits first so the state
+      // reads before the actions on it.
+      const badge = _badgeFor(c);
+      const badgeEl = _el("span", `comment-badge comment-badge-${badge.state}`, badge.label);
+      badgeEl.dataset.delivery = badge.state;
+      bar.appendChild(badgeEl);
+      if (_isDraft(c)) {
+        const sendBtn = _el("button", "comment-btn comment-btn-send", "Send");
+        sendBtn.title = badge.state === "resend"
+          ? "Send the edited comment to Claude again"
+          : "Send this comment to Claude now";
+        sendBtn.addEventListener("click", (e) => { e.stopPropagation(); actions.onSend(); });
+        bar.appendChild(sendBtn);
+      }
+    }
     const editBtn = _el("button", "comment-btn comment-btn-edit", "edit");
     const delBtn = _el("button", "comment-btn comment-btn-del", "delete");
     bar.appendChild(editBtn);
     bar.appendChild(delBtn);
-    editBtn.addEventListener("click", (e) => { e.stopPropagation(); onEdit(); });
-    delBtn.addEventListener("click", (e) => { e.stopPropagation(); onDelete(); });
+    editBtn.addEventListener("click", (e) => { e.stopPropagation(); actions.onEdit(); });
+    delBtn.addEventListener("click", (e) => { e.stopPropagation(); actions.onDelete(); });
     entry.appendChild(bar);
   }
   return entry;
@@ -557,21 +651,24 @@ function _buildThreadRow(
 
   if (expanded) {
     thread.entries.forEach((c, idx) => {
-      const entry = _buildEntry(
-        c, idx > 0,
-        () => {
+      const entry = _buildEntry(c, idx > 0, {
+        onEdit: () => {
           handle?.remove();
           _openEditor({
             rowEl: anchorRowEl, side: c.side, line: c.line,
             file: c.file, existing: c,
           });
         },
-        () => _store.delete(c.id).then(() => { refresh(); _onChange?.(); }),
-      );
+        onDelete: () => _store.delete(c.id).then(() => { refresh(); _onChange?.(); }),
+        onSend: () => _store.send(c.id).then(() => { refresh(); _onChange?.(); }),
+      });
       container.appendChild(entry);
     });
 
-    if (ingestedThread) {
+    // A reply is how the reviewer follows up: on an ingested thread it
+    // nests on GitHub; with Claude as the counterpart it is an ordinary
+    // draft they Send, delivered as `reply`.
+    if (ingestedThread || _counterpart === "claude") {
       const actions = _el("div", "comment-thread-actions");
       const reply = _el("button", "comment-btn comment-btn-reply", "Reply");
       reply.addEventListener("click", (e) => {
@@ -711,4 +808,8 @@ export const Comments = {
   promote,
   openBlockEditor,
   attachBlockThreads,
+  draftCount,
+  sendAll,
+  onRemote,
+  onRemoved,
 };

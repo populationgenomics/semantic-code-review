@@ -151,6 +151,8 @@ interface ViewerData {
   run_id?: string;
   pending?: boolean;
   explainer?: boolean;
+  counterpart?: "claude" | "github";
+  listening?: boolean;
   pr?: Record<string, unknown>;
   smells_catalogue?: Record<string, unknown>;
   files?: Array<Record<string, unknown>>;
@@ -378,6 +380,8 @@ function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
   return {
     version: "1",
     run_id: RUN,
+    counterpart: "claude",
+    listening: false,
     pending: true,
     pr: { title: "test", themes: [], callgraph_edges: [] },
     smells_catalogue: {},
@@ -5896,5 +5900,202 @@ describe("lazy disclosure", () => {
         Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: real });
       }
     });
+  });
+});
+
+// --- Comment lifecycle (ADR 0009) -------------------------------------------
+// Review mode: every local comment carries its state towards Claude, a
+// draft carries Send, the send bar carries Send all and whether Claude is
+// listening. The server states every change over SSE (`comment`,
+// `comment-deleted`, `listening`) and the chrome follows.
+
+describe("comment lifecycle (ADR 0009)", () => {
+  const localComment = (id: string, line: number, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    id, file: "a.py", side: "new", line, body: `note ${id}`, created_at: 1, updated_at: 1,
+    source: "local", delivery: "draft", deliveries: 0, batch_no: null, withdrawn: false, ...extra,
+  });
+
+  const entry = (id: string): HTMLElement | null =>
+    document.querySelector<HTMLElement>(`.comment-thread-entry[data-comment-id="${id}"]`);
+  const badgeOf = (id: string): string | null => entry(id)?.querySelector(".comment-badge")?.textContent ?? null;
+  const sendBtn = (id: string): HTMLElement | null => entry(id)?.querySelector<HTMLElement>(".comment-btn-send") ?? null;
+  const posts = (path: string): number =>
+    fetchCalls.filter((c) => c.url === path && c.init?.method === "POST").length;
+
+  test("review mode mounts the send bar and no Done; PR mode the reverse", async () => {
+    await bootViewer(makeData({ counterpart: "claude" }));
+    expect(document.querySelector(".send-bar")).not.toBeNull();
+    expect(document.querySelector(".send-all-btn")).not.toBeNull();
+    expect(document.querySelector(".done-btn")).toBeNull();
+    expect(document.querySelector(".listening-indicator")).not.toBeNull();
+
+    document.body.innerHTML = "";
+    await bootViewer(makeData({ counterpart: "github" }));
+    expect(document.querySelector(".done-btn")).not.toBeNull();
+    expect(document.querySelector(".send-bar")).toBeNull();
+  });
+
+  test("PR mode shows no lifecycle chrome: Done posts everything", async () => {
+    window.location.hash = "#fold=code";
+    await bootViewer(makeData({ pending: false, counterpart: "github" }), { comments: [localComment("c1", 1)] });
+    await tick();
+    expect(entry("c1")).not.toBeNull();
+    expect(badgeOf("c1")).toBeNull();
+    expect(sendBtn("c1")).toBeNull();
+  });
+
+  test("a draft carries its badge and Send; Send POSTs and the badge reads sent", async () => {
+    window.location.hash = "#fold=code";
+    await bootViewer(makeData({ pending: false }), { comments: [localComment("c1", 1)] });
+    await tick();
+    expect(badgeOf("c1")).toBe("draft");
+    expect(entry("c1")!.querySelector(".comment-badge")!.getAttribute("data-delivery")).toBe("draft");
+    expect(sendBtn("c1")).not.toBeNull();
+    expect(document.querySelector(".send-all-count")!.textContent).toBe("1");
+
+    queueFetchResponse({ status: 200, body: { batch_no: 1, comment_ids: ["c1"] } });
+    sendBtn("c1")!.click();
+    await tick();
+
+    expect(posts("/comments/c1/send")).toBe(1);
+    expect(badgeOf("c1")).toBe("sent");
+    expect(sendBtn("c1")).toBeNull();
+    expect(document.querySelector(".send-all-count")!.textContent).toBe("0");
+    expect((document.querySelector(".send-all-btn") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  test("Send all sends every draft as one batch and leaves sent comments alone", async () => {
+    window.location.hash = "#fold=code";
+    await bootViewer(makeData({ pending: false }), {
+      comments: [localComment("c1", 1), localComment("c2", 2), localComment("s1", 2, { delivery: "sent", batch_no: 1 })],
+    });
+    await tick();
+    const button = document.querySelector(".send-all-btn") as HTMLButtonElement;
+    expect(document.querySelector(".send-all-count")!.textContent).toBe("2");
+    expect(button.disabled).toBe(false);
+    expect(badgeOf("s1")).toBe("sent");
+    expect(sendBtn("s1")).toBeNull();
+
+    queueFetchResponse({ status: 200, body: { batch_no: 2, comment_ids: ["c1", "c2"] } });
+    button.click();
+    await tick();
+    await tick();
+
+    expect(posts("/comments/send-all")).toBe(1);
+    expect(badgeOf("c1")).toBe("sent");
+    expect(badgeOf("c2")).toBe("sent");
+    expect(document.querySelector(".send-all-count")!.textContent).toBe("0");
+    expect(button.disabled).toBe(true);
+  });
+
+  test("a delivered comment reads delivered; edited after delivery it needs re-send", async () => {
+    window.location.hash = "#fold=code";
+    await bootViewer(makeData({ pending: false }), {
+      comments: [localComment("c1", 1, { delivery: "delivered", deliveries: 1, batch_no: 1 })],
+    });
+    await tick();
+    expect(badgeOf("c1")).toBe("delivered");
+    expect(sendBtn("c1")).toBeNull();
+    expect(document.querySelector(".send-all-count")!.textContent).toBe("0");
+
+    // The server states the edit (this tab's, or another's): back to a
+    // draft that the counterpart has already seen once.
+    lastEventSource().dispatch("comment", localComment("c1", 1, { body: "edited", delivery: "draft", deliveries: 1 }));
+    await tick();
+
+    expect(badgeOf("c1")).toBe("needs re-send");
+    expect(entry("c1")!.querySelector(".comment-badge")!.getAttribute("data-delivery")).toBe("resend");
+    expect(sendBtn("c1")).not.toBeNull();
+    expect(entry("c1")!.querySelector(".comment-body")!.textContent).toBe("edited");
+    expect(document.querySelector(".send-all-count")!.textContent).toBe("1");
+
+    // Delivery lands the same way once a --wait takes the batch.
+    lastEventSource().dispatch("comment", localComment("c1", 1, { body: "edited", delivery: "delivered", deliveries: 2 }));
+    await tick();
+    expect(badgeOf("c1")).toBe("delivered");
+  });
+
+  test("Claude's reply arrives live, labelled claude and read-only", async () => {
+    window.location.hash = "#fold=code";
+    await bootViewer(makeData({ pending: false }), {
+      comments: [localComment("c1", 1, { delivery: "delivered", deliveries: 1, batch_no: 1 })],
+    });
+    await tick();
+    expect(entry("claude-1")).toBeNull();
+
+    lastEventSource().dispatch("comment", {
+      id: "claude-1", file: "a.py", side: "new", line: 1, body: "Fixed in 3f2a.", created_at: 2, updated_at: 2,
+      source: "claude", author: "claude", in_reply_to_id: "c1",
+    });
+    await tick();
+
+    const reply = entry("claude-1")!;
+    expect(reply).not.toBeNull();
+    expect(reply.classList.contains("comment-thread-entry-claude")).toBe(true);
+    expect(reply.classList.contains("comment-thread-reply")).toBe(true);
+    expect(reply.querySelector(".comment-author")!.textContent).toBe("claude");
+    expect(reply.querySelector(".comment-body")!.textContent).toBe("Fixed in 3f2a.");
+    expect(reply.querySelector(".comment-actions")).toBeNull();
+    expect(reply.querySelector(".comment-badge")).toBeNull();
+    // The reviewer's follow-up is a reply they Send: the thread offers Reply.
+    const thread = reply.closest(".comment-thread")!;
+    expect(thread.querySelector(".comment-btn-reply")).not.toBeNull();
+    // The root keeps its own chrome.
+    expect(badgeOf("c1")).toBe("delivered");
+  });
+
+  test("a resolve from Claude collapses the thread without a reload", async () => {
+    window.location.hash = "#fold=code";
+    await bootViewer(makeData({ pending: false }), { comments: [localComment("c1", 1)] });
+    await tick();
+    expect(document.querySelector(".comment-thread-resolved")).toBeNull();
+
+    lastEventSource().dispatch("comment", localComment("c1", 1, { thread_resolved: true }));
+    await tick();
+
+    expect(document.querySelector(".comment-thread-resolved")).not.toBeNull();
+    expect(document.querySelector(".comment-thread-resolved-tag")!.textContent).toContain("Resolved");
+  });
+
+  test("a comment-deleted frame takes the entry off the page", async () => {
+    window.location.hash = "#fold=code";
+    await bootViewer(makeData({ pending: false }), { comments: [localComment("c1", 1)] });
+    await tick();
+    expect(entry("c1")).not.toBeNull();
+
+    lastEventSource().dispatch("comment-deleted", { id: "c1" });
+    await tick();
+
+    expect(entry("c1")).toBeNull();
+    expect(document.querySelectorAll(".annot-comment")).toHaveLength(0);
+    expect(document.querySelector(".send-all-count")!.textContent).toBe("0");
+  });
+
+  test("the listening indicator follows /data.json and then the SSE frame, in text and glyph", async () => {
+    await bootViewer(makeData({ listening: false }));
+    const indicator = document.querySelector<HTMLElement>(".listening-indicator")!;
+    expect(indicator.dataset.listening).toBe("false");
+    expect(indicator.textContent).toContain("Claude not listening");
+    expect(indicator.textContent).toContain("ask it to resume");
+    expect(indicator.querySelector(".listening-glyph")!.textContent).toBe("○");
+
+    lastEventSource().dispatch("listening", { listening: true });
+    expect(indicator.dataset.listening).toBe("true");
+    expect(indicator.textContent).toContain("Claude listening");
+    expect(indicator.textContent).not.toContain("not listening");
+    expect(indicator.querySelector(".listening-glyph")!.textContent).toBe("●");
+
+    lastEventSource().dispatch("listening", { listening: false });
+    expect(indicator.dataset.listening).toBe("false");
+    expect(indicator.querySelector(".listening-glyph")!.textContent).toBe("○");
+
+    document.body.innerHTML = "";
+    await bootViewer(makeData({ listening: true }));
+    expect(document.querySelector<HTMLElement>(".listening-indicator")!.dataset.listening).toBe("true");
+  });
+
+  test("a /data.json without a counterpart fails the boot", async () => {
+    await bootViewer(makeData({ counterpart: undefined }));
+    expect(document.querySelector(".boot-error")!.textContent).toContain("counterpart");
   });
 });
