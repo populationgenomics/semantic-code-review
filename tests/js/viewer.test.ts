@@ -3096,6 +3096,70 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
     expect(document.querySelector(".annot-box")?.textContent).toBe("from another tab");
   });
 
+  test("a nested fold keeps its state through the enclosing fold closing, opening, and a re-attach", async () => {
+    await bootViewer(makeData({ pending: false, files: [labelledFile()], symbols: [] }), {
+      comments: [comment("c-guard", 10, "is this branch reachable?")],
+    });
+    await tick();
+    expandHunk();
+    queueFetchResponse({ status: 500, body: {} });
+    queueFetchResponse({ status: 500, body: {} });
+    const threadRow = (): HTMLElement => document.querySelector<HTMLElement>('.row-annotation[data-thread-id="c-guard"]')!;
+    const betaBox = (): HTMLElement => foldBoxOf(8).closest<HTMLElement>(".row-annotation")!;
+    const display = (lines: number[]): string[] => lines.map((n) => rowOfLine(n).style.display);
+
+    // Collapse beta, then the class around it.
+    clickEl(chevronOnLine(8));
+    clickEl(chevronOnLine(4));
+    await tick();
+    expect(display([5, 8, 9, 11])).toEqual(["none", "none", "none", "none"]);
+    expect(betaBox().style.display).toBe("none");
+
+    // Opening the class shows what the class hid — beta's opener and its
+    // box — and nothing beta hid: its rows and the thread on them stay
+    // folded under a chevron that is still closed.
+    clickEl(chevronOnLine(4));
+    expect(display([5, 8])).toEqual(["", ""]);
+    expect(display([9, 10, 11])).toEqual(["none", "none", "none"]);
+    expect(threadRow().style.display).toBe("none");
+    expect(chevronOnLine(8).classList.contains("open")).toBe(false);
+    expect(betaBox().style.display).toBe("");
+    expect(threadLabels(betaBox())).toEqual(["+10 open is this branch reachable?"]);
+
+    // A re-attach (a summary landing from another tab) rebuilds the
+    // chrome in the state the rows are in: beta stays closed, the class
+    // around it open.
+    lastEventSource().dispatch("fold-summary", {
+      file_idx: 0, context: "right", right_start: 8, right_end: 11, summary: "beta guards then acts",
+    });
+    expect(chevronOnLine(4).classList.contains("open")).toBe(true);
+    expect(chevronOnLine(8).classList.contains("open")).toBe(false);
+    expect(display([5, 8, 9, 10, 11])).toEqual(["", "", "none", "none", "none"]);
+    expect(foldBoxOf(8).querySelector(".fold-summary")!.textContent).toBe("method Foo.beta — beta guards then acts");
+    expect(threadLabels(betaBox())).toEqual(["+10 open is this branch reachable?"]);
+
+    // A re-attach while the class is closed rebuilds beta's box hidden
+    // with its opener; opening the class shows it, still closed.
+    queueFetchResponse({ status: 500, body: {} });
+    clickEl(chevronOnLine(4));
+    await tick();
+    lastEventSource().dispatch("fold-summary", {
+      file_idx: 0, context: "right", right_start: 1, right_end: 11, summary: "the class",
+    });
+    expect(foldBoxOf(4).querySelector(".fold-summary")!.textContent).toBe("class Foo — the class");
+    expect(display([8, 9])).toEqual(["none", "none"]);
+    expect(betaBox().style.display).toBe("none");
+    clickEl(chevronOnLine(4));
+    expect(display([8, 9])).toEqual(["", "none"]);
+    expect(betaBox().style.display).toBe("");
+    expect(chevronOnLine(8).classList.contains("open")).toBe(false);
+
+    // Opening beta brings its rows and the thread back.
+    clickEl(chevronOnLine(8));
+    expect(display([9, 10, 11])).toEqual(["", "", ""]);
+    expect(threadRow().style.display).toBe("");
+  });
+
   test("re-attaching over cached rows replaces the chevrons rather than doubling them", async () => {
     // A repaint rebuilds the `.file` around the diff pane's cached
     // `.diff`; the fold pass runs again over the same rows.

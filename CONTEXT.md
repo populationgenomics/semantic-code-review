@@ -268,10 +268,15 @@ fold and is not listed; a body with nothing labelled shows the summary
 line alone. Nothing is fetched for a label. Clicking a row opens the fold
 and lands on what it names. folds.ts owns the box and the summary line
 and asks the renderer for the tree through `FoldLabels`;
-`Render.attachFileFolds` is the entry every re-attach uses. Collapsing
-also hides what hangs off the body rows (notes, comments, their
-placeholders) and shows again only what it hid, so a nested fold keeps
-its own state.
+`Render.attachFileFolds` is the entry every re-attach uses. A fold owns
+what it hides: every body row and everything hanging off one (notes,
+comments, their placeholders, a nested fold's box) that it hides carries
+its key in `data-fold-by`, and it shows again only what carries its key,
+so a nested fold keeps its own state through the enclosing fold closing
+and opening. A fold is collapsed when it hides any body row; a re-attach
+rebuilds the chrome in that state and re-hides a collapsed fold's body,
+so rows a chip has since disclosed and anything attached to a hidden row
+meanwhile fold in.
 
 **Annotation span**
 An LLM-produced label on a range of a [[hunk]]'s post-image lines
