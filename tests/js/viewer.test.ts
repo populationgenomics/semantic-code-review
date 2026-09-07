@@ -6263,8 +6263,12 @@ describe("the pending review (ADR 0009, slice 2)", () => {
       source: "github", delivery: "delivered", deliveries: 1, node_id: "C1",
     }));
     await tick();
-    expect(entry("c1")!.querySelector(".comment-actions")).toBeNull();
+    // Read-only: none of its own controls or badge; what is left on its
+    // row is the thread's — Reply and Resolve, as on any upstream thread.
+    expect(entry("c1")!.querySelector(".comment-btn-edit, .comment-btn-del, .comment-btn-send")).toBeNull();
     expect(entry("c1")!.querySelector(".comment-badge")).toBeNull();
+    expect(Array.from(entry("c1")!.querySelectorAll(".comment-actions > *")).map((b) => b.className.split(" ").pop()))
+      .toEqual(["comment-btn-reply", "comment-btn-resolve"]);
     expect(entry("c1")!.classList.contains("comment-thread-entry-ingested")).toBe(true);
     // The draft stays the reviewer's.
     expect(badge("d1")!.textContent).toBe("draft");
