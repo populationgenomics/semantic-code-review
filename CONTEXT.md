@@ -446,10 +446,14 @@ hash.
 
 Per-item exceptions live in `RenderState.overrides` — a reviewer
 expanding/collapsing one file (`F0`) or hunk (`H0_1`, header open or
-closed); an override wins over the level default. Picking a level
-(`_setGlobalFold`) is authoritative: it clears every override, folding
-the whole tree to that depth, including a filter's focused hunks. Picking
-one from inside overview mode also leaves the mode into the diff at that
+closed); an override wins over the item's baseline (the level's default,
+or open under a focus), and records a departure from it, not a state —
+toggling back to the baseline drops it. Picking a level
+(`_setGlobalFold`) is a bulk action, not a reset: the overrides stand, so
+a file the reviewer folded away stays shut when the rest opens to code;
+the focus does clear, since the level says what every hunk folds to. The
+Reset button is the one control that retracts the overrides. Picking a
+level from inside overview mode also leaves the mode into the diff at that
 level — the document is not shown at a level, so reaching for the zoom
 while reading it is a request for the ladder. The URL hash carries the
 level and the overrides; `fold=segments`, `fold=definitions` and
