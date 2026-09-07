@@ -248,3 +248,38 @@ the span to `off`, ephemerally — cleared by the slider, never stored as an
 override. That is `focusReveal` today; the change is that it becomes a
 property of the gesture rather than an unnamed flag, and no other reveal
 inherits it.
+
+## Relation to ADR 0006
+
+[0006](0006-one-visibility-model.md) decided much of this ground on
+2026-08-20 in PR #11, which never merged; its file lived on that branch and
+this ADR was written without reading it. What that cost, recorded so it is
+not paid twice more:
+
+**Re-done here, differently.** Content from `/file-text` with `head_lines`
+gone from the payload (0006 slice; slice 1 here). Fold regions detected
+once over the whole file, not from rendered rows (0006 slice 6; slice 3
+here, in Python from the AST — the better detector, and the one 0006's
+own slice 6 conceded it should have kept). Hidden content headed by what
+it hides (0006's manifest; the label tree here).
+
+**Reversed, deliberately.** 0006's one `HiddenSpan` primitive for file and
+hunk collapse and hidden context. This ADR keeps hide and fold distinct on
+purpose — different questions, different affordances — so there are two
+small ledgers, not one union.
+
+**Reversed by omission, then restored.** 0006 decided that a reveal is a
+reversible record, that picking a collapse level is a bulk action and not
+a reset (the `uv.lock` case), that the reviewer's own comments head any
+hidden range, and that per-run state is per tab while nothing in
+`localStorage` outlives a run on an ephemeral port. None of that was
+argued against here; it was simply not considered. Restored after the
+fact: #43 (bulk action), #44 (comments in the manifest), #45 (preferences
+server-side, per-run state per tab), and the reveal-state record that
+closes #10.
+
+**Not adopted, with reason.** 0006 took `fold=` out of the URL for a
+`sessionStorage` record. The hash has since become load-bearing for
+`mode=` (ADR 0007) and the per-item fold overrides already survive in it;
+the per-tab record holds what the hash never did — reveals, code folds,
+the pill, the section — and the two coexist.
