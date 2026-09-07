@@ -40,7 +40,7 @@ from typing import Any, ClassVar
 from .. import errors, paths
 from .comments import CommentStore
 from .prefs import PrefsStore
-from .session import PostCallable, ReviewSession, ServerTasks
+from .session import Counterpart, PostCallable, ReviewSession, ServerTasks
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +89,10 @@ _CLOSE = object()
 #: match because the section id is in the path — it is passed straight
 #: to the session, which 404s on anything the document does not know.
 _EXPLAINER_SECTION_PREFIX = "/explainer/section/"
+
+#: `POST /comments/<id>/<action>` — the lifecycle gestures on one comment.
+#: `send-all` is not an id and is matched before this.
+_COMMENT_ACTION_RE = re.compile(r"/comments/(?P<id>[^/]+)/(?P<action>send|resolve|unresolve)")
 
 
 def _parse_last_event_id(raw: str | None) -> int:
@@ -406,7 +410,16 @@ class _Handler(BaseHTTPRequestHandler):
         self._touch()
         path = self.path.split("?", 1)[0]
         if path == "/comments":
-            self._handle_upsert_comment()
+            payload = self._body()
+            if payload is not None:
+                self._dispatch(lambda: self.ctx.session.upsert_comment(payload))
+            return
+        if path == "/comments/send-all":
+            self._dispatch(self.ctx.session.send_all)
+            return
+        comment_action = _COMMENT_ACTION_RE.fullmatch(path)
+        if comment_action is not None:
+            self._handle_comment_action(comment_action["id"], comment_action["action"])
             return
         if path == "/exit":
             # Respond BEFORE signalling shutdown so the caller's fetch resolves.
@@ -465,35 +478,23 @@ class _Handler(BaseHTTPRequestHandler):
         self._touch()
         path = self.path.split("?", 1)[0]
         if path.startswith("/comments/"):
-            comment_id = path[len("/comments/") :]
-            try:
-                existed = self.ctx.session.store.delete(comment_id)
-            except errors.ScrError as e:
-                self._json(e.status, e.body())
-                return
-            self._json(200 if existed else 404, {"ok": existed})
+            comment_id = urllib.parse.unquote(path[len("/comments/") :])
+            self._dispatch(lambda: self.ctx.session.delete_comment(comment_id))
             return
         self._json(404, {"error": "not found"})
 
-    def _handle_upsert_comment(self) -> None:
-        """Add or edit one reviewer comment.
-
-        Not on `_dispatch`: a payload pydantic rejects is the client's
-        fault, so the fallback here is 400 rather than the 500 a session
-        operation's unexpected failure earns.
+    def _handle_comment_action(self, raw_id: str, action: str) -> None:
+        """`POST /comments/<id>/{send,resolve,unresolve}`. The id is a path
+        segment, so decoding it is the transport's job.
         """
-        payload = self._body()
-        if payload is None:
-            return
-        try:
-            c = self.ctx.session.store.upsert(payload)
-        except errors.ScrError as e:
-            self._json(e.status, e.body())
-            return
-        except Exception as e:  # noqa: BLE001 — pydantic throws many kinds
-            self._json(400, {"error": str(e)})
-            return
-        self._json(200, c.model_dump())
+        comment_id = urllib.parse.unquote(raw_id)
+        session = self.ctx.session
+        if action == "send":
+            self._dispatch(lambda: session.send_comment(comment_id))
+        elif action == "resolve":
+            self._dispatch(lambda: session.set_thread_resolved(comment_id, True))
+        else:
+            self._dispatch(lambda: session.set_thread_resolved(comment_id, False))
 
     def _handle_file_text(self) -> None:
         """Serve one changed file's full base+head source.
@@ -571,6 +572,7 @@ class ReviewServer:
         *,
         run_dir: paths.RunDir,
         viewer_json: dict[str, Any],
+        counterpart: Counterpart,
         host: str = "127.0.0.1",
         port: int = 0,
         post_callback: PostCallable | None = None,
@@ -592,6 +594,7 @@ class ReviewServer:
             viewer_json=viewer_json,
             store=CommentStore(run_dir.comments),
             publish=publish,
+            counterpart=counterpart,
             debug=debug,
             explainer_enabled=explainer,
             post_callback=post_callback,

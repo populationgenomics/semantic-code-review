@@ -32,6 +32,7 @@ from .config import ReviewConfig
 from .server import ReviewServer
 from .session import (
     ConsoleCallable,
+    Counterpart,
     ExplainerCallable,
     ExplainerSectionCallable,
     FoldSummaryCallable,
@@ -153,7 +154,7 @@ def run_review(opts: ReviewOptions) -> int:
     if not cfg.augment:
         ensure_augmented_diff(run_dir)
 
-    result = serve_review(run_dir, cfg, tasks)
+    result = serve_review(run_dir, cfg, tasks, counterpart="claude")
     # The markdown dump is the reviewer's "new notes" feed — ingested
     # upstream comments are already on GitHub and would crowd it out.
     local_comments = [c for c in result.comments if c.source == "local"]
@@ -204,6 +205,7 @@ def serve_review(
     cfg: ReviewConfig,
     tasks: ServerTasks,
     *,
+    counterpart: Counterpart,
     post: PostCallable | None = None,
     post_meta: dict | None = None,
     on_ready: Callable[[str], None] | None = None,
@@ -236,6 +238,7 @@ def serve_review(
     srv = ReviewServer(
         run_dir=run_dir,
         viewer_json=viewer_json,
+        counterpart=counterpart,
         port=cfg.port,
         post_callback=post,
         post_meta=post_meta,

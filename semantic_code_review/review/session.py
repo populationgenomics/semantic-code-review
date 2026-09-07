@@ -32,12 +32,19 @@ import logging
 import pathlib
 import threading
 from collections.abc import Callable, Coroutine
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from .. import errors, paths
 from . import comments
 
 log = logging.getLogger(__name__)
+
+
+#: Who a review's comments are for — the [[counterpart]]. Claude in
+#: review mode (`scr review`), GitHub in PR mode (`scr pr`). One
+#: lifecycle serves both; the viewer mounts the Send surface or the Done
+#: button by it.
+Counterpart = Literal["claude", "github"]
 
 
 #: Signature of the augment pass `serve_review` runs while the page is
@@ -343,6 +350,7 @@ class ReviewSession:
         viewer_json: dict[str, Any],
         store: comments.CommentStore,
         publish: EventPublisher,
+        counterpart: Counterpart,
         debug: bool = False,
         explainer_enabled: bool = False,
         post_callback: PostCallable | None = None,
@@ -350,6 +358,7 @@ class ReviewSession:
     ) -> None:
         self.run_dir = run_dir
         self.store = store
+        self.counterpart = counterpart
         #: Known at construction, not at attach time: the viewer decides
         #: whether to mount the overview-mode button on its first
         #: /data.json, well before augmentation has finished.
@@ -370,6 +379,9 @@ class ReviewSession:
         self._console_history: Any = None
         self._console_cancel: threading.Event | None = None
         self._posted_result: PostOutcome | None = None
+        # The stream to Claude: a Send notifies here; `wait_for_batch`
+        # blocks on it. Guards the listener count too.
+        self._batch_cond = threading.Condition()
 
     # --- lifecycle ------------------------------------------------------
 
@@ -404,7 +416,96 @@ class ReviewSession:
             "run_id": self.run_dir.slug,
             "debug": self._debug,
             "explainer": self.explainer_enabled,
+            "counterpart": self.counterpart,
         }
+
+    # --- reviewer comments ----------------------------------------------
+    # The store owns the lifecycle transitions; the session decodes what
+    # arrived, calls one store method, and fans the changed comments out
+    # as `comment` / `comment-deleted` frames so every tab follows.
+
+    def upsert_comment(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Add or edit a reviewer comment, or take a counterpart's reply.
+
+        A payload with `source: "claude"` is a reply from Claude
+        (`scr comment reply`): anchored on its parent, read-only to the
+        reviewer, outside the lifecycle. Anything else is the reviewer's
+        and lands as a local draft whatever source it claims.
+
+        Raises:
+            ReadOnlyCommentError: 403 — editing an ingested or claude comment.
+            CommentStateError: 409 — editing a withdrawn tombstone; a
+                reply with no parent or body.
+            CommentNotFound: 404 — a reply to a comment the store lacks.
+            ReviewSessionError: 400 — the payload is not a comment.
+        """
+        if payload.get("source") == "claude":
+            c = self.store.add_reply(payload, source="claude", author=comments.CLAUDE_AUTHOR)
+        else:
+            try:
+                c = self.store.upsert(payload)
+            except errors.ScrError:
+                raise
+            except Exception as e:  # pydantic throws many kinds
+                raise ReviewSessionError(400, str(e)) from e
+        self._publish_comment(c)
+        return c.model_dump()
+
+    def delete_comment(self, comment_id: str) -> dict[str, Any]:
+        """Delete a reviewer comment. A delivered one becomes a withdrawn
+        tombstone, its own batch; the response says which happened.
+
+        Raises:
+            CommentNotFound: 404. ReadOnlyCommentError: 403.
+        """
+        tombstone = self.store.delete(comment_id)
+        self._publish("comment-deleted", {"id": comment_id})
+        if tombstone is not None:
+            self._batch_sent()
+        return {"ok": True, "withdrawn": tombstone is not None}
+
+    def send_comment(self, comment_id: str) -> dict[str, Any]:
+        """Send one draft as its own batch.
+
+        Raises:
+            CommentNotFound: 404. ReadOnlyCommentError: 403.
+            CommentStateError: 409 — not a draft.
+        """
+        batch_no, sent = self.store.send(comment_id)
+        self._publish_comment(sent)
+        self._batch_sent()
+        return {"batch_no": batch_no, "comment_ids": [sent.id]}
+
+    def send_all(self) -> dict[str, Any]:
+        """Send every draft as one batch. With no drafts nothing is sent
+        and `batch_no` is null.
+        """
+        batch_no, sent = self.store.send_all()
+        for c in sent:
+            self._publish_comment(c)
+        if sent:
+            self._batch_sent()
+        return {"batch_no": batch_no, "comment_ids": [c.id for c in sent]}
+
+    def set_thread_resolved(self, comment_id: str, resolved: bool) -> dict[str, Any]:
+        """Resolve or reopen the thread holding `comment_id`.
+
+        Raises:
+            CommentNotFound: 404. ReadOnlyCommentError: 403 — an
+                ingested thread's resolution lives on GitHub.
+        """
+        changed = self.store.set_thread_resolved(comment_id, resolved)
+        for c in changed:
+            self._publish_comment(c)
+        return {"ok": True, "resolved": resolved, "comment_ids": [c.id for c in changed]}
+
+    def _publish_comment(self, c: comments.Comment) -> None:
+        self._publish("comment", c.model_dump())
+
+    def _batch_sent(self) -> None:
+        """A batch is waiting for the counterpart: wake any `--wait`."""
+        with self._batch_cond:
+            self._batch_cond.notify_all()
 
     @property
     def posted_result(self) -> PostOutcome | None:

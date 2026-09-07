@@ -114,6 +114,7 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
         run_dir,
         opts.config,
         tasks,
+        counterpart="github",
         post=post_callback,
         post_meta=post_meta,
     )

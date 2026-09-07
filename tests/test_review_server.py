@@ -42,6 +42,7 @@ def server(run_dir: paths.RunDir, prefs_path: Path):
     srv = ReviewServer(
         run_dir=run_dir,
         viewer_json={"version": "1", "files": []},
+        counterpart="claude",
         prefs_path=prefs_path,
     )
     srv.start()
@@ -230,7 +231,7 @@ def test_post_cannot_overwrite_ingested_comment(server, run_dir: paths.RunDir) -
         )
     )
     server.stop()
-    srv2 = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []})
+    srv2 = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []}, counterpart="github")
     srv2.start()
     try:
         try:
@@ -277,7 +278,7 @@ def test_delete_cannot_remove_ingested_comment(server, run_dir: paths.RunDir) ->
         )
     )
     server.stop()
-    srv2 = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []})
+    srv2 = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []}, counterpart="github")
     srv2.start()
     try:
         conn = HTTPConnection("127.0.0.1", int(srv2.url().rsplit(":", 1)[1]), timeout=5)
@@ -689,6 +690,12 @@ _ROUTES = [
     ("POST", "/explainer/section/background", 409),
     ("POST", "/post-review", 409),
     ("POST", "/nope", 404),
+    ("POST", "/comments", 400),
+    ("POST", "/comments/send-all", 200),
+    ("POST", "/comments/nope/send", 404),
+    ("POST", "/comments/nope/resolve", 404),
+    ("POST", "/comments/nope/unresolve", 404),
+    ("POST", "/comments/nope/frobnicate", 404),
     ("DELETE", "/comments/nope", 404),
     ("DELETE", "/nope", 404),
 ]
@@ -841,6 +848,7 @@ def test_serve_review_serves_pending_then_streams_and_finalises(run_dir: paths.R
             run_dir,
             ReviewConfig(port=0, timeout=10, open_browser=False),
             ServerTasks(augment=fake_augment),
+            counterpart="claude",
             on_ready=_on_ready,
         )
 
@@ -893,6 +901,7 @@ def test_serve_review_reports_the_idle_shutdown(run_dir: paths.RunDir, capsys) -
         run_dir,
         ReviewConfig(port=0, timeout=1, open_browser=False),
         ServerTasks(),
+        counterpart="claude",
     )
     assert result.clean is False
     assert "idle timeout — 1s with no request and no open viewer" in capsys.readouterr().err

@@ -81,6 +81,7 @@ class _Harness:
             viewer_json=self.viewer_json,
             store=CommentStore(run_dir.comments),
             publish=self.frames.publish,
+            counterpart=kwargs.pop("counterpart", "claude"),
             **kwargs,
         )
 
@@ -997,3 +998,106 @@ def test_posting_takes_the_selected_comments_out_of_the_local_set(run_dir: paths
     assert reloaded["c1"].source == "github"
     assert reloaded["c1"].node_id == "TH_1"
     assert reloaded["c2"].source == "local"
+
+
+# --- reviewer comments (ADR 0009) ----------------------------------------
+# The store owns the transitions; the session decodes the payload, calls
+# one store method and fans the changed comments out, so every tab and
+# the badges follow.
+
+
+def _note(cid: str, body: str = "note", **extra: Any) -> dict[str, Any]:
+    return {"id": cid, "file": "a.py", "side": "new", "line": 3, "body": body, **extra}
+
+
+def test_data_json_names_the_counterpart(run_dir: paths.RunDir) -> None:
+    assert _Harness(run_dir).session.data_json()["counterpart"] == "claude"
+    assert _Harness(run_dir, counterpart="github").session.data_json()["counterpart"] == "github"
+
+
+def test_a_saved_comment_is_a_draft_and_is_fanned_out(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    saved = h.session.upsert_comment(_note("c1"))
+    assert saved["delivery"] == "draft"
+    assert h.frames.payloads("comment") == [saved]
+
+
+def test_a_malformed_comment_is_the_clients_fault(run_dir: paths.RunDir) -> None:
+    err = _refused(lambda: _Harness(run_dir).session.upsert_comment({"id": "c1", "body": "no anchor"}))
+    assert err.status == 400
+
+
+def test_send_and_send_all_mark_sent_and_number_the_batches(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    h.session.upsert_comment(_note("c1"))
+    h.session.upsert_comment(_note("c2", line=9))
+    h.session.upsert_comment(_note("c3", line=12))
+
+    one = h.session.send_comment("c1")
+    rest = h.session.send_all()
+
+    assert one == {"batch_no": 1, "comment_ids": ["c1"]}
+    assert rest == {"batch_no": 2, "comment_ids": ["c2", "c3"]}
+    sent = [p for p in h.frames.payloads("comment") if p["delivery"] == "sent"]
+    assert [(p["id"], p["batch_no"]) for p in sent] == [("c1", 1), ("c2", 2), ("c3", 2)]
+    assert h.session.send_all() == {"batch_no": None, "comment_ids": []}
+
+
+def test_sending_what_is_not_a_draft_is_refused(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    h.session.upsert_comment(_note("c1"))
+    h.session.send_comment("c1")
+    assert _refused(lambda: h.session.send_comment("c1")).status == 409
+    assert _refused(lambda: h.session.send_comment("ghost")).status == 404
+
+
+def test_deleting_a_delivered_comment_withdraws_it_and_the_tab_drops_it(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    h.session.upsert_comment(_note("c1"))
+    h.session.send_comment("c1")
+    h.session.store.deliver(1)
+
+    assert h.session.delete_comment("c1") == {"ok": True, "withdrawn": True}
+
+    assert h.frames.payloads("comment-deleted") == [{"id": "c1"}]
+    assert [(n, [c.id for c in cs]) for n, cs in h.session.store.pending_batches()] == [(2, ["c1"])]
+
+
+def test_deleting_a_draft_withdraws_nothing(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    h.session.upsert_comment(_note("c1"))
+    assert h.session.delete_comment("c1") == {"ok": True, "withdrawn": False}
+    assert h.frames.payloads("comment-deleted") == [{"id": "c1"}]
+    assert _refused(lambda: h.session.delete_comment("c1")).status == 404
+
+
+def test_a_claude_reply_arrives_through_the_comment_route(run_dir: paths.RunDir) -> None:
+    """`scr comment reply` POSTs the existing route with `source: claude`;
+    the session routes it to the reply path rather than forcing it local."""
+    h = _Harness(run_dir)
+    h.session.upsert_comment(_note("c1", line=7))
+
+    reply = h.session.upsert_comment({"source": "claude", "in_reply_to_id": "c1", "body": "fixed in 3f2a"})
+
+    assert reply["source"] == "claude" and reply["author"] == "claude"
+    assert (reply["file"], reply["side"], reply["line"]) == ("a.py", "new", 7)
+    assert h.frames.payloads("comment")[-1] == reply
+    assert _refused(lambda: h.session.upsert_comment({"source": "claude", "body": "orphan"})).status == 409
+    # The reviewer's editor never sends a source; the edit is refused as
+    # read-only rather than taken as a second reply.
+    edit = {k: v for k, v in reply.items() if k != "source"} | {"body": "edited"}
+    assert _refused(lambda: h.session.upsert_comment(edit)).status == 403
+
+
+def test_resolving_a_thread_fans_out_every_member(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    h.session.upsert_comment(_note("c1"))
+    reply = h.session.upsert_comment({"source": "claude", "in_reply_to_id": "c1", "body": "done"})
+
+    result = h.session.set_thread_resolved("c1", True)
+
+    assert result == {"ok": True, "resolved": True, "comment_ids": ["c1", reply["id"]]}
+    flagged = [p for p in h.frames.payloads("comment") if p["thread_resolved"]]
+    assert sorted(p["id"] for p in flagged) == sorted(["c1", reply["id"]])
+    assert h.session.set_thread_resolved("c1", False)["comment_ids"] == ["c1", reply["id"]]
+    assert _refused(lambda: h.session.set_thread_resolved("ghost", True)).status == 404
