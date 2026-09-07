@@ -319,6 +319,10 @@ def test_resolving_an_ingested_thread_is_refused(run_dir: paths.RunDir) -> None:
     store.upsert(_payload("mine", "reply", in_reply_to_id="gh"))
     with pytest.raises(comments.ReadOnlyCommentError):
         store.set_thread_resolved("mine", True)
+    # Unless the caller has flipped it on GitHub and is recording that.
+    changed = store.set_thread_resolved("mine", True, upstream=True)
+    assert sorted(c.id for c in changed) == ["gh", "mine"]
+    assert store.thread_root("mine").id == "gh"
 
 
 def test_resolution_does_not_dirty_a_delivered_comment(run_dir: paths.RunDir) -> None:
@@ -328,6 +332,138 @@ def test_resolution_does_not_dirty_a_delivered_comment(run_dir: paths.RunDir) ->
     store.deliver(1)
     store.set_thread_resolved("c1", True)
     assert _by_id(store)["c1"].delivery == "delivered"
+
+
+# --- the pending review (PR mode) --------------------------------------------
+# GitHub takes one comment at a time: a delivery lands or is refused per
+# comment, an existing pending review is adopted, a submit flips what it
+# held to upstream.
+
+
+def test_mark_delivered_records_the_ids_github_gave(run_dir: paths.RunDir) -> None:
+    store = CommentStore(run_dir.comments)
+    store.upsert(_payload("c1"))
+    store.send("c1")
+    assert [c.id for c in store.undelivered()] == ["c1"]
+
+    delivered = store.mark_delivered("c1", node_id="PRRC_1", thread_id="PRRT_1")
+
+    assert delivered is not None
+    assert (delivered.delivery, delivered.deliveries, delivered.node_id, delivered.thread_id) == (
+        "delivered",
+        1,
+        "PRRC_1",
+        "PRRT_1",
+    )
+    assert store.undelivered() == []
+    assert store.node_index() == {"PRRC_1": "c1"}
+
+
+def test_mark_delivered_refuses_what_was_not_sent(run_dir: paths.RunDir) -> None:
+    store = CommentStore(run_dir.comments)
+    store.upsert(_payload("c1"))
+    with pytest.raises(comments.CommentStateError):
+        store.mark_delivered("c1", node_id="x")
+    with pytest.raises(comments.CommentNotFound):
+        store.mark_delivered("ghost", node_id="x")
+
+
+def test_a_refused_delivery_leaves_the_comment_sent_and_unsent(run_dir: paths.RunDir) -> None:
+    store = CommentStore(run_dir.comments)
+    store.upsert(_payload("c1"))
+    store.send("c1")
+
+    failed = store.mark_send_failed("c1", "HTTP 502")
+
+    assert (failed.delivery, failed.send_error) == ("sent", "HTTP 502")
+    assert [c.id for c in store.undelivered()] == ["c1"]
+    # A later delivery clears the refusal.
+    delivered = store.mark_delivered("c1", node_id="PRRC_1")
+    assert delivered is not None and delivered.send_error is None
+    with pytest.raises(comments.CommentStateError):
+        store.mark_send_failed("c1", "again")
+
+
+def test_an_edit_of_a_delivered_comment_keeps_its_node_id_for_the_update(run_dir: paths.RunDir) -> None:
+    store = CommentStore(run_dir.comments)
+    store.upsert(_payload("c1"))
+    store.send("c1")
+    store.mark_delivered("c1", node_id="PRRC_1", thread_id="PRRT_1")
+
+    edited = store.upsert(_payload("c1", body="edited"))
+    _, sent = store.send("c1")
+
+    assert (edited.delivery, edited.deliveries, edited.node_id) == ("draft", 1, "PRRC_1")
+    assert (sent.delivery, sent.node_id, sent.thread_id, sent.send_error) == ("sent", "PRRC_1", "PRRT_1", None)
+    delivered = store.mark_delivered("c1")
+    assert delivered is not None and (delivered.deliveries, delivered.node_id) == (2, "PRRC_1")
+
+
+def test_a_withdrawn_tombstone_is_dropped_when_its_deletion_lands(run_dir: paths.RunDir) -> None:
+    store = CommentStore(run_dir.comments)
+    store.upsert(_payload("c1"))
+    store.send("c1")
+    store.mark_delivered("c1", node_id="PRRC_1")
+
+    tombstone = store.delete("c1")
+    assert tombstone is not None and tombstone.node_id == "PRRC_1" and tombstone.send_error is None
+    assert [c.id for c in store.undelivered()] == ["c1"]
+    failed = store.mark_send_failed("c1", "HTTP 502")
+    assert failed.withdrawn and failed.send_error == "HTTP 502"
+
+    assert store.mark_delivered("c1") is None
+    assert store.undelivered() == [] and store.all() == []
+
+
+def test_adopt_takes_a_pending_comment_in_as_delivered(run_dir: paths.RunDir) -> None:
+    store = CommentStore(run_dir.comments)
+    pending = comments.Comment(
+        id="gh-11", file="a.py", side="new", line=3, body="theirs", node_id="PRRC_11", delivery="draft", send_error="x"
+    )
+
+    adopted = store.adopt(pending)
+
+    assert (adopted.source, adopted.delivery, adopted.deliveries, adopted.send_error) == ("local", "delivered", 1, None)
+    assert adopted.is_writable and not adopted.is_draft
+    # Editable and deletable like anything the reviewer sent from here.
+    assert store.upsert(_payload("gh-11", body="edited")).delivery == "draft"
+    store.send("gh-11")
+    assert store.mark_delivered("gh-11") is not None
+    tombstone = store.delete("gh-11")
+    assert tombstone is not None and tombstone.node_id == "PRRC_11"
+
+
+def test_adopt_refuses_a_taken_id_and_a_comment_without_a_node(run_dir: paths.RunDir) -> None:
+    store = CommentStore(run_dir.comments)
+    store.upsert(_payload("c1"))
+    with pytest.raises(comments.CommentStateError, match="already exists"):
+        store.adopt(comments.Comment(id="c1", file="a.py", side="new", line=3, body="x", node_id="N"))
+    with pytest.raises(comments.CommentStateError, match="no node_id"):
+        store.adopt(comments.Comment(id="c2", file="a.py", side="new", line=3, body="x"))
+    with pytest.raises(comments.CommentStateError, match="only the reviewer's"):
+        store.adopt(comments.Comment(id="c3", file="a.py", side="new", line=3, body="x", node_id="N", source="github"))
+
+
+def test_mark_submitted_flips_what_the_review_held_and_leaves_drafts(run_dir: paths.RunDir) -> None:
+    store = CommentStore(run_dir.comments)
+    store.upsert(_payload("sent", line=1))
+    store.upsert(_payload("draft", line=2))
+    store.upsert(_payload("unsent", line=3))
+    store.send("sent")
+    store.mark_delivered("sent", node_id="PRRC_1", thread_id="PRRT_1")
+    store.send("unsent")
+    store.mark_send_failed("unsent", "HTTP 502")
+
+    changed = store.mark_submitted()
+
+    assert [c.id for c in changed] == ["sent"]
+    by_id = _by_id(store)
+    assert (by_id["sent"].source, by_id["sent"].node_id, by_id["sent"].thread_id) == ("github", "PRRC_1", "PRRT_1")
+    assert not by_id["sent"].is_writable
+    assert by_id["draft"].is_draft and by_id["unsent"].delivery == "sent"
+    assert store.mark_submitted() == []
+    # Survives a reload.
+    assert _by_id(CommentStore(run_dir.comments))["sent"].source == "github"
 
 
 # --- the end of a review -----------------------------------------------------
