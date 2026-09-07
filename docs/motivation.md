@@ -53,10 +53,12 @@ tools.
   or their agent picks them up later, across people and time.
 
 The loop mechanism is agent-agnostic. The agnostic surface is the CLI
-stdout contract: `scr review` blocks, opens the viewer, prints the
-comments as structured markdown on Done, exits. Any TUI agent that can run
-a subprocess and read stdout drives the loop. Only the packaging (slash
-command, driver prompt, venv bootstrap) is Claude-specific.
+stdout contract: `scr review` opens the viewer and prints a run id;
+`scr review --wait <run_id>` prints each batch the reviewer sends as
+structured markdown, or `ended` with what was never sent; `scr comment
+reply` answers into the thread. Any TUI agent that can run a subprocess
+and read stdout drives the loop. Only the packaging (slash command, driver
+prompt, venv bootstrap) is Claude-specific.
 
 ## Scope: conformance vs adequacy
 
