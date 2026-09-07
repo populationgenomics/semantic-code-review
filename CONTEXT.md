@@ -27,13 +27,18 @@ overridable with `--runs-root`. Contents:
   so `RepoTools` (the MCP-exposed read_file / grep) can resolve paths
   during the LLM passes.
 - `comments.json` — the [[reviewer-comment]] store, with each comment's
-  lifecycle state and the last [[batch]] number assigned. Written by the
-  review server, and by `scr review --wait` once the server has gone.
+  lifecycle state and the last [[batch]] number assigned; in PR mode
+  also the GitHub ids of a comment the [[pending-review]] holds
+  (`node_id`, `thread_id`) and why a delivery was refused
+  (`send_error`). Written by the review server, and by `scr review
+  --wait` once the server has gone. The pending review's own id is not
+  kept here: it is looked up on GitHub at start and on the first Send.
 - `server.json` — `{port, pid, started_at, url}` of the review server
   holding the run; present only while it runs (`serve_review` writes it
   once bound and removes it on exit). How `scr review --wait` and
-  `scr comment` reach the server, and how a second `scr review` knows to
-  reuse it. `server.log` beside it is the detached server's stdio.
+  `scr comment` reach the server, and how a second `scr review` or
+  `scr pr` knows to reuse it. `server.log` beside it is the detached
+  server's stdio.
 - `explainer.json` — the [[change-explainer]] document, when one has
   been generated. Absent until the reviewer asks for it; written and
   refilled section by section by the `serve_review` explainer routes.
@@ -123,7 +128,7 @@ model, concurrency, cache switches, port, idle timeout, browser,
 skip globs, extra-review prompt, client, debug, explainer on/off and
 its house style. Each flow's options type composes one as a `config`
 field and adds only its own source-side fields: `ReviewOptions` the
-[[run-spec]] endpoints, `PrFlowOptions` the repo/number/`--yes`.
+[[run-spec]] endpoints, `PrFlowOptions` the repo/number.
 
 The rule for what belongs in it is settings vs collaborators. A value
 the user chose travels in the config; a constructed object a flow hands
@@ -151,8 +156,10 @@ Two consumers derive from it rather than reading it whole:
 The state of one live review and the operations over it — `ReviewSession`
 in `review/session.py`. Holds the [[run-directory]], the [[viewer-data]]
 served as `/data.json`, the [[reviewer-comment]] store, its
-[[counterpart]], the `ServerTasks` once attached, and the guards that
-allow one console turn and one explainer pass at a time. It also holds
+[[counterpart]] — and, when that is GitHub, the `ReviewSink`
+(`review/pending_review.py`) every delivery goes through — the
+`ServerTasks` once attached, and the guards that allow one console turn
+and one explainer pass at a time. It also holds
 the stream to Claude: `wait_for_batch` (behind `GET /wait`) blocks until
 a [[batch]] is pending and hands the oldest over, marking it
 [[delivered]]; a Send wakes it; while one is blocked the session is
@@ -720,8 +727,9 @@ network refused is *unsent* and retried.
 **Delivered**
 A [[sent]] comment the [[counterpart]] holds: Claude has received the
 [[batch]] carrying it, or GitHub has it in the [[pending-review]]. An
-edit makes it a [[draft]] again, and re-sending delivers it as *revised*;
-deleting it delivers *withdrawn*.
+edit makes it a [[draft]] again, and re-sending delivers it as *revised*
+— in PR mode the edit is sent again on save, since the pending comment
+is editable in place; deleting it delivers *withdrawn*.
 _Avoid_: acknowledged, received
 
 **Batch**
