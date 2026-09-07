@@ -3387,6 +3387,29 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
       expect(foldBoxOf(1).querySelector(".fold-summary")!.textContent).toBe("function foo — foo does foo");
     });
 
+    test("a fold that swallows a hunk and revealed rows survives the file closing and opening (#10)", async () => {
+      // Show hidden lines, fold at a point that takes in the expansion's
+      // rows and the hunk's, fold the file away, unfold it: the lines are
+      // still revealed and still folded.
+      await bootViewer(makeData({ pending: false, files: [fooFile()] }));
+      expandHunk();
+      queueFileText(0, "a.py", null, FOO_TEXT);
+      (document.querySelector(".gap-chip") as HTMLElement).click();
+      await tick();
+      queueFetchResponse({ status: 200, body: { summary: "foo does foo" } });
+      clickEl(chevronOnLine(1));
+      await tick();
+
+      const header = (): HTMLElement => document.querySelector('.file[data-id="F0"] .file-header') as HTMLElement;
+      header().click();
+      expect(document.querySelector(".gap-expansion")).toBeNull();
+      header().click();
+      expect(document.querySelector(".gap-expansion")).not.toBeNull();
+      expect(chevronOnLine(1).classList.contains("open")).toBe(false);
+      expect(display([2, 3])).toEqual(["none", "none"]);
+      expect(foldBoxOf(1).querySelector(".fold-summary")!.textContent).toBe("function foo — foo does foo");
+    });
+
     test("a fold inside a file survives collapsing and reopening the file", async () => {
       await bootViewer(dataWithFold());
       expandHunk();
