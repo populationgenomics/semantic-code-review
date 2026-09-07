@@ -15,6 +15,7 @@ import { Explainer } from "./explainer";
 import { FileTextCache } from "./file_text";
 import { LayoutDividers } from "./layout_dividers";
 import { PostModal } from "./post_modal";
+import { Prefs } from "./prefs";
 import { Progress } from "./progress";
 import { Render } from "./render";
 import { Sidebar } from "./sidebar";
@@ -49,6 +50,10 @@ const SESSION_ENDPOINT: string = (() => {
 // --- Boot ----------------------------------------------------------------
 
 async function boot(): Promise<void> {
+  // The reader's cross-run preferences, before anything that reads one:
+  // the sidebar divider takes its width from them and Render.init the
+  // gutter's fold, and both are on the first paint.
+  await Prefs.load(SESSION_ENDPOINT);
   Comments.init({
     // Whenever the store changes (initial load, save, delete, promotion):
     // the sidebar pills' per-file counts, and the manifests hidden

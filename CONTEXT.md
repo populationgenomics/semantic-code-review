@@ -174,6 +174,25 @@ augment pass has left a sidecar, so the augmented view and every task
 that resolves the diff arrive together. Before it, each LLM-backed route
 409s — the state the viewer polls against.
 
+**Viewer preference**
+A viewer setting that is the reader's rather than the review's — the
+span gutter's fold (`scr-gutter-fold`), the sidebar and explainer-column
+divider widths (`scr-sidebar-width`, `scr-explainer-doc-width`). Kept
+server-side in `~/.config/scr/viewer-prefs.json` (XDG-aware, beside
+`config.toml`) by `PrefsStore` in `review/prefs.py`: a flat JSON object
+of scalars, served whole by `GET /prefs`, merged by `PATCH /prefs` (a
+null unsets a key), written atomically, re-read on every call so two
+servers can share it. The store hangs off `ServerContext`, not the
+[[review-session]]. The viewer's `Prefs` (`prefs.ts`) loads it once
+before the first paint and coalesces sets into one PATCH per 200ms.
+
+The split the term draws: `localStorage` cannot hold anything across
+runs, because the server binds port 0 and every run is a new origin.
+What should outlive a run is a preference and goes here; what belongs to
+one run — the active sidebar pill, the open explainer section, ids that
+mean nothing in another run — is per-tab view state in `sessionStorage`,
+owned by the module that reads it.
+
 **Hunk**
 A contiguous range of changed lines in a diff, with its `@@` header
 plus old/new start+count. Both on-disk forms — the
@@ -396,7 +415,7 @@ and dots still showing where each span is and how they nest, an edge's
 tooltip its rationale. Clicking an edge unfolds it and brings that
 span's text into view; clicking the strip's empty area, or `g`,
 toggles. A reading preference like the [[fold-level]], not a rung of
-it: kept in localStorage (`scr-gutter-fold`), default expanded, and
+it: a [[viewer-preference]] (`scr-gutter-fold`), default expanded, and
 followed by every pane — the explainer's panel included — through one
 class on the document (`html.gutter-collapsed`) that the stylesheet
 zeroes the text column by. On disk,
@@ -469,8 +488,7 @@ hides ([[collapsible-region]]), the definition chevron folds
 ([[fold-region]] — a collapsed one shows its labels), the span labels
 ([[annotation-span]], in the span gutter). The gutter's own fold (`g`)
 is not a rung either: it hides the spans' text, never rows, and is a
-preference kept in localStorage rather than a level carried by the
-hash.
+[[viewer-preference]] rather than a level carried by the hash.
 
 Per-item exceptions live in `RenderState.overrides` — a reviewer
 expanding/collapsing one file (`F0`) or hunk (`H0_1`, header open or
@@ -772,8 +790,8 @@ directory — and the pill reads `+N -M` like the file header. The viewer's
 `Sidebar.rebuildSymbolsAxis` loads the forest from `DATA.symbols` at boot
 (flattening every node into `byId` for active-pill lookup) and
 `Sidebar` renders it as an expand/collapse tree (`_symbolNode`) reusing
-the existing pill machinery (`applyFilter`, localStorage `<axis>:<id>`,
-count badges). Like the Files axis it's structural — present from boot,
+the existing pill machinery (`applyFilter`, the per-tab `<axis>:<id>` in
+sessionStorage, count badges). Like the Files axis it's structural — present from boot,
 never refreshed by an SSE pass (ADR 0001 Slice 5).
 
 Filtering is hunk-granular, not symbol-precise: a pill resolves to the

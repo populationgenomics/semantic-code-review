@@ -31,10 +31,18 @@ from semantic_code_review.review.session import ServerTasks
 
 
 @pytest.fixture
-def server(run_dir: paths.RunDir):
+def prefs_path(tmp_path: Path) -> Path:
+    """Where the server's `/prefs` routes read and write, kept out of the
+    developer's real `~/.config/scr`."""
+    return tmp_path / "config" / "viewer-prefs.json"
+
+
+@pytest.fixture
+def server(run_dir: paths.RunDir, prefs_path: Path):
     srv = ReviewServer(
         run_dir=run_dir,
         viewer_json={"version": "1", "files": []},
+        prefs_path=prefs_path,
     )
     srv.start()
     yield srv
@@ -302,6 +310,82 @@ def test_post_resets_source_to_local_on_new_comment(server, run_dir: paths.RunDi
     )
     assert code == 200
     assert body["source"] == "local"
+
+
+# --- /prefs -----------------------------------------------------------------
+# The store's own semantics (merge, atomic write, malformed file) are in
+# tests/test_review_prefs.py; here is the wire: the verbs, the status map,
+# and that the routes reach the file the server was given.
+
+
+def test_get_prefs_empty_before_any_write(server, prefs_path: Path) -> None:
+    code, body = _request(server.url() + "/prefs")
+    assert code == 200
+    assert body == {}
+    assert not prefs_path.exists()
+
+
+def test_patch_prefs_merges_and_round_trips(server, prefs_path: Path) -> None:
+    code, body = _request(server.url() + "/prefs", method="PATCH", body={"scr-gutter-fold": "collapsed"})
+    assert code == 200
+    assert body == {"scr-gutter-fold": "collapsed"}
+    code, body = _request(server.url() + "/prefs", method="PATCH", body={"scr-sidebar-width": 300})
+    assert code == 200
+    assert body == {"scr-gutter-fold": "collapsed", "scr-sidebar-width": 300}
+    code, body = _request(server.url() + "/prefs")
+    assert body == {"scr-gutter-fold": "collapsed", "scr-sidebar-width": 300}
+    assert json.loads(prefs_path.read_text()) == body
+
+
+def test_patch_prefs_null_removes_a_key(server) -> None:
+    _request(server.url() + "/prefs", method="PATCH", body={"scr-sidebar-width": 300})
+    code, body = _request(server.url() + "/prefs", method="PATCH", body={"scr-sidebar-width": None})
+    assert code == 200
+    assert body == {}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        ["scr-gutter-fold", "collapsed"],
+        {"": "x"},
+        {"scr-sidebar-width": [300]},
+        {"scr-sidebar-width": {"px": 300}},
+    ],
+)
+def test_patch_prefs_rejects_non_flat_scalars_400(server, prefs_path: Path, payload) -> None:
+    try:
+        _request(server.url() + "/prefs", method="PATCH", body=payload)
+    except urllib.error.HTTPError as e:
+        assert e.code == 400
+        assert "prefs" in json.loads(e.read())["error"]
+    else:
+        raise AssertionError("expected 400")
+    assert not prefs_path.exists()
+
+
+def test_patch_prefs_invalid_json_400(server) -> None:
+    req = urllib.request.Request(
+        server.url() + "/prefs",
+        method="PATCH",
+        data=b"{not json",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        urllib.request.urlopen(req, timeout=5)
+    except urllib.error.HTTPError as e:
+        assert e.code == 400
+    else:
+        raise AssertionError("expected 400")
+
+
+def test_patch_unknown_path_404(server) -> None:
+    try:
+        _request(server.url() + "/comments", method="PATCH", body={})
+    except urllib.error.HTTPError as e:
+        assert e.code == 404
+    else:
+        raise AssertionError("expected 404")
 
 
 def test_delete_comment(server, run_dir: paths.RunDir) -> None:

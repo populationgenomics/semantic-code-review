@@ -30,6 +30,7 @@ import { ExplainerPanel, type PanelHost } from "./explainer_panel";
 import { FileRows } from "./file_rows";
 import { FileTextCache, type FileText } from "./file_text";
 import { Folds, type FoldLabels } from "./folds";
+import { Prefs } from "./prefs";
 import { Progress } from "./progress";
 import { Rendered, type PaneState } from "./rendered";
 import { Sidebar } from "./sidebar";
@@ -75,8 +76,9 @@ let _symbolSearch: string | null = null;
 // Whether the span gutter is folded to its bars alone — its text column
 // zero wide, the rationales hidden, the bars and dots still showing where
 // every span is. A reading preference like the fold level, global across
-// files and panes, kept in localStorage rather than the hash: it is the
-// reader's, not the link's. Default expanded.
+// files and panes, kept in the server-side prefs (`Prefs`) rather than
+// the hash: it is the reader's, not the link's, and it outlives the run.
+// Default expanded.
 let _gutterCollapsed = false;
 const _GUTTER_FOLD_KEY = "scr-gutter-fold";
 // Whether the change explainer exists for this review (`--no-augment`
@@ -172,7 +174,7 @@ function renderInit(data: ViewerData): void {
   _state.overrides = Object.create(null);
   _state.renderedDiffs = Object.create(null);
   _state.rendered = Rendered.newPaneState();
-  // A filter restored from localStorage is not a gesture: the diff opens
+  // A filter restored from sessionStorage is not a gesture: the diff opens
   // at its level, filtered, with nothing focused.
   _state.focus = null;
   _applyGutterFold(_readGutterFold());
@@ -1528,11 +1530,7 @@ function _setGutterWidths(body: HTMLElement, f: FileBlock): void {
 /** The stored preference; expanded when nothing (or nothing this code
  *  wrote) is stored. */
 function _readGutterFold(): boolean {
-  try {
-    return localStorage.getItem(_GUTTER_FOLD_KEY) === "collapsed";
-  } catch (_) {
-    return false;
-  }
+  return Prefs.get(_GUTTER_FOLD_KEY) === "collapsed";
 }
 
 /** Fold or unfold the gutter everywhere it is on screen. The class on
@@ -1551,9 +1549,7 @@ function _applyGutterFold(collapsed: boolean): void {
 function _setGutterFold(collapsed: boolean): void {
   if (collapsed === _gutterCollapsed) return;
   _applyGutterFold(collapsed);
-  try {
-    localStorage.setItem(_GUTTER_FOLD_KEY, collapsed ? "collapsed" : "expanded");
-  } catch (_) { /* localStorage may be unavailable */ }
+  Prefs.set(_GUTTER_FOLD_KEY, collapsed ? "collapsed" : "expanded");
 }
 
 /** The strip's own affordances, delegated from the document so one

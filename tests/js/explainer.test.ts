@@ -110,7 +110,7 @@ function boot(overrides: Partial<ViewerData> = {}, opts = {}): void {
 }
 
 beforeEach(() => {
-  localStorage.clear();
+  sessionStorage.clear();
   vi.restoreAllMocks();
 });
 
@@ -292,16 +292,16 @@ describe("footer", () => {
 
 describe("section selection", () => {
   test("persists under its own key, leaving the diff-mode pill alone", () => {
-    localStorage.setItem("scr-active-group:head5678", "files:BF0");
+    sessionStorage.setItem("scr-active-group:head5678", "files:BF0");
     boot();
     Explainer.onEvent(doc() as SseExplainerEvent);
     Explainer.setActiveSection("background");
-    expect(localStorage.getItem("scr-explainer-section:head5678")).toBe("explainer:background");
-    expect(localStorage.getItem("scr-active-group:head5678")).toBe("files:BF0");
+    expect(sessionStorage.getItem("scr-explainer-section:head5678")).toBe("explainer:background");
+    expect(sessionStorage.getItem("scr-active-group:head5678")).toBe("files:BF0");
   });
 
   test("a persisted section is restored on the next boot", () => {
-    localStorage.setItem("scr-explainer-section:head5678", "explainer:background");
+    sessionStorage.setItem("scr-explainer-section:head5678", "explainer:background");
     boot();
     expect(Explainer.activeSectionId()).toBe("background");
     Explainer.onEvent(doc() as SseExplainerEvent);
@@ -309,7 +309,7 @@ describe("section selection", () => {
   });
 
   test("a persisted section the document doesn't have falls back to the Map", () => {
-    localStorage.setItem("scr-explainer-section:head5678", "explainer:nonesuch");
+    sessionStorage.setItem("scr-explainer-section:head5678", "explainer:nonesuch");
     boot();
     Explainer.onEvent(doc() as SseExplainerEvent);
     expect(Explainer.activeSectionId()).toBe("map");
@@ -814,7 +814,7 @@ describe("subsections", () => {
   });
 
   test("a subsection can be the persisted selection", () => {
-    localStorage.setItem("scr-explainer-section:head5678", "explainer:code-1");
+    sessionStorage.setItem("scr-explainer-section:head5678", "explainer:code-1");
     boot();
     Explainer.onEvent(proseDoc({
       state: "ready",

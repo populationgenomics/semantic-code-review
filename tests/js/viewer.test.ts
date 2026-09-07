@@ -92,9 +92,26 @@ const fetchCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
 // queue: boot fires it behind /comments and PostModal's /post-config,
 // so its position depends on wiring the test has no reason to know.
 let explainerLoadResponse: FetchResponse | null = null;
+// `/prefs` likewise: boot's GET is the first fetch after /data.json, and
+// a PATCH lands 200ms after any gesture that changes a preference —
+// neither belongs in a positional queue a test builds for its own calls.
+// The GET's response is the test's seed; a PATCH is always accepted.
+let prefsLoadResponse: FetchResponse = { status: 200, body: {} };
 
 function queueFetchResponse(r: FetchResponse): void {
   fetchResponses.push(r);
+}
+
+/** The bodies of every `PATCH /prefs` so far, in order. */
+function prefsPatches(): Array<Record<string, unknown>> {
+  return fetchCalls
+    .filter((c) => c.url === "/prefs" && c.init?.method === "PATCH")
+    .map((c) => JSON.parse(c.init!.body as string) as Record<string, unknown>);
+}
+
+/** Wait out the coalescing window, so a preference set has been sent. */
+function flushPrefs(): Promise<void> {
+  return new Promise<void>((r) => setTimeout(r, 250));
 }
 
 /** Queue the `/file-text` payload an expand chip (or the md toggle)
@@ -128,6 +145,9 @@ interface BootOptions {
   /** Body the /comments fetch fired by Comments.init should resolve to.
    *  Defaults to an empty array. */
   comments?: unknown[];
+  /** Response for boot's `GET /prefs`: the reader's stored preferences,
+   *  or a failure to boot on defaults from. Defaults to none stored. */
+  prefs?: FetchResponse;
   /** Response for the `GET /explainer` pre-fetch boot fires when
    *  `data.explainer` is set. Must be queued between /comments and
    *  anything the test adds, so it goes here rather than at the call
@@ -188,10 +208,12 @@ async function bootViewer(data: ViewerData, opts: BootOptions = {}): Promise<voi
   explainerLoadResponse = data.explainer
     ? (opts.explainer ?? { status: 404, body: { error: "no explainer document" } })
     : null;
+  prefsLoadResponse = opts.prefs ?? { status: 200, body: {} };
   // Execute viewer.js as a fresh IIFE in the current realm so it
   // picks up our stubs. `new Function` ensures strict-mode + clean
   // scope. The IIFE returns synchronously; the boot continues on
   // microtasks once the /data.json fetch resolves.
+  recordTimers();
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
   new Function(VIEWER_SRC)();
   // Drain microtasks + one macrotask tick so the fetch promise
@@ -374,6 +396,36 @@ function dropPageListeners(): void {
   boundListeners.length = 0;
 }
 
+// --- Timers ----------------------------------------------------------------
+// The same for timers: a preference set holds its PATCH for 200ms, so a
+// test that drags a divider and ends leaves a write that fires into the
+// next test's `fetchCalls`. Record every timer a boot's bundle arms and
+// clear what is still pending after the test. Recording starts at the
+// bundle's eval rather than at beforeEach, so vitest's own per-test timer
+// (armed before the body runs) is not among them.
+
+const armedTimers: Array<ReturnType<typeof setTimeout>> = [];
+let realSetTimeout: typeof setTimeout | null = null;
+
+function recordTimers(): void {
+  if (realSetTimeout !== null) return;
+  realSetTimeout = globalThis.setTimeout;
+  const real = realSetTimeout;
+  globalThis.setTimeout = ((fn: TimerHandler, ms?: number, ...args: unknown[]) => {
+    const id = real(fn as () => void, ms, ...args);
+    armedTimers.push(id);
+    return id;
+  }) as typeof setTimeout;
+}
+
+function dropTimers(): void {
+  if (realSetTimeout === null) return;
+  globalThis.setTimeout = realSetTimeout;
+  realSetTimeout = null;
+  for (const id of armedTimers) clearTimeout(id);
+  armedTimers.length = 0;
+}
+
 // --- Global hooks ----------------------------------------------------------
 
 beforeEach(() => {
@@ -382,11 +434,12 @@ beforeEach(() => {
   fetchResponses.length = 0;
   fetchCalls.length = 0;
   // Reset persisted viewer state between tests. The viewer restores the
-  // focused sidebar pill from localStorage (sidebar.ts) and fold/focus from
-  // location.hash (render.ts _restoreHash) on boot; neither is cleared by
-  // wiping the DOM. Without this, a prior test's focused symbol re-applies on
-  // the next boot — highlighting before the test acts and leaking symbol-hit
-  // spans. node 25's timing masked it; node 20's exposed it.
+  // focused sidebar pill from sessionStorage (sidebar.ts) and fold/focus
+  // from location.hash (render.ts _restoreHash) on boot; neither is cleared
+  // by wiping the DOM. Without this, a prior test's focused symbol re-applies
+  // on the next boot — highlighting before the test acts and leaking
+  // symbol-hit spans. node 25's timing masked it; node 20's exposed it.
+  sessionStorage.clear();
   localStorage.clear();
   window.history.replaceState(null, "", window.location.pathname + window.location.search);
   (globalThis as unknown as { EventSource: typeof EventSource }).EventSource =
@@ -394,9 +447,10 @@ beforeEach(() => {
   explainerLoadResponse = null;
   vi.spyOn(globalThis, "fetch").mockImplementation(((url: string, init?: RequestInit) => {
     fetchCalls.push({ url, init });
-    const next = (url === "/explainer" && explainerLoadResponse !== null)
-      ? explainerLoadResponse
-      : fetchResponses.shift() ?? { status: 200, body: {} };
+    let next: FetchResponse;
+    if (url === "/prefs") next = init?.method === "PATCH" ? { status: 200, body: {} } : prefsLoadResponse;
+    else if (url === "/explainer" && explainerLoadResponse !== null) next = explainerLoadResponse;
+    else next = fetchResponses.shift() ?? { status: 200, body: {} };
     return Promise.resolve({
       status: next.status,
       ok: next.status >= 200 && next.status < 300,
@@ -407,6 +461,7 @@ beforeEach(() => {
 
 afterEach(() => {
   dropPageListeners();
+  dropTimers();
   document.head.innerHTML = "";
   document.body.innerHTML = "";
 });
@@ -1215,7 +1270,7 @@ describe("streaming events", () => {
   });
 
   test("a filter restored at boot is not a focus: the diff opens filtered, at its level", async () => {
-    localStorage.setItem("scr-active-group:local", "symbols:SY0");
+    sessionStorage.setItem("scr-active-group:local", "symbols:SY0");
     await bootViewer(makeData({
       pending: false, files: [foldFile()],
       symbols: [{ id: "SY0", title: "mid", rationale: "", hunk_ids: ["H1"] }],
@@ -1599,7 +1654,8 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
       expect(block.classList.contains("headless")).toBe(true);
       expect(extent("H0_0:span:4-5")).toEqual([4, 5]);
       expect(rowsUntouched()).toBe(true);
-      expect(localStorage.getItem("scr-gutter-fold")).toBe("collapsed");
+      await flushPrefs();
+      expect(prefsPatches()).toEqual([{ "scr-gutter-fold": "collapsed" }]);
       // A pass the rows trigger while folded places no text either.
       await layoutGeometry();
       expect(block.classList.contains("headless")).toBe(true);
@@ -1609,11 +1665,11 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
       expect(collapsed()).toBe(false);
       expect(block.classList.contains("headless")).toBe(false);
       expect(rowsUntouched()).toBe(true);
-      expect(localStorage.getItem("scr-gutter-fold")).toBe("expanded");
+      await flushPrefs();
+      expect(prefsPatches()).toEqual([{ "scr-gutter-fold": "collapsed" }, { "scr-gutter-fold": "expanded" }]);
     });
 
-    test("the fold is remembered across a reload, and applies to every half", async () => {
-      localStorage.setItem("scr-gutter-fold", "collapsed");
+    test("the fold is a stored preference: it boots folded from /prefs, and applies to every half", async () => {
       const file = gutterFile(TALL);
       const hunks = file.hunks as Record<string, unknown>[];
       hunks.push(makeHunkBlock("H0_1", "adds more", {
@@ -1621,7 +1677,11 @@ describe("the span gutter at the right edge: spans on visible code (ADR 0008)", 
         rows: [12, 13].map((n) => ({ kind: "ins", old_line: null, new_line: n, old_text: "", new_text: `l${n}` })),
         spans: [span("H0_1:span:12-13", 12, 13, "later")],
       }));
-      await bootViewer(makeData({ pending: false, files: [file], symbols: [] }));
+      await bootViewer(
+        makeData({ pending: false, files: [file], symbols: [] }),
+        { prefs: { status: 200, body: { "scr-gutter-fold": "collapsed" } } },
+      );
+      expect(fetchCalls.filter((c) => c.url === "/prefs" && c.init?.method !== "PATCH")).toHaveLength(1);
       fold("code");
       expect(collapsed()).toBe(true);
       const blocks = Array.from(document.querySelectorAll<HTMLElement>(".half-new > .span-text"));
@@ -3984,11 +4044,23 @@ describe("the sidebar divider", () => {
     expect(divider()).toBe(el);
   });
 
-  test("dragging writes the sidebar's basis and stores the width", async () => {
+  test("dragging writes the sidebar's basis and stores the width as a preference", async () => {
     await bootViewer(makeData({ pending: false }));
     dragDivider(divider(), 0, 300);
     expect(basis()).toBe("300px");
-    expect(localStorage.getItem("scr-sidebar-width")).toBe("300");
+    await flushPrefs();
+    expect(prefsPatches()).toEqual([{ "scr-sidebar-width": 300 }]);
+  });
+
+  test("a drag and the nudges after it go to the server as one write", async () => {
+    await bootViewer(makeData({ pending: false }));
+    const el = divider();
+    dragDivider(el, 0, 300);
+    nudgeDivider(el, "ArrowRight");
+    nudgeDivider(el, "ArrowRight");
+    expect(prefsPatches()).toEqual([]);
+    await flushPrefs();
+    expect(prefsPatches()).toEqual([{ "scr-sidebar-width": 332 }]);
   });
 
   test("the page stops selecting while the boundary is moving", async () => {
@@ -4028,7 +4100,8 @@ describe("the sidebar divider", () => {
     expect(basis()).toBe("252px");
     // A nudge is a whole gesture, so it stores where a drag stores on
     // release.
-    expect(localStorage.getItem("scr-sidebar-width")).toBe("252");
+    await flushPrefs();
+    expect(prefsPatches()).toEqual([{ "scr-sidebar-width": 252 }]);
     // And a key the divider has no move for is not one it swallows.
     nudgeDivider(el, "ArrowUp");
     expect(basis()).toBe("252px");
@@ -4040,26 +4113,35 @@ describe("the sidebar divider", () => {
     dragDivider(el, 0, 300);
     el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
     expect(basis()).toBe("");
-    expect(localStorage.getItem("scr-sidebar-width")).toBeNull();
+    // The reset is the one write: a null unsets the key server-side.
+    await flushPrefs();
+    expect(prefsPatches()).toEqual([{ "scr-sidebar-width": null }]);
   });
 
   test("the stored width is there on the next boot", async () => {
-    await bootViewer(makeData({ pending: false }));
-    dragDivider(divider(), 0, 300);
-
-    // A second boot in the same window: the DOM is rebuilt, localStorage
-    // is not, which is the reload the reader sees.
-    await bootViewer(makeData({ pending: false }));
+    // The next run is a new origin, so the width comes back from /prefs,
+    // not from the browser.
+    await bootViewer(makeData({ pending: false }), { prefs: { status: 200, body: { "scr-sidebar-width": 300 } } });
     expect(basis()).toBe("300px");
     expect(divider().getAttribute("aria-valuenow")).toBe("300");
+    expect(prefsPatches()).toEqual([]);
   });
 
   test("a stored width wider than the window clamps, and is not rewritten", async () => {
-    localStorage.setItem("scr-sidebar-width", "900");
-    await bootViewer(makeData({ pending: false }));
+    await bootViewer(makeData({ pending: false }), { prefs: { status: 200, body: { "scr-sidebar-width": 900 } } });
     expect(basis()).toBe("410px");
     // The room may come back — a narrow window is not a decision.
-    expect(localStorage.getItem("scr-sidebar-width")).toBe("900");
+    await flushPrefs();
+    expect(prefsPatches()).toEqual([]);
+  });
+
+  test("a /prefs the server cannot answer boots the defaults", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await bootViewer(makeData({ pending: false }), { prefs: { status: 404, body: { error: "not found" } } });
+    expect(basis()).toBe("");
+    expect(document.documentElement.classList.contains("gutter-collapsed")).toBe(false);
+    expect(document.querySelector(".boot-error")).toBeNull();
+    expect(warn.mock.calls.filter((c) => String(c[0]).startsWith("prefs:"))).toHaveLength(1);
   });
 });
 
@@ -4090,8 +4172,9 @@ describe("overview mode (ADR 0007)", () => {
   async function bootWithExplainer(
     explainer: { status: number; body: unknown },
     dataOverrides: Partial<ViewerData> = {},
+    opts: Omit<BootOptions, "explainer"> = {},
   ): Promise<void> {
-    await bootViewer(makeData({ explainer: true, ...dataOverrides }), { explainer });
+    await bootViewer(makeData({ explainer: true, ...dataOverrides }), { ...opts, explainer });
     await new Promise<void>((r) => setTimeout(r, 0));
   }
 
@@ -4205,13 +4288,13 @@ describe("overview mode (ADR 0007)", () => {
   });
 
   test("the section tree does not touch the diff-mode sidebar pill", async () => {
-    localStorage.setItem("scr-active-group:local", "files:BF0");
+    sessionStorage.setItem("scr-active-group:local", "files:BF0");
     await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
     const tree = document.querySelector('#group-sidebar [data-pill-id="background"]') as HTMLElement;
     tree.click();
     await new Promise<void>((r) => setTimeout(r, 0));
-    expect(localStorage.getItem("scr-active-group:local")).toBe("files:BF0");
-    expect(localStorage.getItem("scr-explainer-section:local")).toBe("explainer:background");
+    expect(sessionStorage.getItem("scr-active-group:local")).toBe("files:BF0");
+    expect(sessionStorage.getItem("scr-explainer-section:local")).toBe("explainer:background");
   });
 
   test("an SSE frame from another tab fills the pane without a POST", async () => {
@@ -4409,8 +4492,8 @@ describe("overview mode (ADR 0007)", () => {
     };
 
     /** Boot into the document with the panel mounted and closed. */
-    async function bootWithPanel(): Promise<HTMLElement> {
-      await bootWithExplainer({ status: 200, body: PANEL_DOC }, { pending: false, files: FILES });
+    async function bootWithPanel(opts: Omit<BootOptions, "explainer"> = {}): Promise<HTMLElement> {
+      await bootWithExplainer({ status: 200, body: PANEL_DOC }, { pending: false, files: FILES }, opts);
       return document.querySelector("#app .explainer-detail") as HTMLElement;
     }
 
@@ -4882,7 +4965,8 @@ describe("overview mode (ADR 0007)", () => {
 
       dragDivider(docDivider(), 0, 620);
       expect(docCell().style.width).toBe("620px");
-      expect(localStorage.getItem("scr-explainer-doc-width")).toBe("620");
+      await flushPrefs();
+      expect(prefsPatches()).toEqual([{ "scr-explainer-doc-width": 620 }]);
       // The measure was the default, not a ceiling: the text takes the
       // column it was given, its padding unchanged.
       expect(getComputedStyle(document.querySelector("#app .explainer") as HTMLElement).maxWidth)
@@ -4913,7 +4997,8 @@ describe("overview mode (ADR 0007)", () => {
       expect(docCell().style.width).toBe("604px");
       nudgeDivider(el, "ArrowRight", true);
       expect(docCell().style.width).toBe("668px");
-      expect(localStorage.getItem("scr-explainer-doc-width")).toBe("668");
+      await flushPrefs();
+      expect(prefsPatches()).toEqual([{ "scr-explainer-doc-width": 668 }]);
     });
 
     test("double-clicking hands the column back to the measure", async () => {
@@ -4929,12 +5014,12 @@ describe("overview mode (ADR 0007)", () => {
       expect(docCell().classList.contains("explainer-doc-sized")).toBe(false);
       expect(getComputedStyle(document.querySelector("#app .explainer") as HTMLElement).maxWidth)
         .toBe("calc(72ch + 64px)");
-      expect(localStorage.getItem("scr-explainer-doc-width")).toBeNull();
+      await flushPrefs();
+      expect(prefsPatches()).toEqual([{ "scr-explainer-doc-width": null }]);
     });
 
     test("the stored column is applied when the mode paints, clamped to the room", async () => {
-      localStorage.setItem("scr-explainer-doc-width", "620");
-      await bootWithPanel();
+      await bootWithPanel({ prefs: { status: 200, body: { "scr-explainer-doc-width": 620 } } });
       // A split that reports no width has none to give: the column
       // arrives at its floor rather than overflowing.
       expect(docCell().classList.contains("explainer-doc-sized")).toBe(true);
@@ -4945,7 +5030,8 @@ describe("overview mode (ADR 0007)", () => {
       splitWidth(1600);
       window.dispatchEvent(new Event("resize"));
       expect(docCell().style.width).toBe("620px");
-      expect(localStorage.getItem("scr-explainer-doc-width")).toBe("620");
+      await flushPrefs();
+      expect(prefsPatches()).toEqual([]);
     });
 
     // --- the document scrolls in its own column --------------------------
