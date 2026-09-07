@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import sys
 import time
@@ -153,4 +154,7 @@ def test_serve_pr_run_refuses_a_run_that_is_not_a_pr(tmp_path: Path, capsys) -> 
 def test_yes_is_no_longer_an_option() -> None:
     result = CliRunner().invoke(app, ["pr", "o/r", "7", "--yes"])
     assert result.exit_code == 2
-    assert "--yes" in (result.stderr or "") + result.stdout
+    # Click boxes and colours the complaint at the terminal's width, so
+    # compare letters only.
+    letters = re.sub(r"[^a-z]", "", ((result.stderr or "") + result.stdout).lower())
+    assert "nosuchoption" in letters and "yes" in letters
