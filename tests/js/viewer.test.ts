@@ -89,8 +89,8 @@ interface FetchResponse {
 const fetchResponses: FetchResponse[] = [];
 const fetchCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
 // `GET /explainer` is answered by URL rather than from the positional
-// queue: boot fires it behind /comments and PostModal's /post-config,
-// so its position depends on wiring the test has no reason to know.
+// queue: boot fires it behind /comments, so its position depends on
+// wiring the test has no reason to know.
 let explainerLoadResponse: FetchResponse | null = null;
 // `/prefs` likewise: boot's GET is the first fetch after /data.json, and
 // a PATCH lands 200ms after any gesture that changes a preference —
