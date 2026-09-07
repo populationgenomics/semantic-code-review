@@ -1287,15 +1287,6 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  * the divider between entries is enough. (The .comment-thread-reply
  * class still attaches for any future treatment that wants to target
  * replies specifically.) */
-.comment-thread-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
-  margin-top: 4px;
-  padding-top: 6px;
-  border-top: 1px solid var(--border);
-}
-.comment-btn-reply { padding: 2px 10px; }
 
 /* Smell pills that are click-to-promote get a subtle hover cue —
  * pointer cursor + a hint underline. Non-promotable smells (the
@@ -1459,7 +1450,9 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 }
 .comment-badge-draft { border-style: dashed; }
 .comment-badge-resend { border-style: dashed; border-color: var(--warn); color: var(--fg); }
-.comment-badge-sent { border-style: solid; border-color: var(--fg-muted); }
+/* One border colour across badge and buttons: a brighter border reads
+ * as a taller box. Draft dashed, sent solid, delivered filled. */
+.comment-badge-sent { border-style: solid; }
 .comment-badge-delivered {
   border-style: solid; border-color: var(--ok); background: var(--ok); color: #fff;
 }
