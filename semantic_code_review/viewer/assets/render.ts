@@ -3,7 +3,8 @@
 // Owns the layout pass that turns DATA into the on-page DOM: PR
 // panel, file blocks, hunk headers, the side-by-side row grid, gap
 // chips for unchanged context, the span gutter's bars and text, the label tree
-// a collapsed fold shows, refs, smell pills. Carries the fold state too
+// a collapsed fold shows and the comment manifest a collapsed hunk or file
+// carries, refs, smell pills. Carries the fold state too
 // (STATE.fold / overrides / renderedDiffs cache) because all of that
 // exists to feed the renderer, and binds the user inputs that drive it
 // (fold-slider buttons, keyboard 1-3, hash sync).
@@ -22,7 +23,7 @@
 //     chain collapses (render.ts → console.ts, as boot.ts wires it)
 
 import { Annotations } from "./annotations";
-import { Comments } from "./comments";
+import { Comments, type ThreadSummary } from "./comments";
 import { Console } from "./console";
 import { Explainer } from "./explainer";
 import { ExplainerPanel, type PanelHost } from "./explainer_panel";
@@ -597,7 +598,10 @@ function _renderFile(f: FileBlock, scope: PaneScope): HTMLElement | null {
   const folded = _fileFolded(scope, f);
   div.classList.toggle("folded", folded);
   div.appendChild(_renderFileHeader(f, folded, scope));
-  if (!folded) {
+  if (folded) {
+    const manifest = _renderCommentManifest(Comments.threadsFor(f.path), (t) => _revealThread(f, t, scope));
+    if (manifest) div.appendChild(manifest);
+  } else {
     const body = _el("div", "file-body");
     if (Rendered.isOn(scope.rendered, f.id)) {
       // Rendered markdown mode is a separate body renderer: no diff
@@ -925,7 +929,10 @@ function _renderHunk(h: HunkBlock, f: FileBlock, scope: PaneScope): HTMLElement 
   const folded = _hunkFolded(scope, h);
   div.classList.toggle("folded", folded);
   div.appendChild(_renderHunkHeader(h, folded, f, scope));
-  if (!folded) {
+  if (folded) {
+    const manifest = _renderCommentManifest(_hunkThreads(h, f), (t) => _revealThread(f, t, scope));
+    if (manifest) div.appendChild(manifest);
+  } else {
     div.appendChild(_renderHunkDiff(h, f, scope));
     if (h.context) {
       const c = _el("div", "context-note");
@@ -1012,16 +1019,28 @@ function _renderHunkHeader(
 // --- The label tree: what a collapsed fold shows ----------------------------
 //
 // The labels on the rows a fold hid (ADR 0008: folding a region shows its
-// label): every definition touched within them (a `FileBlock.fold_regions`
-// entry with a name whose range holds a changed row) and every annotation
-// span with a row in them, nested by containment over row indices and
-// rendered as labelled rows. Row indices are the one coordinate both
-// kinds share: a deleted definition has only pre-image lines, a span only
-// post-image ones. Nothing is synthesised for rows with neither.
+// label; hidden content is a manifest): every definition touched within
+// them (a `FileBlock.fold_regions` entry with a name whose range holds a
+// changed row), every annotation span with a row in them, and every
+// reviewer comment thread on one of them, nested by containment over row
+// indices and rendered as labelled rows. Row indices are the one
+// coordinate all three share: a deleted definition has only pre-image
+// lines, a span only post-image ones, a thread one line on one side.
+// Nothing is synthesised for rows with none.
 
 type LabelNode =
   | { kind: "definition"; region: FoldRegion; first: number; last: number; children: LabelNode[] }
-  | { kind: "span"; span: AnnotationSpan; first: number; last: number; children: LabelNode[] };
+  | { kind: "span"; span: AnnotationSpan; first: number; last: number; children: LabelNode[] }
+  | { kind: "comment"; thread: ThreadSummary; first: number; last: number; children: LabelNode[] };
+
+// Siblings of one extent, in order: the definition, the spans over it,
+// the threads on it.
+const _LABEL_KIND_ORDER: Record<LabelNode["kind"], number> = { definition: 0, span: 1, comment: 2 };
+
+/** Whether `row` is the line a thread sits on, on the thread's side. */
+function _rowCarries(row: RowBlock, thread: ThreadSummary): boolean {
+  return thread.side === "new" ? row.new_line === thread.line : row.old_line === thread.line;
+}
 
 /** What the tree is being built for: the fold's chevron row, which stays
  *  visible above the rows it labels. A definition covering that row
@@ -1060,34 +1079,45 @@ function _touchedDefinitions(f: FileBlock, rows: RowBlock[], scope: LabelScope):
   return out;
 }
 
-/** Nest definitions and spans by containment. Sorted outermost first —
- *  `(first, -last)`, a definition before a span of the same extent — so a
- *  node is a child of the nearest open node that still covers it. Two
- *  spans of one extent are siblings (two notes on one line are two
- *  observations). A span is drawn from whichever hunk carries it; one
- *  with no row here is simply elsewhere, and one still covering the
- *  visible line has its bar and text on screen already. */
+/** Nest definitions, spans and threads by containment. Sorted outermost
+ *  first — `(first, -last)`, then definition, span, comment for one
+ *  extent — so a node is a child of the nearest open node that still
+ *  covers it. A span covers nothing of exactly its extent: two spans of
+ *  one extent are siblings (two notes on one line are two observations),
+ *  and so are a one-line span and the thread on its line; a thread is a
+ *  leaf. A span is drawn from whichever hunk carries it; one with no row
+ *  here is simply elsewhere, and one still covering the visible line has
+ *  its bar and text on screen already. A span whose intent the reviewer
+ *  promoted is replaced by the comment, as its ticket is in the gutter.
+ *  A thread is listed when its row is among the hidden ones; one on the
+ *  chevron row hangs off a row still on screen. */
 function _labelTree(f: FileBlock, rows: RowBlock[], scope: LabelScope): LabelNode[] {
   const nodes: LabelNode[] = _touchedDefinitions(f, rows, scope);
   for (const h of f.hunks) {
     for (const span of h.spans || []) {
       const shown = scope.visibleRow.new_line;
       if (shown != null && span.start <= shown && shown <= span.end) continue;
+      if (_spanPromoted(span, h.id)) continue;
       const extent = _rowExtent(rows, (r) => r.new_line != null && span.start <= r.new_line && r.new_line <= span.end);
       if (extent === null) continue;
       nodes.push({ kind: "span", span, ...extent, children: [] });
     }
   }
+  for (const thread of Comments.threadsFor(f.path)) {
+    const extent = _rowExtent(rows, (r) => _rowCarries(r, thread));
+    if (extent === null) continue;
+    nodes.push({ kind: "comment", thread, ...extent, children: [] });
+  }
   nodes.sort((a, b) => a.first - b.first || b.last - a.last
-    || (a.kind === b.kind ? 0 : a.kind === "definition" ? -1 : 1));
+    || _LABEL_KIND_ORDER[a.kind] - _LABEL_KIND_ORDER[b.kind]);
   const roots: LabelNode[] = [];
   const open: LabelNode[] = [];
   for (const node of nodes) {
     while (open.length) {
       const top = open[open.length - 1];
       const same = top.first === node.first && top.last === node.last;
-      const covers = top.first <= node.first && node.last <= top.last
-        && !(same && top.kind === "span" && node.kind === "span");
+      const covers = top.kind !== "comment" && top.first <= node.first && node.last <= top.last
+        && !(same && top.kind === "span");
       if (covers) break;
       open.pop();
     }
@@ -1123,6 +1153,7 @@ function _renderLabelTree(f: FileBlock, rows: RowBlock[], scope: LabelScope, pic
 
 /** One labelled row, its children indented beneath. */
 function _renderLabelNode(node: LabelNode, f: FileBlock, rows: RowBlock[], pick: LabelPick): HTMLElement {
+  if (node.kind === "comment") return _renderCommentLabel(node.thread, () => pick(node));
   const row = _el("div", `label-row label-${node.kind}`);
   row.appendChild(_chev(true));
   if (node.kind === "definition") {
@@ -1154,13 +1185,126 @@ function _renderLabelNode(node: LabelNode, f: FileBlock, rows: RowBlock[], pick:
   return wrap;
 }
 
+/** A thread's label row — the one form a hidden thread takes, in a
+ *  fold's label tree and in the manifest under a collapsed hunk or file:
+ *  its line on its side, its state as the sidebar's dot draws it (filled
+ *  while open, hollow once resolved — never colour alone), the root's
+ *  first line cut with an ellipsis. `data-thread-id` is the rendered
+ *  thread row's. */
+function _renderCommentLabel(thread: ThreadSummary, pick: () => void): HTMLElement {
+  const row = _el("div", "label-row label-comment");
+  row.dataset.threadId = thread.id;
+  row.appendChild(_chev(true));
+  row.appendChild(_el("span", "label-range", `${thread.side === "new" ? "+" : "-"}${thread.line}`));
+  const dot = _el("span", `thread-dot ${thread.resolved ? "all-resolved" : "has-unresolved"}`);
+  dot.title = thread.resolved ? "resolved thread" : "unresolved thread";
+  row.appendChild(dot);
+  row.appendChild(_el("span", thread.text ? "label-text" : "label-text empty", thread.text || "(empty comment)"));
+  row.title = thread.text;
+  row.addEventListener("click", (e) => {
+    e.stopPropagation();
+    pick();
+  });
+  return row;
+}
+
+/** Where a thread is to be found within `pane`: its rendered row when
+ *  that is on screen, else the label standing in for it (a collapsed
+ *  definition's tree lists it), else null. */
+function _threadTarget(pane: ParentNode, thread: ThreadSummary): HTMLElement | null {
+  const sel = `[data-thread-id="${_cssEscape(thread.id)}"]`;
+  const row = pane.querySelector<HTMLElement>(`.row-annotation${sel}`);
+  if (row && row.style.display !== "none") return row;
+  return pane.querySelector<HTMLElement>(`.label-comment${sel}`);
+}
+
+// --- The manifest under a collapsed hunk or file ---------------------------
+//
+// The `files` and `hunks` rungs are one-line summaries and name no span
+// or definition (ADR 0008). The reviewer's threads are the exception:
+// a collapsed hunk lists the threads on its rows, a collapsed file every
+// thread on the file, each as the label row the tree uses. Nothing is
+// rendered when there are none.
+
+/** The threads on a hunk's rows, either side, in row order. */
+function _hunkThreads(h: HunkBlock, f: FileBlock): ThreadSummary[] {
+  const rows = h.rows || [];
+  const placed: { thread: ThreadSummary; idx: number }[] = [];
+  for (const thread of Comments.threadsFor(f.path)) {
+    const idx = rows.findIndex((r) => _rowCarries(r, thread));
+    if (idx >= 0) placed.push({ thread, idx });
+  }
+  return placed.sort((a, b) => a.idx - b.idx).map((p) => p.thread);
+}
+
+function _renderCommentManifest(
+  threads: ThreadSummary[], pick: (thread: ThreadSummary) => void,
+): HTMLElement | null {
+  if (!threads.length) return null;
+  const box = _el("div", "comment-manifest");
+  for (const thread of threads) box.appendChild(_renderCommentLabel(thread, () => pick(thread)));
+  return box;
+}
+
+/** A manifest row was clicked: open the file and the hunk carrying the
+ *  thread's line in this pane, repaint, and bring the thread into view —
+ *  its row, or the label a still-collapsed definition lists it under. A
+ *  thread on a line no hunk carries opens the file alone. */
+function _revealThread(f: FileBlock, thread: ThreadSummary, scope: PaneScope): void {
+  scope.overrides[f.id] = false;
+  const hunk = f.hunks.find((h) => (h.rows || []).some((r) => _rowCarries(r, thread)));
+  if (hunk) scope.overrides[hunk.id] = false;
+  scope.repaint();
+  // One pane holds `.file` nodes at a time: the panel's in overview mode,
+  // the diff's otherwise.
+  const fileEl = document.querySelector<HTMLElement>(`.file[data-id="${_cssEscape(f.id)}"]`);
+  const target = fileEl && _threadTarget(fileEl, thread);
+  if (target) target.scrollIntoView({ block: "nearest" });
+}
+
+/** Rebuild what the comment store feeds, in place: the manifests under
+ *  collapsed hunk and file headers, and every fold box's label tree
+ *  (re-attaching the fold chrome rebuilds them in the state the rows are
+ *  in). Boot wires this to the store's `onChange`: comments arrive after
+ *  the first paint and change on every save, delete and promotion, and
+ *  a full render for that would drop the reader's place. */
+function refreshCommentManifests(): void {
+  if (!_initialised) return;
+  const scope = _state.mode === "overview" ? _panelScope : _diffScope();
+  for (const fileEl of document.querySelectorAll<HTMLElement>(".file[data-id]")) {
+    const f = _data.files.find((x) => x.id === fileEl.dataset.id);
+    if (!f) throw new Error(`no file ${fileEl.dataset.id} in the data`);
+    const folded = fileEl.classList.contains("folded");
+    _replaceManifest(fileEl, ".file-header", folded
+      ? _renderCommentManifest(Comments.threadsFor(f.path), (t) => _revealThread(f, t, scope)) : null);
+    if (folded) continue;
+    for (const hunkEl of fileEl.querySelectorAll<HTMLElement>(".hunk[data-id]")) {
+      const h = f.hunks.find((x) => x.id === hunkEl.dataset.id);
+      if (!h) throw new Error(`no hunk ${hunkEl.dataset.id} in ${f.id}`);
+      _replaceManifest(hunkEl, ".hunk-header", hunkEl.classList.contains("folded")
+        ? _renderCommentManifest(_hunkThreads(h, f), (t) => _revealThread(f, t, scope)) : null);
+    }
+    attachFileFolds(fileEl, f);
+  }
+}
+
+/** Put `fresh` (or nothing) where `el`'s manifest goes: right after its
+ *  header, replacing the one there. */
+function _replaceManifest(el: HTMLElement, headerSelector: string, fresh: HTMLElement | null): void {
+  el.querySelector(":scope > .comment-manifest")?.remove();
+  if (!fresh) return;
+  const header = el.querySelector(`:scope > ${headerSelector}`);
+  if (!header) throw new Error(`${el.dataset.id}: no ${headerSelector}`);
+  header.after(fresh);
+}
+
 // --- A collapsed fold's labels ---------------------------------------------
 
 /** The labels a collapsed region shows (the `FoldLabels` folds.ts asks
  *  for): the tree over the rows the fold hid. Clicking one opens the fold
- *  and lands on what it names — a span's text, a definition's first row
- *  — found within this pane's copy of the file, so the explainer panel
- *  never scrolls the diff pane. */
+ *  and lands on what it names — a span's text, a thread's row, a
+ *  definition's first row — found within this pane's copy of the file,
+ *  so the explainer panel never scrolls the diff pane. */
 function _foldLabels(f: FileBlock): FoldLabels {
   return (headerRow, bodyRows, open) => {
     const scope: LabelScope = { visibleRow: headerRow };
@@ -1168,10 +1312,16 @@ function _foldLabels(f: FileBlock): FoldLabels {
     const pick: LabelPick = (node) => {
       open();
       const pane = tree?.closest(".file") ?? document;
-      const target = node.kind === "span"
-        ? pane.querySelector<HTMLElement>(`.span-text[data-span-id="${_cssEscape(node.span.id)}"]`)
-        : (bodyRows[node.first].newEl.children[1].classList.contains("empty")
-          ? bodyRows[node.first].oldEl : bodyRows[node.first].newEl);
+      const rowOf = (side: "old" | "new"): HTMLElement =>
+        side === "new" ? bodyRows[node.first].newEl : bodyRows[node.first].oldEl;
+      let target: HTMLElement | null;
+      if (node.kind === "span") {
+        target = pane.querySelector<HTMLElement>(`.span-text[data-span-id="${_cssEscape(node.span.id)}"]`);
+      } else if (node.kind === "comment") {
+        target = _threadTarget(pane, node.thread) ?? rowOf(node.thread.side);
+      } else {
+        target = rowOf(bodyRows[node.first].newEl.children[1].classList.contains("empty") ? "old" : "new");
+      }
       if (target) target.scrollIntoView({ block: "nearest" });
     };
     tree = _renderLabelTree(f, bodyRows, scope, pick);
@@ -2178,5 +2328,6 @@ export const Render = {
   repaintHunkHeader,
   clearRenderedDiffCache,
   attachFileFolds,
+  refreshCommentManifests,
   setSymbolSearch,
 };

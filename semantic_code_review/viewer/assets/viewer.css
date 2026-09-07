@@ -238,14 +238,18 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  * amber when there's outstanding discussion to chase. */
 /* Shape carries the state, colour reinforces it: a filled disc while any
  * thread is open, a hollow ring once every thread is resolved. Orange and
- * green alone are not distinguishable to every reviewer. */
-.group-btn-comments {
+ * green alone are not distinguishable to every reviewer. The same dot
+ * marks one thread in a fold's label tree and a comment manifest
+ * (`.thread-dot`). */
+.group-btn-comments, .thread-dot {
   width: 8px; height: 8px; border-radius: 50%;
-  justify-self: center;
   box-sizing: border-box;
 }
-.group-btn-comments.has-unresolved { background: var(--warn); }
-.group-btn-comments.all-resolved { background: transparent; border: 2px solid var(--ok); }
+.group-btn-comments { justify-self: center; }
+.group-btn-comments.has-unresolved, .thread-dot.has-unresolved { background: var(--warn); }
+.group-btn-comments.all-resolved, .thread-dot.all-resolved {
+  background: transparent; border: 2px solid var(--ok);
+}
 .group-btn-all {
   margin-bottom: 6px;
   color: var(--fg-muted);
@@ -655,11 +659,11 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 
 /* --- Label tree ----------------------------------------------------------- */
 /* What a collapsed fold shows beneath its summary line: the labels on the
- * rows it hid — the definitions touched and the annotation spans, nested.
- * The summary line keeps the ~3-line clamp; the tree is not clipped. Each
- * label is an inline row (chevron + name or range + text), not a
- * filled/bordered box — the chevron carries the "click to open" affordance
- * and a subtle hover fill echoes it. */
+ * rows it hid — the definitions touched, the annotation spans and the
+ * reviewer's comment threads, nested. The summary line keeps the ~3-line
+ * clamp; the tree is not clipped. Each label is an inline row (chevron +
+ * name or range + text), not a filled/bordered box — the chevron carries
+ * the "click to open" affordance and a subtle hover fill echoes it. */
 .diff .annot-fold .fold-summary { max-height: 5em; overflow: hidden; }
 .label-tree {
   padding: 4px 0 0; margin-top: 4px;
@@ -679,6 +683,20 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 .label-def { font-family: var(--mono); font-size: 12px; font-weight: 600; flex-shrink: 0; }
 .label-text { flex: 1; font-size: 13px; }
 .label-text.empty { color: var(--fg-dim); font-style: italic; }
+/* A thread's row: its state dot beside the line, the root's first line on
+ * one line — the thread itself is a click away. */
+.label-comment .thread-dot { flex-shrink: 0; margin-top: 5px; }
+.label-comment .label-text {
+  min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* The manifest under a collapsed hunk or file header: the threads inside
+ * it, one label row each, quiet and indented under the header's text. */
+.comment-manifest {
+  padding: 0 12px 4px 36px;
+  color: var(--fg-muted); font-size: 12px;
+}
+.comment-manifest .label-text { font-size: 12px; }
+.file > .comment-manifest { padding-left: 38px; background: var(--bg-alt); }
 /* A node's children sit indented beneath its row, with a hairline on the
  * left carrying the containment. */
 .label-children {

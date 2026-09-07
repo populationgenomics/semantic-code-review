@@ -320,27 +320,36 @@ function _setFoldSummary(
   foldHandle.resize();
 }
 
-// A fold's state lives in its rows: collapsed when every body row is
-// hidden. Re-attaching after a gap expands or a summary lands rebuilds
-// the chevron in the state the rows are already in, so it never pops a
-// fold open or shows an open chevron over hidden rows.
-function _isCollapsed(rows: RowWithEls[], bodyStart: number, bodyEnd: number): boolean {
+// A fold owns what it hides. Every row and attachment a fold hides
+// carries the fold's key in `data-fold-by`, and a fold shows again only
+// what carries its key: a nested fold's rows, box and comment rows stay
+// as the nested fold left them when the enclosing one opens or closes,
+// and a row hidden by the fold's earlier incarnation (before a re-attach)
+// is still known to be its own.
+function _foldKey(region: FoldRegion): string {
+  return `${region.context || "right"}:${region.right_start ?? ""}-${region.right_end ?? ""}`
+    + `:${region.left_start ?? ""}-${region.left_end ?? ""}`;
+}
+
+// A fold's state lives in its rows: collapsed when it hides any body
+// row. Re-attaching after a gap expands, a summary lands or the comment
+// store changes rebuilds the chevron in the state the rows are already
+// in, so it never pops a fold open — a collapsed one re-hides its body,
+// taking in rows a chip has since disclosed and anything attached to a
+// hidden row meanwhile.
+function _isCollapsed(rows: RowWithEls[], bodyStart: number, bodyEnd: number, key: string): boolean {
   for (let i = bodyStart; i <= bodyEnd; i++) {
     const r = rows[i];
     if (!r) continue;
-    if ((r.oldEl && r.oldEl.style.display !== "none")
-        || (r.newEl && r.newEl.style.display !== "none")) {
-      return false;
-    }
+    if (r.oldEl?.dataset.foldBy === key || r.newEl?.dataset.foldBy === key) return true;
   }
-  return true;
+  return false;
 }
 
 // A body row folds with what hangs off it: the annotation rows, their
 // placeholders and a span's label sit between it and the next recorded
-// row in DOM order. Only what this fold hid is shown again, so a nested
-// fold's own collapsed box and hidden rows stay as they were.
-function _showRows(rows: RowWithEls[], start: number, end: number, show: boolean): void {
+// row in DOM order.
+function _showRows(rows: RowWithEls[], start: number, end: number, show: boolean, key: string): void {
   const recorded = new Set<HTMLElement>();
   for (const r of rows) { recorded.add(r.oldEl); recorded.add(r.newEl); }
   for (let i = start; i <= end; i++) {
@@ -348,23 +357,26 @@ function _showRows(rows: RowWithEls[], start: number, end: number, show: boolean
     if (!r) continue;
     for (const el of [r.oldEl, r.newEl]) {
       if (!el) continue;
-      el.style.display = show ? "" : "none";
-      _showAttachments(el, recorded, show);
+      _setHidden(el, !show, key);
+      for (let s = el.nextElementSibling as HTMLElement | null; s && !recorded.has(s);
+           s = s.nextElementSibling as HTMLElement | null) {
+        _setHidden(s, !show, key);
+      }
     }
   }
 }
 
-function _showAttachments(rowEl: HTMLElement, recorded: Set<HTMLElement>, show: boolean): void {
-  for (let s = rowEl.nextElementSibling as HTMLElement | null; s && !recorded.has(s);
-       s = s.nextElementSibling as HTMLElement | null) {
-    if (show) {
-      if (s.dataset.foldHidden === undefined) continue;
-      delete s.dataset.foldHidden;
-      s.style.display = "";
-    } else if (s.style.display !== "none") {
-      s.dataset.foldHidden = "";
-      s.style.display = "none";
-    }
+/** Hide `el` on behalf of the fold `key`, or show it again when `key` is
+ *  what hid it. Something already hidden — by another fold, or by its own
+ *  logic, as an open fold's box is — is left as it is. */
+function _setHidden(el: HTMLElement, hide: boolean, key: string): void {
+  if (hide) {
+    if (el.style.display === "none") return;
+    el.style.display = "none";
+    el.dataset.foldBy = key;
+  } else if (el.dataset.foldBy === key) {
+    delete el.dataset.foldBy;
+    el.style.display = "";
   }
 }
 
@@ -385,8 +397,9 @@ function _attachOneFold(
   const anchor = side === "new" ? headerNew : headerOld;
   const shadow = side === "new" ? headerOld : headerNew;
 
-  const collapsed = _isCollapsed(rows, bodyStart, bodyEnd);
-  if (!collapsed) _showRows(rows, bodyStart, bodyEnd, true);   // a partly hidden body reads as open
+  const key = _foldKey(region);
+  const collapsed = _isCollapsed(rows, bodyStart, bodyEnd, key);
+  if (collapsed) _showRows(rows, bodyStart, bodyEnd, false, key);
   const marker = _chev(collapsed, "fold-chev");
   marker.setAttribute("role", "button");
   marker.setAttribute("tabindex", "0");
@@ -394,7 +407,7 @@ function _attachOneFold(
   let foldHandle: AnnotationHandle | null = null;
   const setOpen = (nowOpen: boolean): void => {
     marker.classList.toggle("open", nowOpen);
-    _showRows(rows, bodyStart, bodyEnd, nowOpen);
+    _showRows(rows, bodyStart, bodyEnd, nowOpen, key);
     if (foldHandle) {
       foldHandle.element.style.display = nowOpen ? "none" : "";
       if (foldHandle.placeholder) {
@@ -436,6 +449,13 @@ function _attachOneFold(
     foldHandle.element.style.display = collapsed ? "" : "none";
     if (foldHandle.placeholder) foldHandle.placeholder.style.display = collapsed ? "" : "none";
     if (collapsed) foldHandle.resize();
+    // A fold whose chevron row an enclosing fold hides is hidden with
+    // it, box and all, and comes back when that fold opens.
+    const enclosing = anchor.dataset.foldBy;
+    if (collapsed && enclosing !== undefined) {
+      _setHidden(foldHandle.element, true, enclosing);
+      if (foldHandle.placeholder) _setHidden(foldHandle.placeholder, true, enclosing);
+    }
   }
 
   marker.addEventListener("click", (e) => {

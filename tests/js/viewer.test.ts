@@ -286,6 +286,30 @@ function nudgeDivider(el: HTMLElement, key: string, shiftKey = false): void {
   el.dispatchEvent(new KeyboardEvent("keydown", { key, shiftKey, bubbles: true }));
 }
 
+/** Every thread label under `root` — a fold's label tree or a comment
+ *  manifest — as "range state text". */
+function threadLabels(root: ParentNode): string[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(".label-comment")).map((el) => {
+    const dot = el.querySelector<HTMLElement>(".thread-dot")!;
+    const state = dot.classList.contains("all-resolved") ? "resolved"
+      : dot.classList.contains("has-unresolved") ? "open" : "?";
+    return `${el.querySelector(".label-range")!.textContent} ${state} ${el.querySelector(".label-text")!.textContent}`;
+  });
+}
+
+/** Run `fn` recording every element `scrollIntoView` was called on. */
+function recordingScrolls(fn: () => void): Element[] {
+  const scrolled: Element[] = [];
+  const orig = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = function scrollIntoView(this: Element): void { scrolled.push(this); };
+  try {
+    fn();
+  } finally {
+    Element.prototype.scrollIntoView = orig;
+  }
+  return scrolled;
+}
+
 function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
   return {
     version: "1",
@@ -2786,8 +2810,13 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
   const labelRows = (root: ParentNode): string[] =>
     Array.from(root.querySelectorAll<HTMLElement>(".label-row")).map((el) =>
       `${el.dataset.def ?? el.dataset.id}: ${el.querySelector(".label-text")!.textContent}`);
-  const foldBoxOf = (line: number): HTMLElement =>
-    rowOfLine(line).nextElementSibling!.querySelector<HTMLElement>(".annot-box")!;
+  /** The fold box hanging off the chevron row for `line` — past any
+   *  comment rows also hanging off it. */
+  const foldBoxOf = (line: number): HTMLElement => {
+    let el = rowOfLine(line).nextElementSibling;
+    while (el && !el.classList.contains("annot-fold")) el = el.nextElementSibling;
+    return el!.querySelector<HTMLElement>(".annot-box")!;
+  };
 
   test("collapsing a definition shows the labels it hid, beneath its summary line", async () => {
     await bootViewer(makeData({ pending: false, files: [labelledFile()], symbols: [] }));
@@ -2877,6 +2906,117 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
     expect(text.style.gridRow).toBe("2 / 3");
     expect(foldBoxOf(5).querySelector(".label-tree")).toBeNull();
     expect(foldBoxOf(5).querySelector(".fold-summary")!.textContent).toContain("method Foo.alpha — ");
+  });
+
+  // --- Hidden content is a manifest: the reviewer's threads are listed too ---
+
+  /** A comment on `a.py`, new side unless `extra` says otherwise. */
+  function comment(id: string, line: number, body: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return { id, file: "a.py", side: "new", line, body, created_at: 1, updated_at: 1, ...extra };
+  }
+  test("a collapsed definition lists the threads on the rows it hid, nested where they sit", async () => {
+    await bootViewer(makeData({ pending: false, files: [labelledFile()], symbols: [] }), {
+      comments: [
+        comment("c-guard", 10, "is this branch reachable?\nsecond line", {}),
+        comment("c-guard-reply", 10, "yes, via the CLI", { in_reply_to_id: "c-guard", created_at: 2 }),
+        comment("c-guard-2", 10, "also: rename this", { created_at: 3 }),
+        comment("gh-tail", 11, "settled", { source: "github", author: "alice", thread_resolved: true }),
+        comment("c-opener", 8, "on the chevron row"),
+        comment("c-alpha", 6, "outside this fold"),
+        comment("c-old", 10, "old line 10 is not among these rows", { side: "old" }),
+      ],
+    });
+    await tick();
+    expandHunk();
+    queueFetchResponse({ status: 500, body: {} });
+
+    clickEl(chevronOnLine(8));
+    const tree = foldBoxOf(8).querySelector(".label-tree")!;
+    // One row per thread (the reply adds nothing), the root's first line
+    // only, in row order; the thread on the opener row hangs off a row
+    // still on screen and alpha's thread is outside the fold. Shape
+    // carries the state: a filled dot while open, a ring once resolved.
+    expect(threadLabels(tree)).toEqual([
+      "+10 open is this branch reachable?",
+      "+10 open also: rename this",
+      "+11 resolved settled",
+    ]);
+    expect(tree.querySelector<HTMLElement>('.label-comment[data-thread-id="c-guard"] .thread-dot')!.title).toBe("unresolved thread");
+    expect(tree.querySelector<HTMLElement>('.label-comment[data-thread-id="gh-tail"] .thread-dot')!.title).toBe("resolved thread");
+    // The guard span (9..10) covers line 10, so its threads nest under
+    // it — beside the one-line callout and each other, not under them;
+    // line 11 is under no span, so its thread is a root.
+    const guard = tree.querySelector('.label-row[data-id="H0_0:span:9-10"]')!.parentElement!;
+    expect(Array.from(guard.querySelector(":scope > .label-children")!.children).map((el) => el.className))
+      .toEqual(["label-row label-span", "label-row label-comment", "label-row label-comment"]);
+    expect(tree.querySelector(':scope > .label-comment[data-thread-id="gh-tail"]')).not.toBeNull();
+    // The thread rows themselves folded with their lines.
+    expect(document.querySelector<HTMLElement>('.row-annotation[data-thread-id="c-guard"]')!.style.display).toBe("none");
+
+    // Clicking the label opens the fold and brings the thread into view.
+    const scrolled = recordingScrolls(() => clickEl(tree.querySelector('.label-comment[data-thread-id="c-guard"]')!));
+    expect(chevronOnLine(8).classList.contains("open")).toBe(true);
+    const threadRow = document.querySelector<HTMLElement>('.row-annotation[data-thread-id="c-guard"]')!;
+    expect(threadRow.style.display).toBe("");
+    expect(scrolled).toEqual([threadRow]);
+  });
+
+  test("a promoted span's comment stands in the tree where the span's label was", async () => {
+    await bootViewer(makeData({ pending: false, files: [labelledFile()], symbols: [] }), {
+      comments: [
+        comment("c-from-span", 9, "beta's guard — promoted", { derived_from: "H0_0:span:9-10" }),
+        // The id a store written before spans recorded a one-line note under.
+        comment("c-from-note", 10, "callout — promoted", { derived_from: "H0_0:line_note:10" }),
+      ],
+    });
+    await tick();
+    expandHunk();
+    queueFetchResponse({ status: 500, body: {} });
+
+    clickEl(chevronOnLine(8));
+    const tree = foldBoxOf(8).querySelector(".label-tree")!;
+    expect(tree.querySelector(".label-span")).toBeNull();
+    expect(threadLabels(tree)).toEqual([
+      "+9 open beta's guard — promoted",
+      "+10 open callout — promoted",
+    ]);
+  });
+
+  test("a comment saved while a definition is collapsed joins its tree in place, hidden with its row", async () => {
+    await bootViewer(makeData({ pending: false, files: [labelledFile()], symbols: [] }));
+    await tick();
+    expandHunk();
+    queueFetchResponse({ status: 500, body: {} });
+    clickEl(chevronOnLine(8));
+    const pillSel = '.label-row[data-id="H0_0:span:10-10"] .smell[data-smell-id="H0_0:span:10-10:smell:dead-code"]';
+    expect(threadLabels(foldBoxOf(8))).toEqual([]);
+    expect(foldBoxOf(8).querySelector<HTMLElement>(pillSel)!.style.display).toBe("");
+
+    // Promote the callout's smell from the tree: the comment lands on a
+    // hidden row. The fold stays closed, the row it hangs off stays
+    // hidden — and so does the comment, which the tree now lists in the
+    // pill's place.
+    foldBoxOf(8).querySelector<HTMLElement>(pillSel)!.click();
+    await tick();
+    expect(chevronOnLine(8).classList.contains("open")).toBe(false);
+    expect(rowOfLine(10).style.display).toBe("none");
+    const threadRow = document.querySelector<HTMLElement>(".row-annotation.annot-comment")!;
+    expect(threadRow.style.display).toBe("none");
+    expect(threadLabels(foldBoxOf(8))).toEqual(["+10 open dead-code"]);
+    expect(foldBoxOf(8).querySelector<HTMLElement>(pillSel)!.style.display).toBe("none");
+    // One box per fold (Foo, alpha, beta), one tree in it: rebuilt, not doubled.
+    expect(document.querySelectorAll(".annot-fold").length).toBe(3);
+    expect(foldBoxOf(8).querySelectorAll(".label-tree")).toHaveLength(1);
+
+    // Opening the fold shows the row and the comment; deleting the
+    // comment takes it out of the tree and gives the pill back.
+    clickEl(chevronOnLine(8));
+    expect(threadRow.style.display).toBe("");
+    threadRow.querySelector<HTMLElement>(".comment-btn-del")!.click();
+    await tick();
+    clickEl(chevronOnLine(8));
+    expect(threadLabels(foldBoxOf(8))).toEqual([]);
+    expect(foldBoxOf(8).querySelector<HTMLElement>(pillSel)!.style.display).toBe("");
   });
 
   test("a region with nothing labelled inside it shows its summary line alone", async () => {
@@ -2993,6 +3133,70 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
     expect(document.querySelector(".annot-box")?.textContent).toBe("from another tab");
   });
 
+  test("a nested fold keeps its state through the enclosing fold closing, opening, and a re-attach", async () => {
+    await bootViewer(makeData({ pending: false, files: [labelledFile()], symbols: [] }), {
+      comments: [comment("c-guard", 10, "is this branch reachable?")],
+    });
+    await tick();
+    expandHunk();
+    queueFetchResponse({ status: 500, body: {} });
+    queueFetchResponse({ status: 500, body: {} });
+    const threadRow = (): HTMLElement => document.querySelector<HTMLElement>('.row-annotation[data-thread-id="c-guard"]')!;
+    const betaBox = (): HTMLElement => foldBoxOf(8).closest<HTMLElement>(".row-annotation")!;
+    const display = (lines: number[]): string[] => lines.map((n) => rowOfLine(n).style.display);
+
+    // Collapse beta, then the class around it.
+    clickEl(chevronOnLine(8));
+    clickEl(chevronOnLine(4));
+    await tick();
+    expect(display([5, 8, 9, 11])).toEqual(["none", "none", "none", "none"]);
+    expect(betaBox().style.display).toBe("none");
+
+    // Opening the class shows what the class hid — beta's opener and its
+    // box — and nothing beta hid: its rows and the thread on them stay
+    // folded under a chevron that is still closed.
+    clickEl(chevronOnLine(4));
+    expect(display([5, 8])).toEqual(["", ""]);
+    expect(display([9, 10, 11])).toEqual(["none", "none", "none"]);
+    expect(threadRow().style.display).toBe("none");
+    expect(chevronOnLine(8).classList.contains("open")).toBe(false);
+    expect(betaBox().style.display).toBe("");
+    expect(threadLabels(betaBox())).toEqual(["+10 open is this branch reachable?"]);
+
+    // A re-attach (a summary landing from another tab) rebuilds the
+    // chrome in the state the rows are in: beta stays closed, the class
+    // around it open.
+    lastEventSource().dispatch("fold-summary", {
+      file_idx: 0, context: "right", right_start: 8, right_end: 11, summary: "beta guards then acts",
+    });
+    expect(chevronOnLine(4).classList.contains("open")).toBe(true);
+    expect(chevronOnLine(8).classList.contains("open")).toBe(false);
+    expect(display([5, 8, 9, 10, 11])).toEqual(["", "", "none", "none", "none"]);
+    expect(foldBoxOf(8).querySelector(".fold-summary")!.textContent).toBe("method Foo.beta — beta guards then acts");
+    expect(threadLabels(betaBox())).toEqual(["+10 open is this branch reachable?"]);
+
+    // A re-attach while the class is closed rebuilds beta's box hidden
+    // with its opener; opening the class shows it, still closed.
+    queueFetchResponse({ status: 500, body: {} });
+    clickEl(chevronOnLine(4));
+    await tick();
+    lastEventSource().dispatch("fold-summary", {
+      file_idx: 0, context: "right", right_start: 1, right_end: 11, summary: "the class",
+    });
+    expect(foldBoxOf(4).querySelector(".fold-summary")!.textContent).toBe("class Foo — the class");
+    expect(display([8, 9])).toEqual(["none", "none"]);
+    expect(betaBox().style.display).toBe("none");
+    clickEl(chevronOnLine(4));
+    expect(display([8, 9])).toEqual(["", "none"]);
+    expect(betaBox().style.display).toBe("");
+    expect(chevronOnLine(8).classList.contains("open")).toBe(false);
+
+    // Opening beta brings its rows and the thread back.
+    clickEl(chevronOnLine(8));
+    expect(display([9, 10, 11])).toEqual(["", "", ""]);
+    expect(threadRow().style.display).toBe("");
+  });
+
   test("re-attaching over cached rows replaces the chevrons rather than doubling them", async () => {
     // A repaint rebuilds the `.file` around the diff pane's cached
     // `.diff`; the fold pass runs again over the same rows.
@@ -3003,6 +3207,191 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
     (document.querySelector('.fold-slider button[data-fold="code"]') as HTMLElement).click();
     expect(chevrons()).toHaveLength(1);
     expect(document.querySelectorAll(".annot-box")).toHaveLength(1);
+  });
+});
+
+describe("hidden content is a manifest: a collapsed hunk or file lists its threads", () => {
+  /** `a.py`: three hunks with unchanged context between — a one-line
+   *  edit at 2, a hunk at 8 replacing two old lines (8, 9) with one new
+   *  (8), a one-line edit at 12; `b.py`: one hunk, no comments. */
+  function twoFileData(): ViewerData {
+    const hunk = (id: string, line: number): Record<string, unknown> => makeHunkBlock(id, `edit at ${line}`, {
+      header: `@@ -${line},1 +${line},1 @@`,
+      old_start: line, old_count: 1, new_start: line, new_count: 1,
+      rows: [{ kind: "pair", old_line: line, new_line: line, old_text: `l${line}`, new_text: `L${line}` }],
+    });
+    const squeeze = makeHunkBlock("H0_1", "two lines become one", {
+      header: "@@ -8,2 +8,1 @@",
+      old_start: 8, old_count: 2, new_start: 8, new_count: 1, adds: 1, dels: 2,
+      rows: [
+        { kind: "del", old_line: 8, new_line: null, old_text: "l8", new_text: "" },
+        { kind: "del", old_line: 9, new_line: null, old_text: "l9", new_text: "" },
+        { kind: "ins", old_line: null, new_line: 8, old_text: "", new_text: "L8" },
+      ],
+    });
+    return makeData({
+      pending: false,
+      files: [
+        {
+          id: "F0", path: "a.py", status: "modified", language: "python",
+          adds: 3, dels: 4, summary: "", head_line_count: 19,
+          symbols: { added: [], modified: [], removed: [] },
+          hunks: [hunk("H0_0", 2), squeeze, hunk("H0_2", 12)],
+        },
+        {
+          id: "F1", path: "b.py", status: "modified", language: "python",
+          adds: 1, dels: 1, summary: "", head_line_count: null,
+          symbols: { added: [], modified: [], removed: [] },
+          hunks: [makeHunkBlock("H1_0")],
+        },
+      ],
+    });
+  }
+  const COMMENTS = [
+    { id: "c-null", file: "a.py", side: "new", line: 2, body: "needs a null check\nand a test", created_at: 1, updated_at: 1 },
+    { id: "c-ctx", file: "a.py", side: "new", line: 5, body: "this loop is the hot path", created_at: 2, updated_at: 2 },
+    { id: "c-old", file: "a.py", side: "old", line: 9, body: "why was this dropped?", created_at: 3, updated_at: 3 },
+    { id: "gh-8", file: "a.py", side: "new", line: 8, body: "settled", created_at: 4, updated_at: 4,
+      source: "github", author: "alice", thread_resolved: true },
+  ];
+  const hunkEl = (id: string): HTMLElement => document.querySelector<HTMLElement>(`.hunk[data-id="${id}"]`)!;
+  const fileEl = (id: string): HTMLElement => document.querySelector<HTMLElement>(`.file[data-id="${id}"]`)!;
+  const setLevel = (level: string): void =>
+    (document.querySelector(`.fold-slider button[data-fold="${level}"]`) as HTMLElement).click();
+
+  test("a collapsed hunk lists the threads on its rows, either side; one with none shows no manifest", async () => {
+    await bootViewer(twoFileData(), { comments: COMMENTS });
+    await tick();
+    setLevel("hunks");
+
+    // One row per thread inside the hunk, in row order — the deleted
+    // line's thread before the inserted line's, whatever their numbers.
+    // The context comment (line 5) is in no hunk.
+    expect(threadLabels(hunkEl("H0_0"))).toEqual(["+2 open needs a null check"]);
+    expect(threadLabels(hunkEl("H0_1"))).toEqual(["-9 open why was this dropped?", "+8 resolved settled"]);
+    expect(hunkEl("H0_2").querySelector(".comment-manifest")).toBeNull();
+    expect(hunkEl("H1_0").querySelector(".comment-manifest")).toBeNull();
+    // The manifest is the header's neighbour, not part of it.
+    expect(hunkEl("H0_0").querySelector(":scope > .comment-manifest")).not.toBeNull();
+    expect(hunkEl("H0_0").querySelector(".hunk-header .comment-manifest")).toBeNull();
+    // Nothing about spans or definitions at this rung.
+    expect(hunkEl("H0_0").querySelector(".label-span, .label-definition, .label-tree")).toBeNull();
+
+    // Clicking a row opens that hunk alone and brings the thread into view.
+    const scrolled = recordingScrolls(() => hunkEl("H0_1").querySelector<HTMLElement>('.label-comment[data-thread-id="c-old"]')!.click());
+    expect(hunkEl("H0_1").classList.contains("folded")).toBe(false);
+    expect(hunkEl("H0_0").classList.contains("folded")).toBe(true);
+    const threadRow = hunkEl("H0_1").querySelector<HTMLElement>('.row-annotation[data-thread-id="c-old"]')!;
+    expect(threadRow).not.toBeNull();
+    expect(scrolled).toEqual([threadRow]);
+    // Open, the hunk carries its threads on their rows and no manifest.
+    expect(hunkEl("H0_1").querySelector(".comment-manifest")).toBeNull();
+  });
+
+  test("a collapsed file lists every thread on it; one with none shows no manifest", async () => {
+    await bootViewer(twoFileData(), { comments: COMMENTS });
+    await tick();
+    setLevel("files");
+
+    // Every thread on the file, by line.
+    expect(threadLabels(fileEl("F0"))).toEqual([
+      "+2 open needs a null check",
+      "+5 open this loop is the hot path",
+      "+8 resolved settled",
+      "-9 open why was this dropped?",
+    ]);
+    expect(fileEl("F0").querySelector(":scope > .comment-manifest")).not.toBeNull();
+    expect(fileEl("F1").querySelector(".comment-manifest")).toBeNull();
+
+    // Clicking a row opens the file and the hunk carrying the line; the
+    // other hunks stay at the level's default.
+    const scrolled = recordingScrolls(() => fileEl("F0").querySelector<HTMLElement>('.label-comment[data-thread-id="c-old"]')!.click());
+    expect(fileEl("F0").classList.contains("folded")).toBe(false);
+    expect(fileEl("F1").classList.contains("folded")).toBe(true);
+    expect(hunkEl("H0_1").classList.contains("folded")).toBe(false);
+    expect(hunkEl("H0_0").classList.contains("folded")).toBe(true);
+    expect(scrolled).toEqual([hunkEl("H0_1").querySelector('.row-annotation[data-thread-id="c-old"]')]);
+    // The still-folded hunk carries its own manifest now.
+    expect(threadLabels(hunkEl("H0_0"))).toEqual(["+2 open needs a null check"]);
+  });
+
+  test("a hunk collapsed before the store loads carries its manifest once it does", async () => {
+    // The default level folds every hunk on the first paint, before
+    // `/comments` resolves; the store landing fills the manifests in
+    // place rather than leaving them empty until the next repaint.
+    await bootViewer(twoFileData(), { comments: COMMENTS });
+    expect(hunkEl("H0_0").classList.contains("folded")).toBe(true);
+    await tick();
+    expect(threadLabels(hunkEl("H0_0"))).toEqual(["+2 open needs a null check"]);
+    expect(threadLabels(hunkEl("H0_1"))).toEqual(["-9 open why was this dropped?", "+8 resolved settled"]);
+    expect(hunkEl("H0_2").querySelector(".comment-manifest")).toBeNull();
+    // Nothing doubled: one manifest per hunk.
+    expect(hunkEl("H0_1").querySelectorAll(".comment-manifest")).toHaveLength(1);
+  });
+
+  test("a collapsed hunk's or file's manifest follows the store in place: a smell promoted from a header joins it", async () => {
+    const data = twoFileData();
+    data.smells_catalogue = {
+      perf: { label: "perf concern", severity: "minor", color: "#888" },
+      "dead-code": { label: "dead code", severity: "minor", color: "#888" },
+    };
+    (data.files![0].hunks as Array<Record<string, unknown>>)[2].smells =
+      [{ tag: "perf", note: "tight loop" }, { tag: "dead-code", note: "" }];
+    await bootViewer(data, { comments: [
+      ...COMMENTS,
+      { id: "c-b", file: "b.py", side: "new", line: 1, body: "in b", created_at: 5, updated_at: 5 },
+    ] });
+    await tick();
+    expect(hunkEl("H0_2").querySelector(".comment-manifest")).toBeNull();
+    // H0_0 open, its thread on a visible row: nothing for a manifest to say.
+    hunkEl("H0_0").querySelector<HTMLElement>(".label-comment")!.click();
+    expect(hunkEl("H0_0").classList.contains("folded")).toBe(false);
+    // b.py collapsed by its header: its manifest, and the file open beside it has none.
+    (fileEl("F1").querySelector(".file-header") as HTMLElement).click();
+    expect(threadLabels(fileEl("F1"))).toEqual(["+1 open in b"]);
+    expect(fileEl("F0").querySelector(":scope > .comment-manifest")).toBeNull();
+
+    // The header's pill is the one control a collapsed hunk offers; its
+    // comment lands on the hunk's first line, and the manifest says so
+    // without the hunk repainting. The open hunk gets none.
+    hunkEl("H0_2").querySelector<HTMLElement>('.smell[data-smell-id="H0_2:smell:perf"]')!.click();
+    await tick();
+    expect(hunkEl("H0_2").classList.contains("folded")).toBe(true);
+    expect(threadLabels(hunkEl("H0_2"))).toEqual(["+12 open perf: tight loop"]);
+    expect(hunkEl("H0_2").querySelector('.smell[data-smell-id="H0_2:smell:perf"]')).toBeNull();
+    expect(hunkEl("H0_0").querySelector(".comment-manifest")).toBeNull();
+    expect(fileEl("F0").querySelector(":scope > .comment-manifest")).toBeNull();
+    expect(threadLabels(fileEl("F1"))).toEqual(["+1 open in b"]);
+    expect(fileEl("F1").querySelectorAll(".comment-manifest")).toHaveLength(1);
+    // A second promotion replaces the manifest rather than adding one.
+    hunkEl("H0_2").querySelector<HTMLElement>('.smell[data-smell-id="H0_2:smell:dead-code"]')!.click();
+    await tick();
+    expect(hunkEl("H0_2").querySelectorAll(".comment-manifest")).toHaveLength(1);
+    expect(threadLabels(hunkEl("H0_2"))).toEqual(["+12 open perf: tight loop", "+12 open dead-code"]);
+
+    // Deleting a comment from its row (the hunk opened for it) gives its
+    // pill back and, once the hunk folds again, the manifest lists the
+    // other thread alone.
+    hunkEl("H0_2").querySelector<HTMLElement>(".label-comment")!.click();
+    expect(hunkEl("H0_2").classList.contains("folded")).toBe(false);
+    const perfRow = Array.from(hunkEl("H0_2").querySelectorAll<HTMLElement>(".row-annotation.annot-comment"))
+      .find((r) => r.textContent!.includes("perf: tight loop"))!;
+    perfRow.querySelector<HTMLElement>(".comment-btn-del")!.click();
+    await tick();
+    (hunkEl("H0_2").querySelector(".hunk-header") as HTMLElement).click();
+    expect(hunkEl("H0_2").classList.contains("folded")).toBe(true);
+    expect(threadLabels(hunkEl("H0_2"))).toEqual(["+12 open dead-code"]);
+    expect(hunkEl("H0_2").querySelector<HTMLElement>('.smell[data-smell-id="H0_2:smell:perf"]')!.style.display).toBe("");
+    expect(hunkEl("H0_2").querySelector('.smell[data-smell-id="H0_2:smell:dead-code"]')).toBeNull();
+  });
+
+  test("the file header itself keeps toggling the file", async () => {
+    await bootViewer(twoFileData(), { comments: COMMENTS });
+    await tick();
+    setLevel("files");
+    (fileEl("F0").querySelector(".file-header") as HTMLElement).click();
+    expect(fileEl("F0").classList.contains("folded")).toBe(false);
+    expect(fileEl("F0").querySelector(":scope > .comment-manifest")).toBeNull();
   });
 });
 

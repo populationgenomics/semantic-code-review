@@ -24,8 +24,9 @@ let _store: CommentStore = makeNoopStore();
 const _expandedResolved = new Set<string>();
 
 // Fired after every store mutation or load. Boot wires this so the
-// sidebar can refresh per-file comment counts without comments.ts
-// having to import Sidebar (mutual imports kept off the boot path).
+// sidebar can refresh per-file comment counts and the renderer its
+// manifests without comments.ts importing either (mutual imports kept
+// off the boot path).
 let _onChange: (() => void) | null = null;
 
 function _sessionEndpoint(): string {
@@ -48,9 +49,9 @@ function _el(tag: string, className: string | null, text?: string): HTMLElement 
 
 interface InitOptions {
   /** Notified after the initial load completes and after every
-   *  user-driven save/delete. The sidebar uses this to refresh
-   *  per-file comment counts without comments.ts having to import
-   *  Sidebar directly. */
+   *  user-driven save/delete/promotion. The sidebar refreshes its
+   *  per-file counts and the renderer the manifests hidden content
+   *  carries, without comments.ts importing either. */
   onChange?: () => void;
 }
 
@@ -70,6 +71,59 @@ function init(opts: InitOptions = {}): void {
  *  as immutable. */
 function getAll(): ReviewerComment[] {
   return _store.getAll();
+}
+
+/** One thread as a fold's manifest lists it (ADR 0008: hidden content
+ *  is a manifest): where it is, whether it is settled, and the first
+ *  line of what it says. */
+export interface ThreadSummary {
+  /** The thread's id — its root comment's, and the `data-thread-id` of
+   *  its rendered row. */
+  id: string;
+  side: "old" | "new";
+  /** The line the thread is shown on: the root's display line (its
+   *  propagated `head_line` for an ingested comment). */
+  line: number;
+  /** The root comment's first non-blank line. */
+  text: string;
+  resolved: boolean;
+  /** The annotation id the root was promoted from, or null. */
+  derivedFrom: string | null;
+}
+
+/** Every thread on `file` with a line to show on, grouped as `renderAll`
+ *  groups them: by anchor, then by reply chain. Ordered by line, the
+ *  old side before the new on a tie. */
+function threadsFor(file: string): ThreadSummary[] {
+  const byAnchor = new Map<string, { side: "old" | "new"; line: number; comments: ReviewerComment[] }>();
+  for (const c of _store.getAll()) {
+    if (c.file !== file) continue;
+    const ln = _displayLine(c);
+    if (ln == null) continue;
+    const k = `${c.side}|${ln}`;
+    let bucket = byAnchor.get(k);
+    if (!bucket) byAnchor.set(k, bucket = { side: c.side, line: ln, comments: [] });
+    bucket.comments.push(c);
+  }
+  const out: ThreadSummary[] = [];
+  for (const { side, line, comments } of byAnchor.values()) {
+    for (const thread of _buildThreads(comments)) {
+      const root = thread.entries[0];
+      out.push({
+        id: thread.id, side, line,
+        text: _firstLine(root.body), resolved: _isThreadResolved(thread),
+        derivedFrom: root.derived_from ?? null,
+      });
+    }
+  }
+  return out.sort((a, b) => a.line - b.line || (a.side === b.side ? 0 : a.side === "old" ? -1 : 1));
+}
+
+function _firstLine(body: string): string {
+  for (const line of String(body || "").split("\n")) {
+    if (line.trim()) return line.trim();
+  }
+  return "";
 }
 
 /** True iff a local comment has been promoted from the given LLM
@@ -652,6 +706,7 @@ export const Comments = {
   init,
   renderAll,
   getAll,
+  threadsFor,
   isPromoted,
   promote,
   openBlockEditor,
