@@ -17,12 +17,12 @@
 // hunks as live hunks while the rest of each file demotes into
 // collapsible "expand" regions (a file no hunk touches is dropped). The
 // "ungrouped" visual tell (applyFilter) is anchored to the themes axis
-// and only shows in the unfiltered view. The active pill is kept in
-// sessionStorage as `<axis>:<id>` — per tab, for the run the tab is on:
-// the ids mean nothing in another run, and the server's port-0 origin
-// would not carry them there anyway.
+// and only shows in the unfiltered view. The active pill is part of the
+// tab's view state (view_state.ts) as `<axis>:<id>` — per tab, for the
+// run the tab is on: the ids mean nothing in another run.
 
 import { Comments } from "./comments";
+import { ViewState } from "./view_state";
 
 type AxisId = "themes" | "files" | "symbols";
 
@@ -58,7 +58,6 @@ const AXES: SidebarAxis[] = [THEMES_AXIS, FILES_AXIS, SYMBOLS_AXIS];
 
 let _data: ViewerData | null = null;
 let _activePill: ActivePill | null = null;
-let _ssKey = "scr-active-group:local";
 // Notified with the focused symbol's name (or null) whenever the active
 // pill changes — boot points this at Render.setSymbolSearch. Kept as an
 // injected callback rather than a direct import so the sidebar doesn't
@@ -76,8 +75,8 @@ let _onFilterChange: (() => void) | null = null;
 const _collapsedNodes = new Set<string>();
 
 /** Populate axes from the initial viewer data + restore any active
- *  pill from sessionStorage. Idempotent (call again after DATA mutates
- *  in a way the in-place refreshers don't cover). */
+ *  pill from the tab's view state. Idempotent (call again after DATA
+ *  mutates in a way the in-place refreshers don't cover). */
 function init(
   data: ViewerData,
   opts?: {
@@ -88,32 +87,22 @@ function init(
   _data = data;
   if (opts && opts.onActivePillChange) _onActivePillChange = opts.onActivePillChange;
   if (opts && opts.onFilterChange) _onFilterChange = opts.onFilterChange;
-  _ssKey =
-    "scr-active-group:"
-    + (data.pr && data.pr.head_sha ? data.pr.head_sha : "local");
-
   // Themes axis: refresh in place so any references the rest of
   // the viewer holds to THEMES_AXIS.* arrays stay live.
   refreshThemes(data.groups || []);
   rebuildFilesAxis();
   rebuildSymbolsAxis();
 
-  // Restore the active pill across axes. Legacy entries are bare
-  // ids (themes axis); new entries are `<axis>:<id>`.
-  try {
-    const saved = sessionStorage.getItem(_ssKey);
-    if (saved) {
-      let axisId: ActivePill["axis"] = "themes";
-      let pillId = saved;
-      if (saved.includes(":")) {
-        const parts = saved.split(":", 2);
-        axisId = parts[0] as ActivePill["axis"];
-        pillId = parts[1];
-      }
-      const axis = AXES.find((a) => a.id === axisId);
-      if (axis && axis.byId[pillId]) _activePill = { axis: axisId, id: pillId };
-    }
-  } catch (_) { /* sessionStorage may be unavailable */ }
+  // Restore the active pill across axes; a pill the axes no longer
+  // carry (a re-augment renamed the themes) restores nothing.
+  const saved = ViewState.pill();
+  if (saved !== null) {
+    const sep = saved.indexOf(":");
+    const axisId = saved.slice(0, sep) as ActivePill["axis"];
+    const pillId = saved.slice(sep + 1);
+    const axis = AXES.find((a) => a.id === axisId);
+    if (axis && axis.byId[pillId]) _activePill = { axis: axisId, id: pillId };
+  }
   // Seed the symbol search now (init runs before Render.init in boot):
   // the emit's repaint finds no cells yet, but it sets `_symbolSearch` in
   // render so Render.init's first paint highlights a restored Symbols pill.
@@ -306,7 +295,7 @@ function render(): void {
 // module keeps no dependency on the explainer, and it deliberately does
 // NOT go through the pill machinery: a section is not a hunk filter, and
 // routing it through `setActivePill` would both break `activeHunkIds`
-// and overwrite the reviewer's diff-mode pill in sessionStorage.
+// and overwrite the reviewer's diff-mode pill in the view state.
 
 interface SectionTree {
   sections: ExplainerSection[];
@@ -473,10 +462,7 @@ function _isActivePill(axisId: string, pillId: string): boolean {
 
 function setActivePill(pill: ActivePill | null): void {
   _activePill = pill;
-  try {
-    if (pill === null) sessionStorage.removeItem(_ssKey);
-    else sessionStorage.setItem(_ssKey, `${pill.axis}:${pill.id}`);
-  } catch (_) { /* ignore */ }
+  ViewState.setPill(pill === null ? null : `${pill.axis}:${pill.id}`);
   // Seed the symbol-search term before re-rendering so freshly rendered
   // cells pick it up in _renderContent (order matters).
   _emitActivePill();

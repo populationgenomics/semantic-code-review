@@ -133,6 +133,7 @@ const nineLines = Array.from({ length: 9 }, (_, i) => `l${i + 1}`).join("\n") + 
 
 interface ViewerData {
   version?: string;
+  run_id?: string;
   pending?: boolean;
   explainer?: boolean;
   pr?: Record<string, unknown>;
@@ -332,9 +333,36 @@ function recordingScrolls(fn: () => void): Element[] {
   return scrolled;
 }
 
+/** The run id every fixture boots under; the tab's view state is keyed
+ *  by it (view_state.ts). */
+const RUN = "local-main-abc12345";
+
+/** The tab's stored view-state record, as view_state.ts writes it. */
+interface StoredViewState {
+  v: number;
+  run: string;
+  reveals: Array<{ file: string; old: [number, number]; new: [number, number] }>;
+  folds: Array<{ file: string; key: string }>;
+  pill: string | null;
+  section: string | null;
+}
+
+/** Leave a record in sessionStorage as an earlier boot of this tab would
+ *  have; the next `bootViewer` reads it. */
+function plantViewState(partial: Partial<StoredViewState>, run = RUN): void {
+  const record: StoredViewState = { v: 1, run, reveals: [], folds: [], pill: null, section: null, ...partial };
+  sessionStorage.setItem(`scr-view-state:${run}`, JSON.stringify(record));
+}
+
+function storedViewState(run = RUN): StoredViewState | null {
+  const raw = sessionStorage.getItem(`scr-view-state:${run}`);
+  return raw === null ? null : JSON.parse(raw) as StoredViewState;
+}
+
 function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
   return {
     version: "1",
+    run_id: RUN,
     pending: true,
     pr: { title: "test", themes: [], callgraph_edges: [] },
     smells_catalogue: {},
@@ -1270,7 +1298,7 @@ describe("streaming events", () => {
   });
 
   test("a filter restored at boot is not a focus: the diff opens filtered, at its level", async () => {
-    sessionStorage.setItem("scr-active-group:local", "symbols:SY0");
+    plantViewState({ pill: "symbols:SY0" });
     await bootViewer(makeData({
       pending: false, files: [foldFile()],
       symbols: [{ id: "SY0", title: "mid", rationale: "", hunk_ids: ["H1"] }],
@@ -4288,13 +4316,13 @@ describe("overview mode (ADR 0007)", () => {
   });
 
   test("the section tree does not touch the diff-mode sidebar pill", async () => {
-    sessionStorage.setItem("scr-active-group:local", "files:BF0");
+    plantViewState({ pill: "files:BF0" });
     await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
     const tree = document.querySelector('#group-sidebar [data-pill-id="background"]') as HTMLElement;
     tree.click();
     await new Promise<void>((r) => setTimeout(r, 0));
-    expect(sessionStorage.getItem("scr-active-group:local")).toBe("files:BF0");
-    expect(sessionStorage.getItem("scr-explainer-section:local")).toBe("explainer:background");
+    expect(storedViewState()!.pill).toBe("files:BF0");
+    expect(storedViewState()!.section).toBe("background");
   });
 
   test("an SSE frame from another tab fills the pane without a POST", async () => {

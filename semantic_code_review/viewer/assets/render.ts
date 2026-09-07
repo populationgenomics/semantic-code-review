@@ -174,7 +174,7 @@ function renderInit(data: ViewerData): void {
   _state.overrides = Object.create(null);
   _state.renderedDiffs = Object.create(null);
   _state.rendered = Rendered.newPaneState();
-  // A filter restored from sessionStorage is not a gesture: the diff opens
+  // A filter restored from the view state is not a gesture: the diff opens
   // at its level, filtered, with nothing focused.
   _state.focus = null;
   _applyGutterFold(_readGutterFold());

@@ -7,6 +7,9 @@
 
 import { describe, test, expect, vi, beforeEach } from "vitest";
 import { Explainer } from "../../semantic_code_review/viewer/assets/explainer";
+import { ViewState } from "../../semantic_code_review/viewer/assets/view_state";
+
+const RUN = "local-main-abc12345";
 
 /** `n` hunks for file `fileIdx`, ids only: what a hunk chip's label
  *  reads off a file is the count. */
@@ -17,6 +20,7 @@ function hunks(fileIdx: number, n: number): HunkBlock[] {
 function data(overrides: Partial<ViewerData> = {}): ViewerData {
   return {
     version: "1",
+    run_id: RUN,
     pr: { head_sha: "head5678" } as PRBlock,
     smells_catalogue: {},
     files: [
@@ -105,8 +109,17 @@ function mockFetch(responses: Array<{ status: number; body: unknown }>): Array<{
 
 function boot(overrides: Partial<ViewerData> = {}, opts = {}): void {
   const d = data(overrides);
+  // As boot.ts does: the tab's record, before the module reads its slot.
+  ViewState.init(d.run_id);
   Explainer.setFiles(d);
   Explainer.init("", d, opts);
+}
+
+/** Leave `id` in the tab's record, as an earlier boot of this tab would
+ *  have; the `boot` that follows reads it back. */
+function plantSection(id: string): void {
+  ViewState.init(RUN);
+  ViewState.setSection(id);
 }
 
 beforeEach(() => {
@@ -291,17 +304,18 @@ describe("footer", () => {
 // --- Section selection -----------------------------------------------------
 
 describe("section selection", () => {
-  test("persists under its own key, leaving the diff-mode pill alone", () => {
-    sessionStorage.setItem("scr-active-group:head5678", "files:BF0");
+  test("persists in its own slot, leaving the diff-mode pill alone", () => {
+    ViewState.init(RUN);
+    ViewState.setPill("files:BF0");
     boot();
     Explainer.onEvent(doc() as SseExplainerEvent);
     Explainer.setActiveSection("background");
-    expect(sessionStorage.getItem("scr-explainer-section:head5678")).toBe("explainer:background");
-    expect(sessionStorage.getItem("scr-active-group:head5678")).toBe("files:BF0");
+    expect(ViewState.section()).toBe("background");
+    expect(ViewState.pill()).toBe("files:BF0");
   });
 
   test("a persisted section is restored on the next boot", () => {
-    sessionStorage.setItem("scr-explainer-section:head5678", "explainer:background");
+    plantSection("background");
     boot();
     expect(Explainer.activeSectionId()).toBe("background");
     Explainer.onEvent(doc() as SseExplainerEvent);
@@ -309,7 +323,7 @@ describe("section selection", () => {
   });
 
   test("a persisted section the document doesn't have falls back to the Map", () => {
-    sessionStorage.setItem("scr-explainer-section:head5678", "explainer:nonesuch");
+    plantSection("nonesuch");
     boot();
     Explainer.onEvent(doc() as SseExplainerEvent);
     expect(Explainer.activeSectionId()).toBe("map");
@@ -814,7 +828,7 @@ describe("subsections", () => {
   });
 
   test("a subsection can be the persisted selection", () => {
-    sessionStorage.setItem("scr-explainer-section:head5678", "explainer:code-1");
+    plantSection("code-1");
     boot();
     Explainer.onEvent(proseDoc({
       state: "ready",

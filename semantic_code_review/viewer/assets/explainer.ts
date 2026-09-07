@@ -27,11 +27,11 @@
 
 import { renderMarkdown, renderInlineMarkdown } from "./console_render";
 import { ExplainerFigures } from "./explainer_figure";
+import { ViewState } from "./view_state";
 
 let _endpoint = "";
 let _doc: ExplainerDocument | null = null;
 let _activeSectionId: string | null = null;
-let _ssKey = "scr-explainer-section:local";
 let _phase: "absent" | "loading" | "ready" | "error" = "absent";
 let _error = "";
 // Set once the overview SSE event lands (or at boot on a page that
@@ -98,15 +98,11 @@ function init(endpoint: string, data: ViewerData, opts: ExplainerInitOptions = {
   if (opts.onChange) _onChange = opts.onChange;
   if (opts.onOpenFile) _onOpenFile = opts.onOpenFile;
   if (opts.onOpenHunk) _onOpenHunk = opts.onOpenHunk;
-  _ssKey = "scr-explainer-section:" + (data.pr && data.pr.head_sha ? data.pr.head_sha : "local");
   // Per tab, for this run — a section id means nothing in another run.
-  // Deliberately a different key from the sidebar's `scr-active-group:`
-  // pill. Sharing one would make entering overview mode overwrite the
-  // reviewer's diff-mode filter, which they expect to find on return.
-  try {
-    const saved = sessionStorage.getItem(_ssKey);
-    if (saved && saved.startsWith("explainer:")) _activeSectionId = saved.slice("explainer:".length);
-  } catch (_) { /* sessionStorage may be unavailable */ }
+  // Its own slot in the view state, not the sidebar's pill: sharing one
+  // would make entering overview mode overwrite the reviewer's diff-mode
+  // filter, which they expect to find on return.
+  _activeSectionId = ViewState.section();
 }
 
 /** True once the skeleton's inputs exist server-side. The mode button
@@ -412,9 +408,7 @@ function activeSectionId(): string | null {
 
 function setActiveSection(id: string): void {
   _activeSectionId = id;
-  try {
-    sessionStorage.setItem(_ssKey, `explainer:${id}`);
-  } catch (_) { /* ignore */ }
+  ViewState.setSection(id);
   // Still queues on selection, for the section that failed or that a
   // reviewer reached before the auto-queue drained.
   const section = _findSection(id);

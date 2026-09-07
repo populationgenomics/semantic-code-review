@@ -8,9 +8,9 @@
 // synchronously, `set`/`unset` update it at once and send the change
 // behind a short delay so a drag's stream of widths goes as one request.
 //
-// Per-run view state — the selected pill, the open section — is not a
-// preference and does not come here: it is kept in sessionStorage, per
-// tab, by the module that owns it.
+// Per-run view state — the selected pill, the open section, what the
+// reviewer revealed and folded — is not a preference and does not come
+// here: it is the tab's record of the run (view_state.ts).
 
 export type PrefValue = string | number | boolean;
 
