@@ -133,6 +133,25 @@ def test_a_second_run_review_reuses_the_live_server(repo: Path, tmp_path: Path, 
 
 
 @pytest.mark.usefixtures("isolated_config")
+def test_a_sigterm_ends_the_session_cleanly(repo: Path, tmp_path: Path) -> None:
+    """A `kill <pid>` of the recorded server takes the record with it, so
+    the next `--wait` reads `ended` rather than a stale record."""
+    import os
+    import signal
+
+    runs_root = tmp_path / "runs"
+    assert _run_review(repo, runs_root, idle_timeout=60) == 0
+    run_dir = _the_run_dir(runs_root)
+    info = stream.read_server_info(run_dir)
+    assert info is not None
+
+    os.kill(info.pid, signal.SIGTERM)
+
+    _wait_until(lambda: not run_dir.server_json.exists(), what="server.json removed on SIGTERM", timeout=10)
+    _wait_until(lambda: not stream.server_alive(info), what="the server to stop answering", timeout=10)
+
+
+@pytest.mark.usefixtures("isolated_config")
 def test_a_stale_server_json_is_replaced(repo: Path, tmp_path: Path) -> None:
     """A record a killed server left behind must not be reused."""
     from semantic_code_review.fetch import materialize_local_diff_run

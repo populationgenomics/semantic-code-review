@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -228,11 +229,20 @@ def serve_run(run_dir: paths.RunDir, cfg: ReviewConfig) -> int:
     if not run_dir.meta.exists():
         sys.stderr.write(f"scr review: {run_dir.path} is not a run directory\n")
         return 2
+    # A SIGTERM (a `kill` of the pid in server.json) ends the session the
+    # way the idle clock does: `serve_review`'s finally stops the server
+    # and removes the record, so the next `--wait` reads `ended` rather
+    # than meeting a stale record.
+    signal.signal(signal.SIGTERM, _exit_on_sigterm)
     tasks = build_server_tasks(run_dir, cfg)
     if not cfg.augment:
         ensure_augmented_diff(run_dir)
     serve_review(run_dir, cfg, tasks, counterpart="claude")
     return 0
+
+
+def _exit_on_sigterm(signum: int, frame: object) -> None:
+    raise SystemExit(0)
 
 
 def _print_run_id(run_dir: paths.RunDir, url: str) -> None:
