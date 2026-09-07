@@ -14,6 +14,7 @@
 // survives a small window and comes back with the room for it.
 
 import { Annotations } from "./annotations";
+import { Prefs } from "./prefs";
 
 /** What the owner of a boundary answers about the cell it moves. */
 export interface DividerSpec {
@@ -22,10 +23,10 @@ export interface DividerSpec {
   className: string;
   /** What the separator announces, and its tooltip's subject. */
   label: string;
-  /** localStorage key holding the reader's width. Not per-run like the
-   *  pill and section keys: a comfortable column is a property of the
-   *  monitor, not of the diff being read on it. */
-  storageKey: string;
+  /** The preference (`Prefs`) holding the reader's width, as a number of
+   *  pixels. A preference rather than per-run state: a comfortable column
+   *  is a property of the monitor, not of the diff being read on it. */
+  prefKey: string;
   /** The range the cell's width may take, asked for per use — the window
    *  can have been resized since the last answer. */
   bounds: () => { min: number; max: number };
@@ -71,7 +72,7 @@ function create(spec: DividerSpec): HTMLElement {
   el.addEventListener("keydown", (e) => _onKey(live, e));
   el.addEventListener("dblclick", () => _reset(live));
   _watchResize();
-  _put(live, _read(spec.storageKey));
+  _put(live, _read(spec.prefKey));
   return el;
 }
 
@@ -84,7 +85,7 @@ function installSidebar(): void {
   const el = create({
     className: "layout-divider-sidebar",
     label: "Resize the sidebar",
-    storageKey: "scr-sidebar-width",
+    prefKey: "scr-sidebar-width",
     bounds: () => ({ min: SIDEBAR_MIN, max: window.innerWidth * 0.4 }),
     measure: () => sidebar.getBoundingClientRect().width,
     // The stylesheet's basis is the default, so the basis is what a
@@ -166,9 +167,7 @@ function _onKey(live: Live, e: KeyboardEvent): void {
  *  way out of a width whose own divider has been dragged out of reach. */
 function _reset(live: Live): void {
   _put(live, null);
-  try {
-    localStorage.removeItem(live.spec.storageKey);
-  } catch (_) { /* localStorage may be unavailable */ }
+  Prefs.unset(live.spec.prefKey);
 }
 
 /** Arrow geometry is measured, so every boundary move invalidates it.
@@ -209,23 +208,15 @@ function _aria(live: Live): void {
 
 function _store(live: Live): void {
   if (live.wanted === null) return;
-  try {
-    localStorage.setItem(live.spec.storageKey, String(Math.round(live.wanted)));
-  } catch (_) { /* localStorage may be unavailable */ }
+  Prefs.set(live.spec.prefKey, Math.round(live.wanted));
 }
 
-/** The stored width, or null for none — and for a value nothing but an
- *  older version of this code could have written, which is a default
- *  rather than a page that refuses to lay out. */
+/** The stored width, or null for none — and for a value this code could
+ *  not have written, which is a default rather than a page that refuses
+ *  to lay out. */
 function _read(key: string): number | null {
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw === null) return null;
-    const n = Number(raw);
-    return Number.isFinite(n) && n > 0 ? n : null;
-  } catch (_) {
-    return null;
-  }
+  const v = Prefs.get(key);
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null;
 }
 
 export const LayoutDividers = {

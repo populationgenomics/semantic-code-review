@@ -135,7 +135,7 @@ function _divider(split: HTMLElement, docCell: HTMLElement): HTMLElement {
   return LayoutDividers.create({
     className: "layout-divider-doc",
     label: "Resize the document column",
-    storageKey: "scr-explainer-doc-width",
+    prefKey: "scr-explainer-doc-width",
     bounds: () => ({
       min: DOC_FLOOR,
       max: split.clientWidth - PANEL_FLOOR - DIVIDER_WIDTH,
