@@ -2,10 +2,13 @@
 
 A review is a [[run-directory]] plus the things a reviewer can ask of it
 — summarise a fold, write the change-explainer document, hold a console
-turn, post the comments. `ReviewSession` owns that state and those
-operations. `review/server.py` is the HTTP transport in front of it and
-holds no session state beyond its own SSE fan-out, which the session
-publishes *through* rather than owns.
+turn, send a comment to the counterpart, post the comments. `ReviewSession`
+owns that state and those operations, including the stream to Claude: a
+Send wakes the `--wait` blocked in `wait_for_batch`, which hands the
+oldest pending [[batch]] over and marks it delivered; while one is
+blocked the session is [[listening]]. `review/server.py` is the HTTP
+transport in front of it and holds no session state beyond its own SSE
+fan-out, which the session publishes *through* rather than owns.
 
 Two conventions the routes rely on:
 
@@ -31,6 +34,7 @@ import dataclasses
 import logging
 import pathlib
 import threading
+import time
 from collections.abc import Callable, Coroutine
 from typing import Any, Literal, Protocol
 
@@ -380,8 +384,10 @@ class ReviewSession:
         self._console_cancel: threading.Event | None = None
         self._posted_result: PostOutcome | None = None
         # The stream to Claude: a Send notifies here; `wait_for_batch`
-        # blocks on it. Guards the listener count too.
+        # blocks on it. Guards the listener count and the closed flag too.
         self._batch_cond = threading.Condition()
+        self._listeners = 0
+        self._closed = False
 
     # --- lifecycle ------------------------------------------------------
 
@@ -417,7 +423,94 @@ class ReviewSession:
             "debug": self._debug,
             "explainer": self.explainer_enabled,
             "counterpart": self.counterpart,
+            "listening": self.listening,
         }
+
+    def close(self) -> None:
+        """The session is ending: every `wait_for_batch` returns `ended`."""
+        with self._batch_cond:
+            self._closed = True
+            self._batch_cond.notify_all()
+
+    # --- the stream to Claude -------------------------------------------
+
+    @property
+    def listening(self) -> bool:
+        """Whether a `--wait` is attached — Claude is [[listening]]."""
+        with self._batch_cond:
+            return self._listeners > 0
+
+    def wait_for_batch(self, *, timeout: float) -> dict[str, Any]:
+        """Block until a [[batch]] is pending, `timeout` seconds pass, or
+        the session closes; deliver the oldest pending batch if there is one.
+
+        Returns one of:
+            `{status: "batch", batch_no, run_id, entries: [{comment, state,
+            excerpt}]}` — the batch, whose comments are now delivered;
+            `{status: "nothing-yet"}`; `{status: "ended"}`.
+
+        While blocked the caller counts as a listener: the viewer's
+        indicator flips with the first attach and the last detach, and the
+        server's idle clock does not run.
+        """
+        deadline = time.monotonic() + timeout
+        with self._batch_cond:
+            self._listeners += 1
+            if self._listeners == 1:
+                self._publish("listening", {"listening": True})
+            try:
+                while True:
+                    if self._closed:
+                        return {"status": "ended"}
+                    pending = self.store.pending_batches()
+                    if pending:
+                        # Delivered under the condition so two waiters
+                        # cannot both take the same batch.
+                        batch = self.store.deliver(pending[0][0])
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return {"status": "nothing-yet"}
+                    self._batch_cond.wait(remaining)
+            finally:
+                self._listeners -= 1
+                if self._listeners == 0:
+                    self._publish("listening", {"listening": False})
+        for entry in batch.entries:
+            if entry.state == "withdrawn":
+                self._publish("comment-deleted", {"id": entry.comment.id})
+        for c in self.store.all():
+            if c.batch_no == batch.batch_no and c.delivery == "delivered":
+                self._publish_comment(c)
+        return {
+            "status": "batch",
+            "batch_no": batch.batch_no,
+            "run_id": self.run_dir.slug,
+            "entries": [
+                {
+                    "comment": e.comment.model_dump(),
+                    "state": e.state,
+                    "excerpt": None if e.state == "withdrawn" else self._excerpt_for(e.comment),
+                }
+                for e in batch.entries
+            ],
+        }
+
+    def _excerpt_for(self, c: comments.Comment) -> str | None:
+        """The anchored code, two lines either side, from the side's
+        worktree: `head/` for the new side, `base/` (at the file's old
+        path) for the old.
+        """
+        if c.side == "old":
+            old_path = c.file
+            for file in self._viewer_json.get("files") or []:
+                if file.get("path") == c.file and file.get("old_path"):
+                    old_path = str(file["old_path"])
+                    break
+            text = _read_worktree_file(self.run_dir.base, old_path)
+        else:
+            text = _read_worktree_file(self.run_dir.head, c.file)
+        return comments.excerpt(text, c.line)
 
     # --- reviewer comments ----------------------------------------------
     # The store owns the lifecycle transitions; the session decodes what

@@ -16,7 +16,7 @@ import typer
 from .. import paths
 from ..fetch import EmptyDiff, LocalDiffError
 from ..paths import default_runs_root
-from ..review import runner
+from ..review import runner, stream
 from ..review.config import ReviewConfig
 from . import app
 from ._shared import (
@@ -97,6 +97,22 @@ def review(
         envvar="SCR_DEBUG",
         help="Surface each CLI-backend subprocess spawn (raw argv + envelope) in the viewer's debug drawer.",
     ),
+    wait: str = typer.Option(
+        None,
+        "--wait",
+        metavar="RUN_ID",
+        help=(
+            "Claude's end of the review: block for the next batch of comments the "
+            "reviewer sends from the viewer of RUN_ID. Prints `status: batch`, "
+            "`status: nothing-yet` or `status: ended` as the first line; exit 0 for "
+            "all three, 2 for an unknown run id."
+        ),
+    ),
+    wait_timeout: int = typer.Option(
+        stream.WAIT_TIMEOUT,
+        "--wait-timeout",
+        help="Seconds a --wait blocks before answering `nothing-yet`.",
+    ),
     serve_run: str = typer.Option(None, runner.SERVE_RUN_FLAG, hidden=True),
 ) -> None:
     """Review a local git diff in the browser; returns at once with the run id.
@@ -107,6 +123,9 @@ def review(
     """
     configure_logging(verbose)
 
+    runs_root = runs_root or default_runs_root()
+    if wait is not None:
+        raise typer.Exit(code=stream.run_wait(paths.RunDir(runs_root / wait), timeout=wait_timeout))
     if spec is None and serve_run is None:
         typer.echo("scr review: give a git ref or range to review", err=True)
         raise typer.Exit(code=2)
@@ -114,7 +133,6 @@ def review(
     cfg = get_config()
     backend = cfg.resolve_backend(backend)
     model = cfg.resolve_model(backend=backend, cli_value=model)
-    runs_root = runs_root or default_runs_root()
     extra_review_prompt = resolve_extra_review_prompt(extra_prompt) if augment else None
     house_style = resolve_explainer_prompt(explainer_prompt) if augment else None
     # Resolve the backend up-front so a misconfiguration fails fast, before

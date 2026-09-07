@@ -90,6 +90,12 @@ _CLOSE = object()
 #: to the session, which 404s on anything the document does not know.
 _EXPLAINER_SECTION_PREFIX = "/explainer/section/"
 
+#: `GET /wait` without a `timeout`: the same 540 s `scr review --wait`
+#: defaults to, under the Bash tool's 600 s cap. The cap bounds a client
+#: that asks for more.
+_WAIT_DEFAULT_TIMEOUT = 540.0
+_WAIT_MAX_TIMEOUT = 3600.0
+
 #: `POST /comments/<id>/<action>` — the lifecycle gestures on one comment.
 #: `send-all` is not an id and is matched before this.
 _COMMENT_ACTION_RE = re.compile(r"/comments/(?P<id>[^/]+)/(?P<action>send|resolve|unresolve)")
@@ -292,7 +298,29 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/events":
             self._stream_events()
             return
+        if path == "/wait":
+            self._handle_wait()
+            return
         self._json(404, {"error": "not found"})
+
+    def _handle_wait(self) -> None:
+        """`GET /wait?timeout=S` — Claude's end of the stream: block up to
+        `timeout` seconds for the next batch. The query value is a URL
+        component, so parsing it is the transport's job; it is capped so a
+        handler thread never outlives the idle clock by much.
+        """
+        query = urllib.parse.urlparse(self.path).query
+        raw = (urllib.parse.parse_qs(query).get("timeout") or [str(_WAIT_DEFAULT_TIMEOUT)])[0]
+        try:
+            timeout = float(raw)
+        except (TypeError, ValueError):
+            self._json(400, {"error": "timeout must be a number of seconds"})
+            return
+        if timeout < 0:
+            self._json(400, {"error": "timeout must be a number of seconds"})
+            return
+        timeout = min(timeout, _WAIT_MAX_TIMEOUT)
+        self._dispatch(lambda: self.ctx.session.wait_for_batch(timeout=timeout))
 
     #: Whitelist of asset basenames that may be served via /static/.
     #: Keeps the route from doubling as a generic file-read primitive
@@ -660,20 +688,21 @@ class ReviewServer:
         """Block until /exit fires or the server sits idle for ``timeout``
         seconds. Returns True on clean exit, False on the idle timeout.
 
-        Idle means two things at once: no request has been handled
-        (``ctx.last_activity``, set by every route) and no viewer is
-        holding an SSE stream open. An open tab is attention, so a
-        reviewer reading for an hour without clicking anything is never
-        cut off; a closed tab — or one Chrome froze until its socket
-        dropped — starts the countdown.
+        Idle means three things at once: no request has been handled
+        (``ctx.last_activity``, set by every route), no viewer is holding
+        an SSE stream open, and no `--wait` is attached. An open tab is
+        attention, so a reviewer reading for an hour without clicking
+        anything is never cut off; a closed tab — or one Chrome froze
+        until its socket dropped — starts the countdown, unless Claude is
+        still listening for what the reviewer sent.
         """
         # The later of the last handled request and the last poll that
-        # saw a viewer. Carrying the observation forward is what starts
-        # the countdown when a tab drops, rather than at whenever that
-        # tab last made a request.
+        # saw a viewer or a listener. Carrying the observation forward is
+        # what starts the countdown when a tab drops, rather than at
+        # whenever that tab last made a request.
         last_seen = self.ctx.last_activity
         while not self.done_event.is_set():
-            if self._connected_viewers():
+            if self._connected_viewers() or self.session.listening:
                 last_seen = time.time()
             last_seen = max(last_seen, self.ctx.last_activity)
             idle = time.time() - last_seen
@@ -696,7 +725,9 @@ class ReviewServer:
         # Wake any SSE handler threads parked on their queue so they
         # return out of ``_stream_events`` before we tear down the
         # socket — otherwise ``server_close`` can race the still-open
-        # connections and the process pins on the daemon threads.
+        # connections and the process pins on the daemon threads. A
+        # `/wait` parked in the session returns `ended` the same way.
+        self.session.close()
         with self.ctx.state_lock:
             subs = list(self.ctx.subscribers)
         for q in subs:

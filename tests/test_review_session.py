@@ -1101,3 +1101,129 @@ def test_resolving_a_thread_fans_out_every_member(run_dir: paths.RunDir) -> None
     assert sorted(p["id"] for p in flagged) == sorted(["c1", reply["id"]])
     assert h.session.set_thread_resolved("c1", False)["comment_ids"] == ["c1", reply["id"]]
     assert _refused(lambda: h.session.set_thread_resolved("ghost", True)).status == 404
+
+
+# --- the stream to Claude (ADR 0009) --------------------------------------
+
+
+def _stream_harness(run_dir: paths.RunDir) -> _Harness:
+    """A session with a head worktree holding `a.py`, so a batch can carry
+    the anchored code."""
+    run_dir.head.mkdir()
+    (run_dir.head / "a.py").write_text("\n".join(f"line {n}" for n in range(1, 11)) + "\n", encoding="utf-8")
+    return _Harness(run_dir, viewer_json={"version": "1", "files": [{"path": "a.py"}]})
+
+
+def test_wait_returns_the_oldest_pending_batch_and_delivers_it(run_dir: paths.RunDir) -> None:
+    h = _stream_harness(run_dir)
+    h.session.upsert_comment(_note("c1", "why?", line=5))
+    h.session.upsert_comment(_note("c2", "and this", line=9))
+    h.session.send_comment("c1")
+    h.session.send_comment("c2")
+
+    first = h.session.wait_for_batch(timeout=1)
+
+    assert first["status"] == "batch" and first["batch_no"] == 1 and first["run_id"] == run_dir.slug
+    [entry] = first["entries"]
+    assert entry["state"] == "new"
+    assert entry["comment"]["id"] == "c1" and entry["comment"]["body"] == "why?"
+    assert entry["excerpt"] == "\n".join(
+        ["  3 | line 3", "  4 | line 4", "> 5 | line 5", "  6 | line 6", "  7 | line 7"]
+    )
+    by_id = {c.id: c for c in h.session.store.all()}
+    assert by_id["c1"].delivery == "delivered" and by_id["c2"].delivery == "sent"
+    # The tab learns the comment is delivered; the badge follows.
+    delivered = [p for p in h.frames.payloads("comment") if p["delivery"] == "delivered"]
+    assert [p["id"] for p in delivered] == ["c1"]
+    # Attach and detach flip the indicator.
+    assert [p["listening"] for p in h.frames.payloads("listening")] == [True, False]
+
+    second = h.session.wait_for_batch(timeout=1)
+    assert second["batch_no"] == 2 and [e["comment"]["id"] for e in second["entries"]] == ["c2"]
+
+
+def test_wait_answers_nothing_yet_after_the_timeout(run_dir: paths.RunDir) -> None:
+    h = _stream_harness(run_dir)
+    started = time.monotonic()
+    assert h.session.wait_for_batch(timeout=0.2) == {"status": "nothing-yet"}
+    assert time.monotonic() - started >= 0.2
+    assert [p["listening"] for p in h.frames.payloads("listening")] == [True, False]
+    assert not h.session.listening
+
+
+def test_a_send_wakes_a_blocked_wait(run_dir: paths.RunDir) -> None:
+    h = _stream_harness(run_dir)
+    h.session.upsert_comment(_note("c1", line=2))
+    result: dict = {}
+
+    def wait() -> None:
+        result.update(h.session.wait_for_batch(timeout=5))
+
+    t = threading.Thread(target=wait, daemon=True)
+    t.start()
+    _wait_until(lambda: h.session.listening, what="the waiter to attach")
+    assert h.session.data_json()["listening"] is True
+
+    h.session.send_comment("c1")
+    t.join(timeout=5)
+
+    assert not t.is_alive()
+    assert result["status"] == "batch" and [e["comment"]["id"] for e in result["entries"]] == ["c1"]
+    assert not h.session.listening
+
+
+def test_close_ends_a_blocked_wait(run_dir: paths.RunDir) -> None:
+    h = _stream_harness(run_dir)
+    result: dict = {}
+    t = threading.Thread(target=lambda: result.update(h.session.wait_for_batch(timeout=5)), daemon=True)
+    t.start()
+    _wait_until(lambda: h.session.listening, what="the waiter to attach")
+
+    h.session.close()
+    t.join(timeout=5)
+
+    assert result == {"status": "ended"}
+    assert h.session.wait_for_batch(timeout=1) == {"status": "ended"}
+
+
+def test_a_batch_carries_revised_withdrawn_and_reply_states(run_dir: paths.RunDir) -> None:
+    h = _stream_harness(run_dir)
+    h.session.upsert_comment(_note("c1", "v1", line=5))
+    h.session.upsert_comment(_note("gone", "delete me", line=6))
+    h.session.send_all()
+    h.session.wait_for_batch(timeout=1)
+    h.session.upsert_comment(_note("c1", "v2", line=5))  # dirty again
+    h.session.upsert_comment(_note("r1", "follow-up", line=5, in_reply_to_id="c1"))
+    h.session.delete_comment("gone")  # withdrawn: batch 2
+    h.session.send_all()  # c1 (revised) + r1 (reply): batch 3
+
+    withdrawal = h.session.wait_for_batch(timeout=1)
+    rest = h.session.wait_for_batch(timeout=1)
+
+    assert [(e["comment"]["id"], e["state"], e["excerpt"]) for e in withdrawal["entries"]] == [
+        ("gone", "withdrawn", None)
+    ]
+    assert h.frames.payloads("comment-deleted") == [{"id": "gone"}, {"id": "gone"}]
+    assert [(e["comment"]["id"], e["state"]) for e in rest["entries"]] == [("c1", "revised"), ("r1", "reply")]
+    assert rest["entries"][1]["comment"]["in_reply_to_id"] == "c1"
+    assert h.session.store.all()[0].body == "v2"
+
+
+def test_an_old_side_excerpt_reads_the_base_worktree_at_the_old_path(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir, viewer_json={"version": "1", "files": [{"path": "new.py", "old_path": "old.py"}]})
+    run_dir.base.mkdir()
+    (run_dir.base / "old.py").write_text("a\nb\nc\n", encoding="utf-8")
+    h.session.upsert_comment({"id": "c1", "file": "new.py", "side": "old", "line": 2, "body": "gone?"})
+    h.session.send_comment("c1")
+
+    [entry] = h.session.wait_for_batch(timeout=1)["entries"]
+
+    assert entry["excerpt"] == "  1 | a\n> 2 | b\n  3 | c"
+
+
+def test_an_anchor_outside_the_file_has_no_excerpt(run_dir: paths.RunDir) -> None:
+    h = _stream_harness(run_dir)
+    h.session.upsert_comment(_note("c1", line=99))
+    h.session.send_comment("c1")
+    [entry] = h.session.wait_for_batch(timeout=1)["entries"]
+    assert entry["excerpt"] is None
