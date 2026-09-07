@@ -26,8 +26,14 @@ overridable with `--runs-root`. Contents:
 - `base/` and `head/` — git worktrees pinned to the diff's endpoints
   so `RepoTools` (the MCP-exposed read_file / grep) can resolve paths
   during the LLM passes.
-- `comments.json` — reviewer comments persisted by the back-channel
-  HTTP server; populated only when `scr review` is the entry point.
+- `comments.json` — the [[reviewer-comment]] store, with each comment's
+  lifecycle state and the last [[batch]] number assigned. Written by the
+  review server, and by `scr review --wait` once the server has gone.
+- `server.json` — `{port, pid, started_at, url}` of the review server
+  holding the run; present only while it runs (`serve_review` writes it
+  once bound and removes it on exit). How `scr review --wait` and
+  `scr comment` reach the server, and how a second `scr review` knows to
+  reuse it. `server.log` beside it is the detached server's stdio.
 - `explainer.json` — the [[change-explainer]] document, when one has
   been generated. Absent until the reviewer asks for it; written and
   refilled section by section by the `serve_review` explainer routes.
@@ -48,7 +54,8 @@ overridable with `--runs-root`. Contents:
 The layout is owned by one type, `paths.RunDir`: the directory plus a
 named accessor for everything in it — `head`, `base`, `repo_git`,
 `raw_diff`, `files_txt`, `meta`, `spec_md`, `augmented`, `sidecar`,
-`trace`, `usage`, `comments`, `explainer`. Every subsystem under
+`trace`, `usage`, `comments`, `explainer`, `server_json`, `server_log`.
+Every subsystem under
 `fetch/`, `review/`, `augment/`, and `viewer/` takes a
 `run_dir: paths.RunDir` and operates inside it, so "everything I need
 to do my job lives under this one path" is the type rather than a
@@ -143,12 +150,20 @@ Two consumers derive from it rather than reading it whole:
 **Review session**
 The state of one live review and the operations over it — `ReviewSession`
 in `review/session.py`. Holds the [[run-directory]], the [[viewer-data]]
-served as `/data.json`, the [[reviewer-comment]] store, the
-`ServerTasks` once attached, and the guards that allow one console turn
-and one explainer pass at a time. `review/server.py` is HTTP transport in
-front of it and holds no review state of its own: a route decodes the
-request, calls one session operation, and turns the result — or the
-failure — into a response.
+served as `/data.json`, the [[reviewer-comment]] store, its
+[[counterpart]], the `ServerTasks` once attached, and the guards that
+allow one console turn and one explainer pass at a time. It also holds
+the stream to Claude: `wait_for_batch` (behind `GET /wait`) blocks until
+a [[batch]] is pending and hands the oldest over, marking it
+[[delivered]]; a Send wakes it; while one is blocked the session is
+[[listening]], which rides `/data.json`, goes out as a `listening` SSE
+frame on each change, and holds the server's idle clock. The store owns
+the lifecycle transitions; the session decodes what arrived, calls one
+store method and fans the changed comments out (`comment`,
+`comment-deleted`). `review/server.py` is HTTP transport in front of it
+and holds no review state of its own: a route decodes the request, calls
+one session operation, and turns the result — or the failure — into a
+response.
 
 Three rules make that split hold:
 
