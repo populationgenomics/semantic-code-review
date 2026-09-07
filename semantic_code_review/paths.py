@@ -54,6 +54,15 @@ def ensure_private_dir(path: Path) -> Path:
     return path
 
 
+def default_config_root() -> Path:
+    """The user-level scr config directory.
+
+    `~/.config/scr`, or `$XDG_CONFIG_HOME/scr` when set. Holds
+    `config.toml` and `viewer-prefs.json`; may not exist yet.
+    """
+    return Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")) / "scr"
+
+
 def default_config_path() -> Path:
     """Path to the user-level scr config.
 
@@ -61,8 +70,16 @@ def default_config_path() -> Path:
     when set. The file is optional — its absence is the same as an
     empty config.
     """
-    config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")) / "scr"
-    return config_root / "config.toml"
+    return default_config_root() / "config.toml"
+
+
+def default_viewer_prefs_path() -> Path:
+    """Path to the viewer's cross-run preferences (`review/prefs.py`).
+
+    `<config root>/viewer-prefs.json`. Optional, like `config.toml`: its
+    absence is the same as no preference set.
+    """
+    return default_config_root() / "viewer-prefs.json"
 
 
 def find_repo_config_path(start: Path | None = None) -> Path | None:

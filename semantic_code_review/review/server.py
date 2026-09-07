@@ -7,7 +7,9 @@ Transport only: a route decodes the request, calls the session, and
 turns what comes back into a response. The session's refusals arrive as
 ``ScrError``s carrying the status and body to answer with, so the
 error-to-status map is the one in :meth:`_Handler._dispatch` rather than
-one per handler.
+one per handler. The one route that isn't the session's is ``/prefs``:
+the viewer's cross-run preferences (``review/prefs.py``) are the
+reader's, not the review's, and hang off the server context instead.
 
 The server also publishes Server-Sent Events on ``GET /events`` so the
 viewer can react to back-channel updates (the augmentation pass
@@ -37,6 +39,7 @@ from typing import Any, ClassVar
 
 from .. import errors, paths
 from .comments import CommentStore
+from .prefs import PrefsStore
 from .session import PostCallable, ReviewSession, ServerTasks
 
 log = logging.getLogger(__name__)
@@ -163,7 +166,9 @@ class ServerContext:
     """What a request handler needs that isn't the [[review-session]].
 
     The session holds the review; this holds the transport's own state —
-    the idle clock, the shutdown latch, and the SSE fan-out. Subscribers
+    the idle clock, the shutdown latch, and the SSE fan-out — plus the
+    viewer preference store, which is the reader's rather than the
+    review's and so belongs to neither. Subscribers
     and `buffer` are mutated by both publishing threads and
     request-handling threads; the single ``state_lock`` covers both so a
     reconnecting client sees a consistent snapshot (replay-then-subscribe
@@ -172,6 +177,7 @@ class ServerContext:
 
     session: ReviewSession
     done_event: threading.Event
+    prefs: PrefsStore
     last_activity: float = 0.0
     subscribers: list[queue.Queue] = field(default_factory=list)
     buffer: list[_BufferedEvent] = field(default_factory=list)
@@ -269,6 +275,9 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/explainer":
             self._dispatch(self.ctx.session.get_explainer)
+            return
+        if path == "/prefs":
+            self._dispatch(self.ctx.prefs.read)
             return
         if path == "/post-config":
             self._dispatch(self.ctx.session.post_config)
@@ -440,6 +449,18 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._json(404, {"error": "not found"})
 
+    def do_PATCH(self) -> None:
+        self._touch()
+        path = self.path.split("?", 1)[0]
+        if path == "/prefs":
+            # A partial object merged into the file, so PATCH rather than
+            # PUT: the viewer sends the one key a gesture changed.
+            payload = self._body()
+            if payload is not None:
+                self._dispatch(lambda: self.ctx.prefs.update(payload))
+            return
+        self._json(404, {"error": "not found"})
+
     def do_DELETE(self) -> None:
         self._touch()
         path = self.path.split("?", 1)[0]
@@ -556,6 +577,7 @@ class ReviewServer:
         post_meta: dict[str, Any] | None = None,
         debug: bool = False,
         explainer: bool = False,
+        prefs_path: Path | None = None,
     ) -> None:
         self.run_dir = run_dir
         self.done_event = threading.Event()
@@ -578,6 +600,7 @@ class ReviewServer:
         self.ctx = ServerContext(
             session=self.session,
             done_event=self.done_event,
+            prefs=PrefsStore(prefs_path if prefs_path is not None else paths.default_viewer_prefs_path()),
             last_activity=time.time(),
         )
         self._host = host
