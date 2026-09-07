@@ -382,11 +382,12 @@ beforeEach(() => {
   fetchResponses.length = 0;
   fetchCalls.length = 0;
   // Reset persisted viewer state between tests. The viewer restores the
-  // focused sidebar pill from localStorage (sidebar.ts) and fold/focus from
-  // location.hash (render.ts _restoreHash) on boot; neither is cleared by
-  // wiping the DOM. Without this, a prior test's focused symbol re-applies on
-  // the next boot — highlighting before the test acts and leaking symbol-hit
-  // spans. node 25's timing masked it; node 20's exposed it.
+  // focused sidebar pill from sessionStorage (sidebar.ts) and fold/focus
+  // from location.hash (render.ts _restoreHash) on boot; neither is cleared
+  // by wiping the DOM. Without this, a prior test's focused symbol re-applies
+  // on the next boot — highlighting before the test acts and leaking
+  // symbol-hit spans. node 25's timing masked it; node 20's exposed it.
+  sessionStorage.clear();
   localStorage.clear();
   window.history.replaceState(null, "", window.location.pathname + window.location.search);
   (globalThis as unknown as { EventSource: typeof EventSource }).EventSource =
@@ -1215,7 +1216,7 @@ describe("streaming events", () => {
   });
 
   test("a filter restored at boot is not a focus: the diff opens filtered, at its level", async () => {
-    localStorage.setItem("scr-active-group:local", "symbols:SY0");
+    sessionStorage.setItem("scr-active-group:local", "symbols:SY0");
     await bootViewer(makeData({
       pending: false, files: [foldFile()],
       symbols: [{ id: "SY0", title: "mid", rationale: "", hunk_ids: ["H1"] }],
@@ -4205,13 +4206,13 @@ describe("overview mode (ADR 0007)", () => {
   });
 
   test("the section tree does not touch the diff-mode sidebar pill", async () => {
-    localStorage.setItem("scr-active-group:local", "files:BF0");
+    sessionStorage.setItem("scr-active-group:local", "files:BF0");
     await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
     const tree = document.querySelector('#group-sidebar [data-pill-id="background"]') as HTMLElement;
     tree.click();
     await new Promise<void>((r) => setTimeout(r, 0));
-    expect(localStorage.getItem("scr-active-group:local")).toBe("files:BF0");
-    expect(localStorage.getItem("scr-explainer-section:local")).toBe("explainer:background");
+    expect(sessionStorage.getItem("scr-active-group:local")).toBe("files:BF0");
+    expect(sessionStorage.getItem("scr-explainer-section:local")).toBe("explainer:background");
   });
 
   test("an SSE frame from another tab fills the pane without a POST", async () => {

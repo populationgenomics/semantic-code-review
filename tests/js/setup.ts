@@ -10,17 +10,18 @@
 // good enough for testing reflow coalescing as long as we flush with
 // `await flushRaf()` after scheduling.
 //
-// localStorage: node 25 ships the Web Storage API as an on-by-default
-// global, but it's inert without `--localstorage-file` (accessing it
-// yields a methodless stub) and shadows jsdom's working Storage on the
-// shared global object. We install a real in-memory Storage so
-// getItem/setItem/removeItem/clear behave and stay isolated per run.
+// Web Storage: node 25 ships localStorage and sessionStorage as
+// on-by-default globals, but they're inert without `--localstorage-file`
+// (accessing one yields a methodless stub) and shadow jsdom's working
+// Storage on the shared global object. We install real in-memory
+// Storages so getItem/setItem/removeItem/clear behave and stay isolated
+// per run.
 
 import { afterEach, vi } from "vitest";
 
-{
+function memoryStorage(): Storage {
   const store = new Map<string, string>();
-  const storage: Storage = {
+  return {
     getItem: (k) => (store.has(k) ? store.get(k)! : null),
     setItem: (k, v) => { store.set(k, String(v)); },
     removeItem: (k) => { store.delete(k); },
@@ -28,8 +29,10 @@ import { afterEach, vi } from "vitest";
     key: (i) => Array.from(store.keys())[i] ?? null,
     get length() { return store.size; },
   };
-  (globalThis as unknown as { localStorage: Storage }).localStorage = storage;
 }
+
+(globalThis as unknown as { localStorage: Storage }).localStorage = memoryStorage();
+(globalThis as unknown as { sessionStorage: Storage }).sessionStorage = memoryStorage();
 
 // jsdom implements no layout, so Element.scrollIntoView is absent
 // entirely (not a no-op). The viewer calls it to bring a Map row's file
