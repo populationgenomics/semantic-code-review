@@ -722,8 +722,6 @@ def test_an_unexpected_failure_answers_500_naming_its_type(server) -> None:
 _ROUTES = [
     ("GET", "/data.json", 200),
     ("GET", "/comments", 200),
-    ("GET", "/post-config", 200),
-    ("GET", "/post-preview", 409),
     ("GET", "/explainer", 409),
     ("GET", "/file-text?file_idx=0", 404),
     ("GET", "/file-text?file_idx=abc", 400),
@@ -737,7 +735,6 @@ _ROUTES = [
     ("POST", "/console/reset", 200),
     ("POST", "/explainer/skeleton", 409),
     ("POST", "/explainer/section/background", 409),
-    ("POST", "/post-review", 409),
     ("POST", "/nope", 404),
     ("POST", "/comments", 400),
     ("POST", "/comments/send-all", 200),

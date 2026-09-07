@@ -18,7 +18,6 @@ mutations themselves live in `github_graphql.py`.
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import logging
 import sys
@@ -79,23 +78,6 @@ class PostedComment:
     @property
     def is_reply(self) -> bool:
         return self.in_reply_to_node_id is not None
-
-
-@dataclass(frozen=True)
-class PostResult:
-    """Outcome of posting a review. `review_url` is GitHub's permalink
-    for the new review object so the caller can offer "view on
-    github.com".
-    """
-
-    review_id: int
-    review_url: str
-    posted: int
-    #: `source_id -> upstream node id` for each comment that landed.
-    #: The caller marks these posted in the store; without it they stay
-    #: `source="local"` and the next post sends them again, duplicating
-    #: them into a second review.
-    posted_node_ids: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 # Public alias kept so callers that catch posting failures by name

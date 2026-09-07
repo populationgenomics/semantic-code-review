@@ -122,31 +122,6 @@ ConsoleCallable = Callable[
 ]
 
 
-class PostOutcome(Protocol):
-    """What the session reads off a completed post.
-
-    Structural so the review layer's wire shaping doesn't bind to
-    `review/github.py`'s `PostResult`; read-only members so a frozen
-    dataclass satisfies it.
-    """
-
-    @property
-    def review_id(self) -> int: ...
-
-    @property
-    def review_url(self) -> str: ...
-
-    @property
-    def posted(self) -> int: ...
-
-
-#: Signature of the post callback the caller supplies when the viewer is
-#: to handle confirm-and-post in-browser. Takes the comment ids the
-#: reviewer selected in the confirmation modal; posts them and reports
-#: what landed.
-PostCallable = Callable[[list[str]], PostOutcome]
-
-
 class EventPublisher(Protocol):
     """The SSE fan-out, as the session uses it.
 
@@ -362,8 +337,6 @@ class ReviewSession:
         github: pending_review.ReviewSink | None = None,
         debug: bool = False,
         explainer_enabled: bool = False,
-        post_callback: PostCallable | None = None,
-        post_meta: dict[str, Any] | None = None,
     ) -> None:
         if (counterpart == "github") != (github is not None):
             raise ValueError("a GitHub counterpart needs a review sink, and only it takes one")
@@ -383,8 +356,6 @@ class ReviewSession:
         self._viewer_json = viewer_json
         self._publish = publish
         self._debug = debug
-        self._post_callback = post_callback
-        self._post_meta = post_meta
         self._tasks = ServerTasks()
         self._lock = threading.Lock()
         self._console_slot = _ExclusiveSlot()
@@ -395,7 +366,6 @@ class ReviewSession:
         # asker; the session never reads into it.
         self._console_history: Any = None
         self._console_cancel: threading.Event | None = None
-        self._posted_result: PostOutcome | None = None
         # The stream to Claude: a Send notifies here; `wait_for_batch`
         # blocks on it. Guards the listener count and the closed flag too.
         self._batch_cond = threading.Condition()
@@ -790,14 +760,6 @@ class ReviewSession:
         self._publish("pending-review", state)
         return state
 
-    @property
-    def posted_result(self) -> PostOutcome | None:
-        """The most recent successful post, or None if none happened —
-        the reviewer cancelled, closed the tab, or had nothing postable.
-        """
-        with self._lock:
-            return self._posted_result
-
     # --- fold summaries -------------------------------------------------
 
     def fold_summary(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1189,97 +1151,3 @@ class ReviewSession:
             with self._lock:
                 self._console_cancel = None
             self._console_slot.release()
-
-    # --- post (confirm-and-post modal) ----------------------------------
-
-    def post_config(self) -> dict[str, Any]:
-        """Whether this review is configured for posting.
-
-        The viewer fetches this once on boot. When `posting` is true, the
-        Done button opens the confirmation modal instead of exiting
-        directly. The other fields are display-only metadata (modal
-        header: "Posting N comments to <repo>#<number> at <head_sha>").
-        """
-        if self._post_meta is None:
-            return {"posting": False}
-        return {"posting": True, **self._post_meta}
-
-    def post_preview(self) -> list[dict[str, Any]]:
-        """The comments that would be posted, as the modal renders them.
-
-        Computed on demand because the comment store mutates throughout
-        the session — a preview taken at startup would be stale by Done.
-        Each row carries the id (for the selection round-trip),
-        file/side/line (for context), the body, and `is_reply`.
-
-        Raises:
-            ReviewSessionError: 409 — this review isn't posting.
-        """
-        if self._post_callback is None:
-            raise self._not_posting()
-        # Local import keeps the GitHub mapping types off the import
-        # graph of a review that never posts.
-        from .github import comments_to_github
-
-        all_comments = self.store.all()
-        by_id = {c.id: c for c in all_comments}
-        rows: list[dict[str, Any]] = []
-        for posted in comments_to_github(all_comments):
-            src = by_id.get(posted.source_id or "")
-            if src is None:
-                continue
-            rows.append(
-                {
-                    "id": src.id,
-                    "file": src.file,
-                    "side": src.side,
-                    "line": src.line,
-                    "body": posted.body,
-                    "is_reply": posted.is_reply,
-                }
-            )
-        return rows
-
-    def post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Post the selected comments; keep the result, broadcast it.
-
-        Wire format: `{ "comment_ids": ["id1", "id2", ...] }`. The
-        callback filters the store down to those ids, maps to the wire
-        shape, and posts. The result is kept on the session so the CLI
-        can hand it back after `wait_until_done` returns, and fanned out
-        as a `posted` event for other open tabs.
-
-        Does not end the session: the modal stays open showing the
-        result so the reviewer can click through to the GitHub URL, and
-        ends the session explicitly with its Close button.
-
-        Raises:
-            ReviewSessionError: 409 — this review isn't posting; 400 on a
-                malformed selection.
-        """
-        if self._post_callback is None:
-            raise self._not_posting()
-        ids = payload.get("comment_ids")
-        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
-            raise ReviewSessionError(400, "comment_ids must be a list of strings")
-
-        try:
-            result = self._post_callback(ids)
-        except errors.ScrError:
-            raise
-        except Exception:
-            log.exception("post callback raised")
-            raise
-
-        response = {
-            "posted": result.posted,
-            "review_url": result.review_url,
-            "review_id": result.review_id,
-        }
-        with self._lock:
-            self._posted_result = result
-        self._publish("posted", response)
-        return response
-
-    def _not_posting(self) -> ReviewSessionError:
-        return ReviewSessionError(409, "this server isn't configured for posting")

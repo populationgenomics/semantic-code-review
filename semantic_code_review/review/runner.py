@@ -1,14 +1,15 @@
-"""Orchestrate a ``scr review`` session end-to-end.
+"""Orchestrate a review session end-to-end.
 
 Two processes share the work (ADR 0009). The one the user invoked
-(`run_review`) synthesises the [[run-directory]] from a git ref/range
-and optional spec markdown, then re-executes itself detached as the
-review server (`serve_run`) and returns once that child has written
-`server.json`, printing the run id. The child augments, serves the
-viewer, opens the browser, and lives until the tab has been gone for the
-idle period; `scr review --wait <run_id>` reaches it through
-`server.json`. `serve_review` is the serving core both `scr review` and
-`scr pr` use.
+materialises the [[run-directory]] — `run_review` from a git ref/range
+and optional spec markdown, `pr_flow.run_pr_flow` from a GitHub PR —
+then re-executes itself detached as the review server
+(`detach_server` → `serve_run`) and returns once that child has written
+`server.json`, printing the viewer's URL and the run id. The child
+augments, serves the viewer, opens the browser, and lives until the tab
+has been gone for the idle period; `scr review --wait <run_id>` reaches
+it through `server.json`. `serve_review` is the serving core, with
+Claude or GitHub as the [[counterpart]].
 """
 
 from __future__ import annotations
@@ -36,8 +37,9 @@ from ..fetch import materialize_local_diff_run
 from ..format.parse import parse_augmented_diff
 from ..viewer.build_json import build_pending_viewer_json, build_viewer_json
 from . import stream
-from .comments import CommentStore
+from .comments import Comment, CommentStore
 from .config import ReviewConfig
+from .pending_review import ReviewSink
 from .server import ReviewServer
 from .session import (
     ConsoleCallable,
@@ -45,8 +47,6 @@ from .session import (
     ExplainerCallable,
     ExplainerSectionCallable,
     FoldSummaryCallable,
-    PostCallable,
-    PostOutcome,
     ServerTasks,
 )
 
@@ -158,17 +158,8 @@ SERVE_RUN_FLAG = "--serve-run"
 
 
 def run_review(opts: ReviewOptions, *, argv: Sequence[str]) -> int:
-    """Materialise the run, detach the review server, print the run id.
-
-    `argv` is this invocation's own arguments after the program name
-    (`sys.argv[1:]`); the child is the same interpreter re-executing them
-    with `--runs-root <resolved>` and `--serve-run <slug>` appended, so
-    every option the user gave — backend, model, `--no-open`,
-    `--timeout` — reaches the server without being re-encoded. Stdout
-    ends with `run_id: <slug>`; `viewer: <url>` precedes it.
-
-    Returns the process exit code: 0 once the server is reachable, 2 when
-    the child exits before writing `server.json` (its log is printed).
+    """Materialise the run from a git ref/range, detach the review server,
+    print the run id. See `detach_server` for the child and the exit code.
     """
     cfg = opts.config
     run_dir = materialize_local_diff_run(
@@ -180,11 +171,31 @@ def run_review(opts: ReviewOptions, *, argv: Sequence[str]) -> int:
         no_unstaged=opts.no_unstaged,
         spec_md_path=opts.spec_markdown,
     )
+    return detach_server(run_dir, cfg, argv=argv, program="scr review")
+
+
+def detach_server(run_dir: paths.RunDir, cfg: ReviewConfig, *, argv: Sequence[str], program: str) -> int:
+    """Spawn the review server for a materialised run as a detached
+    child, wait until it is reachable, print the viewer's URL and the run
+    id, return.
+
+    `argv` is this invocation's own arguments after the program name
+    (`sys.argv[1:]`); the child is the same interpreter re-executing them
+    with `--runs-root <resolved>` and `--serve-run <slug>` appended, so
+    every option the user gave — backend, model, `--no-open`,
+    `--timeout` — reaches the server without being re-encoded. Stdout
+    ends with `run_id: <slug>`; `viewer: <url>` precedes it. `program`
+    names the command in what goes to stderr.
+
+    A server already holding the run is reused rather than a second one
+    bound to the same directory.
+
+    Returns the process exit code: 0 once the server is reachable, 2 when
+    the child exits before writing `server.json` (its log is printed).
+    """
     existing = stream.read_server_info(run_dir)
     if existing is not None and stream.server_alive(existing):
-        # A server already holds this run: reuse it rather than bind a
-        # second one to the same directory.
-        sys.stderr.write(f"scr review: a server already holds this run at {existing.url}\n")
+        sys.stderr.write(f"{program}: a server already holds this run at {existing.url}\n")
         sys.stderr.flush()
         _print_run_id(run_dir, existing.url)
         return 0
@@ -211,7 +222,7 @@ def run_review(opts: ReviewOptions, *, argv: Sequence[str]) -> int:
         )
     info = _await_server_info(run_dir, child, timeout=SERVER_START_TIMEOUT)
     if info is None:
-        sys.stderr.write(f"scr review: the review server did not start; its log is {run_dir.server_log}:\n")
+        sys.stderr.write(f"{program}: the review server did not start; its log is {run_dir.server_log}:\n")
         sys.stderr.write(_tail(run_dir.server_log))
         sys.stderr.flush()
         return 2
@@ -219,15 +230,18 @@ def run_review(opts: ReviewOptions, *, argv: Sequence[str]) -> int:
     return 0
 
 
-def serve_run(run_dir: paths.RunDir, cfg: ReviewConfig) -> int:
+def serve_run(run_dir: paths.RunDir, cfg: ReviewConfig, *, github: ReviewSink | None = None) -> int:
     """The detached server: serve an already-materialised run until the
     tab has been gone for the idle period. What `--serve-run` runs.
 
-    Prints nothing on stdout — the comments reach Claude through
-    `scr review --wait`, not this process's exit.
+    With `github` the counterpart is GitHub (`scr pr`): the run's pending
+    review is resumed before serving and Sends deliver into it. Without,
+    Claude is: the comments reach it through `scr review --wait`.
+
+    Prints nothing on stdout — nothing here is for the caller's process.
     """
     if not run_dir.meta.exists():
-        sys.stderr.write(f"scr review: {run_dir.path} is not a run directory\n")
+        sys.stderr.write(f"scr: {run_dir.path} is not a run directory\n")
         return 2
     # A SIGTERM (a `kill` of the pid in server.json) ends the session the
     # way the idle clock does: `serve_review`'s finally stops the server
@@ -237,7 +251,7 @@ def serve_run(run_dir: paths.RunDir, cfg: ReviewConfig) -> int:
     tasks = build_server_tasks(run_dir, cfg)
     if not cfg.augment:
         ensure_augmented_diff(run_dir)
-    serve_review(run_dir, cfg, tasks, counterpart="claude")
+    serve_review(run_dir, cfg, tasks, counterpart="github" if github is not None else "claude", github=github)
     return 0
 
 
@@ -278,21 +292,12 @@ def _tail(path: Path, lines: int = 20) -> str:
 
 @dataclass
 class ServeResult:
-    """Outcome of `serve_review`. Returned in addition to the side
-    effect of `comments.json` on disk so callers don't have to re-load
-    it (and so each caller can decide what to do with the comments —
-    `scr review` prints markdown, `scr pr` posts to GitHub).
-
-    ``posted`` is set when the viewer's confirmation modal fired a
-    successful /post-review (only possible when the caller supplied a
-    ``post`` callback to ``serve_review``). None means "no post
-    happened" — cancelled, no postable comments, or the caller wasn't
-    in posting mode at all.
+    """Outcome of `serve_review`: the comments as the session left them,
+    and whether it ended on `/exit` (True) or the idle clock (False).
     """
 
-    comments: list  # list[Comment] — kept loose to avoid an import cycle
-    clean: bool  # True iff the viewer signalled Done; False on idle timeout
-    posted: PostOutcome | None = None
+    comments: list[Comment]
+    clean: bool
 
 
 def ensure_augmented_diff(run_dir: paths.RunDir) -> None:
@@ -301,10 +306,9 @@ def ensure_augmented_diff(run_dir: paths.RunDir) -> None:
 
     The ``--no-augment`` path calls this: an absent one is filled with
     ``raw.diff``, annotation-free. An existing one is left alone. Run
-    dirs are keyed by head SHA, so re-running ``--no-augment`` — which
-    is what a failed post tells the reviewer to do to retry — lands in
-    the run dir a paid-for pass already augmented; overwriting it would
-    drop those annotations and desync the text form from
+    dirs are keyed by head SHA, so re-running ``--no-augment`` on a PR
+    lands in the run dir a paid-for pass already augmented; overwriting
+    it would drop those annotations and desync the text form from
     ``augmented.scr.json``.
     """
     if run_dir.augmented.exists():
@@ -318,21 +322,23 @@ def serve_review(
     tasks: ServerTasks,
     *,
     counterpart: Counterpart,
-    post: PostCallable | None = None,
-    post_meta: dict | None = None,
+    github: ReviewSink | None = None,
     on_ready: Callable[[str], None] | None = None,
 ) -> ServeResult:
     """Render the viewer for a populated run dir, host the back-channel
     server, block until the session ends, and return the comments left.
 
-    The session ends on `/exit` (PR mode's Done) or once the server has
-    sat idle — no request, no open viewer, no `--wait` attached — for
-    `cfg.timeout` seconds. While it runs, `server.json` in the run dir
-    says how to reach it; it is removed on the way out.
+    The session ends once the server has sat idle — no request, no open
+    viewer, no `--wait` attached — for `cfg.timeout` seconds (or on
+    `POST /exit`). While it runs, `server.json` in the run dir says how
+    to reach it; it is removed on the way out.
 
-    Both `serve_run` (local diff) and `pr_flow` (GitHub PR) call this
-    with a run dir whose `meta.json`, `raw.diff`, and worktrees are
-    already in place. If ``tasks.augment`` is supplied, the server starts
+    `github` is the [[pending-review]] when the counterpart is GitHub; an
+    existing one is resumed before the server binds, so the first
+    `/comments` a tab fetches already holds what it carried.
+
+    `serve_run` calls this with a run dir whose `meta.json`, `raw.diff`,
+    and worktrees are already in place. If ``tasks.augment`` is supplied, the server starts
     immediately with a pending viewer (file/hunk structure visible,
     no annotations yet); the augmentation coroutine then runs while
     the page is live, publishing per-hunk SSE events as completions
@@ -355,15 +361,16 @@ def serve_review(
         run_dir=run_dir,
         viewer_json=viewer_json,
         counterpart=counterpart,
+        github=github,
         port=cfg.port,
-        post_callback=post,
-        post_meta=post_meta,
         debug=cfg.debug,
         # Known at construction, not at wire-up: the viewer needs to
         # decide whether to mount the overview-mode button on its first
         # /data.json, well before augmentation has finished.
         explainer=tasks.explainer is not None,
     )
+    if github is not None:
+        srv.session.resume_pending_review()
     srv.start()
     try:
         log.info("review server at %s", srv.url())
@@ -425,11 +432,7 @@ def serve_review(
         run_dir.server_json.unlink(missing_ok=True)
 
     store = CommentStore(run_dir.comments)
-    return ServeResult(
-        comments=store.all(),
-        clean=clean,
-        posted=srv.session.posted_result,
-    )
+    return ServeResult(comments=store.all(), clean=clean)
 
 
 def _write_server_json(run_dir: paths.RunDir, srv: ReviewServer) -> None:

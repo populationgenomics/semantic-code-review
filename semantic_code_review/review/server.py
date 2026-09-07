@@ -1,7 +1,7 @@
 """Ephemeral localhost HTTP server in front of one [[review-session]].
 
-Spawned by ``scr review``; dies when the viewer POSTs /exit or when the
-idle timeout elapses. No external deps — stdlib ``http.server``.
+Spawned by ``scr review`` and ``scr pr``; dies when the idle timeout
+elapses (or on ``POST /exit``). No external deps — stdlib ``http.server``.
 
 Transport only: a route decodes the request, calls the session, and
 turns what comes back into a response. The session's refusals arrive as
@@ -41,7 +41,7 @@ from .. import errors, paths
 from .comments import CommentStore
 from .pending_review import ReviewSink
 from .prefs import PrefsStore
-from .session import Counterpart, PostCallable, ReviewSession, ServerTasks
+from .session import Counterpart, ReviewSession, ServerTasks
 
 log = logging.getLogger(__name__)
 
@@ -290,12 +290,6 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/prefs":
             self._dispatch(self.ctx.prefs.read)
             return
-        if path == "/post-config":
-            self._dispatch(self.ctx.session.post_config)
-            return
-        if path == "/post-preview":
-            self._dispatch(lambda: {"comments": self.ctx.session.post_preview()})
-            return
         if path == "/events":
             self._stream_events()
             return
@@ -469,11 +463,6 @@ class _Handler(BaseHTTPRequestHandler):
             if payload is not None:
                 self._dispatch(lambda: self.ctx.session.fold_summary(payload))
             return
-        if path == "/post-review":
-            payload = self._body()
-            if payload is not None:
-                self._dispatch(lambda: self.ctx.session.post(payload))
-            return
         if path == "/console/ask":
             payload = self._body()
             if payload is not None:
@@ -593,7 +582,7 @@ class ReviewServer:
 
     Owns the socket, the SSE fan-out and the idle clock; the review
     itself lives on :attr:`session`, which is also what callers reach
-    for to attach tasks or read the post result back.
+    for to attach tasks.
 
     Usage:
 
@@ -613,8 +602,6 @@ class ReviewServer:
         github: ReviewSink | None = None,
         host: str = "127.0.0.1",
         port: int = 0,
-        post_callback: PostCallable | None = None,
-        post_meta: dict[str, Any] | None = None,
         debug: bool = False,
         explainer: bool = False,
         prefs_path: Path | None = None,
@@ -636,8 +623,6 @@ class ReviewServer:
             github=github,
             debug=debug,
             explainer_enabled=explainer,
-            post_callback=post_callback,
-            post_meta=post_meta,
         )
         self.ctx = ServerContext(
             session=self.session,

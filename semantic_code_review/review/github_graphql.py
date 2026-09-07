@@ -24,11 +24,9 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
-from collections.abc import Iterable
 from typing import Any
 
 from .. import errors, git_ops
-from . import anchors, github
 
 log = logging.getLogger(__name__)
 
@@ -547,60 +545,6 @@ def set_thread_resolved(thread_id: str, resolved: bool) -> None:
     thread = (data.get(op) or {}).get("thread") or {}
     if thread.get("isResolved") is not resolved:
         raise GitHubRefused(f"{op} did not change thread {thread_id}")
-
-
-# ---------------------------------------------------------------------------
-# One-shot posting — what `scr pr --yes` and the modal call. Goes with them.
-# ---------------------------------------------------------------------------
-
-
-def post_review_via_graphql(
-    repo: str,
-    number: int,
-    comments: Iterable[Any],
-    *,
-    event: str = "COMMENT",
-    body: str = "",
-    diff_text: str | None = None,
-) -> github.PostResult:
-    """Submit one review composed from ``comments``: find or create the
-    pending review, add every comment, submit with ``event``.
-    """
-    posted = list(comments) if all(isinstance(c, github.PostedComment) for c in comments) else None
-    if posted is None:
-        posted = github.comments_to_github(comments)
-    if not posted:
-        raise GitHubRefused("no postable comments after mapping (all entries malformed?)")
-    if diff_text is not None:
-        ranges = anchors.postable_ranges(diff_text)
-        resolved: list[github.PostedComment] = []
-        for c in posted:
-            if c.is_reply or c.path is None or c.line is None:
-                resolved.append(c)
-                continue
-            a = anchors.resolve(c.path, c.line, c.side or "RIGHT", ranges)
-            resolved.append(dataclasses.replace(c, line=a.line, side=a.side, body=anchors.with_note(c.body, a.note)))
-        posted = resolved
-    state = query_pr_review_state(repo, number)
-    review_id = state.pending_review_id or create_pending_review(state.pr_node_id)
-    node_ids: dict[str, str] = {}
-    for c in posted:
-        if c.is_reply:
-            assert c.in_reply_to_node_id is not None
-            nid = add_review_comment_reply(review_id, c.in_reply_to_node_id, c.body)
-        else:
-            if c.path is None:
-                raise GitHubRefused(f"comment has neither a reply target nor a path: {c.body[:60]!r}")
-            nid = add_review_thread(review_id, c.path, c.line, c.side, c.body).comment_id
-        if c.source_id:
-            node_ids[c.source_id] = nid
-    submitted = submit_review(review_id, event=event, body=body)
-    return github.PostResult(
-        review_id=submitted.database_id,
-        review_url=submitted.url,
-        posted=len(posted),
-        posted_node_ids=node_ids,
-    )
 
 
 __all__ = [

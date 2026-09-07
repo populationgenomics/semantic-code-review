@@ -408,26 +408,6 @@ class CommentStore:
                 raise CommentNotFound(f"comment {comment_id} not found")
             return c
 
-    def mark_posted(self, node_ids: dict[str, str]) -> int:
-        """Flip the local comments in `node_ids` (`id -> node id`) to
-        upstream ones: what the one-shot post path records. Goes with it.
-        """
-        if not node_ids:
-            return 0
-        with self._lock:
-            marked = 0
-            for cid, node_id in node_ids.items():
-                existing = self._items.get(cid)
-                if existing is None or existing.source != "local":
-                    continue
-                data = existing.model_dump()
-                data.update({"source": "github", "node_id": node_id, "updated_at": time.time()})
-                self._items[cid] = Comment.model_validate(data)
-                marked += 1
-            if marked:
-                self._flush_locked()
-            return marked
-
     def mark_submitted(self) -> list[Comment]:
         """The pending review was published: every local comment it held
         is an upstream comment now, read-only like every other comment
