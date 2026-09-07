@@ -1,10 +1,14 @@
 """Orchestrate a ``scr review`` session end-to-end.
 
-Given a git ref/range and optional spec markdown, synthesise a run
-directory compatible with the existing augment + render pipeline,
-optionally run the LLM augmentation, render the HTML, spawn the
-ephemeral server, and drain reviewer comments to stdout when the
-viewer signals done.
+Two processes share the work (ADR 0009). The one the user invoked
+(`run_review`) synthesises the [[run-directory]] from a git ref/range
+and optional spec markdown, then re-executes itself detached as the
+review server (`serve_run`) and returns once that child has written
+`server.json`, printing the run id. The child augments, serves the
+viewer, opens the browser, and lives until the tab has been gone for the
+idle period; `scr review --wait <run_id>` reaches it through
+`server.json`. `serve_review` is the serving core both `scr review` and
+`scr pr` use.
 """
 
 from __future__ import annotations
@@ -12,10 +16,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import subprocess
 import sys
 import threading
+import time
 import webbrowser
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,7 +34,8 @@ from ..cache.store import CacheStore
 from ..fetch import materialize_local_diff_run
 from ..format.parse import parse_augmented_diff
 from ..viewer.build_json import build_pending_viewer_json, build_viewer_json
-from .comments import CommentStore, format_markdown
+from . import stream
+from .comments import CommentStore
 from .config import ReviewConfig
 from .server import ReviewServer
 from .session import (
@@ -137,8 +145,30 @@ def build_server_tasks(run_dir: paths.RunDir, cfg: ReviewConfig) -> ServerTasks:
     )
 
 
-def run_review(opts: ReviewOptions) -> int:
-    """Run a full review session. Returns the process exit code."""
+#: How long `run_review` gives the detached server to bind and write
+#: `server.json`. The server starts before augmentation, so this covers
+#: interpreter start-up and the SDK import, not an LLM pass.
+SERVER_START_TIMEOUT = 60.0
+
+#: The hidden `scr review` option that turns an invocation into the
+#: detached server for an existing run. `run_review` appends it (with the
+#: resolved runs root) to its own argv to spawn the child.
+SERVE_RUN_FLAG = "--serve-run"
+
+
+def run_review(opts: ReviewOptions, *, argv: Sequence[str]) -> int:
+    """Materialise the run, detach the review server, print the run id.
+
+    `argv` is this invocation's own arguments after the program name
+    (`sys.argv[1:]`); the child is the same interpreter re-executing them
+    with `--runs-root <resolved>` and `--serve-run <slug>` appended, so
+    every option the user gave — backend, model, `--no-open`,
+    `--timeout` — reaches the server without being re-encoded. Stdout
+    ends with `run_id: <slug>`; `viewer: <url>` precedes it.
+
+    Returns the process exit code: 0 once the server is reachable, 2 when
+    the child exits before writing `server.json` (its log is printed).
+    """
     cfg = opts.config
     run_dir = materialize_local_diff_run(
         opts.spec,
@@ -149,19 +179,91 @@ def run_review(opts: ReviewOptions) -> int:
         no_unstaged=opts.no_unstaged,
         spec_md_path=opts.spec_markdown,
     )
+    existing = stream.read_server_info(run_dir)
+    if existing is not None and stream.server_alive(existing):
+        # A server already holds this run: reuse it rather than bind a
+        # second one to the same directory.
+        sys.stderr.write(f"scr review: a server already holds this run at {existing.url}\n")
+        sys.stderr.flush()
+        _print_run_id(run_dir, existing.url)
+        return 0
+    run_dir.server_json.unlink(missing_ok=True)
 
+    child_argv = [
+        sys.executable,
+        "-m",
+        "semantic_code_review.cli",
+        *argv,
+        "--runs-root",
+        str(cfg.runs_root),
+        SERVE_RUN_FLAG,
+        run_dir.slug,
+    ]
+    with run_dir.server_log.open("ab") as log_file:
+        child = subprocess.Popen(
+            child_argv,
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=log_file,
+            cwd=os.getcwd(),
+            start_new_session=True,
+        )
+    info = _await_server_info(run_dir, child, timeout=SERVER_START_TIMEOUT)
+    if info is None:
+        sys.stderr.write(f"scr review: the review server did not start; its log is {run_dir.server_log}:\n")
+        sys.stderr.write(_tail(run_dir.server_log))
+        sys.stderr.flush()
+        return 2
+    _print_run_id(run_dir, info.url)
+    return 0
+
+
+def serve_run(run_dir: paths.RunDir, cfg: ReviewConfig) -> int:
+    """The detached server: serve an already-materialised run until the
+    tab has been gone for the idle period. What `--serve-run` runs.
+
+    Prints nothing on stdout — the comments reach Claude through
+    `scr review --wait`, not this process's exit.
+    """
+    if not run_dir.meta.exists():
+        sys.stderr.write(f"scr review: {run_dir.path} is not a run directory\n")
+        return 2
     tasks = build_server_tasks(run_dir, cfg)
     if not cfg.augment:
         ensure_augmented_diff(run_dir)
+    serve_review(run_dir, cfg, tasks, counterpart="claude")
+    return 0
 
-    result = serve_review(run_dir, cfg, tasks, counterpart="claude")
-    # The markdown dump is the reviewer's "new notes" feed — ingested
-    # upstream comments are already on GitHub and would crowd it out.
-    local_comments = [c for c in result.comments if c.source == "local"]
-    markdown = format_markdown(local_comments, run_slug=run_dir.slug)
-    sys.stdout.write(markdown)
+
+def _print_run_id(run_dir: paths.RunDir, url: str) -> None:
+    """The two stdout lines a caller reads: the viewer's URL, then the run
+    id last, as `run_id: <slug>`.
+    """
+    sys.stdout.write(f"viewer: {url}\n")
+    sys.stdout.write(f"run_id: {run_dir.slug}\n")
     sys.stdout.flush()
-    return 0 if result.clean else 2
+
+
+def _await_server_info(run_dir: paths.RunDir, child: subprocess.Popen, *, timeout: float) -> stream.ServerInfo | None:
+    """Poll for the child's `server.json`; None if the child exits first
+    or the timeout passes.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        info = stream.read_server_info(run_dir)
+        if info is not None:
+            return info
+        if child.poll() is not None:
+            return None
+        time.sleep(0.05)
+    return None
+
+
+def _tail(path: Path, lines: int = 20) -> str:
+    try:
+        return "".join(path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)[-lines:])
+    except OSError:
+        return ""
 
 
 @dataclass
@@ -211,10 +313,14 @@ def serve_review(
     on_ready: Callable[[str], None] | None = None,
 ) -> ServeResult:
     """Render the viewer for a populated run dir, host the back-channel
-    server, block on the user clicking Done, and return the comments
-    they left.
+    server, block until the session ends, and return the comments left.
 
-    Both `cli.review` (local diff) and `cli.pr` (GitHub PR) call this
+    The session ends on `/exit` (PR mode's Done) or once the server has
+    sat idle — no request, no open viewer, no `--wait` attached — for
+    `cfg.timeout` seconds. While it runs, `server.json` in the run dir
+    says how to reach it; it is removed on the way out.
+
+    Both `serve_run` (local diff) and `pr_flow` (GitHub PR) call this
     with a run dir whose `meta.json`, `raw.diff`, and worktrees are
     already in place. If ``tasks.augment`` is supplied, the server starts
     immediately with a pending viewer (file/hunk structure visible,
@@ -253,6 +359,7 @@ def serve_review(
         log.info("review server at %s", srv.url())
         sys.stderr.write(f"scr review: listening on {srv.url()}\n")
         sys.stderr.flush()
+        _write_server_json(run_dir, srv)
         # Route the CLI backend's per-spawn debug records to the viewer's
         # drawer. Bound before augmentation so its spawns are captured too.
         if cfg.debug and tasks.bind_debug_sink is not None:
@@ -305,6 +412,7 @@ def serve_review(
             sys.stderr.flush()
     finally:
         srv.stop()
+        run_dir.server_json.unlink(missing_ok=True)
 
     store = CommentStore(run_dir.comments)
     return ServeResult(
@@ -312,6 +420,16 @@ def serve_review(
         clean=clean,
         posted=srv.session.posted_result,
     )
+
+
+def _write_server_json(run_dir: paths.RunDir, srv: ReviewServer) -> None:
+    """Record how to reach the server. Written whole then renamed, so a
+    reader never sees a torn record.
+    """
+    record = {"port": srv.port, "pid": os.getpid(), "started_at": time.time(), "url": srv.url()}
+    tmp = run_dir.server_json.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    os.replace(tmp, run_dir.server_json)
 
 
 def _build_fold_summary_task(

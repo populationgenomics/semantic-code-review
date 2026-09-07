@@ -628,6 +628,11 @@ class ReviewServer:
     def url(self) -> str:
         return f"http://{self._host}:{self._port}"
 
+    @property
+    def port(self) -> int:
+        """The bound port — the kernel's pick once `start()` has run."""
+        return self._port
+
     def publish(self, event_type: str, payload: dict[str, Any]) -> None:
         """Broadcast an SSE event to every connected /events client and
         append it to the replay buffer.

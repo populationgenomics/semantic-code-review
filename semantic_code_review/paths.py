@@ -227,3 +227,17 @@ class RunDir:
     def explainer(self) -> Path:
         """The [[change-explainer]] document, once one has been generated."""
         return self.path / "explainer.json"
+
+    # --- the live server ------------------------------------------------
+
+    @property
+    def server_json(self) -> Path:
+        """How to reach the review server while it runs: `{port, pid,
+        started_at, url}`. Present only while a server holds the run.
+        """
+        return self.path / "server.json"
+
+    @property
+    def server_log(self) -> Path:
+        """Where a detached review server's stdout and stderr go."""
+        return self.path / "server.log"
