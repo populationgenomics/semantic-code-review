@@ -19,10 +19,10 @@ import contextlib
 import json
 import logging
 import os
+import pathlib
 import tempfile
 import threading
 from collections.abc import Mapping
-from pathlib import Path
 
 from .. import errors, paths
 
@@ -55,7 +55,7 @@ class PrefsStore:
     but the log line is the loud part.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: pathlib.Path) -> None:
         self.path = path
         self._lock = threading.Lock()
 
