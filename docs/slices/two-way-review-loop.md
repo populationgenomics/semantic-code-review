@@ -21,6 +21,36 @@ an edit before delivery replaces the text and after delivery arrives as
 appears in the thread without a reload; closing the tab makes the next
 `--wait` return `ended` with the remaining drafts.
 
+**Landed as:** `scr review <spec>` materialises the run, spawns the
+server as a detached child (the same interpreter re-executing the
+invocation's argv with `--runs-root <resolved> --serve-run <slug>`, a new
+session, stdio on the run dir's `server.log`), waits for `server.json`
+and returns; stdout ends `viewer: <url>` then `run_id: <slug>`; exit 0,
+or 2 with the log tail when the child dies before binding. The server
+writes `server.json` (`{port, pid, started_at, url}`) once bound and
+removes it on exit; it exits after `--timeout` idle seconds with no
+request, no open viewer and no `--wait` attached. `scr review --wait
+<run_id> [--wait-timeout 540] [--runs-root …]` long-polls `GET
+/wait?timeout=S`; the first stdout line is `status: batch` (then `# Batch
+<n> for <run_id>` and per comment `## <id> — new|revised|withdrawn|reply —
+<file>:<line> (<side>)[ — in reply to <id>]`, the body quoted, the
+anchored code ±2 lines in a fence), `status: nothing-yet`, or `status:
+ended` (then `# Review ended — remaining comments for <run_id>` over
+every undelivered comment, marked delivered by the CLI writing the
+store); exit 0 for all three, 2 for an unknown run id or a live server
+refusing `/wait`. `scr comment reply <run_id> <comment_id> [BODY]`
+(stdin when omitted), `scr comment resolve|unresolve <run_id>
+<comment_id>`: exit 0, or 2 with no live server or on a refusal. Routes:
+`POST /comments/<id>/send`, `POST /comments/send-all`, `POST
+/comments/<id>/{resolve,unresolve}`, `POST /comments` with `source:
+"claude"` for a reply, `GET /wait`; SSE frames `comment`,
+`comment-deleted`, `listening`; `/data.json` carries `counterpart` and
+`listening`. Batches are numbered by the store at Send (one per Send,
+one per Send all, one per deletion of a delivered comment) and persisted
+in `comments.json` as `last_batch_no`; a batch whose comments were all
+deleted before delivery is skipped. PR mode keeps Done and the modal
+until slice 2.
+
 ## Slice 2 — The pending review
 
 PR mode adopts the lifecycle with GitHub as the sink: Send adds to the

@@ -81,6 +81,7 @@ class _Harness:
             viewer_json=self.viewer_json,
             store=CommentStore(run_dir.comments),
             publish=self.frames.publish,
+            counterpart=kwargs.pop("counterpart", "claude"),
             **kwargs,
         )
 
@@ -997,3 +998,232 @@ def test_posting_takes_the_selected_comments_out_of_the_local_set(run_dir: paths
     assert reloaded["c1"].source == "github"
     assert reloaded["c1"].node_id == "TH_1"
     assert reloaded["c2"].source == "local"
+
+
+# --- reviewer comments (ADR 0009) ----------------------------------------
+# The store owns the transitions; the session decodes the payload, calls
+# one store method and fans the changed comments out, so every tab and
+# the badges follow.
+
+
+def _note(cid: str, body: str = "note", **extra: Any) -> dict[str, Any]:
+    return {"id": cid, "file": "a.py", "side": "new", "line": 3, "body": body, **extra}
+
+
+def test_data_json_names_the_counterpart(run_dir: paths.RunDir) -> None:
+    assert _Harness(run_dir).session.data_json()["counterpart"] == "claude"
+    assert _Harness(run_dir, counterpart="github").session.data_json()["counterpart"] == "github"
+
+
+def test_a_saved_comment_is_a_draft_and_is_fanned_out(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    saved = h.session.upsert_comment(_note("c1"))
+    assert saved["delivery"] == "draft"
+    assert h.frames.payloads("comment") == [saved]
+
+
+def test_a_malformed_comment_is_the_clients_fault(run_dir: paths.RunDir) -> None:
+    err = _refused(lambda: _Harness(run_dir).session.upsert_comment({"id": "c1", "body": "no anchor"}))
+    assert err.status == 400
+
+
+def test_send_and_send_all_mark_sent_and_number_the_batches(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    h.session.upsert_comment(_note("c1"))
+    h.session.upsert_comment(_note("c2", line=9))
+    h.session.upsert_comment(_note("c3", line=12))
+
+    one = h.session.send_comment("c1")
+    rest = h.session.send_all()
+
+    assert one == {"batch_no": 1, "comment_ids": ["c1"]}
+    assert rest == {"batch_no": 2, "comment_ids": ["c2", "c3"]}
+    sent = [p for p in h.frames.payloads("comment") if p["delivery"] == "sent"]
+    assert [(p["id"], p["batch_no"]) for p in sent] == [("c1", 1), ("c2", 2), ("c3", 2)]
+    assert h.session.send_all() == {"batch_no": None, "comment_ids": []}
+
+
+def test_sending_what_is_not_a_draft_is_refused(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    h.session.upsert_comment(_note("c1"))
+    h.session.send_comment("c1")
+    assert _refused(lambda: h.session.send_comment("c1")).status == 409
+    assert _refused(lambda: h.session.send_comment("ghost")).status == 404
+
+
+def test_deleting_a_delivered_comment_withdraws_it_and_the_tab_drops_it(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    h.session.upsert_comment(_note("c1"))
+    h.session.send_comment("c1")
+    h.session.store.deliver(1)
+
+    assert h.session.delete_comment("c1") == {"ok": True, "withdrawn": True}
+
+    assert h.frames.payloads("comment-deleted") == [{"id": "c1"}]
+    assert [(n, [c.id for c in cs]) for n, cs in h.session.store.pending_batches()] == [(2, ["c1"])]
+
+
+def test_deleting_a_draft_withdraws_nothing(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    h.session.upsert_comment(_note("c1"))
+    assert h.session.delete_comment("c1") == {"ok": True, "withdrawn": False}
+    assert h.frames.payloads("comment-deleted") == [{"id": "c1"}]
+    assert _refused(lambda: h.session.delete_comment("c1")).status == 404
+
+
+def test_a_claude_reply_arrives_through_the_comment_route(run_dir: paths.RunDir) -> None:
+    """`scr comment reply` POSTs the existing route with `source: claude`;
+    the session routes it to the reply path rather than forcing it local."""
+    h = _Harness(run_dir)
+    h.session.upsert_comment(_note("c1", line=7))
+
+    reply = h.session.upsert_comment({"source": "claude", "in_reply_to_id": "c1", "body": "fixed in 3f2a"})
+
+    assert reply["source"] == "claude" and reply["author"] == "claude"
+    assert (reply["file"], reply["side"], reply["line"]) == ("a.py", "new", 7)
+    assert h.frames.payloads("comment")[-1] == reply
+    assert _refused(lambda: h.session.upsert_comment({"source": "claude", "body": "orphan"})).status == 409
+    # The reviewer's editor never sends a source; the edit is refused as
+    # read-only rather than taken as a second reply.
+    edit = {k: v for k, v in reply.items() if k != "source"} | {"body": "edited"}
+    assert _refused(lambda: h.session.upsert_comment(edit)).status == 403
+
+
+def test_resolving_a_thread_fans_out_every_member(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    h.session.upsert_comment(_note("c1"))
+    reply = h.session.upsert_comment({"source": "claude", "in_reply_to_id": "c1", "body": "done"})
+
+    result = h.session.set_thread_resolved("c1", True)
+
+    assert result == {"ok": True, "resolved": True, "comment_ids": ["c1", reply["id"]]}
+    flagged = [p for p in h.frames.payloads("comment") if p["thread_resolved"]]
+    assert sorted(p["id"] for p in flagged) == sorted(["c1", reply["id"]])
+    assert h.session.set_thread_resolved("c1", False)["comment_ids"] == ["c1", reply["id"]]
+    assert _refused(lambda: h.session.set_thread_resolved("ghost", True)).status == 404
+
+
+# --- the stream to Claude (ADR 0009) --------------------------------------
+
+
+def _stream_harness(run_dir: paths.RunDir) -> _Harness:
+    """A session with a head worktree holding `a.py`, so a batch can carry
+    the anchored code."""
+    run_dir.head.mkdir()
+    (run_dir.head / "a.py").write_text("\n".join(f"line {n}" for n in range(1, 11)) + "\n", encoding="utf-8")
+    return _Harness(run_dir, viewer_json={"version": "1", "files": [{"path": "a.py"}]})
+
+
+def test_wait_returns_the_oldest_pending_batch_and_delivers_it(run_dir: paths.RunDir) -> None:
+    h = _stream_harness(run_dir)
+    h.session.upsert_comment(_note("c1", "why?", line=5))
+    h.session.upsert_comment(_note("c2", "and this", line=9))
+    h.session.send_comment("c1")
+    h.session.send_comment("c2")
+
+    first = h.session.wait_for_batch(timeout=1)
+
+    assert first["status"] == "batch" and first["batch_no"] == 1 and first["run_id"] == run_dir.slug
+    [entry] = first["entries"]
+    assert entry["state"] == "new"
+    assert entry["comment"]["id"] == "c1" and entry["comment"]["body"] == "why?"
+    assert entry["excerpt"] == "\n".join(
+        ["  3 | line 3", "  4 | line 4", "> 5 | line 5", "  6 | line 6", "  7 | line 7"]
+    )
+    by_id = {c.id: c for c in h.session.store.all()}
+    assert by_id["c1"].delivery == "delivered" and by_id["c2"].delivery == "sent"
+    # The tab learns the comment is delivered; the badge follows.
+    delivered = [p for p in h.frames.payloads("comment") if p["delivery"] == "delivered"]
+    assert [p["id"] for p in delivered] == ["c1"]
+    # Attach and detach flip the indicator.
+    assert [p["listening"] for p in h.frames.payloads("listening")] == [True, False]
+
+    second = h.session.wait_for_batch(timeout=1)
+    assert second["batch_no"] == 2 and [e["comment"]["id"] for e in second["entries"]] == ["c2"]
+
+
+def test_wait_answers_nothing_yet_after_the_timeout(run_dir: paths.RunDir) -> None:
+    h = _stream_harness(run_dir)
+    started = time.monotonic()
+    assert h.session.wait_for_batch(timeout=0.2) == {"status": "nothing-yet"}
+    assert time.monotonic() - started >= 0.2
+    assert [p["listening"] for p in h.frames.payloads("listening")] == [True, False]
+    assert not h.session.listening
+
+
+def test_a_send_wakes_a_blocked_wait(run_dir: paths.RunDir) -> None:
+    h = _stream_harness(run_dir)
+    h.session.upsert_comment(_note("c1", line=2))
+    result: dict = {}
+
+    def wait() -> None:
+        result.update(h.session.wait_for_batch(timeout=5))
+
+    t = threading.Thread(target=wait, daemon=True)
+    t.start()
+    _wait_until(lambda: h.session.listening, what="the waiter to attach")
+    assert h.session.data_json()["listening"] is True
+
+    h.session.send_comment("c1")
+    t.join(timeout=5)
+
+    assert not t.is_alive()
+    assert result["status"] == "batch" and [e["comment"]["id"] for e in result["entries"]] == ["c1"]
+    assert not h.session.listening
+
+
+def test_close_ends_a_blocked_wait(run_dir: paths.RunDir) -> None:
+    h = _stream_harness(run_dir)
+    result: dict = {}
+    t = threading.Thread(target=lambda: result.update(h.session.wait_for_batch(timeout=5)), daemon=True)
+    t.start()
+    _wait_until(lambda: h.session.listening, what="the waiter to attach")
+
+    h.session.close()
+    t.join(timeout=5)
+
+    assert result == {"status": "ended"}
+    assert h.session.wait_for_batch(timeout=1) == {"status": "ended"}
+
+
+def test_a_batch_carries_revised_withdrawn_and_reply_states(run_dir: paths.RunDir) -> None:
+    h = _stream_harness(run_dir)
+    h.session.upsert_comment(_note("c1", "v1", line=5))
+    h.session.upsert_comment(_note("gone", "delete me", line=6))
+    h.session.send_all()
+    h.session.wait_for_batch(timeout=1)
+    h.session.upsert_comment(_note("c1", "v2", line=5))  # dirty again
+    h.session.upsert_comment(_note("r1", "follow-up", line=5, in_reply_to_id="c1"))
+    h.session.delete_comment("gone")  # withdrawn: batch 2
+    h.session.send_all()  # c1 (revised) + r1 (reply): batch 3
+
+    withdrawal = h.session.wait_for_batch(timeout=1)
+    rest = h.session.wait_for_batch(timeout=1)
+
+    assert [(e["comment"]["id"], e["state"], e["excerpt"]) for e in withdrawal["entries"]] == [
+        ("gone", "withdrawn", None)
+    ]
+    assert h.frames.payloads("comment-deleted") == [{"id": "gone"}, {"id": "gone"}]
+    assert [(e["comment"]["id"], e["state"]) for e in rest["entries"]] == [("c1", "revised"), ("r1", "reply")]
+    assert rest["entries"][1]["comment"]["in_reply_to_id"] == "c1"
+    assert h.session.store.all()[0].body == "v2"
+
+
+def test_an_old_side_excerpt_reads_the_base_worktree_at_the_old_path(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir, viewer_json={"version": "1", "files": [{"path": "new.py", "old_path": "old.py"}]})
+    run_dir.base.mkdir()
+    (run_dir.base / "old.py").write_text("a\nb\nc\n", encoding="utf-8")
+    h.session.upsert_comment({"id": "c1", "file": "new.py", "side": "old", "line": 2, "body": "gone?"})
+    h.session.send_comment("c1")
+
+    [entry] = h.session.wait_for_batch(timeout=1)["entries"]
+
+    assert entry["excerpt"] == "  1 | a\n> 2 | b\n  3 | c"
+
+
+def test_an_anchor_outside_the_file_has_no_excerpt(run_dir: paths.RunDir) -> None:
+    h = _stream_harness(run_dir)
+    h.session.upsert_comment(_note("c1", line=99))
+    h.session.send_comment("c1")
+    [entry] = h.session.wait_for_batch(timeout=1)["entries"]
+    assert entry["excerpt"] is None

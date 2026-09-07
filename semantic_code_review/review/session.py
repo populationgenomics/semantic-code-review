@@ -2,10 +2,13 @@
 
 A review is a [[run-directory]] plus the things a reviewer can ask of it
 — summarise a fold, write the change-explainer document, hold a console
-turn, post the comments. `ReviewSession` owns that state and those
-operations. `review/server.py` is the HTTP transport in front of it and
-holds no session state beyond its own SSE fan-out, which the session
-publishes *through* rather than owns.
+turn, send a comment to the counterpart, post the comments. `ReviewSession`
+owns that state and those operations, including the stream to Claude: a
+Send wakes the `--wait` blocked in `wait_for_batch`, which hands the
+oldest pending [[batch]] over and marks it delivered; while one is
+blocked the session is [[listening]]. `review/server.py` is the HTTP
+transport in front of it and holds no session state beyond its own SSE
+fan-out, which the session publishes *through* rather than owns.
 
 Two conventions the routes rely on:
 
@@ -31,13 +34,21 @@ import dataclasses
 import logging
 import pathlib
 import threading
+import time
 from collections.abc import Callable, Coroutine
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from .. import errors, paths
 from . import comments
 
 log = logging.getLogger(__name__)
+
+
+#: Who a review's comments are for — the [[counterpart]]. Claude in
+#: review mode (`scr review`), GitHub in PR mode (`scr pr`). One
+#: lifecycle serves both; the viewer mounts the Send surface or the Done
+#: button by it.
+Counterpart = Literal["claude", "github"]
 
 
 #: Signature of the augment pass `serve_review` runs while the page is
@@ -343,6 +354,7 @@ class ReviewSession:
         viewer_json: dict[str, Any],
         store: comments.CommentStore,
         publish: EventPublisher,
+        counterpart: Counterpart,
         debug: bool = False,
         explainer_enabled: bool = False,
         post_callback: PostCallable | None = None,
@@ -350,6 +362,7 @@ class ReviewSession:
     ) -> None:
         self.run_dir = run_dir
         self.store = store
+        self.counterpart = counterpart
         #: Known at construction, not at attach time: the viewer decides
         #: whether to mount the overview-mode button on its first
         #: /data.json, well before augmentation has finished.
@@ -370,6 +383,11 @@ class ReviewSession:
         self._console_history: Any = None
         self._console_cancel: threading.Event | None = None
         self._posted_result: PostOutcome | None = None
+        # The stream to Claude: a Send notifies here; `wait_for_batch`
+        # blocks on it. Guards the listener count and the closed flag too.
+        self._batch_cond = threading.Condition()
+        self._listeners = 0
+        self._closed = False
 
     # --- lifecycle ------------------------------------------------------
 
@@ -404,7 +422,183 @@ class ReviewSession:
             "run_id": self.run_dir.slug,
             "debug": self._debug,
             "explainer": self.explainer_enabled,
+            "counterpart": self.counterpart,
+            "listening": self.listening,
         }
+
+    def close(self) -> None:
+        """The session is ending: every `wait_for_batch` returns `ended`."""
+        with self._batch_cond:
+            self._closed = True
+            self._batch_cond.notify_all()
+
+    # --- the stream to Claude -------------------------------------------
+
+    @property
+    def listening(self) -> bool:
+        """Whether a `--wait` is attached — Claude is [[listening]]."""
+        with self._batch_cond:
+            return self._listeners > 0
+
+    def wait_for_batch(self, *, timeout: float) -> dict[str, Any]:
+        """Block until a [[batch]] is pending, `timeout` seconds pass, or
+        the session closes; deliver the oldest pending batch if there is one.
+
+        Returns one of:
+            `{status: "batch", batch_no, run_id, entries: [{comment, state,
+            excerpt}]}` — the batch, whose comments are now delivered;
+            `{status: "nothing-yet"}`; `{status: "ended"}`.
+
+        While blocked the caller counts as a listener: the viewer's
+        indicator flips with the first attach and the last detach, and the
+        server's idle clock does not run.
+        """
+        deadline = time.monotonic() + timeout
+        with self._batch_cond:
+            self._listeners += 1
+            if self._listeners == 1:
+                self._publish("listening", {"listening": True})
+            try:
+                while True:
+                    if self._closed:
+                        return {"status": "ended"}
+                    pending = self.store.pending_batches()
+                    if pending:
+                        # Delivered under the condition so two waiters
+                        # cannot both take the same batch.
+                        batch = self.store.deliver(pending[0][0])
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return {"status": "nothing-yet"}
+                    self._batch_cond.wait(remaining)
+            finally:
+                self._listeners -= 1
+                if self._listeners == 0:
+                    self._publish("listening", {"listening": False})
+        for entry in batch.entries:
+            if entry.state == "withdrawn":
+                self._publish("comment-deleted", {"id": entry.comment.id})
+        for c in self.store.all():
+            if c.batch_no == batch.batch_no and c.delivery == "delivered":
+                self._publish_comment(c)
+        return {
+            "status": "batch",
+            "batch_no": batch.batch_no,
+            "run_id": self.run_dir.slug,
+            "entries": [
+                {
+                    "comment": e.comment.model_dump(),
+                    "state": e.state,
+                    "excerpt": None if e.state == "withdrawn" else self._excerpt_for(e.comment),
+                }
+                for e in batch.entries
+            ],
+        }
+
+    def _excerpt_for(self, c: comments.Comment) -> str | None:
+        """The anchored code, two lines either side, from the side's
+        worktree: `head/` for the new side, `base/` (at the file's old
+        path) for the old.
+        """
+        if c.side == "old":
+            old_path = c.file
+            for file in self._viewer_json.get("files") or []:
+                if file.get("path") == c.file and file.get("old_path"):
+                    old_path = str(file["old_path"])
+                    break
+            text = _read_worktree_file(self.run_dir.base, old_path)
+        else:
+            text = _read_worktree_file(self.run_dir.head, c.file)
+        return comments.excerpt(text, c.line)
+
+    # --- reviewer comments ----------------------------------------------
+    # The store owns the lifecycle transitions; the session decodes what
+    # arrived, calls one store method, and fans the changed comments out
+    # as `comment` / `comment-deleted` frames so every tab follows.
+
+    def upsert_comment(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Add or edit a reviewer comment, or take a counterpart's reply.
+
+        A payload with `source: "claude"` is a reply from Claude
+        (`scr comment reply`): anchored on its parent, read-only to the
+        reviewer, outside the lifecycle. Anything else is the reviewer's
+        and lands as a local draft whatever source it claims.
+
+        Raises:
+            ReadOnlyCommentError: 403 — editing an ingested or claude comment.
+            CommentStateError: 409 — editing a withdrawn tombstone; a
+                reply with no parent or body.
+            CommentNotFound: 404 — a reply to a comment the store lacks.
+            ReviewSessionError: 400 — the payload is not a comment.
+        """
+        if payload.get("source") == "claude":
+            c = self.store.add_reply(payload, source="claude", author=comments.CLAUDE_AUTHOR)
+        else:
+            try:
+                c = self.store.upsert(payload)
+            except errors.ScrError:
+                raise
+            except Exception as e:  # pydantic throws many kinds
+                raise ReviewSessionError(400, str(e)) from e
+        self._publish_comment(c)
+        return c.model_dump()
+
+    def delete_comment(self, comment_id: str) -> dict[str, Any]:
+        """Delete a reviewer comment. A delivered one becomes a withdrawn
+        tombstone, its own batch; the response says which happened.
+
+        Raises:
+            CommentNotFound: 404. ReadOnlyCommentError: 403.
+        """
+        tombstone = self.store.delete(comment_id)
+        self._publish("comment-deleted", {"id": comment_id})
+        if tombstone is not None:
+            self._batch_sent()
+        return {"ok": True, "withdrawn": tombstone is not None}
+
+    def send_comment(self, comment_id: str) -> dict[str, Any]:
+        """Send one draft as its own batch.
+
+        Raises:
+            CommentNotFound: 404. ReadOnlyCommentError: 403.
+            CommentStateError: 409 — not a draft.
+        """
+        batch_no, sent = self.store.send(comment_id)
+        self._publish_comment(sent)
+        self._batch_sent()
+        return {"batch_no": batch_no, "comment_ids": [sent.id]}
+
+    def send_all(self) -> dict[str, Any]:
+        """Send every draft as one batch. With no drafts nothing is sent
+        and `batch_no` is null.
+        """
+        batch_no, sent = self.store.send_all()
+        for c in sent:
+            self._publish_comment(c)
+        if sent:
+            self._batch_sent()
+        return {"batch_no": batch_no, "comment_ids": [c.id for c in sent]}
+
+    def set_thread_resolved(self, comment_id: str, resolved: bool) -> dict[str, Any]:
+        """Resolve or reopen the thread holding `comment_id`.
+
+        Raises:
+            CommentNotFound: 404. ReadOnlyCommentError: 403 — an
+                ingested thread's resolution lives on GitHub.
+        """
+        changed = self.store.set_thread_resolved(comment_id, resolved)
+        for c in changed:
+            self._publish_comment(c)
+        return {"ok": True, "resolved": resolved, "comment_ids": [c.id for c in changed]}
+
+    def _publish_comment(self, c: comments.Comment) -> None:
+        self._publish("comment", c.model_dump())
+
+    def _batch_sent(self) -> None:
+        """A batch is waiting for the counterpart: wake any `--wait`."""
+        with self._batch_cond:
+            self._batch_cond.notify_all()
 
     @property
     def posted_result(self) -> PostOutcome | None:

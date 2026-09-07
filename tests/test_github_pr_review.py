@@ -245,7 +245,7 @@ def test_both_entry_paths_prepare_the_run_dir_the_same_way(tmp_path) -> None:
 
     from semantic_code_review.review import pr_flow, runner
 
-    for flow in (runner.run_review, pr_flow.run_pr_flow):
+    for flow in (runner.serve_run, pr_flow.run_pr_flow):
         src = inspect.getsource(flow)
         assert "ensure_augmented_diff(run_dir)" in src, flow.__name__
         assert 'augmented.diff").write_text' not in src, flow.__name__

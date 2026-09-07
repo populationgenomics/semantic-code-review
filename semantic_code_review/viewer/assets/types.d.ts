@@ -41,7 +41,19 @@ interface ViewerData {
    *  off; the overview-mode button is then not mounted at all. Rides
    *  /data.json because the button is decided before augment finishes. */
   explainer?: boolean;
+  /** Who the review's comments are for (ADR 0009). `claude` in review
+   *  mode: the Send surface and the listening indicator are mounted.
+   *  `github` in PR mode: Done and the post modal, as before. */
+  counterpart: Counterpart;
+  /** Whether a `--wait` is attached at first paint; `listening` SSE
+   *  frames carry every change after. */
+  listening: boolean;
 }
+
+type Counterpart = "claude" | "github";
+
+/** Where a local comment stands towards its counterpart (ADR 0009). */
+type Delivery = "draft" | "sent" | "delivered";
 
 interface SmellCatalogueEntry {
   label: string;
@@ -276,6 +288,21 @@ interface SseDoneEvent {
   reason: string;
 }
 
+// --- Comment lifecycle events (ADR 0009) -----------------------------------
+// Every store change the session makes fans out here so other tabs and
+// the badges follow: the changed comment whole, a deleted comment's id,
+// and whether a `--wait` is attached.
+
+interface SseCommentEvent extends ReviewerComment {}
+
+interface SseCommentDeletedEvent {
+  id: string;
+}
+
+interface SseListeningEvent {
+  listening: boolean;
+}
+
 // --- Change explainer (ADR 0007) --------------------------------------------
 // The document served by GET /explainer, produced by POST
 // /explainer/skeleton, and fanned out as the `explainer` SSE frame so a
@@ -459,8 +486,19 @@ interface ReviewerComment {
   created_at: number;
   updated_at: number;
   /** Where the comment came from. "local" → authored in this session
-   *  (editable). "github" → ingested from the PR (read-only). */
-  source?: "local" | "github";
+   *  (editable). "github" → ingested from the PR (read-only). "claude"
+   *  → Claude's reply through `scr comment reply` (read-only). */
+  source?: "local" | "github" | "claude";
+  /** Lifecycle towards the counterpart; local comments only. Absent on
+   *  a comment the viewer built itself before the server answered. */
+  delivery?: Delivery;
+  /** Times the counterpart has received it. A draft with deliveries > 0
+   *  is one edited after delivery: it needs re-sending. */
+  deliveries?: number;
+  batch_no?: number | null;
+  /** A delivered comment the reviewer deleted, kept server-side until
+   *  its withdrawal is delivered. Never sent to the viewer. */
+  withdrawn?: boolean;
   /** Display name of the author. Null for local comments (the
    *  reviewer is implicit). */
   author?: string | null;

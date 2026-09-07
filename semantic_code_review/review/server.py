@@ -40,7 +40,7 @@ from typing import Any, ClassVar
 from .. import errors, paths
 from .comments import CommentStore
 from .prefs import PrefsStore
-from .session import PostCallable, ReviewSession, ServerTasks
+from .session import Counterpart, PostCallable, ReviewSession, ServerTasks
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +89,16 @@ _CLOSE = object()
 #: match because the section id is in the path — it is passed straight
 #: to the session, which 404s on anything the document does not know.
 _EXPLAINER_SECTION_PREFIX = "/explainer/section/"
+
+#: `GET /wait` without a `timeout`: the same 540 s `scr review --wait`
+#: defaults to, under the Bash tool's 600 s cap. The cap bounds a client
+#: that asks for more.
+_WAIT_DEFAULT_TIMEOUT = 540.0
+_WAIT_MAX_TIMEOUT = 3600.0
+
+#: `POST /comments/<id>/<action>` — the lifecycle gestures on one comment.
+#: `send-all` is not an id and is matched before this.
+_COMMENT_ACTION_RE = re.compile(r"/comments/(?P<id>[^/]+)/(?P<action>send|resolve|unresolve)")
 
 
 def _parse_last_event_id(raw: str | None) -> int:
@@ -288,7 +298,29 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/events":
             self._stream_events()
             return
+        if path == "/wait":
+            self._handle_wait()
+            return
         self._json(404, {"error": "not found"})
+
+    def _handle_wait(self) -> None:
+        """`GET /wait?timeout=S` — Claude's end of the stream: block up to
+        `timeout` seconds for the next batch. The query value is a URL
+        component, so parsing it is the transport's job; it is capped so a
+        handler thread never outlives the idle clock by much.
+        """
+        query = urllib.parse.urlparse(self.path).query
+        raw = (urllib.parse.parse_qs(query).get("timeout") or [str(_WAIT_DEFAULT_TIMEOUT)])[0]
+        try:
+            timeout = float(raw)
+        except (TypeError, ValueError):
+            self._json(400, {"error": "timeout must be a number of seconds"})
+            return
+        if timeout < 0:
+            self._json(400, {"error": "timeout must be a number of seconds"})
+            return
+        timeout = min(timeout, _WAIT_MAX_TIMEOUT)
+        self._dispatch(lambda: self.ctx.session.wait_for_batch(timeout=timeout))
 
     #: Whitelist of asset basenames that may be served via /static/.
     #: Keeps the route from doubling as a generic file-read primitive
@@ -406,7 +438,16 @@ class _Handler(BaseHTTPRequestHandler):
         self._touch()
         path = self.path.split("?", 1)[0]
         if path == "/comments":
-            self._handle_upsert_comment()
+            payload = self._body()
+            if payload is not None:
+                self._dispatch(lambda: self.ctx.session.upsert_comment(payload))
+            return
+        if path == "/comments/send-all":
+            self._dispatch(self.ctx.session.send_all)
+            return
+        comment_action = _COMMENT_ACTION_RE.fullmatch(path)
+        if comment_action is not None:
+            self._handle_comment_action(comment_action["id"], comment_action["action"])
             return
         if path == "/exit":
             # Respond BEFORE signalling shutdown so the caller's fetch resolves.
@@ -465,35 +506,23 @@ class _Handler(BaseHTTPRequestHandler):
         self._touch()
         path = self.path.split("?", 1)[0]
         if path.startswith("/comments/"):
-            comment_id = path[len("/comments/") :]
-            try:
-                existed = self.ctx.session.store.delete(comment_id)
-            except errors.ScrError as e:
-                self._json(e.status, e.body())
-                return
-            self._json(200 if existed else 404, {"ok": existed})
+            comment_id = urllib.parse.unquote(path[len("/comments/") :])
+            self._dispatch(lambda: self.ctx.session.delete_comment(comment_id))
             return
         self._json(404, {"error": "not found"})
 
-    def _handle_upsert_comment(self) -> None:
-        """Add or edit one reviewer comment.
-
-        Not on `_dispatch`: a payload pydantic rejects is the client's
-        fault, so the fallback here is 400 rather than the 500 a session
-        operation's unexpected failure earns.
+    def _handle_comment_action(self, raw_id: str, action: str) -> None:
+        """`POST /comments/<id>/{send,resolve,unresolve}`. The id is a path
+        segment, so decoding it is the transport's job.
         """
-        payload = self._body()
-        if payload is None:
-            return
-        try:
-            c = self.ctx.session.store.upsert(payload)
-        except errors.ScrError as e:
-            self._json(e.status, e.body())
-            return
-        except Exception as e:  # noqa: BLE001 — pydantic throws many kinds
-            self._json(400, {"error": str(e)})
-            return
-        self._json(200, c.model_dump())
+        comment_id = urllib.parse.unquote(raw_id)
+        session = self.ctx.session
+        if action == "send":
+            self._dispatch(lambda: session.send_comment(comment_id))
+        elif action == "resolve":
+            self._dispatch(lambda: session.set_thread_resolved(comment_id, True))
+        else:
+            self._dispatch(lambda: session.set_thread_resolved(comment_id, False))
 
     def _handle_file_text(self) -> None:
         """Serve one changed file's full base+head source.
@@ -571,6 +600,7 @@ class ReviewServer:
         *,
         run_dir: paths.RunDir,
         viewer_json: dict[str, Any],
+        counterpart: Counterpart,
         host: str = "127.0.0.1",
         port: int = 0,
         post_callback: PostCallable | None = None,
@@ -592,6 +622,7 @@ class ReviewServer:
             viewer_json=viewer_json,
             store=CommentStore(run_dir.comments),
             publish=publish,
+            counterpart=counterpart,
             debug=debug,
             explainer_enabled=explainer,
             post_callback=post_callback,
@@ -625,6 +656,11 @@ class ReviewServer:
     def url(self) -> str:
         return f"http://{self._host}:{self._port}"
 
+    @property
+    def port(self) -> int:
+        """The bound port — the kernel's pick once `start()` has run."""
+        return self._port
+
     def publish(self, event_type: str, payload: dict[str, Any]) -> None:
         """Broadcast an SSE event to every connected /events client and
         append it to the replay buffer.
@@ -652,20 +688,21 @@ class ReviewServer:
         """Block until /exit fires or the server sits idle for ``timeout``
         seconds. Returns True on clean exit, False on the idle timeout.
 
-        Idle means two things at once: no request has been handled
-        (``ctx.last_activity``, set by every route) and no viewer is
-        holding an SSE stream open. An open tab is attention, so a
-        reviewer reading for an hour without clicking anything is never
-        cut off; a closed tab — or one Chrome froze until its socket
-        dropped — starts the countdown.
+        Idle means three things at once: no request has been handled
+        (``ctx.last_activity``, set by every route), no viewer is holding
+        an SSE stream open, and no `--wait` is attached. An open tab is
+        attention, so a reviewer reading for an hour without clicking
+        anything is never cut off; a closed tab — or one Chrome froze
+        until its socket dropped — starts the countdown, unless Claude is
+        still listening for what the reviewer sent.
         """
         # The later of the last handled request and the last poll that
-        # saw a viewer. Carrying the observation forward is what starts
-        # the countdown when a tab drops, rather than at whenever that
-        # tab last made a request.
+        # saw a viewer or a listener. Carrying the observation forward is
+        # what starts the countdown when a tab drops, rather than at
+        # whenever that tab last made a request.
         last_seen = self.ctx.last_activity
         while not self.done_event.is_set():
-            if self._connected_viewers():
+            if self._connected_viewers() or self.session.listening:
                 last_seen = time.time()
             last_seen = max(last_seen, self.ctx.last_activity)
             idle = time.time() - last_seen
@@ -688,7 +725,9 @@ class ReviewServer:
         # Wake any SSE handler threads parked on their queue so they
         # return out of ``_stream_events`` before we tear down the
         # socket — otherwise ``server_close`` can race the still-open
-        # connections and the process pins on the daemon threads.
+        # connections and the process pins on the daemon threads. A
+        # `/wait` parked in the session returns `ended` the same way.
+        self.session.close()
         with self.ctx.state_lock:
             subs = list(self.ctx.subscribers)
         for q in subs:

@@ -1,15 +1,23 @@
-"""`scr review` — review a local git diff in the browser."""
+"""`scr review` — review a local git diff in the browser.
+
+One command, three modes (ADR 0009): `scr review <spec>` materialises the
+run and detaches the server, printing the run id; `scr review --serve-run
+<slug>` is the detached server itself (hidden — `run_review` spawns it);
+`scr review --wait <run_id>` is Claude's end of the stream.
+"""
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import typer
 
+from .. import paths
 from ..fetch import EmptyDiff, LocalDiffError
 from ..paths import default_runs_root
+from ..review import runner, stream
 from ..review.config import ReviewConfig
-from ..review.runner import ReviewOptions, run_review
 from . import app
 from ._shared import (
     configure_logging,
@@ -23,7 +31,8 @@ from ._shared import (
 @app.command()
 def review(
     spec: str = typer.Argument(
-        ...,
+        None,
+        metavar="[SPEC]",
         help=(
             "Git ref (e.g. 'main') or range ('main..HEAD', 'HEAD~3...HEAD'). "
             "Single ref diffs against current working state; range is "
@@ -88,47 +97,79 @@ def review(
         envvar="SCR_DEBUG",
         help="Surface each CLI-backend subprocess spawn (raw argv + envelope) in the viewer's debug drawer.",
     ),
+    wait: str = typer.Option(
+        None,
+        "--wait",
+        metavar="RUN_ID",
+        help=(
+            "Claude's end of the review: block for the next batch of comments the "
+            "reviewer sends from the viewer of RUN_ID. Prints `status: batch`, "
+            "`status: nothing-yet` or `status: ended` as the first line; exit 0 for "
+            "all three, 2 for an unknown run id."
+        ),
+    ),
+    wait_timeout: int = typer.Option(
+        stream.WAIT_TIMEOUT,
+        "--wait-timeout",
+        help="Seconds a --wait blocks before answering `nothing-yet`.",
+    ),
+    serve_run: str = typer.Option(None, runner.SERVE_RUN_FLAG, hidden=True),
 ) -> None:
-    """Review a local git diff; round-trip reviewer comments to stdout."""
+    """Review a local git diff in the browser; returns at once with the run id.
+
+    The review server detaches and keeps running until the tab has been
+    gone for the idle timeout. Comments the reviewer sends reach Claude
+    through `scr review --wait <run_id>`.
+    """
     configure_logging(verbose)
+
+    runs_root = runs_root or default_runs_root()
+    if wait is not None:
+        raise typer.Exit(code=stream.run_wait(paths.RunDir(runs_root / wait), timeout=wait_timeout))
+    if spec is None and serve_run is None:
+        typer.echo("scr review: give a git ref or range to review", err=True)
+        raise typer.Exit(code=2)
 
     cfg = get_config()
     backend = cfg.resolve_backend(backend)
     model = cfg.resolve_model(backend=backend, cli_value=model)
-    runs_root = runs_root or default_runs_root()
     extra_review_prompt = resolve_extra_review_prompt(extra_prompt) if augment else None
     house_style = resolve_explainer_prompt(explainer_prompt) if augment else None
     # Resolve the backend up-front so a misconfiguration fails fast, before
     # we spend time building the diff / worktrees.
     client = select_client(backend, model=model) if augment else None
 
-    opts = ReviewOptions(
+    review_cfg = ReviewConfig(
+        runs_root=runs_root,
+        augment=augment,
+        model=model,
+        concurrency=concurrency,
+        no_cache=no_cache,
+        cache_dir=cache_dir,
+        open_browser=not no_open,
+        port=port,
+        timeout=timeout,
+        client=client,
+        extra_review_prompt=extra_review_prompt,
+        skip_globs=cfg.skip_globs,
+        explainer=cfg.explainer,
+        explainer_prompt=house_style,
+        debug=debug,
+    )
+    if serve_run is not None:
+        raise typer.Exit(code=runner.serve_run(paths.RunDir(runs_root / serve_run), review_cfg))
+
+    opts = runner.ReviewOptions(
         spec=spec,
         spec_right=right,
         spec_markdown=spec_md,
         repo_root=repo_root,
         no_staged=no_staged,
         no_unstaged=no_unstaged,
-        config=ReviewConfig(
-            runs_root=runs_root,
-            augment=augment,
-            model=model,
-            concurrency=concurrency,
-            no_cache=no_cache,
-            cache_dir=cache_dir,
-            open_browser=not no_open,
-            port=port,
-            timeout=timeout,
-            client=client,
-            extra_review_prompt=extra_review_prompt,
-            skip_globs=cfg.skip_globs,
-            explainer=cfg.explainer,
-            explainer_prompt=house_style,
-            debug=debug,
-        ),
+        config=review_cfg,
     )
     try:
-        code = run_review(opts)
+        code = runner.run_review(opts, argv=sys.argv[1:])
     except EmptyDiff as e:
         # Empty-diff isn't an error — exit cleanly so calling scripts
         # ("review every commit on this branch") don't have to special-

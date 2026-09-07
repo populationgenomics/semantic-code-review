@@ -4,7 +4,8 @@
 // per-type JSON payload, and dispatches to typed handlers the
 // caller registers. The wire format is one EventSource frame per
 // pipeline phase (overview-start, overview, overview-failed,
-// hunk-start, hunk, fold-summary, explainer, done); payload shapes live in
+// hunk-start, hunk, fold-summary, explainer, done, comment,
+// comment-deleted, listening); payload shapes live in
 // `types.d.ts`. Replay on reconnect is handled by the browser's
 // EventSource implementation (it sends Last-Event-ID automatically;
 // the server replays from its buffer).
@@ -23,6 +24,9 @@ interface SseHandlers {
   consoleDone?: (payload: SseConsoleDoneEvent) => void;
   consoleError?: (payload: SseConsoleErrorEvent) => void;
   debugLog?: (payload: SseDebugLogEvent) => void;
+  comment?: (payload: SseCommentEvent) => void;
+  commentDeleted?: (payload: SseCommentDeletedEvent) => void;
+  listening?: (payload: SseListeningEvent) => void;
 }
 
 /** Subscribe to `<endpoint>/events`. Returns the EventSource so
@@ -75,6 +79,9 @@ function connect(endpoint: string, handlers: SseHandlers): EventSource | null {
   if (handlers.consoleDone) wireJson<SseConsoleDoneEvent>("console-done", handlers.consoleDone);
   if (handlers.consoleError) wireJson<SseConsoleErrorEvent>("console-error", handlers.consoleError);
   if (handlers.debugLog) wireJson<SseDebugLogEvent>("debug-log", handlers.debugLog);
+  if (handlers.comment) wireJson<SseCommentEvent>("comment", handlers.comment);
+  if (handlers.commentDeleted) wireJson<SseCommentDeletedEvent>("comment-deleted", handlers.commentDeleted);
+  if (handlers.listening) wireJson<SseListeningEvent>("listening", handlers.listening);
   return es;
 }
 

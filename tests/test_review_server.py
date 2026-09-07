@@ -42,6 +42,7 @@ def server(run_dir: paths.RunDir, prefs_path: Path):
     srv = ReviewServer(
         run_dir=run_dir,
         viewer_json={"version": "1", "files": []},
+        counterpart="claude",
         prefs_path=prefs_path,
     )
     srv.start()
@@ -230,7 +231,7 @@ def test_post_cannot_overwrite_ingested_comment(server, run_dir: paths.RunDir) -
         )
     )
     server.stop()
-    srv2 = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []})
+    srv2 = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []}, counterpart="github")
     srv2.start()
     try:
         try:
@@ -277,7 +278,7 @@ def test_delete_cannot_remove_ingested_comment(server, run_dir: paths.RunDir) ->
         )
     )
     server.stop()
-    srv2 = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []})
+    srv2 = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []}, counterpart="github")
     srv2.start()
     try:
         conn = HTTPConnection("127.0.0.1", int(srv2.url().rsplit(":", 1)[1]), timeout=5)
@@ -458,6 +459,52 @@ def test_an_open_viewer_is_not_idle(server) -> None:
         server.ctx.subscribers.remove(q)
     t.join(timeout=2.0)
     assert result["done"] is False
+
+
+def test_an_attached_wait_is_not_idle(server) -> None:
+    """A `--wait` blocked in `/wait` holds the server open with no tab: the
+    reviewer may be away, but Claude is listening for what they sent."""
+    poll: dict = {}
+
+    def long_poll() -> None:
+        poll["result"] = _request(server.url() + "/wait?timeout=1.5")
+
+    poller = threading.Thread(target=long_poll, daemon=True)
+    poller.start()
+    for _ in range(100):
+        if server.session.listening:
+            break
+        time.sleep(0.01)
+    assert server.session.listening
+
+    t, result = _spawn_waiter(server, timeout=0.2, idle_poll=0.02)
+    t.join(timeout=1.0)
+    assert t.is_alive()  # the countdown has not started
+    poller.join(timeout=5.0)
+    assert poll["result"][1] == {"status": "nothing-yet"}
+    t.join(timeout=2.0)
+    assert result["done"] is False  # and it runs out once the wait detaches
+
+
+def test_wait_hands_a_sent_batch_over_and_flips_listening(server, run_dir: paths.RunDir) -> None:
+    run_dir.head.mkdir()
+    (run_dir.head / "a.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    _request(server.url() + "/comments", "POST", {"id": "c1", "file": "a.py", "side": "new", "line": 2, "body": "hm"})
+    code, sent = _request(server.url() + "/comments/c1/send", "POST", {})
+    assert (code, sent) == (200, {"batch_no": 1, "comment_ids": ["c1"]})
+
+    code, body = _request(server.url() + "/wait?timeout=5")
+
+    assert code == 200
+    assert body["status"] == "batch" and body["batch_no"] == 1 and body["run_id"] == run_dir.slug
+    [entry] = body["entries"]
+    assert entry["state"] == "new" and entry["excerpt"] == "  1 | one\n> 2 | two\n  3 | three"
+    stored = json.loads(run_dir.comments.read_text(encoding="utf-8"))["comments"]
+    assert stored[0]["delivery"] == "delivered"
+    with server.ctx.state_lock:
+        frames = [(ev.event_type, ev.payload) for ev in server.ctx.buffer]
+    assert [p["listening"] for t, p in frames if t == "listening"] == [True, False]
+    assert [p["id"] for t, p in frames if t == "comment" and p["delivery"] == "delivered"] == ["c1"]
 
 
 def test_a_request_resets_the_idle_countdown(server) -> None:
@@ -680,6 +727,9 @@ _ROUTES = [
     ("GET", "/explainer", 409),
     ("GET", "/file-text?file_idx=0", 404),
     ("GET", "/file-text?file_idx=abc", 400),
+    ("GET", "/wait?timeout=abc", 400),
+    ("GET", "/wait?timeout=-1", 400),
+    ("GET", "/wait?timeout=0", 200),
     ("GET", "/nope", 404),
     ("POST", "/fold-summary", 409),
     ("POST", "/console/ask", 409),
@@ -689,6 +739,12 @@ _ROUTES = [
     ("POST", "/explainer/section/background", 409),
     ("POST", "/post-review", 409),
     ("POST", "/nope", 404),
+    ("POST", "/comments", 400),
+    ("POST", "/comments/send-all", 200),
+    ("POST", "/comments/nope/send", 404),
+    ("POST", "/comments/nope/resolve", 404),
+    ("POST", "/comments/nope/unresolve", 404),
+    ("POST", "/comments/nope/frobnicate", 404),
     ("DELETE", "/comments/nope", 404),
     ("DELETE", "/nope", 404),
 ]
@@ -841,6 +897,7 @@ def test_serve_review_serves_pending_then_streams_and_finalises(run_dir: paths.R
             run_dir,
             ReviewConfig(port=0, timeout=10, open_browser=False),
             ServerTasks(augment=fake_augment),
+            counterpart="claude",
             on_ready=_on_ready,
         )
 
@@ -893,6 +950,7 @@ def test_serve_review_reports_the_idle_shutdown(run_dir: paths.RunDir, capsys) -
         run_dir,
         ReviewConfig(port=0, timeout=1, open_browser=False),
         ServerTasks(),
+        counterpart="claude",
     )
     assert result.clean is False
     assert "idle timeout — 1s with no request and no open viewer" in capsys.readouterr().err

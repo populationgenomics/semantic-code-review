@@ -8,8 +8,9 @@ judge *whether* the change matches the intent and *how* it was built.
 Nothing is posted or applied without you.
 
 The same review runs at two radii. As a Claude Code plugin
-(`/scr:review`), your inline comments return into the session when you
-click Done and the authoring agent iterates on them. As `scr pr`, the
+(`/scr:review`), your inline comments are drafts until you send them;
+each Send reaches the authoring agent as it happens, and its answers
+appear in the thread. As `scr pr`, the
 same flow runs against a GitHub PR and posts your comments as a single
 review the author — or their agent — picks up later. Both open one
 browser viewer: a side-by-side diff with semantic-group navigation,
@@ -84,11 +85,19 @@ that no group claimed get a subtle dotted-border tell so you can
 spot them at a glance.
 
 Leave inline comments by clicking a line number on either side of
-the diff. When you click **Done**, the viewer closes, the command
-returns the comments as structured markdown, and Claude Code walks
-through them with you one at a time.
+the diff. A comment is a draft — yours, editable, never lost — until
+you **Send** it: one comment with its Send button, or every draft with
+**Send all drafts**. What you send reaches Claude Code as a batch as
+soon as you send it; one comment sent alone means "look at this now".
+Claude answers into the thread and can resolve it; your follow-up is a
+reply you Send. The bar shows whether Claude is listening. There is no
+Done: the review ends when the tab has been closed for the idle period,
+and anything you never sent reaches Claude then as the final list.
 
-See `commands/review.md` for the full slash-command prompt.
+Under the hood, `scr review` returns at once with a run id and leaves a
+detached server running; `scr review --wait <run_id>` is how Claude
+listens, and `scr comment reply` / `resolve` how it answers. See
+`commands/review.md` for the full slash-command prompt.
 
 ### LLM backend selection
 
@@ -197,12 +206,20 @@ The three commands you'll actually use:
   default + model, guide credential setup, write the config. Run
   once.
 - `scr review <ref-or-range> [--spec SPEC.md]` — review a local git
-  diff. Runs the LLM augment pass, opens the viewer, and prints your
-  inline comments as markdown when you click Done. Also takes a second
-  endpoint for an explicit two-sided diff — two refs
+  diff. Starts a detached server that runs the LLM augment pass and
+  opens the viewer, then returns at once with `run_id: <slug>`. Also
+  takes a second endpoint for an explicit two-sided diff — two refs
   (`scr review e4e8f74 HEAD`, whole-tree) or two `rev:path` blobs
   (`scr review A:old.py B:new.py`, single-file; cross-path shows as a
   rename).
+- `scr review --wait <run_id>` — block (540 s by default,
+  `--wait-timeout`) for the next batch of comments the reviewer sends;
+  prints `status: batch` and the batch as markdown, `status:
+  nothing-yet`, or `status: ended` with the comments never sent. Exit 0
+  for all three, 2 for an unknown run id.
+- `scr comment reply <run_id> <comment_id> [BODY]`, `scr comment
+  resolve|unresolve <run_id> <comment_id>` — answer into a live
+  review's thread, or settle it.
 - `scr pr <owner/repo> [<number>]` — the same flow against a GitHub
   PR. Omit the number to pick from the open PRs requesting your
   review; on Done it posts your inline comments back as a single
