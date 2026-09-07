@@ -50,9 +50,13 @@ const SESSION_ENDPOINT: string = (() => {
 
 async function boot(): Promise<void> {
   Comments.init({
-    // Sidebar pills carry per-file unresolved/total counts; repaint
-    // them whenever the store changes (initial load, save, delete).
-    onChange: () => Sidebar.refreshFileCommentCounts(),
+    // Whenever the store changes (initial load, save, delete, promotion):
+    // the sidebar pills' per-file counts, and the manifests hidden
+    // content carries — a collapsed hunk's or file's, a fold box's tree.
+    onChange: () => {
+      Sidebar.refreshFileCommentCounts();
+      Render.refreshCommentManifests();
+    },
   });
   installDoneButton();
   // The sidebar's edge is the reader's in both modes, so its divider

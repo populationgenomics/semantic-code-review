@@ -1262,6 +1262,42 @@ function _revealThread(f: FileBlock, thread: ThreadSummary, scope: PaneScope): v
   if (target) target.scrollIntoView({ block: "nearest" });
 }
 
+/** Rebuild what the comment store feeds, in place: the manifests under
+ *  collapsed hunk and file headers, and every fold box's label tree
+ *  (re-attaching the fold chrome rebuilds them in the state the rows are
+ *  in). Boot wires this to the store's `onChange`: comments arrive after
+ *  the first paint and change on every save, delete and promotion, and
+ *  a full render for that would drop the reader's place. */
+function refreshCommentManifests(): void {
+  if (!_initialised) return;
+  const scope = _state.mode === "overview" ? _panelScope : _diffScope();
+  for (const fileEl of document.querySelectorAll<HTMLElement>(".file[data-id]")) {
+    const f = _data.files.find((x) => x.id === fileEl.dataset.id);
+    if (!f) throw new Error(`no file ${fileEl.dataset.id} in the data`);
+    const folded = fileEl.classList.contains("folded");
+    _replaceManifest(fileEl, ".file-header", folded
+      ? _renderCommentManifest(Comments.threadsFor(f.path), (t) => _revealThread(f, t, scope)) : null);
+    if (folded) continue;
+    for (const hunkEl of fileEl.querySelectorAll<HTMLElement>(".hunk[data-id]")) {
+      const h = f.hunks.find((x) => x.id === hunkEl.dataset.id);
+      if (!h) throw new Error(`no hunk ${hunkEl.dataset.id} in ${f.id}`);
+      _replaceManifest(hunkEl, ".hunk-header", hunkEl.classList.contains("folded")
+        ? _renderCommentManifest(_hunkThreads(h, f), (t) => _revealThread(f, t, scope)) : null);
+    }
+    attachFileFolds(fileEl, f);
+  }
+}
+
+/** Put `fresh` (or nothing) where `el`'s manifest goes: right after its
+ *  header, replacing the one there. */
+function _replaceManifest(el: HTMLElement, headerSelector: string, fresh: HTMLElement | null): void {
+  el.querySelector(":scope > .comment-manifest")?.remove();
+  if (!fresh) return;
+  const header = el.querySelector(`:scope > ${headerSelector}`);
+  if (!header) throw new Error(`${el.dataset.id}: no ${headerSelector}`);
+  header.after(fresh);
+}
+
 // --- A collapsed fold's labels ---------------------------------------------
 
 /** The labels a collapsed region shows (the `FoldLabels` folds.ts asks
@@ -2292,5 +2328,6 @@ export const Render = {
   repaintHunkHeader,
   clearRenderedDiffCache,
   attachFileFolds,
+  refreshCommentManifests,
   setSymbolSearch,
 };
