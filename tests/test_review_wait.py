@@ -210,3 +210,72 @@ def test_the_cli_surface(server, run_dir: paths.RunDir, runs_root: Path) -> None
 
     missing = CliRunner().invoke(app, ["review", "--wait", "nope", "--runs-root", str(runs_root)])
     assert missing.exit_code == 2
+
+
+# --- the reply channel: scr comment ------------------------------------------
+
+
+def _comment(*args: str, runs_root: Path, stdin: str | None = None):
+    return CliRunner().invoke(app, ["comment", *args, "--runs-root", str(runs_root)], input=stdin)
+
+
+def test_reply_adds_a_claude_entry_to_the_thread(server, run_dir: paths.RunDir, runs_root: Path) -> None:
+    _post(server.url() + "/comments", {"id": "c1", "file": "a.py", "side": "new", "line": 2, "body": "why?"})
+
+    result = _comment("reply", run_dir.slug, "c1", "Because two.", runs_root=runs_root)
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.startswith("replied as claude-")
+    by_id = {c.id: c for c in CommentStore(run_dir.comments).all()}
+    [reply] = [c for c in by_id.values() if c.source == "claude"]
+    assert reply.author == "claude" and reply.in_reply_to_id == "c1" and reply.body == "Because two."
+    assert (reply.file, reply.side, reply.line) == ("a.py", "new", 2)
+    # Fanned out live, so the open tab shows it without a reload.
+    with server.ctx.state_lock:
+        frames = [(ev.event_type, ev.payload) for ev in server.ctx.buffer]
+    assert [p["id"] for t, p in frames if t == "comment" and p["source"] == "claude"] == [reply.id]
+
+
+def test_reply_body_comes_from_stdin_when_omitted(server, run_dir: paths.RunDir, runs_root: Path) -> None:
+    _post(server.url() + "/comments", {"id": "c1", "file": "a.py", "side": "new", "line": 2, "body": "why?"})
+    result = _comment("reply", run_dir.slug, "c1", runs_root=runs_root, stdin="from stdin\nsecond line\n")
+    assert result.exit_code == 0, result.output
+    [reply] = [c for c in CommentStore(run_dir.comments).all() if c.source == "claude"]
+    assert reply.body == "from stdin\nsecond line\n"
+
+    empty = _comment("reply", run_dir.slug, "c1", runs_root=runs_root, stdin="  \n")
+    assert empty.exit_code == 2 and "empty" in empty.output
+
+
+def test_reply_to_an_unknown_comment_is_refused(server, run_dir: paths.RunDir, runs_root: Path) -> None:
+    result = _comment("reply", run_dir.slug, "ghost", "hello", runs_root=runs_root)
+    assert result.exit_code == 2
+    assert "404" in result.output and "ghost" in result.output
+
+
+def test_resolve_and_unresolve_flip_the_thread(server, run_dir: paths.RunDir, runs_root: Path) -> None:
+    _post(server.url() + "/comments", {"id": "c1", "file": "a.py", "side": "new", "line": 2, "body": "why?"})
+    _comment("reply", run_dir.slug, "c1", "done", runs_root=runs_root)
+
+    resolved = _comment("resolve", run_dir.slug, "c1", runs_root=runs_root)
+
+    assert resolved.exit_code == 0, resolved.output
+    assert "resolved the thread of c1 (2 comment(s) changed)" in resolved.stdout
+    assert all(c.thread_resolved for c in CommentStore(run_dir.comments).all())
+
+    reopened = _comment("unresolve", run_dir.slug, "c1", runs_root=runs_root)
+
+    assert reopened.exit_code == 0, reopened.output
+    assert not any(c.thread_resolved for c in CommentStore(run_dir.comments).all())
+
+
+def test_comment_commands_exit_2_without_a_live_server(run_dir: paths.RunDir, runs_root: Path) -> None:
+    CommentStore(run_dir.comments).upsert({"id": "c1", "file": "a.py", "side": "new", "line": 2, "body": "why?"})
+
+    result = _comment("reply", run_dir.slug, "c1", "too late", runs_root=runs_root)
+
+    assert result.exit_code == 2
+    assert "the review has ended" in result.output
+    assert [c.id for c in CommentStore(run_dir.comments).all()] == ["c1"]  # nothing written
+    unknown = _comment("resolve", "no-such-run", "c1", runs_root=runs_root)
+    assert unknown.exit_code == 2 and "unknown run id" in unknown.output

@@ -188,3 +188,65 @@ def _print_ended(run_dir: paths.RunDir, out: TextIO) -> int:
     )
     out.flush()
     return 0
+
+
+# --- the reply channel: scr comment -----------------------------------------
+
+
+class NoServer(Exception):
+    """No live server holds the run: the review has ended (or never ran)."""
+
+
+def _require_server(run_dir: paths.RunDir) -> ServerInfo:
+    if not run_dir.meta.exists():
+        raise NoServer(f"unknown run id {run_dir.slug!r} (no run at {run_dir.path})")
+    info = read_server_info(run_dir)
+    if info is None:
+        raise NoServer(f"no server holds {run_dir.slug}; the review has ended")
+    if not server_alive(info):
+        run_dir.server_json.unlink(missing_ok=True)
+        raise NoServer(f"the server recorded for {run_dir.slug} is gone; the review has ended")
+    return info
+
+
+def _post(info: ServerInfo, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """One POST to the server. Raises `ServerRefused` with the server's
+    own message on an error status.
+    """
+    req = urllib.request.Request(
+        info.url + path,
+        method="POST",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            message = json.loads(e.read().decode("utf-8")).get("error", "")
+        except ValueError:
+            message = ""
+        raise ServerRefused(f"{path} answered {e.code}: {message}") from e
+
+
+def reply(run_dir: paths.RunDir, comment_id: str, body: str) -> dict[str, Any]:
+    """Add Claude's reply under `comment_id`; the viewer shows it live.
+
+    Raises:
+        NoServer: no live server holds the run.
+        ServerRefused: the server refused (unknown comment, empty body).
+    """
+    payload = {"source": "claude", "in_reply_to_id": comment_id, "body": body}
+    return _post(_require_server(run_dir), "/comments", payload)
+
+
+def set_resolved(run_dir: paths.RunDir, comment_id: str, resolved: bool) -> dict[str, Any]:
+    """Resolve or reopen the thread holding `comment_id`.
+
+    Raises:
+        NoServer: no live server holds the run.
+        ServerRefused: the server refused (unknown comment, ingested thread).
+    """
+    action = "resolve" if resolved else "unresolve"
+    return _post(_require_server(run_dir), f"/comments/{urllib.parse.quote(comment_id, safe='')}/{action}", {})
