@@ -1085,13 +1085,12 @@ function _touchedDefinitions(f: FileBlock, rows: RowBlock[], scope: LabelScope):
  *  covers it. A span covers nothing of exactly its extent: two spans of
  *  one extent are siblings (two notes on one line are two observations),
  *  and so are a one-line span and the thread on its line; a thread is a
- *  leaf. A span is drawn from
- *  whichever hunk carries it; one with no row here is simply elsewhere,
- *  and one still covering the visible line has its bar and text on
- *  screen already. A span whose intent the reviewer promoted is replaced
- *  by the comment, as its ticket is in the gutter. A thread is listed
- *  when its row is among the hidden ones; one on the chevron row hangs
- *  off a row still on screen. */
+ *  leaf. A span is drawn from whichever hunk carries it; one with no row
+ *  here is simply elsewhere, and one still covering the visible line has
+ *  its bar and text on screen already. A span whose intent the reviewer
+ *  promoted is replaced by the comment, as its ticket is in the gutter.
+ *  A thread is listed when its row is among the hidden ones; one on the
+ *  chevron row hangs off a row still on screen. */
 function _labelTree(f: FileBlock, rows: RowBlock[], scope: LabelScope): LabelNode[] {
   const nodes: LabelNode[] = _touchedDefinitions(f, rows, scope);
   for (const h of f.hunks) {
