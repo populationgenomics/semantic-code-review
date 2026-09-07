@@ -231,7 +231,7 @@ def test_post_cannot_overwrite_ingested_comment(server, run_dir: paths.RunDir) -
         )
     )
     server.stop()
-    srv2 = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []}, counterpart="github")
+    srv2 = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []}, counterpart="claude")
     srv2.start()
     try:
         try:
@@ -278,7 +278,7 @@ def test_delete_cannot_remove_ingested_comment(server, run_dir: paths.RunDir) ->
         )
     )
     server.stop()
-    srv2 = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []}, counterpart="github")
+    srv2 = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []}, counterpart="claude")
     srv2.start()
     try:
         conn = HTTPConnection("127.0.0.1", int(srv2.url().rsplit(":", 1)[1]), timeout=5)
@@ -741,6 +741,8 @@ _ROUTES = [
     ("POST", "/nope", 404),
     ("POST", "/comments", 400),
     ("POST", "/comments/send-all", 200),
+    ("POST", "/comments/retry", 409),
+    ("POST", "/submit", 409),
     ("POST", "/comments/nope/send", 404),
     ("POST", "/comments/nope/resolve", 404),
     ("POST", "/comments/nope/unresolve", 404),
@@ -776,6 +778,77 @@ def test_an_out_of_range_file_is_not_a_malformed_one(server) -> None:
     index. Only the second is a bug in the caller."""
     assert _status(server, "GET", "/file-text?file_idx=99") == 404
     assert _status(server, "GET", "/file-text?file_idx=abc") == 400
+
+
+# --- PR mode over the wire --------------------------------------------------
+# What each route does is tested on the session (`test_review_session_github`);
+# this holds the paths and the statuses the viewer discriminates on with
+# GitHub as the counterpart.
+
+
+@pytest.fixture
+def github_server(run_dir: paths.RunDir, prefs_path: Path):
+    from tests.test_review_session_github import FakeSink, _ingested
+
+    run_dir.comments.write_text(json.dumps({"comments": [_ingested().model_dump()]}), encoding="utf-8")
+    sink = FakeSink()
+    srv = ReviewServer(
+        run_dir=run_dir,
+        viewer_json={"version": "1", "files": []},
+        counterpart="github",
+        github=sink,
+        prefs_path=prefs_path,
+    )
+    srv.start()
+    yield srv, sink
+    srv.stop()
+
+
+def test_in_pr_mode_a_send_delivers_and_a_submit_publishes(github_server) -> None:
+    srv, sink = github_server
+    _post(srv, "/comments", {"id": "c1", "file": "a.py", "side": "new", "line": 3, "body": "one"})
+
+    code, body = _post(srv, "/comments/c1/send", {})
+    assert code == 200
+    assert body["comment_ids"] == ["c1"] and body["pending_review"]["unsent"] == []
+    assert [c[0] for c in sink.calls] == ["thread"]
+
+    code, body = _post(srv, "/submit", {"event": "COMMENT", "body": "looks fine"})
+    assert code == 200
+    assert body == {"review_url": "https://gh/o/r/pull/7#pullrequestreview-9", "event": "COMMENT", "submitted": 1}
+    _, listed = _request(srv.url() + "/comments")
+    assert {c["id"]: c["source"] for c in listed["comments"]} == {"gh-1": "github", "c1": "github"}
+
+
+def test_in_pr_mode_a_submit_is_refused_while_a_comment_is_unsent(github_server) -> None:
+    srv, sink = github_server
+    _post(srv, "/comments", {"id": "c1", "file": "a.py", "side": "new", "line": 3, "body": "stuck"})
+    sink.refuse.add("c1")
+    code, body = _post(srv, "/comments/c1/send", {})
+    assert code == 200 and [u["id"] for u in body["pending_review"]["unsent"]] == ["c1"]
+
+    code, body = _post(srv, "/submit", {"event": "APPROVE"})
+    assert code == 409
+    assert [u["id"] for u in body["unsent"]] == ["c1"]
+
+    code, body = _post(srv, "/comments/retry", {})
+    assert code == 200 and body["unsent"] == []
+    assert _status(srv, "GET", "/wait?timeout=0") == 409
+
+
+def test_in_pr_mode_resolve_reaches_github_and_a_pending_thread_is_refused(github_server) -> None:
+    srv, sink = github_server
+    code, body = _post(srv, "/comments/gh-1/resolve", {})
+    assert (code, body) == (200, {"ok": True, "resolved": True, "comment_ids": ["gh-1"]})
+    assert sink.calls == [("resolve", "PRRT_1", True)]
+    sink.refuse.add("resolve")
+    code, body = _post(srv, "/comments/gh-1/unresolve", {})
+    assert code == 502 and "HTTP 502" in body["error"]
+
+    _post(srv, "/comments", {"id": "c1", "file": "a.py", "side": "new", "line": 9, "body": "mine"})
+    _post(srv, "/comments/c1/send", {})
+    code, body = _post(srv, "/comments/c1/resolve", {})
+    assert code == 409 and "pending review" in body["error"]
 
 
 def test_cancel_and_reset_answer_without_a_console(server) -> None:

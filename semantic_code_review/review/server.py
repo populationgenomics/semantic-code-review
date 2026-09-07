@@ -39,6 +39,7 @@ from typing import Any, ClassVar
 
 from .. import errors, paths
 from .comments import CommentStore
+from .pending_review import ReviewSink
 from .prefs import PrefsStore
 from .session import Counterpart, PostCallable, ReviewSession, ServerTasks
 
@@ -445,6 +446,14 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/comments/send-all":
             self._dispatch(self.ctx.session.send_all)
             return
+        if path == "/comments/retry":
+            self._dispatch(self.ctx.session.retry_deliveries)
+            return
+        if path == "/submit":
+            payload = self._body()
+            if payload is not None:
+                self._dispatch(lambda: self.ctx.session.submit(payload))
+            return
         comment_action = _COMMENT_ACTION_RE.fullmatch(path)
         if comment_action is not None:
             self._handle_comment_action(comment_action["id"], comment_action["action"])
@@ -601,6 +610,7 @@ class ReviewServer:
         run_dir: paths.RunDir,
         viewer_json: dict[str, Any],
         counterpart: Counterpart,
+        github: ReviewSink | None = None,
         host: str = "127.0.0.1",
         port: int = 0,
         post_callback: PostCallable | None = None,
@@ -623,6 +633,7 @@ class ReviewServer:
             store=CommentStore(run_dir.comments),
             publish=publish,
             counterpart=counterpart,
+            github=github,
             debug=debug,
             explainer_enabled=explainer,
             post_callback=post_callback,

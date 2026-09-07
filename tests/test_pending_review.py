@@ -89,6 +89,7 @@ def test_resume_skips_what_the_store_already_holds(gh: GhSequence, review: Revie
     resumed = review.resume({"C1": "c-known"})
     assert resumed is not None
     assert [c.id for c in resumed.comments] == ["gh-12"]
+    assert resumed.reclaimed == ["c-known"]
 
 
 # --- deliver ----------------------------------------------------------------

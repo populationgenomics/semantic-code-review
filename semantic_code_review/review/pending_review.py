@@ -48,12 +48,15 @@ class Delivered:
 
 @dataclasses.dataclass(frozen=True)
 class Resumed:
-    """What an existing pending review yielded on resume: the comments
-    the viewer can show, and how many it cannot (file-level comments,
-    which have no line to anchor on).
+    """What an existing pending review yielded on resume: the comments the
+    store lacked, as the viewer can show them; the ids of comments the
+    store already held as upstream ones that are in fact still pending
+    (`reclaimed`); and how many pending comments have no line to anchor
+    on (file-level) and so are not shown.
     """
 
     comments: list[comments.Comment]
+    reclaimed: list[str]
     unanchored: int
 
 
@@ -99,8 +102,10 @@ class PendingReview:
 
         `node_index` maps the node ids the store already knows to their
         comment ids: a pending comment already recorded is not returned
-        again, and a pending reply is threaded under the store's copy of
-        its parent. Returns None when the viewer has no pending review.
+        again (its id is in `reclaimed` instead, for the store to make
+        the reviewer's own if it had it as upstream), and a pending reply
+        is threaded under the store's copy of its parent. Returns None
+        when the viewer has no pending review.
 
         Raises:
             GitHubRefused: the lookup failed.
@@ -120,9 +125,11 @@ class PendingReview:
         """
         ids: dict[str, str] = dict(node_index)
         out: list[comments.Comment] = []
+        reclaimed: list[str] = []
         unanchored = 0
         for p in pending:
             if p.node_id in node_index:
+                reclaimed.append(node_index[p.node_id])
                 continue
             if p.line is None:
                 unanchored += 1
@@ -154,7 +161,7 @@ class PendingReview:
         if out and repo_git.exists():
             github_comments.fetch_comment_commits(repo_git, out)
             github_comments.decorate_with_head_anchors(repo_git, self.head_sha, out)
-        return Resumed(comments=out, unanchored=unanchored)
+        return Resumed(comments=out, reclaimed=reclaimed, unanchored=unanchored)
 
     # --- delivery ----------------------------------------------------------
 

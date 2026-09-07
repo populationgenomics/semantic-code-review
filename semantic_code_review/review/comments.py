@@ -369,10 +369,44 @@ class CommentStore:
             self._flush_locked()
             return adopted
 
+    def reclaim(self, comment_id: str) -> Comment:
+        """A comment recorded as upstream turns out to be the reviewer's
+        own, still in the pending review: make it theirs again — local,
+        delivered once, editable.
+
+        Raises:
+            CommentNotFound: no such comment.
+            CommentStateError: not an upstream comment with a node id.
+        """
+        with self._lock:
+            c = self._items.get(comment_id)
+            if c is None or c.withdrawn:
+                raise CommentNotFound(f"comment {comment_id} not found")
+            if c.source != "github" or not c.node_id:
+                raise CommentStateError(f"comment {comment_id} is not an upstream comment with a node id")
+            data = c.model_dump()
+            data.update({"source": "local", "delivery": "delivered", "deliveries": 1, "send_error": None})
+            reclaimed = Comment.model_validate(data)
+            self._items[comment_id] = reclaimed
+            self._flush_locked()
+            return reclaimed
+
     def node_index(self) -> dict[str, str]:
         """`node_id -> comment id` for every comment GitHub knows."""
         with self._lock:
             return {c.node_id: c.id for c in self._items.values() if c.node_id}
+
+    def get(self, comment_id: str) -> Comment:
+        """One comment as it stands.
+
+        Raises:
+            CommentNotFound: no such comment, or a withdrawn tombstone.
+        """
+        with self._lock:
+            c = self._items.get(comment_id)
+            if c is None or c.withdrawn:
+                raise CommentNotFound(f"comment {comment_id} not found")
+            return c
 
     def mark_posted(self, node_ids: dict[str, str]) -> int:
         """Flip the local comments in `node_ids` (`id -> node id`) to

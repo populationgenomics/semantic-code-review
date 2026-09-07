@@ -1011,8 +1011,10 @@ def _note(cid: str, body: str = "note", **extra: Any) -> dict[str, Any]:
 
 
 def test_data_json_names_the_counterpart(run_dir: paths.RunDir) -> None:
-    assert _Harness(run_dir).session.data_json()["counterpart"] == "claude"
-    assert _Harness(run_dir, counterpart="github").session.data_json()["counterpart"] == "github"
+    """The GitHub counterpart's shape is in `test_review_session_github`."""
+    data = _Harness(run_dir).session.data_json()
+    assert data["counterpart"] == "claude"
+    assert "pending_review" not in data
 
 
 def test_a_saved_comment_is_a_draft_and_is_fanned_out(run_dir: paths.RunDir) -> None:
