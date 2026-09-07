@@ -10,6 +10,6 @@ slice plan holds the *how, in order*.
 - [Review console](review-console.md) — ADR 0002
 - [Tool surface & MCP hosting](tool-surface-hosting.md) — ADR 0003
 - [Rendered markdown diff](rendered-markdown-diff.md) — ADR 0004
-- [One visibility model](visibility-model.md) — ADR owed
+- [One visibility model](visibility-model.md) — ADR 0006, superseded by 0008
 - [Change explainer](change-explainer.md) — ADR 0007
 - [Hide, fold, label](hide-fold-label.md) — ADR 0008
