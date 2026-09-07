@@ -6035,11 +6035,17 @@ describe("comment lifecycle (ADR 0009)", () => {
     expect(reply.classList.contains("comment-thread-reply")).toBe(true);
     expect(reply.querySelector(".comment-author")!.textContent).toBe("claude");
     expect(reply.querySelector(".comment-body")!.textContent).toBe("Fixed in 3f2a.");
-    expect(reply.querySelector(".comment-actions")).toBeNull();
+    // Read-only: no edit, delete, Send or badge of its own. The one button
+    // on its row is the thread's Reply — the reviewer's follow-up is a
+    // reply they Send — which sits on the last entry's row, not under a
+    // rule of its own.
+    expect(reply.querySelector(".comment-btn-edit, .comment-btn-del, .comment-btn-send")).toBeNull();
     expect(reply.querySelector(".comment-badge")).toBeNull();
-    // The reviewer's follow-up is a reply they Send: the thread offers Reply.
+    expect(Array.from(reply.querySelectorAll(".comment-actions > *")).map((b) => b.className))
+      .toEqual(["comment-btn comment-btn-reply"]);
     const thread = reply.closest(".comment-thread")!;
-    expect(thread.querySelector(".comment-btn-reply")).not.toBeNull();
+    expect(thread.querySelector(".comment-thread-actions")).toBeNull();
+    expect(thread.querySelectorAll(".comment-btn-reply").length).toBe(1);
     // The root keeps its own chrome.
     expect(badgeOf("c1")).toBe("delivered");
   });

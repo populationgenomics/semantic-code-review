@@ -562,6 +562,10 @@ interface EntryActions {
   onEdit: () => void;
   onDelete: () => void;
   onSend: () => void;
+  /** Set on the thread's last entry alone: Reply belongs to the thread,
+   *  and sits in one row with the entry's own buttons rather than under
+   *  a rule of its own. */
+  onReply?: () => void;
 }
 
 function _buildEntry(c: ReviewerComment, isReply: boolean, actions: EntryActions): HTMLElement {
@@ -578,8 +582,8 @@ function _buildEntry(c: ReviewerComment, isReply: boolean, actions: EntryActions
   if (header) entry.appendChild(header);
   entry.appendChild(_buildEntryBody(c));
 
+  const bar = _el("div", "comment-actions");
   if (!_isIngested(c)) {
-    const bar = _el("div", "comment-actions");
     if (_counterpart === "claude") {
       // The lifecycle chrome: where the comment stands towards Claude,
       // and Send while it is a draft. The badge sits first so the state
@@ -603,8 +607,13 @@ function _buildEntry(c: ReviewerComment, isReply: boolean, actions: EntryActions
     bar.appendChild(delBtn);
     editBtn.addEventListener("click", (e) => { e.stopPropagation(); actions.onEdit(); });
     delBtn.addEventListener("click", (e) => { e.stopPropagation(); actions.onDelete(); });
-    entry.appendChild(bar);
   }
+  if (actions.onReply) {
+    const reply = _el("button", "comment-btn comment-btn-reply", "Reply");
+    reply.addEventListener("click", (e) => { e.stopPropagation(); actions.onReply!(); });
+    bar.appendChild(reply);
+  }
+  if (bar.childElementCount) entry.appendChild(bar);
   return entry;
 }
 
@@ -650,7 +659,20 @@ function _buildThreadRow(
   }
 
   if (expanded) {
+    // A reply is how the reviewer follows up: on an ingested thread it
+    // nests on GitHub; with Claude as the counterpart it is an ordinary
+    // draft they Send, delivered as `reply`. It sits on the last entry's
+    // row of buttons.
+    const canReply = ingestedThread || _counterpart === "claude";
+    const onReply = (): void => {
+      handle?.remove();
+      _openEditor({
+        rowEl: anchorRowEl, side: anchor.side, line: anchor.line,
+        file: anchor.file, replyTo: replyTarget,
+      });
+    };
     thread.entries.forEach((c, idx) => {
+      const last = idx === thread.entries.length - 1;
       const entry = _buildEntry(c, idx > 0, {
         onEdit: () => {
           handle?.remove();
@@ -661,27 +683,10 @@ function _buildThreadRow(
         },
         onDelete: () => _store.delete(c.id).then(() => { refresh(); _onChange?.(); }),
         onSend: () => _store.send(c.id).then(() => { refresh(); _onChange?.(); }),
+        onReply: canReply && last ? onReply : undefined,
       });
       container.appendChild(entry);
     });
-
-    // A reply is how the reviewer follows up: on an ingested thread it
-    // nests on GitHub; with Claude as the counterpart it is an ordinary
-    // draft they Send, delivered as `reply`.
-    if (ingestedThread || _counterpart === "claude") {
-      const actions = _el("div", "comment-thread-actions");
-      const reply = _el("button", "comment-btn comment-btn-reply", "Reply");
-      reply.addEventListener("click", (e) => {
-        e.stopPropagation();
-        handle?.remove();
-        _openEditor({
-          rowEl: anchorRowEl, side: anchor.side, line: anchor.line,
-          file: anchor.file, replyTo: replyTarget,
-        });
-      });
-      actions.appendChild(reply);
-      container.appendChild(actions);
-    }
   }
 
   handle = Annotations.attach({
