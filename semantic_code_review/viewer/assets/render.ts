@@ -66,7 +66,7 @@ interface RenderState {
   focus: ReadonlySet<string> | null;
 }
 
-let _data: ViewerData = { version: "1", pr: {} as PRBlock, smells_catalogue: {}, files: [], groups: [], symbols: [] };
+let _data: ViewerData = { version: "1", run_id: "", pr: {} as PRBlock, smells_catalogue: {}, files: [], groups: [], symbols: [] };
 let _smells: Record<string, SmellCatalogueEntry> = {};
 // The focused symbol's name, highlighted search-style across every diff
 // line, or null when no symbol pill is active. Newly rendered cells pick

@@ -17,6 +17,10 @@
 
 interface ViewerData {
   version: string;
+  /** The run directory's name — the id the viewer's per-tab view state
+   *  (view_state.ts) is keyed by. Added by `ReviewSession.data_json`, so
+   *  the pending and the augmented payloads carry the same one. */
+  run_id: string;
   /** Pre-augment marker: true while the page is open before the
    *  augmentation pass produced any annotations. Cleared once the
    *  `done` SSE event arrives (see installSessionEvents in viewer.js). */

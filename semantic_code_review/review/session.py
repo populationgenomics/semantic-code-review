@@ -391,13 +391,20 @@ class ReviewSession:
         self._viewer_json = viewer_json
 
     def data_json(self) -> dict[str, Any]:
-        """The `/data.json` payload: the viewer JSON plus the two runtime
-        flags the viewer needs before any pass has run.
+        """The `/data.json` payload: the viewer JSON plus what the viewer
+        needs before any pass has run — the two runtime flags, and the
+        run id its per-tab view state is keyed by.
 
         Merged at read time because `set_viewer_json` swaps the diff
-        payload wholesale.
+        payload wholesale; the run id is the session's, not the diff's,
+        so the pending and the augmented payloads carry the same one.
         """
-        return {**self._viewer_json, "debug": self._debug, "explainer": self.explainer_enabled}
+        return {
+            **self._viewer_json,
+            "run_id": self.run_dir.slug,
+            "debug": self._debug,
+            "explainer": self.explainer_enabled,
+        }
 
     @property
     def posted_result(self) -> PostOutcome | None:
