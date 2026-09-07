@@ -175,7 +175,6 @@ function _ledgerOf(fileEl: HTMLElement): Ledger {
   return ledger;
 }
 
-
 function _isFocused(scope: PaneScope, hunkId: string): boolean {
   return scope.focus !== null && scope.focus.has(hunkId);
 }
