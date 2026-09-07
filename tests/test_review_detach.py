@@ -9,6 +9,7 @@ removes the record. These spawn a real child on a tmp run dir.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -177,10 +178,16 @@ def test_a_child_that_dies_is_reported_with_its_log(repo: Path, tmp_path: Path, 
 
     assert code == 2
     captured = capsys.readouterr()
+    run_dir = _the_run_dir(runs_root)
     assert "run_id:" not in captured.out
     assert "did not start" in captured.err
-    assert "no-such-option" in captured.err  # the child's own complaint, from server.log
-    assert not _the_run_dir(runs_root).server_json.exists()
+    assert str(run_dir.server_log) in captured.err
+    # The child's own complaint is in the log the message points at. Click
+    # renders it in a box whose wrapping depends on the terminal width, so
+    # compare letters only.
+    letters = re.sub(r"[^a-z]", "", run_dir.server_log.read_text(encoding="utf-8", errors="replace").lower())
+    assert "nosuchoption" in letters
+    assert not run_dir.server_json.exists()
 
 
 def test_serve_run_refuses_a_directory_that_is_not_a_run(tmp_path: Path, capsys) -> None:
