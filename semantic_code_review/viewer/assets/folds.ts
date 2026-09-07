@@ -11,7 +11,8 @@
 // whose opener the diff never carried still folds from whichever of its
 // rows is showing; a region with one row showing has nothing to fold.
 //
-// First time the reviewer collapses a region whose summary is empty,
+// First time the reviewer collapses a region whose summary is empty —
+// or a recorded fold is restored collapsed over freshly painted rows —
 // this module fires `POST /fold-summary` against the live review
 // server. The response writes back into the region object (mutating
 // DATA in place); the server's `fold-summary` SSE event is handled by
@@ -22,12 +23,26 @@
 // labels are the renderer's — it knows the spans — and arrive through
 // the `FoldLabels` callback; this module owns the box and the summary.
 //
+// Which regions are collapsed is the pane's record (`FoldLedger`, the
+// renderer's binding of view_state.ts to one file): a chevron toggle
+// writes it, and every attach reads it, so a recorded fold attaches
+// collapsed over rows a fresh paint or a re-applied reveal has just put
+// on screen. The rows still carry what hid them (`data-fold-by`), which
+// is how a nested fold keeps its state through the enclosing one.
+//
 import { Annotations, type AnnotationHandle } from "./annotations";
 import { FileRows, type RowWithEls } from "./file_rows";
 
 interface AttachedFold {
   marker: SVGElement;
   foldHandle: AnnotationHandle | null;
+}
+
+/** Where one pane records which of a file's regions are collapsed, by
+ *  `foldKey`. Bound to the file by the caller. */
+export interface FoldLedger {
+  isFolded(key: string): boolean;
+  setFolded(key: string, folded: boolean): void;
 }
 
 /** What a collapsed region shows beneath its summary: the labels on the
@@ -326,17 +341,19 @@ function _setFoldSummary(
 // as the nested fold left them when the enclosing one opens or closes,
 // and a row hidden by the fold's earlier incarnation (before a re-attach)
 // is still known to be its own.
-function _foldKey(region: FoldRegion): string {
+/** A region's identity within its file, as the fold ledger records it:
+ *  its context and both ranges. */
+function foldKey(region: FoldRegion): string {
   return `${region.context || "right"}:${region.right_start ?? ""}-${region.right_end ?? ""}`
     + `:${region.left_start ?? ""}-${region.left_end ?? ""}`;
 }
 
-// A fold's state lives in its rows: collapsed when it hides any body
-// row. Re-attaching after a gap expands, a summary lands or the comment
-// store changes rebuilds the chevron in the state the rows are already
-// in, so it never pops a fold open — a collapsed one re-hides its body,
-// taking in rows a chip has since disclosed and anything attached to a
-// hidden row meanwhile.
+// A fold is collapsed when the pane's ledger says so, or when its rows
+// still carry its key from before the re-attach. Re-attaching after a gap
+// expands, a summary lands or the comment store changes rebuilds the
+// chevron in that state, so it never pops a fold open — a collapsed one
+// re-hides its body, taking in rows a chip has since disclosed and
+// anything attached to a hidden row meanwhile.
 function _isCollapsed(rows: RowWithEls[], bodyStart: number, bodyEnd: number, key: string): boolean {
   for (let i = bodyStart; i <= bodyEnd; i++) {
     const r = rows[i];
@@ -348,8 +365,13 @@ function _isCollapsed(rows: RowWithEls[], bodyStart: number, bodyEnd: number, ke
 
 // A body row folds with what hangs off it: the annotation rows, their
 // placeholders and a span's label sit between it and the next recorded
-// row in DOM order.
-function _showRows(rows: RowWithEls[], start: number, end: number, show: boolean, key: string): void {
+// row in DOM order. `claim` is the keys of the folds enclosing this one:
+// a body row one of them already hides becomes this fold's, since the
+// innermost collapsed fold is what keeps a row hidden when the enclosing
+// one opens (see `_setHidden`).
+function _showRows(
+  rows: RowWithEls[], start: number, end: number, show: boolean, key: string, claim?: ReadonlySet<string>,
+): void {
   const recorded = new Set<HTMLElement>();
   for (const r of rows) { recorded.add(r.oldEl); recorded.add(r.newEl); }
   for (let i = start; i <= end; i++) {
@@ -357,10 +379,10 @@ function _showRows(rows: RowWithEls[], start: number, end: number, show: boolean
     if (!r) continue;
     for (const el of [r.oldEl, r.newEl]) {
       if (!el) continue;
-      _setHidden(el, !show, key);
+      _setHidden(el, !show, key, claim);
       for (let s = el.nextElementSibling as HTMLElement | null; s && !recorded.has(s);
            s = s.nextElementSibling as HTMLElement | null) {
-        _setHidden(s, !show, key);
+        _setHidden(s, !show, key, claim);
       }
     }
   }
@@ -368,10 +390,18 @@ function _showRows(rows: RowWithEls[], start: number, end: number, show: boolean
 
 /** Hide `el` on behalf of the fold `key`, or show it again when `key` is
  *  what hid it. Something already hidden — by another fold, or by its own
- *  logic, as an open fold's box is — is left as it is. */
-function _setHidden(el: HTMLElement, hide: boolean, key: string): void {
+ *  logic, as an open fold's box is — is left as it is, unless what hid it
+ *  is a fold in `claim` (one enclosing this one): a fold attached after
+ *  the fold enclosing it — every attach runs enclosing-first — takes over
+ *  the body rows the enclosing one hid, as it would own them had the
+ *  reviewer collapsed it first. */
+function _setHidden(el: HTMLElement, hide: boolean, key: string, claim?: ReadonlySet<string>): void {
   if (hide) {
-    if (el.style.display === "none") return;
+    if (el.style.display === "none") {
+      const owner = el.dataset.foldBy;
+      if (claim !== undefined && owner !== undefined && claim.has(owner)) el.dataset.foldBy = key;
+      return;
+    }
     el.style.display = "none";
     el.dataset.foldBy = key;
   } else if (el.dataset.foldBy === key) {
@@ -380,8 +410,22 @@ function _setHidden(el: HTMLElement, hide: boolean, key: string): void {
   }
 }
 
+/** The keys of the placed regions enclosing `placed`: those whose rows
+ *  cover its rows. */
+function _enclosingKeys(placed: PlacedRegion, all: PlacedRegion[]): Set<string> {
+  const keys = new Set<string>();
+  for (const other of all) {
+    if (other === placed) continue;
+    if (other.headerIdx <= placed.headerIdx && other.bodyEndIdx >= placed.bodyEndIdx) {
+      keys.add(foldKey(other.region));
+    }
+  }
+  return keys;
+}
+
 function _attachOneFold(
-  rows: RowWithEls[], placed: PlacedRegion, fileIdx: number, labels: FoldLabels,
+  rows: RowWithEls[], placed: PlacedRegion, enclosing: ReadonlySet<string>,
+  fileIdx: number, labels: FoldLabels, ledger: FoldLedger,
 ): AttachedFold | null {
   const { region } = placed;
   const bodyStart = placed.headerIdx + 1;
@@ -397,15 +441,20 @@ function _attachOneFold(
   const anchor = side === "new" ? headerNew : headerOld;
   const shadow = side === "new" ? headerOld : headerNew;
 
-  const key = _foldKey(region);
-  const collapsed = _isCollapsed(rows, bodyStart, bodyEnd, key);
-  if (collapsed) _showRows(rows, bodyStart, bodyEnd, false, key);
+  const key = foldKey(region);
+  // Recorded but its rows not yet hidden: a fresh paint of them — a
+  // reload, a region a re-applied reveal has just disclosed — rather than
+  // a re-attach over rows the fold's earlier incarnation hid.
+  const fresh = ledger.isFolded(key) && !_isCollapsed(rows, bodyStart, bodyEnd, key);
+  const collapsed = fresh || _isCollapsed(rows, bodyStart, bodyEnd, key);
+  if (collapsed) _showRows(rows, bodyStart, bodyEnd, false, key, enclosing);
   const marker = _chev(collapsed, "fold-chev");
   marker.setAttribute("role", "button");
   marker.setAttribute("tabindex", "0");
 
   let foldHandle: AnnotationHandle | null = null;
   const setOpen = (nowOpen: boolean): void => {
+    ledger.setFolded(key, !nowOpen);
     marker.classList.toggle("open", nowOpen);
     _showRows(rows, bodyStart, bodyEnd, nowOpen, key);
     if (foldHandle) {
@@ -456,6 +505,10 @@ function _attachOneFold(
       _setHidden(foldHandle.element, true, enclosing);
       if (foldHandle.placeholder) _setHidden(foldHandle.placeholder, true, enclosing);
     }
+    // A collapse the reviewer made asked for the summary then; a fold
+    // restored collapsed over fresh rows asks now, or its box would say
+    // "summarising…" with nothing under way.
+    if (fresh && pending) _requestFoldSummary(fileIdx, region, foldHandle);
   }
 
   marker.addEventListener("click", (e) => {
@@ -468,20 +521,26 @@ function _attachOneFold(
   return { marker, foldHandle };
 }
 
-function attachFileFolds(fileEl: HTMLElement, file: FileBlock, labels: FoldLabels): void {
+/** Attach the fold chrome to one pane's copy of `file`, over the rows it
+ *  has rendered. `ledger` is where this pane records the file's collapsed
+ *  regions; a recorded region attaches collapsed whatever its rows show.
+ *  Regions attach enclosing-first (`_placeRegions`' order), which is what
+ *  lets a nested fold's box hide under the enclosing fold's key. */
+function attachFileFolds(fileEl: HTMLElement, file: FileBlock, labels: FoldLabels, ledger: FoldLedger): void {
   const fileIdx = Number(file.id.replace("F", ""));
   const rows = _collectFileRows(fileEl);
   for (const container of new Set(rows.map((r) => r.container))) {
     _teardownContainerFolds(container);
   }
-  for (const placed of _placeRegions(rows, file.fold_regions || [])) {
-    const attached = _attachOneFold(rows, placed, fileIdx, labels);
+  const all = _placeRegions(rows, file.fold_regions || []);
+  for (const placed of all) {
+    const attached = _attachOneFold(rows, placed, _enclosingKeys(placed, all), fileIdx, labels, ledger);
     if (attached) _recordChrome(rows[placed.headerIdx].container, attached);
   }
 }
 
 // The runtime surface. render.ts calls attachFileFolds after a file
 // body is built, after every gap expand/collapse, and (via
-// `Render.attachFileFolds`, which supplies the labels) when boot.ts
-// hears a fold summary land from another tab.
-export const Folds = { attachFileFolds, rowInRegion };
+// `Render.attachFileFolds`, which supplies the labels and the ledger)
+// when boot.ts hears a fold summary land from another tab.
+export const Folds = { attachFileFolds, rowInRegion, foldKey };

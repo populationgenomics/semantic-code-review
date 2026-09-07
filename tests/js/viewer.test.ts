@@ -121,14 +121,19 @@ function queueFileText(idx: number, path: string, base: string | null, head: str
   queueFetchResponse({ status: 200, body: { file_idx: idx, path, base, head } });
 }
 
-// `/file-text` answered by URL, for a fetch the paint itself makes — a
-// recorded reveal re-applied at boot — whose position among boot's own
-// fetches a test has no reason to know. A test that queues positionally
-// (`queueFileText`) for the click it is about to make is unaffected.
-const fileTextByUrl: Record<string, FetchResponse> = {};
+// Responses answered by URL, for a fetch the paint itself makes — a
+// recorded reveal re-applied at boot, the summary a restored fold asks
+// for — whose position among boot's own fetches a test has no reason to
+// know. A test that queues positionally (`queueFileText`) for the click
+// it is about to make is unaffected.
+const responsesByUrl: Record<string, FetchResponse> = {};
+
+function serveByUrl(url: string, response: FetchResponse): void {
+  responsesByUrl[url] = response;
+}
 
 function serveFileText(idx: number, path: string, base: string | null, head: string | null): void {
-  fileTextByUrl[`/file-text?file_idx=${idx}`] = { status: 200, body: { file_idx: idx, path, base, head } };
+  serveByUrl(`/file-text?file_idx=${idx}`, { status: 200, body: { file_idx: idx, path, base, head } });
 }
 
 /** Let a fetch promise chain settle (a chip's expand, a toggle's flip). */
@@ -483,13 +488,13 @@ beforeEach(() => {
   (globalThis as unknown as { EventSource: typeof EventSource }).EventSource =
     EventSourceStub as unknown as typeof EventSource;
   explainerLoadResponse = null;
-  for (const k of Object.keys(fileTextByUrl)) delete fileTextByUrl[k];
+  for (const k of Object.keys(responsesByUrl)) delete responsesByUrl[k];
   vi.spyOn(globalThis, "fetch").mockImplementation(((url: string, init?: RequestInit) => {
     fetchCalls.push({ url, init });
     let next: FetchResponse;
     if (url === "/prefs") next = init?.method === "PATCH" ? { status: 200, body: {} } : prefsLoadResponse;
     else if (url === "/explainer" && explainerLoadResponse !== null) next = explainerLoadResponse;
-    else if (url in fileTextByUrl) next = fileTextByUrl[url];
+    else if (url in responsesByUrl) next = responsesByUrl[url];
     else next = fetchResponses.shift() ?? { status: 200, body: {} };
     return Promise.resolve({
       status: next.status,
@@ -3308,6 +3313,146 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
     expect(chevrons()).toHaveLength(1);
     expect(document.querySelectorAll(".annot-box")).toHaveLength(1);
   });
+
+  // --- The folds are the tab's record ---------------------------------------
+  // A chevron toggle is recorded as `{ file, key }` (view_state.ts), and
+  // every attach reads the record: a recorded fold attaches collapsed over
+  // rows a fresh paint or a re-applied reveal has just put on screen, so a
+  // reload restores the reveals and then the folds inside them.
+
+  describe("the folds are the tab's record", () => {
+    /** `foo` over lines 1..3 of a three-line file; the hunk shows line 3
+     *  alone, so the region folds only once the gap above is disclosed. */
+    function fooFile(): Record<string, unknown> {
+      return {
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 1, dels: 1, summary: "ok", head_line_count: 3,
+        symbols: { added: [], modified: [], removed: [] },
+        fold_regions: [
+          region({ context: "both", right_start: 1, right_end: 3, left_start: 1, left_end: 3, has_changes: true, qualified_name: "foo", kind: "function" }),
+        ],
+        hunks: [makeHunkBlock("H0_0", "ok", {
+          old_start: 3, old_count: 1, new_start: 3, new_count: 1,
+          rows: [{ kind: "pair", old_line: 3, new_line: 3, old_text: "    return old()", new_text: "    return new()" }],
+        })],
+      };
+    }
+    const FOO_TEXT = "def foo():\n    x = 1\n    return new()\n";
+    const FOO_KEY = "both:1-3:1-3";
+    const display = (lines: number[]): string[] => lines.map((n) => rowOfLine(n).style.display);
+
+    test("a chevron toggle is recorded by the region's key, and taken back on reopening", async () => {
+      await bootViewer(dataWithFold());
+      expandHunk();
+      queueFetchResponse({ status: 200, body: { summary: "s" } });
+      clickEl(chevrons()[0]);
+      expect(storedViewState()!.folds).toEqual([{ file: "F0", key: "both:1-2:1-2" }]);
+      clickEl(chevrons()[0]);
+      expect(storedViewState()!.folds).toEqual([]);
+    });
+
+    test("a collapsed definition inside a revealed gap survives a repaint and a reload", async () => {
+      await bootViewer(makeData({ pending: true, files: [fooFile()] }));
+      expandHunk();
+      queueFileText(0, "a.py", null, FOO_TEXT);
+      (document.querySelector(".gap-chip") as HTMLElement).click();
+      await tick();
+      queueFetchResponse({ status: 200, body: { summary: "foo does foo" } });
+      clickEl(chevronOnLine(1));
+      await tick();
+      expect(display([2, 3])).toEqual(["none", "none"]);
+      expect(storedViewState()!.reveals).toEqual([{ file: "F0", old: [1, 2], new: [1, 2] }]);
+      expect(storedViewState()!.folds).toEqual([{ file: "F0", key: FOO_KEY }]);
+
+      // The repaint re-applies the reveal, then the fold inside it.
+      lastEventSource().dispatch("done", { reason: "complete" });
+      expect(document.querySelector(".gap-expansion")).not.toBeNull();
+      expect(chevronOnLine(1).classList.contains("open")).toBe(false);
+      expect(display([2, 3])).toEqual(["none", "none"]);
+      expect(foldBoxOf(1).querySelector(".fold-summary")!.textContent).toBe("function foo — foo does foo");
+
+      // A reload: revealed rows come back, then the fold collapses them.
+      // The summary is in the tab's record of nothing — it lives in the
+      // sidecar — so the restored fold asks for it again.
+      fetchCalls.length = 0;
+      serveFileText(0, "a.py", null, FOO_TEXT);
+      serveByUrl("/fold-summary", { status: 200, body: { summary: "foo does foo" } });
+      await bootViewer(makeData({ pending: false, files: [fooFile()] }));
+      await tick();
+      expect(document.querySelector(".gap-expansion")).not.toBeNull();
+      expect(chevronOnLine(1).classList.contains("open")).toBe(false);
+      expect(display([2, 3])).toEqual(["none", "none"]);
+      expect(fetchCalls.filter((c) => c.url === "/fold-summary")).toHaveLength(1);
+      await tick();
+      expect(foldBoxOf(1).querySelector(".fold-summary")!.textContent).toBe("function foo — foo does foo");
+    });
+
+    test("a fold inside a file survives collapsing and reopening the file", async () => {
+      await bootViewer(dataWithFold());
+      expandHunk();
+      queueFetchResponse({ status: 200, body: { summary: "s" } });
+      clickEl(chevrons()[0]);
+      expect(rowOfLine(2).style.display).toBe("none");
+
+      const header = (): HTMLElement => document.querySelector('.file[data-id="F0"] .file-header') as HTMLElement;
+      header().click();
+      expect(document.querySelector('.file[data-id="F0"] .file-body')).toBeNull();
+      header().click();
+      expect(chevrons()[0].classList.contains("open")).toBe(false);
+      expect(rowOfLine(2).style.display).toBe("none");
+    });
+
+    test("a reload restores a fold nested in a fold: opening the outer leaves the inner shut", async () => {
+      await bootViewer(makeData({ pending: false, files: [labelledFile()], symbols: [] }));
+      expandHunk();
+      queueFetchResponse({ status: 200, body: { summary: "beta guards then acts" } });
+      queueFetchResponse({ status: 200, body: { summary: "the class" } });
+      clickEl(chevronOnLine(8));   // beta
+      clickEl(chevronOnLine(4));   // the class around it
+      await tick();
+      expect(storedViewState()!.folds.map((f) => f.key)).toEqual(["right:8-11:-", "right:1-11:-"]);
+
+      // Attach runs enclosing-first, so on a fresh paint the class hides
+      // beta's rows before beta attaches; beta, recorded collapsed, takes
+      // its body over, and keeps it when the class opens.
+      await bootViewer(makeData({ pending: false, files: [labelledFile()], symbols: [] }));
+      expect(display([5, 8, 9, 10, 11])).toEqual(["none", "none", "none", "none", "none"]);
+      expect(chevronOnLine(4).classList.contains("open")).toBe(false);
+      clickEl(chevronOnLine(4));
+      expect(display([5, 8])).toEqual(["", ""]);
+      expect(display([9, 10, 11])).toEqual(["none", "none", "none"]);
+      expect(chevronOnLine(8).classList.contains("open")).toBe(false);
+      expect(foldBoxOf(8).closest<HTMLElement>(".row-annotation")!.style.display).toBe("");
+      // The record: the class's toggle is out, beta's stands.
+      expect(storedViewState()!.folds.map((f) => f.key)).toEqual(["right:8-11:-"]);
+    });
+
+    test("the explainer panel's folds are the panel's, not the tab's", async () => {
+      // Covered by "fold regions attach inside the panel's copy of a file"
+      // for the DOM; here, the record: a fold made in the panel is not
+      // written to the tab's record.
+      const DOC = {
+        version: 1, base_sha: "b", head_sha: "h", verdict: "narrate", verdict_note: "",
+        figure_family: "", cast: [], toy_data: false, dropped_refs: 0,
+        sections: [{
+          id: "background", kind: "background", title: "Background", state: "ready",
+          body: "The guard is [H0_0].", refs: [], map_rows: [], subsections: [],
+        }],
+      };
+      await bootViewer(
+        { ...dataWithFold(), explainer: true },
+        { explainer: { status: 200, body: DOC } },
+      );
+      await tick();
+      // An inline hunk reference opens the panel with the hunk unfolded.
+      (document.querySelector("#app .explainer-arrow") as HTMLElement).click();
+      const panel = document.querySelector("#app .explainer-detail") as HTMLElement;
+      queueFetchResponse({ status: 200, body: { summary: "s" } });
+      clickEl(panel.querySelector(".fold-chev") as SVGElement);
+      expect((panel.querySelector(".fold-chev") as SVGElement).classList.contains("open")).toBe(false);
+      expect(storedViewState()?.folds ?? []).toEqual([]);
+    });
+  });
 });
 
 describe("hidden content is a manifest: a collapsed hunk or file lists its threads", () => {
@@ -5690,6 +5835,43 @@ describe("lazy disclosure", () => {
       pill().click();
       expect(expansions()).toContain("new 11");
       expect(fileTextHits()).toHaveLength(1);
+    });
+
+    test("a corrupt record is said on the console, and the viewer boots empty", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      sessionStorage.setItem(`scr-view-state:${RUN}`, "{not json");
+      await bootViewer(makeData({ pending: false, files: [nine()] }));
+      expect(document.querySelector(".boot-error")).toBeNull();
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(chipsOf(fileEl("F0"))).toHaveLength(2);
+      // The next gesture replaces it.
+      queueFileText(0, "a.py", null, nineText());
+      chipsOf(fileEl("F0"))[0].click();
+      await tick();
+      expect(storedViewState()!.reveals).toEqual([{ file: "F0", old: [1, 1], new: [1, 1] }]);
+    });
+
+    test("a write the browser refuses keeps the record in memory, with one warning", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const real = sessionStorage;
+      Object.defineProperty(globalThis, "sessionStorage", {
+        configurable: true,
+        value: { ...real, getItem: () => null, setItem: () => { throw new DOMException("quota", "QuotaExceededError"); } },
+      });
+      try {
+        await bootViewer(makeData({ pending: true, files: [nine()] }));
+        queueFileText(0, "a.py", null, nineText());
+        chipsOf(fileEl("F0"))[0].click();
+        await tick();
+        chipsOf(fileEl("F0"))[0].click();   // below, off the cache: a second write
+        expect(expansions()).toEqual(["a.py:1", "a.py:9"]);
+        // The repaint reads the in-memory record.
+        lastEventSource().dispatch("done", { reason: "complete" });
+        expect(expansions()).toEqual(["a.py:1", "a.py:9"]);
+        expect(warn.mock.calls.filter((c) => String(c[0]).startsWith("view state"))).toHaveLength(1);
+      } finally {
+        Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: real });
+      }
     });
   });
 });

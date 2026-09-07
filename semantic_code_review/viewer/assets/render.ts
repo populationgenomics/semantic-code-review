@@ -163,6 +163,18 @@ const _panelScope: PaneScope = {
   repaint: () => ExplainerPanel.repaint(),
 };
 
+// The ledger each rendered `.file` was painted against, for the
+// re-attaches that reach a file through its node alone — a chip's
+// expand, a summary landing from another tab, the comment store
+// changing. A node is in one pane, so this is the pane's ledger.
+const _FILE_LEDGER = new WeakMap<HTMLElement, Ledger>();
+
+function _ledgerOf(fileEl: HTMLElement): Ledger {
+  const ledger = _FILE_LEDGER.get(fileEl);
+  if (!ledger) throw new Error(`${fileEl.dataset.id}: file node was not painted by _renderFile`);
+  return ledger;
+}
+
 
 function _isFocused(scope: PaneScope, hunkId: string): boolean {
   return scope.focus !== null && scope.focus.has(hunkId);
@@ -607,6 +619,7 @@ function _renderFile(f: FileBlock, scope: PaneScope): HTMLElement | null {
   const div = _el("div", "file");
   if (liveIds !== null) div.classList.add("filtered");
   div.dataset.id = f.id;
+  _FILE_LEDGER.set(div, scope.ledger);
   const folded = _fileFolded(scope, f);
   div.classList.toggle("folded", folded);
   div.appendChild(_renderFileHeader(f, folded, scope));
@@ -1398,10 +1411,14 @@ function _foldLabels(f: FileBlock): FoldLabels {
 }
 
 /** Attach the fold chrome to one pane's copy of `f`, with the labels a
- *  collapsed region shows. boot.ts calls this when a summary lands from
- *  another tab. */
+ *  collapsed region shows and the pane's record of the file's folds.
+ *  boot.ts calls this when a summary lands from another tab. */
 function attachFileFolds(fileEl: HTMLElement, f: FileBlock): void {
-  Folds.attachFileFolds(fileEl, f, _foldLabels(f));
+  const ledger = _ledgerOf(fileEl);
+  Folds.attachFileFolds(fileEl, f, _foldLabels(f), {
+    isFolded: (key) => ledger.isFolded(f.id, key),
+    setFolded: (key, folded) => ledger.setFolded(f.id, key, folded),
+  });
 }
 
 function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLElement {
