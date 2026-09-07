@@ -1396,27 +1396,12 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
   color: var(--warn);
 }
 
-/* "Done" button in the PR bar (only present when a session endpoint
- * was baked into the HTML). */
-.done-btn {
-  background: var(--warn);
-  color: #000;
-  border: 1px solid var(--warn);
-  border-radius: 6px;
-  padding: 4px 12px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  margin-left: 8px;
-}
-.done-btn:hover:not(:disabled) { background: #e0ab2c; }
-.done-btn:disabled { opacity: 0.7; cursor: default; }
-
-/* The send bar (ADR 0009) — review mode's place for the lifecycle, where
- * Done sits in PR mode: whether Claude is listening, and Send all drafts
- * with the count of unsent drafts. The listening state is in the text
- * and the glyph (filled disc / hollow ring), never colour alone. */
-.send-bar { display: flex; align-items: center; gap: 12px; margin-left: 8px; }
+/* The send bar (ADR 0009) — the counterpart's place in the PR bar: Send
+ * all drafts with the count of unsent drafts, and beside it whether
+ * Claude is listening (review mode) or the pending review's state and
+ * Submit (PR mode). Every state is in the text and a glyph or a number
+ * (filled disc / hollow ring; a count), never colour alone. */
+.send-bar { display: flex; align-items: center; gap: 12px; margin-left: 8px; position: relative; }
 .listening-indicator { font-size: 12px; color: var(--fg-muted); white-space: nowrap; }
 .listening-indicator[data-listening="true"] { color: var(--fg); }
 .listening-glyph { display: inline-block; width: 1em; text-align: center; }
@@ -1456,8 +1441,76 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 .comment-badge-delivered {
   border-style: solid; border-color: var(--ok); background: var(--ok); color: #fff;
 }
+/* PR mode: GitHub refused the delivery. Dashed like a draft (the
+ * counterpart does not hold this text) and struck, so it differs from
+ * every other state in shape. */
+.comment-badge-unsent {
+  border-style: dashed; border-color: var(--warn); color: var(--fg); text-decoration: line-through;
+}
 .comment-btn-send { background: var(--warn); color: #000; border-color: var(--warn); font-weight: 600; }
 .comment-btn-send:hover { color: #000; background: #e0ab2c; }
+
+/* PR mode: Resolve / Unresolve on a thread row. Disabled — with its title
+ * saying why — on a thread still in the pending review. */
+.comment-btn-resolve:disabled { opacity: 0.5; cursor: not-allowed; }
+.comment-thread-error {
+  flex-basis: 100%; margin: 4px 0 0; font-size: 11px; color: var(--warn);
+}
+
+/* PR mode: the pending review's state beside Send all — how many
+ * comments GitHub refused (retried while the tab is open) — and the
+ * submitted review's link. */
+.pending-review-status { font-size: 12px; color: var(--warn); white-space: nowrap; }
+.pending-review-status[data-unsent="0"] { display: none; }
+.submitted-review-link {
+  font-size: 12px; color: var(--accent); text-decoration: none; white-space: nowrap;
+}
+.submitted-review-link:hover { text-decoration: underline; }
+.submitted-review-link.hidden { display: none; }
+.submit-btn {
+  background: var(--accent);
+  color: #000;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.submit-btn:hover:not(:disabled) { filter: brightness(1.1); }
+
+/* The Submit chooser: a small panel under the bar, not a modal — the
+ * diff stays readable while the verdict is picked. */
+.submit-chooser {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 60;
+  width: min(420px, 90vw); padding: 12px 14px;
+  background: var(--bg-alt); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: var(--fg);
+}
+.submit-chooser.hidden { display: none; }
+.submit-events { display: flex; gap: 14px; }
+.submit-event { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.submit-body {
+  width: 100%; box-sizing: border-box; resize: vertical; font: inherit; font-size: 12px;
+  background: var(--bg-panel); color: var(--fg); border: 1px solid var(--border); border-radius: 4px;
+  padding: 6px;
+}
+.submit-note { margin: 0; font-size: 11px; color: var(--fg-muted); }
+.submit-note:empty { display: none; }
+.submit-error { margin: 0; font-size: 12px; color: var(--warn); }
+.submit-error:empty { display: none; }
+.submit-unsent { margin: 4px 0 0; padding-left: 18px; font-family: var(--mono); font-size: 11px; }
+.submit-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.submit-actions button {
+  background: var(--bg-panel); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 5px 12px; font-size: 12px; cursor: pointer;
+}
+.submit-actions .submit-confirm {
+  background: var(--accent); border-color: var(--accent); color: #000; font-weight: 600;
+}
+.submit-actions button:disabled { opacity: 0.6; cursor: default; }
 
 /* Claude's reply in a thread: labelled by name, set apart by a left rule,
  * read-only to the reviewer (no actions row is built for it). */
@@ -1774,96 +1827,6 @@ body { padding-bottom: 30px; }
   border: 1px solid var(--border); border-radius: 4px; font-family: var(--mono);
   font-size: 11px; margin: 0 2px;
 }
-
-/* --- Post-confirm modal (scr pr only) ------------------------------------ */
-/* Shown when the reviewer clicks Done in posting mode. Each row is a
- * comment that would be posted; per-row checkbox + delete give the
- * reviewer one last pass before the post fires. Reuses the help
- * overlay's backdrop pattern (fixed full-screen, centred card). */
-.post-modal {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 110;
-  display: flex; align-items: center; justify-content: center;
-}
-.post-modal.hidden { display: none; }
-.post-modal-card {
-  background: var(--bg-alt); border: 1px solid var(--border); border-radius: 8px;
-  padding: 20px 24px; width: min(720px, 90vw); max-height: 80vh;
-  display: flex; flex-direction: column; color: var(--fg);
-}
-.post-modal-header { margin: 0 0 6px; font-size: 16px; }
-.post-modal-meta {
-  margin: 0 0 14px; font-size: 12px; color: var(--fg-muted);
-  font-family: var(--mono);
-}
-.post-modal-list {
-  list-style: none; padding: 0; margin: 0; overflow-y: auto;
-  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
-  max-height: 50vh;
-}
-.post-modal-empty {
-  padding: 20px; text-align: center; color: var(--fg-muted); font-style: italic;
-}
-.post-row {
-  display: flex; align-items: flex-start; gap: 8px;
-  padding: 10px 0; border-bottom: 1px solid var(--border);
-}
-.post-row:last-child { border-bottom: 0; }
-.post-row-label {
-  flex: 1; display: grid;
-  grid-template-columns: auto 1fr auto; gap: 4px 10px;
-  align-items: baseline; cursor: pointer;
-}
-.post-row-check { grid-row: 1 / span 2; margin-top: 2px; }
-.post-row-loc {
-  font-family: var(--mono); font-size: 12px; color: var(--fg-muted);
-  grid-column: 2; grid-row: 1;
-}
-.post-row-kind {
-  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em;
-  color: var(--accent); grid-column: 3; grid-row: 1;
-}
-.post-row-body {
-  font-size: 13px; white-space: pre-wrap; word-break: break-word;
-  grid-column: 2 / span 2; grid-row: 2;
-}
-.post-row-delete {
-  background: transparent; border: 1px solid var(--border); border-radius: 4px;
-  width: 22px; height: 22px; padding: 0; line-height: 1;
-  color: var(--fg-muted); cursor: pointer; font-size: 16px;
-}
-.post-row-delete:hover:not(:disabled) {
-  color: var(--warn); border-color: var(--warn);
-}
-.post-row-delete:disabled { opacity: 0.5; cursor: default; }
-.post-modal-status {
-  margin: 10px 0 0; font-size: 12px; color: var(--warn); min-height: 1.2em;
-}
-.post-modal-footer {
-  display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px;
-}
-.post-modal-footer button {
-  background: var(--bg-panel); color: var(--fg);
-  border: 1px solid var(--border); border-radius: 6px;
-  padding: 6px 14px; font-size: 13px; cursor: pointer;
-}
-.post-modal-footer .post-confirm {
-  background: var(--accent); border-color: var(--accent); color: #000; font-weight: 600;
-}
-.post-modal-footer .post-confirm:hover:not(:disabled) { filter: brightness(1.1); }
-.post-modal-footer button:disabled { opacity: 0.6; cursor: default; }
-.post-modal-success {
-  display: flex; gap: 12px; align-items: flex-start;
-  padding: 16px 0; margin-bottom: 4px;
-}
-.post-modal-tick {
-  font-size: 24px; color: var(--ok, #2ea043); line-height: 1;
-}
-.post-modal-success-text { font-size: 14px; }
-.post-modal-link {
-  display: inline-block; margin-top: 4px;
-  color: var(--accent); text-decoration: none;
-}
-.post-modal-link:hover { text-decoration: underline; }
 
 /* --- Change explainer (ADR 0007) -----------------------------------------
    Overview mode is a reading surface, so it takes its own type scale

@@ -20,11 +20,16 @@ import { type CommentStore, makeNoopStore, makeServerStore } from "./comment_sto
 // bother to init() don't crash on stray click-handlers.
 let _store: CommentStore = makeNoopStore();
 
-// Who the comments are for. Set at init from /data.json. With Claude as
-// the counterpart every local comment carries its lifecycle badge and a
-// draft carries Send; with GitHub, Done and the post modal post
-// everything, so neither is shown.
+// Who the comments are for. Set at init from /data.json. Every local
+// comment carries its lifecycle badge and a draft carries Send in both
+// modes; the badge's words are the counterpart's — a comment GitHub
+// holds is *pending* (in the pending review), one Claude holds is
+// *delivered* — and only GitHub's threads can be resolved from here.
 let _counterpart: Counterpart | null = null;
+
+// Threads whose resolve is in flight, by thread id: the toggle is
+// disabled while GitHub answers, and the row shows the refusal after.
+const _resolveErrors = new Map<string, string>();
 
 // Per-session override of resolved-thread collapse state. Thread ids
 // the user has manually expanded sit here; clicking the header again
@@ -110,6 +115,18 @@ function sendAll(): Promise<void> {
   });
 }
 
+/** PR mode: deliver every unsent comment again. The comments' new
+ *  states arrive as `comment` frames; this returns the review's. */
+function retry(): Promise<PendingReviewState | null> {
+  return _store.retry();
+}
+
+/** PR mode: publish the pending review. What it held turns upstream
+ *  through `comment` frames. */
+function submit(event: ReviewEvent, body: string): Promise<SubmitOutcome> {
+  return _store.submit(event, body);
+}
+
 /** The server states a comment (a `comment` SSE frame): another tab's
  *  edit, a Send landing as delivered, Claude's reply. */
 function onRemote(c: ReviewerComment): void {
@@ -131,12 +148,31 @@ function onRemoved(id: string): void {
   _onChange?.();
 }
 
-/** The badge's text, and the class that shapes it. Text carries the
- *  state; colour only reinforces it (never colour alone). */
-function _badgeFor(c: ReviewerComment): { label: string; state: string } {
+/** The badge's text, the class that shapes it, and the title behind it.
+ *  Text carries the state; colour only reinforces it (never colour
+ *  alone). The words are the counterpart's: towards GitHub a delivered
+ *  comment is *pending* (held by the pending review until Submit), a
+ *  refused one *unsent*, and an edit needs no re-send — it is sent again
+ *  the moment it is saved. */
+function _badgeFor(c: ReviewerComment): { label: string; state: string; title: string } {
   const delivery = _deliveryOf(c);
-  if (delivery === "draft" && (c.deliveries ?? 0) > 0) return { label: "needs re-send", state: "resend" };
-  return { label: delivery, state: delivery };
+  if (_counterpart === "github") {
+    if (delivery === "delivered") return { label: "pending", state: "delivered", title: "In your pending review on GitHub" };
+    if (delivery === "sent" && c.send_error) {
+      return { label: "unsent", state: "unsent", title: `GitHub refused it; retried on the next Send and every 30 s — ${c.send_error}` };
+    }
+    if (delivery === "sent" || (c.deliveries ?? 0) > 0) return { label: "sending", state: "sent", title: "On its way to your pending review" };
+    return { label: "draft", state: "draft", title: "Yours only; Send adds it to your pending review" };
+  }
+  if (delivery === "draft" && (c.deliveries ?? 0) > 0) {
+    return { label: "needs re-send", state: "resend", title: "Edited since Claude saw it; Send delivers it as revised" };
+  }
+  const titles: Record<Delivery, string> = {
+    draft: "Yours only; Send hands it to Claude",
+    sent: "Sent; Claude has not taken it yet",
+    delivered: "Claude has it",
+  };
+  return { label: delivery, state: delivery, title: titles[delivery] };
 }
 
 /** One thread as a fold's manifest lists it (ADR 0008: hidden content
@@ -566,6 +602,10 @@ interface EntryActions {
    *  and sits in one row with the entry's own buttons rather than under
    *  a rule of its own. */
   onReply?: () => void;
+  /** Also the thread's, on its last entry: controls after Reply (PR
+   *  mode's Resolve) and a notice beneath the row (a refused resolve). */
+  trailing?: HTMLElement[];
+  notice?: HTMLElement | null;
 }
 
 function _buildEntry(c: ReviewerComment, isReply: boolean, actions: EntryActions): HTMLElement {
@@ -584,22 +624,23 @@ function _buildEntry(c: ReviewerComment, isReply: boolean, actions: EntryActions
 
   const bar = _el("div", "comment-actions");
   if (!_isIngested(c)) {
-    if (_counterpart === "claude") {
-      // The lifecycle chrome: where the comment stands towards Claude,
-      // and Send while it is a draft. The badge sits first so the state
-      // reads before the actions on it.
-      const badge = _badgeFor(c);
-      const badgeEl = _el("span", `comment-badge comment-badge-${badge.state}`, badge.label);
-      badgeEl.dataset.delivery = badge.state;
-      bar.appendChild(badgeEl);
-      if (_isDraft(c)) {
-        const sendBtn = _el("button", "comment-btn comment-btn-send", "Send");
-        sendBtn.title = badge.state === "resend"
+    // The lifecycle chrome: where the comment stands towards the
+    // counterpart, and Send while it is a draft. The badge sits first so
+    // the state reads before the actions on it.
+    const badge = _badgeFor(c);
+    const badgeEl = _el("span", `comment-badge comment-badge-${badge.state}`, badge.label);
+    badgeEl.dataset.delivery = badge.state;
+    badgeEl.title = badge.title;
+    bar.appendChild(badgeEl);
+    if (_isDraft(c) && (_counterpart === "claude" || (c.deliveries ?? 0) === 0)) {
+      const sendBtn = _el("button", "comment-btn comment-btn-send", "Send");
+      sendBtn.title = _counterpart === "github"
+        ? "Add this comment to your pending review on GitHub"
+        : badge.state === "resend"
           ? "Send the edited comment to Claude again"
           : "Send this comment to Claude now";
-        sendBtn.addEventListener("click", (e) => { e.stopPropagation(); actions.onSend(); });
-        bar.appendChild(sendBtn);
-      }
+      sendBtn.addEventListener("click", (e) => { e.stopPropagation(); actions.onSend(); });
+      bar.appendChild(sendBtn);
     }
     const editBtn = _el("button", "comment-btn comment-btn-edit", "edit");
     const delBtn = _el("button", "comment-btn comment-btn-del", "delete");
@@ -613,7 +654,9 @@ function _buildEntry(c: ReviewerComment, isReply: boolean, actions: EntryActions
     reply.addEventListener("click", (e) => { e.stopPropagation(); actions.onReply!(); });
     bar.appendChild(reply);
   }
+  for (const control of actions.trailing ?? []) bar.appendChild(control);
   if (bar.childElementCount) entry.appendChild(bar);
+  if (actions.notice) entry.appendChild(actions.notice);
   return entry;
 }
 
@@ -684,6 +727,11 @@ function _buildThreadRow(
         onDelete: () => _store.delete(c.id).then(() => { refresh(); _onChange?.(); }),
         onSend: () => _store.send(c.id).then(() => { refresh(); _onChange?.(); }),
         onReply: canReply && last ? onReply : undefined,
+        // Resolving is GitHub's: an upstream thread flips there at once,
+        // as GitHub's own UI does; a thread still in the pending review
+        // cannot be resolved until the review is submitted.
+        trailing: last && _counterpart === "github" ? [_buildResolveButton(thread, root, resolved, refresh)] : [],
+        notice: last && _counterpart === "github" ? _resolveNotice(thread.id) : null,
       });
       container.appendChild(entry);
     });
@@ -705,6 +753,50 @@ function _buildThreadRow(
     },
   });
   return handle;
+}
+
+/** Resolve / Unresolve for a thread in PR mode. The flip is optimistic —
+ *  every member takes the new flag and the row repaints — and reverts
+ *  with the refusal shown when GitHub says no. */
+/** The last refused resolve on a thread, as a line under its row. */
+function _resolveNotice(threadId: string): HTMLElement | null {
+  const error = _resolveErrors.get(threadId);
+  if (!error) return null;
+  const line = _el("p", "comment-thread-error", error);
+  line.setAttribute("role", "alert");
+  return line;
+}
+
+function _buildResolveButton(
+  thread: Thread, root: ReviewerComment, resolved: boolean, refresh: () => void,
+): HTMLElement {
+  const button = _el("button", "comment-btn comment-btn-resolve", resolved ? "Unresolve" : "Resolve");
+  if (!_isIngested(root)) {
+    button.setAttribute("disabled", "");
+    button.title = "A thread in your pending review cannot be resolved on GitHub until the review is submitted";
+    return button;
+  }
+  button.title = resolved ? "Reopen this thread on GitHub" : "Resolve this thread on GitHub";
+  button.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const flag = !resolved;
+    const before = thread.entries.map((c) => [c.id, c.thread_resolved ?? false] as const);
+    for (const c of thread.entries) _store.apply({ ...c, thread_resolved: flag });
+    _resolveErrors.delete(thread.id);
+    refresh();
+    _onChange?.();
+    _store.resolve(root.id, flag).then((error) => {
+      if (error === null) return;
+      for (const [id, was] of before) {
+        const c = _store.getAll().find((k) => k.id === id);
+        if (c) _store.apply({ ...c, thread_resolved: was });
+      }
+      _resolveErrors.set(thread.id, `GitHub refused: ${error}`);
+      refresh();
+      _onChange?.();
+    });
+  });
+  return button;
 }
 
 function _buildResolvedHeader(
@@ -815,6 +907,8 @@ export const Comments = {
   attachBlockThreads,
   draftCount,
   sendAll,
+  retry,
+  submit,
   onRemote,
   onRemoved,
 };
