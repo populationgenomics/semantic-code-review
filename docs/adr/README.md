@@ -18,3 +18,4 @@ knowing. This index points at files on `main`, not at PRs.
 - [0006 — One visibility model](0006-one-visibility-model.md) — superseded by 0008
 - [0007 — Change explainer](0007-change-explainer.md)
 - [0008 — Hide by the diff, fold by the structure, label by meaning](0008-hide-by-the-diff-fold-by-the-structure-label-by-meaning.md) — accepted
+- [0009 — Comments are sent, not dumped: a two-way review loop](0009-comments-are-sent-not-dumped.md) — proposed

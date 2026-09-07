@@ -674,6 +674,80 @@ the TS name is qualified because `lib.dom.Comment` (a `Node`
 subtype) is in the global namespace and an unqualified `Comment`
 would shadow it.
 
+A comment has a lifecycle towards its [[counterpart]] (ADR 0009):
+[[draft]], then [[sent]], then [[delivered]].
+
+**Counterpart**
+Who a review's comments are for: Claude, in review mode (`scr review`,
+the plugin's loop); GitHub, in PR mode (`scr pr`). One lifecycle serves
+both; only the sink differs.
+_Avoid_: recipient, target, upstream (which names GitHub's side only)
+
+**Draft**
+A [[reviewer-comment]] the reviewer has written but not [[sent]]: their
+own, editable, persisted in the [[run-directory]], never lost, and unseen
+by the [[counterpart]]. Drafts are the reviewer's notes; the selection of
+which to send is the priority signal.
+_Avoid_: pending (which is GitHub's word for a [[pending-review]]), local
+
+**Send**
+The reviewer's explicit gesture that hands a [[draft]] to the
+[[counterpart]] — one comment, or every draft at once (*Send all*). The
+one thing sent alone is the one that matters now.
+_Avoid_: post, submit (which publishes a [[pending-review]]), save
+
+**Sent**
+A comment the reviewer has [[send|sent]] and the [[counterpart]] does not
+yet hold. An edit to a sent comment replaces its text; nothing has been
+seen. In PR mode a sent comment lives in the [[pending-review]]; one the
+network refused is *unsent* and retried.
+
+**Delivered**
+A [[sent]] comment the [[counterpart]] holds: Claude has received the
+[[batch]] carrying it, or GitHub has it in the [[pending-review]]. An
+edit makes it a [[draft]] again, and re-sending delivers it as *revised*;
+deleting it delivers *withdrawn*.
+_Avoid_: acknowledged, received
+
+**Batch**
+What one [[send]] gesture delivers to Claude, returned by one
+`scr review --wait`: one comment for Send, every draft for Send all.
+Never grouped by time. Carries the run id and a batch number, and per
+comment its id, state (new, revised, withdrawn, reply), anchor, body and
+the anchored code.
+
+**Listening**
+Whether Claude is attached to the review — a `--wait` in flight. Shown in
+the viewer, since a [[send]] into a review nobody is waiting on lands
+only when Claude is asked to resume.
+
+**Pending review**
+GitHub's draft of a review: visible only to its author, its comments
+addable, editable and deletable until [[submit|submitted]]; one per user
+per PR. In PR mode it is where [[sent]] comments go; an existing one is
+resumed, not replaced.
+_Avoid_: draft review (a [[draft]] is a comment the counterpart has not seen)
+
+**Submit**
+Publishes the [[pending-review]] as one GitHub review with a verdict —
+Comment, Approve or Request changes — and an optional body. Approve with
+no comments is the LGTM. Refused while any comment is unsent. The end of
+posting, not of the session: the tab closing ends that.
+_Avoid_: done, post
+
+**Outdated**
+A [[reviewer-comment]] whose anchored line changed under it while the
+review followed the code. Still readable against the text it was written
+on, re-anchored where propagation can find the line. Mechanical: says the
+code moved, not that the point was met.
+_Avoid_: stale (annotations go stale; comments go outdated)
+
+**Addressed**
+An [[outdated]] or open [[reviewer-comment]] whose thread has been
+resolved — by Claude's explicit resolve with a reply, or by the reviewer.
+A judgement, never inferred from the code changing.
+_Avoid_: fixed, done
+
 **Backend**
 A registered LLM provider that the CLI resolves a name to. Each backend
 is a `Backend` subclass under `semantic_code_review/backends/`; the
