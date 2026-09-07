@@ -5,11 +5,22 @@
 
 import { afterEach, describe, expect, test } from "vitest";
 import { FileRows } from "../../semantic_code_review/viewer/assets/file_rows";
-import { Folds, type FoldLabels } from "../../semantic_code_review/viewer/assets/folds";
+import { Folds, type FoldLabels, type FoldLedger } from "../../semantic_code_review/viewer/assets/folds";
 import { makeHunkFixture } from "./fixtures/hunk-dom";
 
 /** The renderer's labels callback, for a walker test with no spans. */
 const NO_LABELS: FoldLabels = () => null;
+
+/** One pane's record of the file's collapsed regions, in memory — what
+ *  render.ts binds view_state.ts to for a file. */
+function memoryLedger(folded: string[] = []): FoldLedger & { keys: Set<string> } {
+  const keys = new Set(folded);
+  return {
+    keys,
+    isFolded: (key) => keys.has(key),
+    setFolded: (key, isFolded) => { if (isFolded) keys.add(key); else keys.delete(key); },
+  };
+}
 
 const ROWS: RowBlock[] = [
   { kind: "ctx", old_line: 1, new_line: 1, old_text: "def foo():", new_text: "def foo():" },
@@ -66,8 +77,8 @@ describe("attachFileFolds per pane", () => {
     ensureEndpointMeta();
     const a = mountCopy();
     const b = mountCopy();
-    Folds.attachFileFolds(a.fileEl, FILE, NO_LABELS);
-    Folds.attachFileFolds(b.fileEl, FILE, NO_LABELS);
+    Folds.attachFileFolds(a.fileEl, FILE, NO_LABELS, memoryLedger());
+    Folds.attachFileFolds(b.fileEl, FILE, NO_LABELS, memoryLedger());
     expect(a.fileEl.querySelectorAll(".fold-chev")).toHaveLength(1);
     expect(b.fileEl.querySelectorAll(".fold-chev")).toHaveLength(1);
     expect(a.fileEl.querySelectorAll(".annot-box")).toHaveLength(1);
@@ -77,11 +88,14 @@ describe("attachFileFolds per pane", () => {
   test("re-attaching to a container replaces its chrome and keeps its fold state", () => {
     ensureEndpointMeta();
     const a = mountCopy();
-    Folds.attachFileFolds(a.fileEl, FILE, NO_LABELS);
+    const ledger = memoryLedger();
+    Folds.attachFileFolds(a.fileEl, FILE, NO_LABELS, ledger);
     const chev = a.fileEl.querySelector(".fold-chev") as SVGElement;
     chev.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     const bodyRows = Array.from(a.diff.querySelectorAll<HTMLElement>(".half-new .row:not(.row-annotation)")).slice(1);
     expect(bodyRows.map((r) => r.style.display)).toEqual(["none", "none"]);
+    // The toggle is recorded, by the region's key.
+    expect(Array.from(ledger.keys)).toEqual([Folds.foldKey(FILE.fold_regions[0])]);
 
     // A repaint rebuilds the `.file` around the same (cached) `.diff`.
     const fileEl2 = document.createElement("div");
@@ -94,7 +108,9 @@ describe("attachFileFolds per pane", () => {
     body2.appendChild(hunk2);
     fileEl2.appendChild(body2);
     document.body.appendChild(fileEl2);
-    Folds.attachFileFolds(fileEl2, FILE, NO_LABELS);
+    // A ledger with no record of it: the rows still carry the key, and
+    // that alone keeps the fold collapsed (a fold owns what it hides).
+    Folds.attachFileFolds(fileEl2, FILE, NO_LABELS, memoryLedger());
 
     expect(fileEl2.querySelectorAll(".fold-chev")).toHaveLength(1);
     expect(fileEl2.querySelectorAll(".annot-box")).toHaveLength(1);
@@ -102,11 +118,30 @@ describe("attachFileFolds per pane", () => {
     expect(bodyRows.map((r) => r.style.display)).toEqual(["none", "none"]);
   });
 
+  test("a recorded fold attaches collapsed over rows that are showing", () => {
+    // A fresh paint (a reload, a region a re-applied reveal just
+    // disclosed) has every row visible; the record says the fold is shut.
+    ensureEndpointMeta();
+    const a = mountCopy();
+    const key = Folds.foldKey(FILE.fold_regions[0]);
+    const ledger = memoryLedger([key]);
+    Folds.attachFileFolds(a.fileEl, FILE, NO_LABELS, ledger);
+    const bodyRows = Array.from(a.diff.querySelectorAll<HTMLElement>(".half-new .row:not(.row-annotation)")).slice(1);
+    expect((a.fileEl.querySelector(".fold-chev") as SVGElement).classList.contains("open")).toBe(false);
+    expect(bodyRows.map((r) => r.style.display)).toEqual(["none", "none"]);
+    expect(bodyRows.map((r) => r.dataset.foldBy)).toEqual([key, key]);
+
+    // Opening it takes the record back.
+    (a.fileEl.querySelector(".fold-chev") as SVGElement).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(bodyRows.map((r) => r.style.display)).toEqual(["", ""]);
+    expect(ledger.keys.size).toBe(0);
+  });
+
   test("a region with one row on screen attaches nothing", () => {
     ensureEndpointMeta();
     const a = mountCopy();
     const narrow = { ...FILE, fold_regions: [{ ...FILE.fold_regions[0], right_start: 3, right_end: 9, left_start: 3, left_end: 9 }] };
-    Folds.attachFileFolds(a.fileEl, narrow as FileBlock, NO_LABELS);
+    Folds.attachFileFolds(a.fileEl, narrow as FileBlock, NO_LABELS, memoryLedger());
     expect(a.fileEl.querySelectorAll(".fold-chev")).toHaveLength(0);
   });
 });

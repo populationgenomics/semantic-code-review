@@ -189,9 +189,20 @@ before the first paint and coalesces sets into one PATCH per 200ms.
 The split the term draws: `localStorage` cannot hold anything across
 runs, because the server binds port 0 and every run is a new origin.
 What should outlive a run is a preference and goes here; what belongs to
-one run — the active sidebar pill, the open explainer section, ids that
-mean nothing in another run — is per-tab view state in `sessionStorage`,
-owned by the module that reads it.
+one run — the active sidebar pill, the open explainer section, the
+regions the reviewer revealed and the definitions they folded, ids that
+mean nothing in another run — is per-tab **view state**: one
+`sessionStorage` record per run (`view_state.ts`, `ViewState`), keyed by
+`/data.json`'s `run_id` (the [[run-directory]]'s name, added by
+`ReviewSession.data_json`) and versioned; a record from another run or
+another version is discarded, not migrated. A write the browser refuses
+degrades to memory with one warning; a record that does not parse or
+does not describe view state is logged as an error and read as empty. The
+reveals and folds are a `Ledger` per pane: the diff pane's is the stored
+record, the explainer panel's is in memory (`ViewState.transient()`),
+since the panel's disclosure is its own (ADR 0007's free return trip).
+The fold **overrides** (file and hunk headers) are not in it — the URL
+hash carries those ([[fold-level]]).
 
 **Hunk**
 A contiguous range of changed lines in a diff, with its `@@` header
@@ -302,10 +313,19 @@ what it hides: every body row and everything hanging off one (notes,
 comments, their placeholders, a nested fold's box) that it hides carries
 its key in `data-fold-by`, and it shows again only what carries its key,
 so a nested fold keeps its own state through the enclosing fold closing
-and opening. A fold is collapsed when it hides any body row; a re-attach
-rebuilds the chrome in that state and re-hides a collapsed fold's body,
-so rows a chip has since disclosed and anything attached to a hidden row
-meanwhile fold in. The tree reads the comment store, which loads after
+and opening. Which regions are collapsed is recorded per tab, per run,
+in the pane's ledger ([[viewer-preference]] draws the split;
+`view_state.ts`, `{ file, key }` with folds.ts's `foldKey`): a chevron
+toggle writes it, and every attach reads it, so a recorded fold attaches
+collapsed whatever its rows show — a fresh paint after a reload, rows a
+re-applied reveal has just disclosed — and a fold not recorded attaches
+as its rows are (still collapsed when they carry its key from before the
+re-attach), so rows a chip has since disclosed and anything attached to a
+hidden row meanwhile fold in. Attach runs enclosing-first; on a fresh
+paint a recorded nested fold claims the body rows the enclosing fold hid
+first, so it stays shut when that fold opens. A fold restored collapsed
+over fresh rows with no summary requests one. The tree reads the comment
+store, which loads after
 the first paint and changes on every save, delete and promotion:
 `Render.refreshCommentManifests` (the store's `onChange`, wired in
 boot.ts) re-attaches each rendered file's fold chrome and rebuilds the
@@ -453,7 +473,17 @@ full source, fetched from `/file-text` through the [[rendered-mode]]
 source cache (`file_text.ts`) the first time any chip in the file is
 clicked; the chip shows the wait, and a failed fetch (or text that does
 not reach the region) is said on the chip and retried on the next click
-rather than expanding to blank rows. Regions read the post-image only:
+rather than expanding to blank rows. A reveal is recorded per tab, per
+run, in the pane's ledger ([[viewer-preference]] draws the split;
+`view_state.ts`) by the region's boundaries on both sides
+(`render._regionRef` — not by row indices, which depend on the text), and
+every layout of the file body renders a recorded region expanded: off the
+text cache, or as a chip already fetching, sharing a click's in-flight
+fetch. So a filter that re-carves the file yields other boundaries and a
+reveal returns with its filter; a region the diff no longer lays out is
+never consulted; one the text cannot cover is dropped and shown as a
+plain chip (the record is a hint). The collapse button and a failed
+fetch take the reveal back. Regions read the post-image only:
 unchanged lines are identical on both sides, and a file with no
 post-image (deleted) has nothing unchanged to disclose — its diff
 already carries every base line. `/data.json` carries no file text.
@@ -535,7 +565,11 @@ includes pre-rendered row layout (the diff's two-column structure
 expanded into row objects) which the sidecar leaves implicit; (2)
 it carries transient runtime flags (e.g. `pending` while the
 augment pass is still streaming) that have no place on the
-persisted sidecar.
+persisted sidecar. `ReviewSession.data_json` adds the session's own
+fields at read time — `debug`, `explainer`, and `run_id`, the
+[[run-directory]]'s name that keys the tab's view state
+([[viewer-preference]]) — so the pending and augmented payloads carry
+the same ones.
 
 It carries no file text. The diff's rows are the only source lines in
 it; the rest of a file is served by `/file-text` on demand (both sides,

@@ -125,6 +125,18 @@ def test_data_json_carries_the_runtime_flags(run_dir: paths.RunDir) -> None:
     assert flagged["explainer"] is True
 
 
+def test_data_json_carries_the_run_id_on_both_payloads(run_dir: paths.RunDir) -> None:
+    """The viewer keys its per-tab view state (reveals, folds, the pill,
+    the section) on the run; the id is the run directory's name, and the
+    same one rides the pending skeleton and the augmented diff."""
+    h = _Harness(run_dir)
+    assert h.session.data_json()["run_id"] == run_dir.slug
+    assert h.session.data_json()["run_id"] == run_dir.path.name
+
+    h.session.set_viewer_json({"version": "1", "files": [], "marker": "augmented"})
+    assert h.session.data_json()["run_id"] == run_dir.slug
+
+
 def test_set_viewer_json_replaces_the_payload(run_dir: paths.RunDir) -> None:
     h = _Harness(run_dir)
     h.session.set_viewer_json({"version": "1", "files": [], "marker": "ok"})

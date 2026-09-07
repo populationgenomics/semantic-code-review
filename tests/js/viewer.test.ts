@@ -121,6 +121,21 @@ function queueFileText(idx: number, path: string, base: string | null, head: str
   queueFetchResponse({ status: 200, body: { file_idx: idx, path, base, head } });
 }
 
+// Responses answered by URL, for a fetch the paint itself makes — a
+// recorded reveal re-applied at boot, the summary a restored fold asks
+// for — whose position among boot's own fetches a test has no reason to
+// know. A test that queues positionally (`queueFileText`) for the click
+// it is about to make is unaffected.
+const responsesByUrl: Record<string, FetchResponse> = {};
+
+function serveByUrl(url: string, response: FetchResponse): void {
+  responsesByUrl[url] = response;
+}
+
+function serveFileText(idx: number, path: string, base: string | null, head: string | null): void {
+  serveByUrl(`/file-text?file_idx=${idx}`, { status: 200, body: { file_idx: idx, path, base, head } });
+}
+
 /** Let a fetch promise chain settle (a chip's expand, a toggle's flip). */
 function tick(): Promise<void> {
   return new Promise<void>((r) => setTimeout(r, 0));
@@ -133,6 +148,7 @@ const nineLines = Array.from({ length: 9 }, (_, i) => `l${i + 1}`).join("\n") + 
 
 interface ViewerData {
   version?: string;
+  run_id?: string;
   pending?: boolean;
   explainer?: boolean;
   pr?: Record<string, unknown>;
@@ -332,9 +348,36 @@ function recordingScrolls(fn: () => void): Element[] {
   return scrolled;
 }
 
+/** The run id every fixture boots under; the tab's view state is keyed
+ *  by it (view_state.ts). */
+const RUN = "local-main-abc12345";
+
+/** The tab's stored view-state record, as view_state.ts writes it. */
+interface StoredViewState {
+  v: number;
+  run: string;
+  reveals: Array<{ file: string; old: [number, number]; new: [number, number] }>;
+  folds: Array<{ file: string; key: string }>;
+  pill: string | null;
+  section: string | null;
+}
+
+/** Leave a record in sessionStorage as an earlier boot of this tab would
+ *  have; the next `bootViewer` reads it. */
+function plantViewState(partial: Partial<StoredViewState>, run = RUN): void {
+  const record: StoredViewState = { v: 1, run, reveals: [], folds: [], pill: null, section: null, ...partial };
+  sessionStorage.setItem(`scr-view-state:${run}`, JSON.stringify(record));
+}
+
+function storedViewState(run = RUN): StoredViewState | null {
+  const raw = sessionStorage.getItem(`scr-view-state:${run}`);
+  return raw === null ? null : JSON.parse(raw) as StoredViewState;
+}
+
 function makeData(overrides: Partial<ViewerData> = {}): ViewerData {
   return {
     version: "1",
+    run_id: RUN,
     pending: true,
     pr: { title: "test", themes: [], callgraph_edges: [] },
     smells_catalogue: {},
@@ -445,11 +488,13 @@ beforeEach(() => {
   (globalThis as unknown as { EventSource: typeof EventSource }).EventSource =
     EventSourceStub as unknown as typeof EventSource;
   explainerLoadResponse = null;
+  for (const k of Object.keys(responsesByUrl)) delete responsesByUrl[k];
   vi.spyOn(globalThis, "fetch").mockImplementation(((url: string, init?: RequestInit) => {
     fetchCalls.push({ url, init });
     let next: FetchResponse;
     if (url === "/prefs") next = init?.method === "PATCH" ? { status: 200, body: {} } : prefsLoadResponse;
     else if (url === "/explainer" && explainerLoadResponse !== null) next = explainerLoadResponse;
+    else if (url in responsesByUrl) next = responsesByUrl[url];
     else next = fetchResponses.shift() ?? { status: 200, body: {} };
     return Promise.resolve({
       status: next.status,
@@ -1270,7 +1315,7 @@ describe("streaming events", () => {
   });
 
   test("a filter restored at boot is not a focus: the diff opens filtered, at its level", async () => {
-    sessionStorage.setItem("scr-active-group:local", "symbols:SY0");
+    plantViewState({ pill: "symbols:SY0" });
     await bootViewer(makeData({
       pending: false, files: [foldFile()],
       symbols: [{ id: "SY0", title: "mid", rationale: "", hunk_ids: ["H1"] }],
@@ -3268,6 +3313,169 @@ describe("fold regions (server-computed) and lazy fold summaries", () => {
     expect(chevrons()).toHaveLength(1);
     expect(document.querySelectorAll(".annot-box")).toHaveLength(1);
   });
+
+  // --- The folds are the tab's record ---------------------------------------
+  // A chevron toggle is recorded as `{ file, key }` (view_state.ts), and
+  // every attach reads the record: a recorded fold attaches collapsed over
+  // rows a fresh paint or a re-applied reveal has just put on screen, so a
+  // reload restores the reveals and then the folds inside them.
+
+  describe("the folds are the tab's record", () => {
+    /** `foo` over lines 1..3 of a three-line file; the hunk shows line 3
+     *  alone, so the region folds only once the gap above is disclosed. */
+    function fooFile(): Record<string, unknown> {
+      return {
+        id: "F0", path: "a.py", status: "modified", language: "python",
+        adds: 1, dels: 1, summary: "ok", head_line_count: 3,
+        symbols: { added: [], modified: [], removed: [] },
+        fold_regions: [
+          region({ context: "both", right_start: 1, right_end: 3, left_start: 1, left_end: 3, has_changes: true, qualified_name: "foo", kind: "function" }),
+        ],
+        hunks: [makeHunkBlock("H0_0", "ok", {
+          old_start: 3, old_count: 1, new_start: 3, new_count: 1,
+          rows: [{ kind: "pair", old_line: 3, new_line: 3, old_text: "    return old()", new_text: "    return new()" }],
+        })],
+      };
+    }
+    const FOO_TEXT = "def foo():\n    x = 1\n    return new()\n";
+    const FOO_KEY = "both:1-3:1-3";
+    const display = (lines: number[]): string[] => lines.map((n) => rowOfLine(n).style.display);
+
+    test("a chevron toggle is recorded by the region's key, and taken back on reopening", async () => {
+      await bootViewer(dataWithFold());
+      expandHunk();
+      queueFetchResponse({ status: 200, body: { summary: "s" } });
+      clickEl(chevrons()[0]);
+      expect(storedViewState()!.folds).toEqual([{ file: "F0", key: "both:1-2:1-2" }]);
+      clickEl(chevrons()[0]);
+      expect(storedViewState()!.folds).toEqual([]);
+    });
+
+    test("a collapsed definition inside a revealed gap survives a repaint and a reload", async () => {
+      await bootViewer(makeData({ pending: true, files: [fooFile()] }));
+      expandHunk();
+      queueFileText(0, "a.py", null, FOO_TEXT);
+      (document.querySelector(".gap-chip") as HTMLElement).click();
+      await tick();
+      queueFetchResponse({ status: 200, body: { summary: "foo does foo" } });
+      clickEl(chevronOnLine(1));
+      await tick();
+      expect(display([2, 3])).toEqual(["none", "none"]);
+      expect(storedViewState()!.reveals).toEqual([{ file: "F0", old: [1, 2], new: [1, 2] }]);
+      expect(storedViewState()!.folds).toEqual([{ file: "F0", key: FOO_KEY }]);
+
+      // The repaint re-applies the reveal, then the fold inside it.
+      lastEventSource().dispatch("done", { reason: "complete" });
+      expect(document.querySelector(".gap-expansion")).not.toBeNull();
+      expect(chevronOnLine(1).classList.contains("open")).toBe(false);
+      expect(display([2, 3])).toEqual(["none", "none"]);
+      expect(foldBoxOf(1).querySelector(".fold-summary")!.textContent).toBe("function foo — foo does foo");
+
+      // A reload: revealed rows come back, then the fold collapses them.
+      // The summary is in the tab's record of nothing — it lives in the
+      // sidecar — so the restored fold asks for it again.
+      fetchCalls.length = 0;
+      serveFileText(0, "a.py", null, FOO_TEXT);
+      serveByUrl("/fold-summary", { status: 200, body: { summary: "foo does foo" } });
+      await bootViewer(makeData({ pending: false, files: [fooFile()] }));
+      await tick();
+      expect(document.querySelector(".gap-expansion")).not.toBeNull();
+      expect(chevronOnLine(1).classList.contains("open")).toBe(false);
+      expect(display([2, 3])).toEqual(["none", "none"]);
+      expect(fetchCalls.filter((c) => c.url === "/fold-summary")).toHaveLength(1);
+      await tick();
+      expect(foldBoxOf(1).querySelector(".fold-summary")!.textContent).toBe("function foo — foo does foo");
+    });
+
+    test("a fold that swallows a hunk and revealed rows survives the file closing and opening (#10)", async () => {
+      // Show hidden lines, fold at a point that takes in the expansion's
+      // rows and the hunk's, fold the file away, unfold it: the lines are
+      // still revealed and still folded.
+      await bootViewer(makeData({ pending: false, files: [fooFile()] }));
+      expandHunk();
+      queueFileText(0, "a.py", null, FOO_TEXT);
+      (document.querySelector(".gap-chip") as HTMLElement).click();
+      await tick();
+      queueFetchResponse({ status: 200, body: { summary: "foo does foo" } });
+      clickEl(chevronOnLine(1));
+      await tick();
+
+      const header = (): HTMLElement => document.querySelector('.file[data-id="F0"] .file-header') as HTMLElement;
+      header().click();
+      expect(document.querySelector(".gap-expansion")).toBeNull();
+      header().click();
+      expect(document.querySelector(".gap-expansion")).not.toBeNull();
+      expect(chevronOnLine(1).classList.contains("open")).toBe(false);
+      expect(display([2, 3])).toEqual(["none", "none"]);
+      expect(foldBoxOf(1).querySelector(".fold-summary")!.textContent).toBe("function foo — foo does foo");
+    });
+
+    test("a fold inside a file survives collapsing and reopening the file", async () => {
+      await bootViewer(dataWithFold());
+      expandHunk();
+      queueFetchResponse({ status: 200, body: { summary: "s" } });
+      clickEl(chevrons()[0]);
+      expect(rowOfLine(2).style.display).toBe("none");
+
+      const header = (): HTMLElement => document.querySelector('.file[data-id="F0"] .file-header') as HTMLElement;
+      header().click();
+      expect(document.querySelector('.file[data-id="F0"] .file-body')).toBeNull();
+      header().click();
+      expect(chevrons()[0].classList.contains("open")).toBe(false);
+      expect(rowOfLine(2).style.display).toBe("none");
+    });
+
+    test("a reload restores a fold nested in a fold: opening the outer leaves the inner shut", async () => {
+      await bootViewer(makeData({ pending: false, files: [labelledFile()], symbols: [] }));
+      expandHunk();
+      queueFetchResponse({ status: 200, body: { summary: "beta guards then acts" } });
+      queueFetchResponse({ status: 200, body: { summary: "the class" } });
+      clickEl(chevronOnLine(8));   // beta
+      clickEl(chevronOnLine(4));   // the class around it
+      await tick();
+      expect(storedViewState()!.folds.map((f) => f.key)).toEqual(["right:8-11:-", "right:1-11:-"]);
+
+      // Attach runs enclosing-first, so on a fresh paint the class hides
+      // beta's rows before beta attaches; beta, recorded collapsed, takes
+      // its body over, and keeps it when the class opens.
+      await bootViewer(makeData({ pending: false, files: [labelledFile()], symbols: [] }));
+      expect(display([5, 8, 9, 10, 11])).toEqual(["none", "none", "none", "none", "none"]);
+      expect(chevronOnLine(4).classList.contains("open")).toBe(false);
+      clickEl(chevronOnLine(4));
+      expect(display([5, 8])).toEqual(["", ""]);
+      expect(display([9, 10, 11])).toEqual(["none", "none", "none"]);
+      expect(chevronOnLine(8).classList.contains("open")).toBe(false);
+      expect(foldBoxOf(8).closest<HTMLElement>(".row-annotation")!.style.display).toBe("");
+      // The record: the class's toggle is out, beta's stands.
+      expect(storedViewState()!.folds.map((f) => f.key)).toEqual(["right:8-11:-"]);
+    });
+
+    test("the explainer panel's folds are the panel's, not the tab's", async () => {
+      // Covered by "fold regions attach inside the panel's copy of a file"
+      // for the DOM; here, the record: a fold made in the panel is not
+      // written to the tab's record.
+      const DOC = {
+        version: 1, base_sha: "b", head_sha: "h", verdict: "narrate", verdict_note: "",
+        figure_family: "", cast: [], toy_data: false, dropped_refs: 0,
+        sections: [{
+          id: "background", kind: "background", title: "Background", state: "ready",
+          body: "The guard is [H0_0].", refs: [], map_rows: [], subsections: [],
+        }],
+      };
+      await bootViewer(
+        { ...dataWithFold(), explainer: true },
+        { explainer: { status: 200, body: DOC } },
+      );
+      await tick();
+      // An inline hunk reference opens the panel with the hunk unfolded.
+      (document.querySelector("#app .explainer-arrow") as HTMLElement).click();
+      const panel = document.querySelector("#app .explainer-detail") as HTMLElement;
+      queueFetchResponse({ status: 200, body: { summary: "s" } });
+      clickEl(panel.querySelector(".fold-chev") as SVGElement);
+      expect((panel.querySelector(".fold-chev") as SVGElement).classList.contains("open")).toBe(false);
+      expect(storedViewState()?.folds ?? []).toEqual([]);
+    });
+  });
 });
 
 describe("hidden content is a manifest: a collapsed hunk or file lists its threads", () => {
@@ -4288,13 +4496,13 @@ describe("overview mode (ADR 0007)", () => {
   });
 
   test("the section tree does not touch the diff-mode sidebar pill", async () => {
-    sessionStorage.setItem("scr-active-group:local", "files:BF0");
+    plantViewState({ pill: "files:BF0" });
     await bootWithExplainer({ status: 200, body: DOC }, { pending: false });
     const tree = document.querySelector('#group-sidebar [data-pill-id="background"]') as HTMLElement;
     tree.click();
     await new Promise<void>((r) => setTimeout(r, 0));
-    expect(sessionStorage.getItem("scr-active-group:local")).toBe("files:BF0");
-    expect(sessionStorage.getItem("scr-explainer-section:local")).toBe("explainer:background");
+    expect(storedViewState()!.pill).toBe("files:BF0");
+    expect(storedViewState()!.section).toBe("background");
   });
 
   test("an SSE frame from another tab fills the pane without a POST", async () => {
@@ -5387,9 +5595,12 @@ describe("lazy disclosure", () => {
 
     (fileEl("F0").querySelector(".md-toggle") as HTMLElement).click();
     await tick();
-    chipsOf(fileEl("F0"))[1].click();   // below: line 5
+    // The reveal above survived the trip through rendered mode; only the
+    // region below is still a chip.
+    expect(chipsOf(fileEl("F0")).map((c) => c.textContent)).toEqual(["⬇expand 1 line below"]);
+    chipsOf(fileEl("F0"))[0].click();   // below: line 5
     await tick();
-    expect(contents(fileEl("F0"), ".gap-expansion .half-new .cell-content")).toEqual(["end"]);
+    expect(contents(fileEl("F0"), ".gap-expansion .half-new .cell-content")).toEqual(["# T", "end"]);
     expect(fileTextHits()).toHaveLength(1);
   });
 
@@ -5420,7 +5631,8 @@ describe("lazy disclosure", () => {
     expect(fileTextHits()).toHaveLength(1);
 
     // Into the document; the panel renders its own copy of the file with
-    // its regions collapsed, and expands one off the cache.
+    // its regions collapsed — the diff pane's reveal is the diff pane's —
+    // and expands one off the cache.
     (document.getElementById("overview-btn") as HTMLButtonElement).click();
     await tick();
     (document.querySelector(".explainer-map-row .explainer-ref") as HTMLElement).click();
@@ -5433,11 +5645,256 @@ describe("lazy disclosure", () => {
     expect(inPanel.querySelector(".gap-expansion .cell-content")!.textContent).toBe("a.py:9");
     expect(fileTextHits()).toHaveLength(1);
 
-    // Back to the diff: its regions are as the pane draws them, not as
-    // the panel left its own.
+    // Back to the diff: its regions are as the reviewer left them there —
+    // the one above still open, the one below still a chip — not as the
+    // panel left its own.
     (document.getElementById("overview-btn") as HTMLButtonElement).click();
     await tick();
-    expect(chipsOf(fileEl("F0"))).toHaveLength(2);
-    expect(fileEl("F0").querySelector(".gap-expansion")).toBeNull();
+    expect(chipsOf(fileEl("F0")).map((c) => c.textContent)).toEqual(["⬇expand 1 line below"]);
+    expect(contents(fileEl("F0"), ".gap-expansion .half-new .cell-content")).toEqual(["a.py:1"]);
+    // And the panel's reveal is not the tab's record.
+    expect(storedViewState()!.reveals).toEqual([{ file: "F0", old: [1, 1], new: [1, 1] }]);
+  });
+
+  // --- The reveals are the tab's record ------------------------------------
+  // A chip's expansion is recorded by the region's boundaries
+  // (view_state.ts), and every paint of the file — a fold-level pick, an
+  // SSE repaint, a reload — renders a recorded region expanded rather than
+  // as a chip. The record is a hint: a region that no longer exists is not
+  // consulted, and a region the text cannot cover is dropped.
+
+  describe("the reveals are the tab's record", () => {
+    /** `a.py`, nine lines, one edit at 5: a hunk over 2..8 with one line
+     *  of context above it and one below. */
+    const nine = (): Row => file(0, "a.py", "modified", 9, [editAt("H0_0", "a.py", 5)]);
+    const nineText = (): string => textOf("a.py", 9, { 5: "new 5" });
+    const expansions = (): (string | null)[] => contents(fileEl("F0"), ".gap-expansion .half-new .cell-content");
+
+    test("a revealed gap survives every repaint: a level pick, the overview, the run finishing", async () => {
+      await bootViewer(makeData({ pending: true, files: [nine()] }));
+      queueFileText(0, "a.py", null, nineText());
+      chipsOf(fileEl("F0"))[0].click();   // above: line 1
+      await tick();
+      expect(expansions()).toEqual(["a.py:1"]);
+      expect(storedViewState()!.reveals).toEqual([{ file: "F0", old: [1, 1], new: [1, 1] }]);
+
+      fold("code");
+      expect(expansions()).toEqual(["a.py:1"]);
+      lastEventSource().dispatch("overview", { summary: "s", themes: [], groups: [] });
+      expect(expansions()).toEqual(["a.py:1"]);
+      lastEventSource().dispatch("done", { reason: "complete" });
+      expect(expansions()).toEqual(["a.py:1"]);
+      // The other region is still the chip it was.
+      expect(chipsOf(fileEl("F0")).map((c) => c.textContent)).toEqual(["⬇expand 1 line below"]);
+      // Off the cache every time.
+      expect(fileTextHits()).toHaveLength(1);
+    });
+
+    test("a collapsed gap stays collapsed through a repaint", async () => {
+      await bootViewer(makeData({ pending: false, files: [nine()] }));
+      queueFileText(0, "a.py", null, nineText());
+      chipsOf(fileEl("F0"))[0].click();
+      await tick();
+      (fileEl("F0").querySelector(".gap-collapse") as HTMLElement).click();
+      expect(storedViewState()!.reveals).toEqual([]);
+
+      fold("code");
+      expect(fileEl("F0").querySelector(".gap-expansion")).toBeNull();
+      expect(chipsOf(fileEl("F0"))).toHaveLength(2);
+    });
+
+    test("a revealed gap survives a reload, fetching the text once", async () => {
+      await bootViewer(makeData({ pending: false, files: [nine()] }));
+      queueFileText(0, "a.py", null, nineText());
+      chipsOf(fileEl("F0"))[1].click();   // below: line 9
+      await tick();
+      expect(expansions()).toEqual(["a.py:9"]);
+
+      // Reload: the same tab, the same storage, a fresh bundle with an
+      // empty text cache. The paint fetches the text for the region.
+      fetchCalls.length = 0;
+      serveFileText(0, "a.py", null, nineText());
+      await bootViewer(makeData({ pending: false, files: [nine()] }));
+      await tick();
+      expect(expansions()).toEqual(["a.py:9"]);
+      expect(chipsOf(fileEl("F0")).map((c) => c.textContent)).toEqual(["⬆expand 1 line above"]);
+      expect(fileTextHits()).toEqual(["/file-text?file_idx=0"]);
+    });
+
+    test("another run starts empty", async () => {
+      await bootViewer(makeData({ pending: false, files: [nine()] }));
+      queueFileText(0, "a.py", null, nineText());
+      chipsOf(fileEl("F0"))[1].click();
+      await tick();
+      expect(expansions()).toEqual(["a.py:9"]);
+
+      fetchCalls.length = 0;
+      serveFileText(0, "a.py", null, nineText());
+      await bootViewer(makeData({ run_id: "local-other-99999999", pending: false, files: [nine()] }));
+      await tick();
+      expect(fileEl("F0").querySelector(".gap-expansion")).toBeNull();
+      expect(chipsOf(fileEl("F0"))).toHaveLength(2);
+      expect(fileTextHits()).toHaveLength(0);
+      // The first run's record is where it was.
+      expect(storedViewState()!.reveals).toEqual([{ file: "F0", old: [9, 9], new: [9, 9] }]);
+    });
+
+    test("a repaint during a click's fetch shares the fetch, and the region opens once", async () => {
+      await bootViewer(makeData({ pending: true, files: [nine()] }));
+      let release: (r: Response) => void = () => {};
+      (globalThis.fetch as unknown as { mockImplementationOnce: (fn: typeof fetch) => void })
+        .mockImplementationOnce(((url: string, init?: RequestInit) => {
+          fetchCalls.push({ url, init });
+          return new Promise<Response>((r) => { release = r; });
+        }) as typeof fetch);
+      chipsOf(fileEl("F0"))[0].click();
+      const clicked = chipsOf(fileEl("F0"))[0];
+      expect(clicked.classList.contains("loading")).toBe(true);
+
+      // The repaint rebuilds the chip: recorded, so it shows the wait
+      // too, off the fetch already in flight.
+      lastEventSource().dispatch("done", { reason: "complete" });
+      const rebuilt = chipsOf(fileEl("F0"))[0];
+      expect(rebuilt).not.toBe(clicked);
+      expect(rebuilt.classList.contains("loading")).toBe(true);
+      expect(rebuilt.textContent).toContain("loading");
+      expect(fileTextHits()).toHaveLength(1);
+
+      release({
+        ok: true, status: 200,
+        json: () => Promise.resolve({ file_idx: 0, path: "a.py", base: null, head: nineText() }),
+      } as Response);
+      await tick();
+      expect(fileEl("F0").querySelectorAll(".gap-expansion")).toHaveLength(1);
+      expect(expansions()).toEqual(["a.py:1"]);
+      expect(fileTextHits()).toHaveLength(1);
+    });
+
+    test("a failed fetch takes the reveal back; the repaint shows a plain chip", async () => {
+      await bootViewer(makeData({ pending: false, files: [nine()] }));
+      queueFetchResponse({ status: 500, body: { error: "boom" } });
+      chipsOf(fileEl("F0"))[0].click();
+      await tick();
+      expect(chipsOf(fileEl("F0"))[0].classList.contains("failed")).toBe(true);
+      expect(storedViewState()!.reveals).toEqual([]);
+
+      fold("code");
+      const chip = chipsOf(fileEl("F0"))[0];
+      expect(chip.classList.contains("failed")).toBe(false);
+      expect(chip.classList.contains("loading")).toBe(false);
+      expect(fileTextHits()).toHaveLength(1);
+    });
+
+    test("a recorded region the text cannot cover is dropped, without a throw", async () => {
+      // The reveal was made against a nine-line head; the reload's head is
+      // shorter (a dirty-tree review whose file was edited under it).
+      plantViewState({ reveals: [{ file: "F0", old: [9, 9], new: [9, 9] }, { file: "F0", old: [1, 1], new: [1, 1] }] });
+      serveFileText(0, "a.py", null, textOf("a.py", 8, { 5: "new 5" }));
+      await bootViewer(makeData({ pending: false, files: [nine()] }));
+      await tick();
+      expect(document.querySelector(".boot-error")).toBeNull();
+      // The region above still fits and opens; the one below does not,
+      // and is a chip again — a plain one, not a failed one.
+      expect(expansions()).toEqual(["a.py:1"]);
+      const below = chipsOf(fileEl("F0"))[0];
+      expect(below.textContent).toBe("⬇expand 1 line below");
+      expect(below.classList.contains("failed")).toBe(false);
+      expect(storedViewState()!.reveals).toEqual([{ file: "F0", old: [1, 1], new: [1, 1] }]);
+    });
+
+    test("a recorded region the diff no longer lays out is left alone, without a throw", async () => {
+      await bootViewer(makeData({ pending: true, files: [nine()] }));
+      queueFileText(0, "a.py", null, nineText());
+      chipsOf(fileEl("F0"))[1].click();   // below: line 9
+      await tick();
+      expect(expansions()).toEqual(["a.py:9"]);
+
+      // The hunk's annotation lands with a block that reaches the end of
+      // the file: there is no region below it any more.
+      const grown = editAt("H0_0", "a.py", 5);
+      grown.new_count = 8;
+      grown.old_count = 8;
+      grown.intent = "reaches the end";
+      (grown.rows as Row[]).push({ kind: "ctx", old_line: 9, new_line: 9, old_text: "a.py:9", new_text: "a.py:9" });
+      lastEventSource().dispatch("hunk", { file_idx: 0, hunk_idx: 0, ok: true, block: grown });
+      lastEventSource().dispatch("done", { reason: "complete" });
+      expect(document.querySelector(".boot-error")).toBeNull();
+      expect(fileEl("F0").querySelector(".gap-expansion")).toBeNull();
+      expect(chipsOf(fileEl("F0")).map((c) => c.textContent)).toEqual(["⬆expand 1 line above"]);
+      // Not consulted, not dropped: the record is a hint.
+      expect(storedViewState()!.reveals).toEqual([{ file: "F0", old: [9, 9], new: [9, 9] }]);
+    });
+
+    test("a demoted hunk's region is recorded by its own boundaries, and comes back with its filter", async () => {
+      const f = file(0, "a.py", "modified", 20, [
+        editAt("H0_0", "a.py", 4), editAt("H0_1", "a.py", 11), editAt("H0_2", "a.py", 17),
+      ]);
+      await bootViewer(makeData({
+        pending: false, files: [f],
+        symbols: [{ id: "SY0", title: "ends", rationale: "", hunk_ids: ["H0_0", "H0_2"] }],
+      }));
+      const pill = (): HTMLElement =>
+        document.querySelector('[data-axis="symbols"] .group-btn[data-pill-id="SY0"]') as HTMLElement;
+      pill().click();
+      queueFileText(0, "a.py", null, textOf("a.py", 20, { 4: "new 4", 11: "new 11", 17: "new 17" }));
+      chipsOf(fileEl("F0")).find((c) => c.textContent!.includes("hidden"))!.click();
+      await tick();
+      expect(expansions()).toContain("new 11");
+      expect(storedViewState()!.reveals).toEqual([{ file: "F0", old: [8, 14], new: [8, 14] }]);
+
+      // A repaint under the same filter keeps it open.
+      lastEventSource().dispatch("done", { reason: "complete" });
+      expect(expansions()).toContain("new 11");
+
+      // Without the filter the file is carved differently: H0_1 is a live
+      // hunk and the context either side of it is two regions with other
+      // boundaries, so neither is the recorded reveal.
+      pill().click();   // toggles the filter off
+      expect(fileEl("F0").querySelector(".gap-expansion")).toBeNull();
+      expect(chipsOf(fileEl("F0")).map((c) => c.textContent)).toEqual([]);   // -U3 context leaves no gap
+      expect(storedViewState()!.reveals).toEqual([{ file: "F0", old: [8, 14], new: [8, 14] }]);
+
+      // The filter back: the region is laid out again, and opens off the cache.
+      pill().click();
+      expect(expansions()).toContain("new 11");
+      expect(fileTextHits()).toHaveLength(1);
+    });
+
+    test("a corrupt record is said on the console, and the viewer boots empty", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      sessionStorage.setItem(`scr-view-state:${RUN}`, "{not json");
+      await bootViewer(makeData({ pending: false, files: [nine()] }));
+      expect(document.querySelector(".boot-error")).toBeNull();
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(chipsOf(fileEl("F0"))).toHaveLength(2);
+      // The next gesture replaces it.
+      queueFileText(0, "a.py", null, nineText());
+      chipsOf(fileEl("F0"))[0].click();
+      await tick();
+      expect(storedViewState()!.reveals).toEqual([{ file: "F0", old: [1, 1], new: [1, 1] }]);
+    });
+
+    test("a write the browser refuses keeps the record in memory, with one warning", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const real = sessionStorage;
+      Object.defineProperty(globalThis, "sessionStorage", {
+        configurable: true,
+        value: { ...real, getItem: () => null, setItem: () => { throw new DOMException("quota", "QuotaExceededError"); } },
+      });
+      try {
+        await bootViewer(makeData({ pending: true, files: [nine()] }));
+        queueFileText(0, "a.py", null, nineText());
+        chipsOf(fileEl("F0"))[0].click();
+        await tick();
+        chipsOf(fileEl("F0"))[0].click();   // below, off the cache: a second write
+        expect(expansions()).toEqual(["a.py:1", "a.py:9"]);
+        // The repaint reads the in-memory record.
+        lastEventSource().dispatch("done", { reason: "complete" });
+        expect(expansions()).toEqual(["a.py:1", "a.py:9"]);
+        expect(warn.mock.calls.filter((c) => String(c[0]).startsWith("view state"))).toHaveLength(1);
+      } finally {
+        Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: real });
+      }
+    });
   });
 });

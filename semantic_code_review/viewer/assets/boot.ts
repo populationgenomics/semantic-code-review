@@ -20,6 +20,7 @@ import { Progress } from "./progress";
 import { Render } from "./render";
 import { Sidebar } from "./sidebar";
 import { Sse } from "./sse";
+import { ViewState } from "./view_state";
 
 // Keep an unused import to ensure annotations.ts's window-attach side
 // effects (if any are added later) execute. Type checker sees Annotations
@@ -54,6 +55,13 @@ async function boot(): Promise<void> {
   // the sidebar divider takes its width from them and Render.init the
   // gutter's fold, and both are on the first paint.
   await Prefs.load(SESSION_ENDPOINT);
+  // The tab's record for this run, before the modules that read a part
+  // of it: the sidebar its pill, the explainer its section, the renderer
+  // its reveals and folds.
+  if (typeof DATA.run_id !== "string" || DATA.run_id === "") {
+    throw new Error("/data.json carries no run_id");
+  }
+  ViewState.init(DATA.run_id);
   Comments.init({
     // Whenever the store changes (initial load, save, delete, promotion):
     // the sidebar pills' per-file counts, and the manifests hidden

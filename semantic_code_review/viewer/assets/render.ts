@@ -35,6 +35,7 @@ import { Progress } from "./progress";
 import { Rendered, type PaneState } from "./rendered";
 import { Sidebar } from "./sidebar";
 import { blockDiff, matchRanges, wrapRanges, type CharRange } from "./text_highlight";
+import { ViewState, type Ledger, type RegionRef } from "./view_state";
 
 // --- Module state --------------------------------------------------------
 
@@ -66,7 +67,7 @@ interface RenderState {
   focus: ReadonlySet<string> | null;
 }
 
-let _data: ViewerData = { version: "1", pr: {} as PRBlock, smells_catalogue: {}, files: [], groups: [], symbols: [] };
+let _data: ViewerData = { version: "1", run_id: "", pr: {} as PRBlock, smells_catalogue: {}, files: [], groups: [], symbols: [] };
 let _smells: Record<string, SmellCatalogueEntry> = {};
 // The focused symbol's name, highlighted search-style across every diff
 // line, or null when no symbol pill is active. Newly rendered cells pick
@@ -126,6 +127,12 @@ interface PaneScope {
    *  files are flipped, and their fold level / reveals. Per-pane for the
    *  same reason `overrides` is. */
   rendered: PaneState;
+  /** What this pane's reviewer has disclosed — the regions revealed, the
+   *  definitions folded — re-applied by every paint of a file. The diff
+   *  pane's is the tab's stored record; the panel's is its own, in
+   *  memory, so a region opened beside the document never opens in the
+   *  diff (ADR 0007's free return trip). */
+  ledger: Ledger;
   repaint: () => void;
 }
 
@@ -139,6 +146,7 @@ function _diffScope(): PaneScope {
     filtered: true,
     focus: _state.focus,
     rendered: _state.rendered,
+    ledger: ViewState,
     repaint: render,
   };
 }
@@ -151,8 +159,21 @@ const _panelScope: PaneScope = {
   filtered: false,
   focus: null,
   rendered: Rendered.newPaneState(),
+  ledger: ViewState.transient(),
   repaint: () => ExplainerPanel.repaint(),
 };
+
+// The ledger each rendered `.file` was painted against, for the
+// re-attaches that reach a file through its node alone — a chip's
+// expand, a summary landing from another tab, the comment store
+// changing. A node is in one pane, so this is the pane's ledger.
+const _FILE_LEDGER = new WeakMap<HTMLElement, Ledger>();
+
+function _ledgerOf(fileEl: HTMLElement): Ledger {
+  const ledger = _FILE_LEDGER.get(fileEl);
+  if (!ledger) throw new Error(`${fileEl.dataset.id}: file node was not painted by _renderFile`);
+  return ledger;
+}
 
 function _isFocused(scope: PaneScope, hunkId: string): boolean {
   return scope.focus !== null && scope.focus.has(hunkId);
@@ -174,7 +195,7 @@ function renderInit(data: ViewerData): void {
   _state.overrides = Object.create(null);
   _state.renderedDiffs = Object.create(null);
   _state.rendered = Rendered.newPaneState();
-  // A filter restored from sessionStorage is not a gesture: the diff opens
+  // A filter restored from the view state is not a gesture: the diff opens
   // at its level, filtered, with nothing focused.
   _state.focus = null;
   _applyGutterFold(_readGutterFold());
@@ -597,6 +618,7 @@ function _renderFile(f: FileBlock, scope: PaneScope): HTMLElement | null {
   const div = _el("div", "file");
   if (liveIds !== null) div.classList.add("filtered");
   div.dataset.id = f.id;
+  _FILE_LEDGER.set(div, scope.ledger);
   const folded = _fileFolded(scope, f);
   div.classList.toggle("folded", folded);
   div.appendChild(_renderFileHeader(f, folded, scope));
@@ -645,7 +667,7 @@ function _renderFileBody(
     );
     const region: DiffRegion = { position, newStart: curNew, oldStart: curOld, newEnd, demoted };
     if (_regionCount(region) === 0) return;
-    body.appendChild(_renderRegionChip(f, region));
+    body.appendChild(_renderRegion(f, region, scope));
   };
 
   for (const h of f.hunks.filter(isLive)) {
@@ -745,11 +767,12 @@ interface DiffRegion {
 
 /** Visit a region's row stream in file order — unchanged context one
  *  (old, new) line pair at a time, demoted hunks as themselves. The one
- *  walk behind both the chip's count and the expansion's rows, so the
- *  two agree. */
+ *  walk behind the chip's count, the expansion's rows and the region's
+ *  identity, so the three agree. Returns the first line past the region
+ *  on each side. */
 function _walkRegion(
   region: DiffRegion, ctx: (oldLine: number, newLine: number) => void, hunk: (h: HunkBlock) => void,
-): void {
+): { oldNext: number; newNext: number } {
   let cn = region.newStart;
   let co = region.oldStart;
   const ctxTo = (upTo: number): void => {
@@ -762,12 +785,44 @@ function _walkRegion(
     co = h.old_start + h.old_count;
   }
   if (region.newEnd !== null) ctxTo(region.newEnd + 1);
+  return { oldNext: co, newNext: cn };
 }
 
 function _regionCount(region: DiffRegion): number {
   let n = 0;
   _walkRegion(region, () => { n++; }, (h) => { n += (h.rows || []).length; });
   return n;
+}
+
+/** The region as the ledger records it: its boundaries on both sides.
+ *  Laid out from the hunks' coordinates alone, like the region itself,
+ *  so the same lines under the same filter identify the same region
+ *  across paints and reloads; a filter that re-carves the file yields
+ *  other boundaries, and a reveal recorded under it is left where it
+ *  is until that filter is back. */
+function _regionRef(region: DiffRegion): RegionRef {
+  const end = _walkRegion(region, () => {}, () => {});
+  return { old: [region.oldStart, end.oldNext - 1], new: [region.newStart, end.newNext - 1] };
+}
+
+/** A region as this paint shows it: expanded when the pane's ledger
+ *  records it revealed and the text is here, else its chip — one that
+ *  is already fetching when the region is recorded but the text is not
+ *  yet cached (a first paint after a reload; a repaint while a click's
+ *  fetch is in flight, which shares that fetch rather than starting a
+ *  second). A recorded region the text cannot cover is dropped from the
+ *  record and shown as a plain chip: the record is a hint. */
+function _renderRegion(f: FileBlock, region: DiffRegion, scope: PaneScope): HTMLElement {
+  const ref = _regionRef(region);
+  if (!scope.ledger.isRevealed(f.id, ref)) return _renderRegionChip(f, region, scope);
+  const cached = FileTextCache.cached(f.id);
+  if (!cached) return _renderRegionChip(f, region, scope, { fetching: true });
+  try {
+    return _renderRegionExpansion(f, region, cached, scope);
+  } catch (_) {
+    scope.ledger.unreveal(f.id, ref);
+    return _renderRegionChip(f, region, scope);
+  }
 }
 
 /** The row stream for a region, its unchanged context read from the
@@ -802,11 +857,20 @@ function _regionRows(
   return { rows, marks };
 }
 
-/** The chip standing in for a region. A click expands it in place; when
- *  the file's text is not yet cached the chip fetches it first, showing
- *  the wait, and on failure says so and takes the click again. The
- *  fetch is the chip's, never the render pass's. */
-function _renderRegionChip(f: FileBlock, region: DiffRegion): HTMLElement {
+/** The chip standing in for a region. A click records the reveal and
+ *  expands the chip in place; when the file's text is not yet cached the
+ *  chip fetches it first, showing the wait, and on failure says so,
+ *  takes the reveal back and takes the click again. The fetch is the
+ *  chip's, never the render pass's — a chip built `fetching` for a
+ *  recorded region starts it as a click would.
+ *
+ *  A chip a repaint has since detached does nothing when its fetch
+ *  lands: the chip the repaint built for the region is the one that
+ *  expands, off the same fetch. */
+function _renderRegionChip(
+  f: FileBlock, region: DiffRegion, scope: PaneScope, opts: { fetching?: boolean } = {},
+): HTMLElement {
+  const ref = _regionRef(region);
   const chip = _el("div", "gap-chip");
   const count = _regionCount(region);
   const icon = region.position === "top" ? "⬆" : region.position === "bottom" ? "⬇" : "⋯";
@@ -817,42 +881,56 @@ function _renderRegionChip(f: FileBlock, region: DiffRegion): HTMLElement {
   const labelEl = _el("span", "gap-label", label);
   chip.appendChild(_el("span", "gap-icon", icon));
   chip.appendChild(labelEl);
-  const fail = (e: unknown): void => {
+  // A failure takes the reveal back. One the reviewer asked for is said
+  // on the chip; one a paint attempted for a recorded region leaves a
+  // plain chip — the reviewer did not click, so nothing is owed a reply.
+  const fail = (e: unknown, asked: boolean): void => {
+    scope.ledger.unreveal(f.id, ref);
     chip.classList.remove("loading");
+    if (!asked) { labelEl.textContent = label; return; }
     chip.classList.add("failed");
     const why = e instanceof Error ? e.message : String(e);
     labelEl.textContent = `${label} — could not load: ${why} (click to retry)`;
   };
-  const expand = (text: FileText): void => {
+  const expand = (text: FileText, asked: boolean): void => {
+    if (!chip.isConnected) return;
     let expansion: HTMLElement;
     try {
-      expansion = _renderRegionExpansion(f, region, text);
+      expansion = _renderRegionExpansion(f, region, text, scope);
     } catch (e) {
-      fail(e);
+      fail(e, asked);
       return;
     }
     chip.replaceWith(expansion);
     _refreshFileFolds(expansion, f);
   };
-  chip.addEventListener("click", () => {
-    if (chip.classList.contains("loading")) return;
-    const cached = FileTextCache.cached(f.id);
-    if (cached) { expand(cached); return; }
+  const fetchThenExpand = (asked: boolean): void => {
     chip.classList.remove("failed");
     chip.classList.add("loading");
     labelEl.textContent = `${label} — loading…`;
-    FileTextCache.load(f).then(expand, fail);
+    FileTextCache.load(f).then((text) => expand(text, asked), (e) => fail(e, asked));
+  };
+  chip.addEventListener("click", () => {
+    if (chip.classList.contains("loading")) return;
+    scope.ledger.reveal(f.id, ref);
+    const cached = FileTextCache.cached(f.id);
+    if (cached) { expand(cached, true); return; }
+    fetchThenExpand(true);
   });
+  if (opts.fetching) fetchThenExpand(false);
   return chip;
 }
 
-function _renderRegionExpansion(f: FileBlock, region: DiffRegion, text: FileText): HTMLElement {
+function _renderRegionExpansion(
+  f: FileBlock, region: DiffRegion, text: FileText, scope: PaneScope,
+): HTMLElement {
   const { rows, marks } = _regionRows(f, region, text);
   const container = _el("div", "gap-expansion");
   const collapse = _el("button", "gap-collapse", "× collapse");
   collapse.title = "Hide these lines again";
   collapse.addEventListener("click", () => {
-    const chip = _renderRegionChip(f, region);
+    scope.ledger.unreveal(f.id, _regionRef(region));
+    const chip = _renderRegionChip(f, region, scope);
     container.replaceWith(chip);
     _refreshFileFolds(chip, f);
   });
@@ -1332,10 +1410,14 @@ function _foldLabels(f: FileBlock): FoldLabels {
 }
 
 /** Attach the fold chrome to one pane's copy of `f`, with the labels a
- *  collapsed region shows. boot.ts calls this when a summary lands from
- *  another tab. */
+ *  collapsed region shows and the pane's record of the file's folds.
+ *  boot.ts calls this when a summary lands from another tab. */
 function attachFileFolds(fileEl: HTMLElement, f: FileBlock): void {
-  Folds.attachFileFolds(fileEl, f, _foldLabels(f));
+  const ledger = _ledgerOf(fileEl);
+  Folds.attachFileFolds(fileEl, f, _foldLabels(f), {
+    isFolded: (key) => ledger.isFolded(f.id, key),
+    setFolded: (key, folded) => ledger.setFolded(f.id, key, folded),
+  });
 }
 
 function _renderHunkDiff(h: HunkBlock, file: FileBlock, scope: PaneScope): HTMLElement {
