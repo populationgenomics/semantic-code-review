@@ -245,7 +245,9 @@ class RepoTools:
         the overview seed (the `SymbolDelta` object, consumed in-process).
         Raises `git_ops.GitError` if the diff can't be enumerated.
         """
-        paths = git_ops.diff_name_only(self.repo_git, self.base_sha, self.head_sha)
+        # Against the head worktree, not `head_sha`: a dirty-tree review's
+        # head is the working directory and its token is no revision.
+        paths = git_ops.changed_paths_in_worktree(self.head_worktree, self.base_sha)
         deltas = []
         for path in paths:
             lang = structural.language_for_path(path)

@@ -244,3 +244,28 @@ def test_grep_at_is_on_both_tool_surfaces(repo: RepoTools) -> None:
     assert "grep_at" in {s["name"] for s in mcp_tool_schemas()}
     out = mcp_dispatch(repo, "grep_at", {"purpose": "find it", "pattern": "foo", "sha": repo.head_sha})
     assert "a.py" in out
+
+
+# compute_symbol_delta
+
+
+def test_symbol_delta_of_a_dirty_tree_reads_the_worktree_not_the_head_token(repo: RepoTools) -> None:
+    # A dirty-tree review's head is the working directory; its token is no
+    # revision. Changes in tracked and untracked files both count.
+    (repo.head_worktree / "a.py").write_text("def foo():\n    return 1\n\ndef bar():\n    return 2\n")
+    (repo.head_worktree / "new.py").write_text("def baz():\n    return 3\n")
+    dirty = RepoTools(
+        head_worktree=repo.head_worktree,
+        repo_git=repo.repo_git,
+        base_sha=repo.base_sha,
+        head_sha=f"{repo.base_sha}-dirty-abc123",
+    )
+    delta = dirty.compute_symbol_delta()
+    added = {(s.path, s.qualified_name) for s in delta.added}
+    assert ("a.py", "bar") in added
+    assert ("new.py", "baz") in added
+
+
+def test_symbol_delta_of_a_clean_tree_is_empty(repo: RepoTools) -> None:
+    delta = repo.compute_symbol_delta()
+    assert delta.added == [] and delta.modified == [] and delta.removed == []

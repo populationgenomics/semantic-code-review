@@ -236,14 +236,19 @@ def worktree_add(repo_git: Path, path: Path, sha: str) -> None:
     git(repo_git, "worktree", "add", "--detach", str(path), sha)
 
 
-def diff_name_only(repo_git: Path, base: str, head: str) -> list[str]:
-    """Paths changed between two commits, current names, blanks dropped.
+def changed_paths_in_worktree(worktree: Path, base: str) -> list[str]:
+    """Paths that differ between ``base`` and a worktree's files, untracked
+    ones included, current names, sorted, blanks dropped.
 
-    ``git diff --name-only <base> <head>`` — added, modified and renamed
-    files report their head name; deleted files their (gone) base name.
+    The head of a dirty-tree review is the working directory, not a
+    commit, so it has no revision to name to ``git diff``; asking the
+    worktree itself serves a committed head the same (its files are the
+    commit's). ``--untracked`` for the same reason `grep` passes it: a
+    file the reviewer has not staged is still under review.
     """
-    out = git(repo_git, "diff", "--name-only", base, head)
-    return [line for line in out.splitlines() if line]
+    diffed = git(worktree, "diff", "--name-only", base).splitlines()
+    untracked = git(worktree, "ls-files", "--others", "--exclude-standard").splitlines()
+    return sorted({line for line in [*diffed, *untracked] if line})
 
 
 # ---------------------------------------------------------------------------
