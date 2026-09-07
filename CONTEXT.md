@@ -254,19 +254,29 @@ sidecar as a `FoldDescription` on the file (`FileAnnotations
 `augmented.diff` written when they lived on the file's first hunk is
 read with them lifted to the file.
 
-A collapsed region shows its labels (ADR 0008): its box is the summary
-line — `kind name — summary`, or the pending / failed copy — and beneath
-it the **label tree** (`render._labelTree`) over the rows the fold hid:
-every [[annotation-span]] with a row among them and every named region
-inside them holding a changed row, nested by containment over row
-indices (the one coordinate a deleted definition and a post-image span
-share). A definition row is `kind name` plus its summary, else its
-opener line when the rows carry it; a span row is its range, intent and
-smells. Anything covering the chevron row — the region itself, a class
-enclosing it, a span whose text is still on screen — is not inside the
-fold and is not listed; a body with nothing labelled shows the summary
-line alone. Nothing is fetched for a label. Clicking a row opens the fold
-and lands on what it names. folds.ts owns the box and the summary line
+A collapsed region shows its labels (ADR 0008; hidden content is a
+manifest, not an absence): its box is the summary line — `kind name —
+summary`, or the pending / failed copy — and beneath it the **label
+tree** (`render._labelTree`) over the rows the fold hid: every
+[[annotation-span]] with a row among them, every named region inside
+them holding a changed row, and every [[reviewer-comment]] thread on one
+of them, nested by containment over row indices (the one coordinate a
+deleted definition, a post-image span and a one-sided thread share). A
+definition row is `kind name` plus its summary, else its opener line
+when the rows carry it; a span row is its range, intent and smells; a
+comment row (`render._renderCommentLabel`, `Comments.threadsFor`) is the
+thread's line on its side (`+N` / `-N`), a state dot drawn as the
+sidebar's — filled while open, a ring once resolved — and the root's
+first line. A thread is a leaf; a one-line span and the thread on its
+line are siblings, as two spans of one extent are. A span the reviewer
+promoted is replaced by its comment (the same `_spanPromoted` test the
+gutter uses); a promoted smell's pill is hidden as elsewhere. Anything
+covering the chevron row — the region itself, a class enclosing it, a
+span whose text is still on screen, a thread hanging off it — is not
+inside the fold and is not listed; a body with nothing labelled shows
+the summary line alone. Nothing is fetched for a label. Clicking a row
+opens the fold and lands on what it names — a span's text, a thread's
+row, a definition's first row. folds.ts owns the box and the summary line
 and asks the renderer for the tree through `FoldLabels`;
 `Render.attachFileFolds` is the entry every re-attach uses. A fold owns
 what it hides: every body row and everything hanging off one (notes,
@@ -276,7 +286,11 @@ so a nested fold keeps its own state through the enclosing fold closing
 and opening. A fold is collapsed when it hides any body row; a re-attach
 rebuilds the chrome in that state and re-hides a collapsed fold's body,
 so rows a chip has since disclosed and anything attached to a hidden row
-meanwhile fold in.
+meanwhile fold in. The tree reads the comment store, which loads after
+the first paint and changes on every save, delete and promotion:
+`Render.refreshCommentManifests` (the store's `onChange`, wired in
+boot.ts) re-attaches each rendered file's fold chrome and rebuilds the
+hunk and file manifests below in place, with no full render.
 
 **Annotation span**
 An LLM-produced label on a range of a [[hunk]]'s post-image lines
@@ -438,7 +452,16 @@ ladder is progressive summarisation — the diff's own units at
 decreasing detail, each with a summary the pipeline already writes:
 `files` shows file headers and summaries; `hunks` shows hunk headers —
 the `@@` line, the intent, the smell / context / confidence chips — and
-nothing that mentions a span; `code` shows the rows. A rung that
+nothing that mentions a span; `code` shows the rows. The one thing a
+collapsed file or hunk says about its inside is the **comment manifest**
+(`render._renderCommentManifest`): under the header, one label row per
+[[reviewer-comment]] thread it hides — every thread on the file, or the
+threads on the hunk's rows, either side — in the form the
+[[fold-region]] label tree uses; nothing when there are none. The
+reviewer's own notes are the exception to the one-line summary because
+they are what the reviewer most needs to find again; spans and
+definitions stay off these rungs. Clicking a row opens the file and the
+hunk carrying the line, and scrolls to the thread. A rung that
 re-carves the diff (`segments` by the model's intent, `definitions` by
 the AST) is a projection, not a summary, and neither exists. The three
 axes the ADR names are affordances at `code`, not rungs: the expand chip
@@ -587,7 +610,12 @@ Delta specifics worth pinning:
 A reviewer-authored inline comment anchored to a specific
 `(file, side, line)`. Round-trips between the viewer and the
 review server's `/comments` route during a session, and is
-persisted to `comments.json` in the [[run-directory]].
+persisted to `comments.json` in the [[run-directory]]. Grouped into
+threads by anchor and reply chain (`comments._buildThreads`;
+`Comments.threadsFor` is the per-file summary). A thread whose row is
+hidden is never absent from the screen: it is listed where its rows
+went — a [[fold-region]]'s label tree, or the comment manifest under a
+collapsed hunk or file ([[fold-level]]).
 
 Named `ReviewerComment` in TypeScript and `Comment` in Python —
 the TS name is qualified because `lib.dom.Comment` (a `Node`

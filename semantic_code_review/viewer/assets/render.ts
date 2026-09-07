@@ -3,7 +3,8 @@
 // Owns the layout pass that turns DATA into the on-page DOM: PR
 // panel, file blocks, hunk headers, the side-by-side row grid, gap
 // chips for unchanged context, the span gutter's bars and text, the label tree
-// a collapsed fold shows, refs, smell pills. Carries the fold state too
+// a collapsed fold shows and the comment manifest a collapsed hunk or file
+// carries, refs, smell pills. Carries the fold state too
 // (STATE.fold / overrides / renderedDiffs cache) because all of that
 // exists to feed the renderer, and binds the user inputs that drive it
 // (fold-slider buttons, keyboard 1-3, hash sync).

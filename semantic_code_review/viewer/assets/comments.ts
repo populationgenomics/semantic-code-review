@@ -24,8 +24,9 @@ let _store: CommentStore = makeNoopStore();
 const _expandedResolved = new Set<string>();
 
 // Fired after every store mutation or load. Boot wires this so the
-// sidebar can refresh per-file comment counts without comments.ts
-// having to import Sidebar (mutual imports kept off the boot path).
+// sidebar can refresh per-file comment counts and the renderer its
+// manifests without comments.ts importing either (mutual imports kept
+// off the boot path).
 let _onChange: (() => void) | null = null;
 
 function _sessionEndpoint(): string {
@@ -48,9 +49,9 @@ function _el(tag: string, className: string | null, text?: string): HTMLElement 
 
 interface InitOptions {
   /** Notified after the initial load completes and after every
-   *  user-driven save/delete. The sidebar uses this to refresh
-   *  per-file comment counts without comments.ts having to import
-   *  Sidebar directly. */
+   *  user-driven save/delete/promotion. The sidebar refreshes its
+   *  per-file counts and the renderer the manifests hidden content
+   *  carries, without comments.ts importing either. */
   onChange?: () => void;
 }
 
