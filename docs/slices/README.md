@@ -13,3 +13,4 @@ slice plan holds the *how, in order*.
 - [One visibility model](visibility-model.md) — ADR 0006, superseded by 0008
 - [Change explainer](change-explainer.md) — ADR 0007
 - [Hide, fold, label](hide-fold-label.md) — ADR 0008
+- [Two-way review loop](two-way-review-loop.md) — ADR 0009
