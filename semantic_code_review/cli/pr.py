@@ -17,7 +17,7 @@ import typer
 
 from .. import paths
 from ..paths import default_runs_root
-from ..review import runner
+from ..review import servers
 from ..review.config import ReviewConfig
 from ..review.pr_flow import PrFlowOptions, run_pr_flow, serve_pr_run
 from . import app
@@ -82,7 +82,7 @@ def pr(
         envvar="SCR_DEBUG",
         help="Surface each CLI-backend subprocess spawn (raw argv + envelope) in the viewer's debug drawer.",
     ),
-    serve_run: str = typer.Option(None, runner.SERVE_RUN_FLAG, hidden=True),
+    serve_run: str = typer.Option(None, servers.SERVE_RUN_FLAG, hidden=True),
 ) -> None:
     """Review a GitHub PR in the browser; returns at once with the run id.
 

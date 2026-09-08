@@ -19,10 +19,8 @@ import json
 import logging
 import os
 import signal
-import subprocess
 import sys
 import threading
-import time
 import webbrowser
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -36,7 +34,7 @@ from ..cache.store import CacheStore
 from ..fetch import materialize_local_diff_run
 from ..format.parse import parse_augmented_diff
 from ..viewer.build_json import build_pending_viewer_json, build_viewer_json
-from . import stream
+from . import identity, servers
 from .comments import Comment, CommentStore
 from .config import ReviewConfig
 from .pending_review import ReviewSink
@@ -146,17 +144,6 @@ def build_server_tasks(run_dir: paths.RunDir, cfg: ReviewConfig) -> ServerTasks:
     )
 
 
-#: How long `run_review` gives the detached server to bind and write
-#: `server.json`. The server starts before augmentation, so this covers
-#: interpreter start-up and the SDK import, not an LLM pass.
-SERVER_START_TIMEOUT = 60.0
-
-#: The hidden `scr review` option that turns an invocation into the
-#: detached server for an existing run. `run_review` appends it (with the
-#: resolved runs root) to its own argv to spawn the child.
-SERVE_RUN_FLAG = "--serve-run"
-
-
 def run_review(opts: ReviewOptions, *, argv: Sequence[str]) -> int:
     """Materialise the run from a git ref/range, detach the review server,
     print the run id. See `detach_server` for the child and the exit code.
@@ -187,40 +174,22 @@ def detach_server(run_dir: paths.RunDir, cfg: ReviewConfig, *, argv: Sequence[st
     ends with `run_id: <slug>`; `viewer: <url>` precedes it. `program`
     names the command in what goes to stderr.
 
-    A server already holding the run is reused rather than a second one
-    bound to the same directory.
+    A server already holding the run is reused when it is this build
+    (`servers.clear_for`); one of another build is stopped first, and a
+    stale record removed.
 
     Returns the process exit code: 0 once the server is reachable, 2 when
     the child exits before writing `server.json` (its log is printed).
     """
-    existing = stream.read_server_info(run_dir)
-    if existing is not None and stream.server_alive(existing):
+    existing = servers.clear_for(run_dir, this=identity.this_build(), program=program, err=sys.stderr)
+    if existing is not None:
         sys.stderr.write(f"{program}: a server already holds this run at {existing.url}\n")
         sys.stderr.flush()
         _print_run_id(run_dir, existing.url)
         return 0
-    run_dir.server_json.unlink(missing_ok=True)
 
-    child_argv = [
-        sys.executable,
-        "-m",
-        "semantic_code_review.cli",
-        *argv,
-        "--runs-root",
-        str(cfg.runs_root),
-        SERVE_RUN_FLAG,
-        run_dir.slug,
-    ]
-    with run_dir.server_log.open("ab") as log_file:
-        child = subprocess.Popen(
-            child_argv,
-            stdin=subprocess.DEVNULL,
-            stdout=log_file,
-            stderr=log_file,
-            cwd=os.getcwd(),
-            start_new_session=True,
-        )
-    info = _await_server_info(run_dir, child, timeout=SERVER_START_TIMEOUT)
+    child = servers.spawn(run_dir, serve_argv(argv, cfg, run_dir), cwd=os.getcwd())
+    info = servers.await_server_info(run_dir, child)
     if info is None:
         sys.stderr.write(f"{program}: the review server did not start; its log is {run_dir.server_log}:\n")
         sys.stderr.write(_tail(run_dir.server_log))
@@ -228,6 +197,15 @@ def detach_server(run_dir: paths.RunDir, cfg: ReviewConfig, *, argv: Sequence[st
         return 2
     _print_run_id(run_dir, info.url)
     return 0
+
+
+def serve_argv(argv: Sequence[str], cfg: ReviewConfig, run_dir: paths.RunDir) -> list[str]:
+    """The arguments that make an invocation's `argv` the server for
+    `run_dir`: `--runs-root <resolved> --serve-run <slug>` appended. What
+    the detached child runs, and what `server.json` records for `scr
+    runs restart`.
+    """
+    return [*argv, "--runs-root", str(cfg.runs_root), servers.SERVE_RUN_FLAG, run_dir.slug]
 
 
 def serve_run(
@@ -273,21 +251,6 @@ def _print_run_id(run_dir: paths.RunDir, url: str) -> None:
     sys.stdout.write(f"viewer: {url}\n")
     sys.stdout.write(f"run_id: {run_dir.slug}\n")
     sys.stdout.flush()
-
-
-def _await_server_info(run_dir: paths.RunDir, child: subprocess.Popen, *, timeout: float) -> stream.ServerInfo | None:
-    """Poll for the child's `server.json`; None if the child exits first
-    or the timeout passes.
-    """
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        info = stream.read_server_info(run_dir)
-        if info is not None:
-            return info
-        if child.poll() is not None:
-            return None
-        time.sleep(0.05)
-    return None
 
 
 def _tail(path: Path, lines: int = 20) -> str:

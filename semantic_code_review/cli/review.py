@@ -16,7 +16,7 @@ import typer
 from .. import paths
 from ..fetch import EmptyDiff, LocalDiffError
 from ..paths import default_runs_root
-from ..review import runner, stream
+from ..review import runner, servers, stream
 from ..review.config import ReviewConfig
 from . import app
 from ._shared import (
@@ -113,7 +113,7 @@ def review(
         "--wait-timeout",
         help="Seconds a --wait blocks before answering `nothing-yet`.",
     ),
-    serve_run: str = typer.Option(None, runner.SERVE_RUN_FLAG, hidden=True),
+    serve_run: str = typer.Option(None, servers.SERVE_RUN_FLAG, hidden=True),
 ) -> None:
     """Review a local git diff in the browser; returns at once with the run id.
 
