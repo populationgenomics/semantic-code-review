@@ -748,7 +748,9 @@ only when Claude is asked to resume.
 GitHub's draft of a review: visible only to its author, its comments
 addable, editable and deletable until [[submit|submitted]]; one per user
 per PR. In PR mode it is where [[sent]] comments go; an existing one is
-resumed, not replaced.
+resumed, not replaced. GitHub is authoritative for it: the store
+reconciles to it on any sign of divergence (a refusal naming an unknown
+node, the Submit chooser opening, a Submit, the retry tick).
 _Avoid_: draft review (a [[draft]] is a comment the counterpart has not seen)
 
 **Submit**

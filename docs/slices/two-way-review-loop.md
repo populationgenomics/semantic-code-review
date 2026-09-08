@@ -116,7 +116,23 @@ the `pending-review` SSE frame after every flush and on submit. The bar
 and the review's link once submitted; badges read *draft* / *sending* /
 *unsent* / *pending*; Resolve / Unresolve sit on every thread in PR
 mode, disabled with the reason on a pending one. The pending review's id
-lives on the sink in memory, re-discovered at start.
+lives on the sink in memory, re-discovered at start. GitHub is
+authoritative for its draft, so the store *reconciles* to it on any sign
+of divergence: one `nodes(ids:)` look (with the PR's pending review in
+the same query, `POST /reconcile`) per comment GitHub was told about —
+still pending: nothing; in a published review: upstream now, with the
+body GitHub holds, `submitted_from: "github"` in the state and the link
+in the bar; unknown: a draft again with a `notice` under its row, cleared
+by the next Send (a deletion tombstone is dropped). Triggers: a
+NOT_FOUND-class refusal (`GitHubRefused.not_found`, off gh's stderr or
+the typed GraphQL error; other refusals stay unsent-and-retry) —
+reconcile once per flush and re-apply that delivery once, a second
+refusal is unsent, never a loop; the chooser opening (it lists what
+Submit would publish from the answer, or the last known state marked
+stale when GitHub is unreachable); Submit, before deciding (refused 409
+with `submitted_url` when the look finds the review published from the
+web; nothing pending and nothing unsent still publishes an empty review);
+the 30 s retry tick; and the start-up resume.
 
 ## Slice 3 — The review follows the code
 
