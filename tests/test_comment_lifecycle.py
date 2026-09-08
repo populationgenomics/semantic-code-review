@@ -466,6 +466,56 @@ def test_mark_submitted_flips_what_the_review_held_and_leaves_drafts(run_dir: pa
     assert _by_id(CommentStore(run_dir.comments))["sent"].source == "github"
 
 
+def test_reset_to_draft_undoes_a_delivery_github_no_longer_holds(run_dir: paths.RunDir) -> None:
+    store = CommentStore(run_dir.comments)
+    store.upsert(_payload("c1"))
+    store.send("c1")
+    store.mark_delivered("c1", node_id="PRRC_1", thread_id="PRRT_1")
+
+    draft = store.reset_to_draft("c1", notice="gone from GitHub")
+
+    assert (draft.delivery, draft.deliveries, draft.node_id, draft.thread_id) == ("draft", 0, None, None)
+    assert draft.notice == "gone from GitHub" and draft.is_draft and draft.send_error is None
+    assert store.with_node_ids() == []
+    # The next Send clears the notice.
+    _, sent = store.send("c1")
+    assert sent.notice is None
+    with pytest.raises(comments.CommentNotFound):
+        store.reset_to_draft("ghost", notice="x")
+
+
+def test_with_node_ids_lists_what_github_was_told_about_tombstones_included(run_dir: paths.RunDir) -> None:
+    store = CommentStore(run_dir.comments)
+    store.upsert(_payload("delivered", line=1))
+    store.upsert(_payload("draft", line=2))
+    store.upsert(_payload("gone", line=3))
+    store.send_all()
+    store.mark_delivered("delivered", node_id="N1")
+    store.mark_delivered("gone", node_id="N3")
+    store.delete("gone")
+    assert [c.id for c in store.with_node_ids()] == ["delivered", "gone"]
+    assert store.find("gone") is not None and store.find("gone").withdrawn  # type: ignore[union-attr]
+    assert store.find("nope") is None
+
+
+def test_mark_submitted_by_ids_takes_the_body_github_published(run_dir: paths.RunDir) -> None:
+    store = CommentStore(run_dir.comments)
+    store.upsert(_payload("kept", "local text", line=1))
+    store.upsert(_payload("edited", "my edit", line=2))
+    store.upsert(_payload("other", line=3))
+    store.send_all()
+    for cid, node in (("kept", "N1"), ("edited", "N2"), ("other", "N3")):
+        store.mark_delivered(cid, node_id=node)
+
+    changed = store.mark_submitted({"kept": None, "edited": "what GitHub has"})
+
+    assert sorted(c.id for c in changed) == ["edited", "kept"]
+    by_id = _by_id(store)
+    assert by_id["kept"].source == "github" and by_id["kept"].body == "local text"
+    assert by_id["edited"].source == "github" and by_id["edited"].body == "what GitHub has"
+    assert by_id["other"].source == "local"
+
+
 # --- the end of a review -----------------------------------------------------
 
 

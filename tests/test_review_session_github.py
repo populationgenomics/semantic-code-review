@@ -21,38 +21,75 @@ from semantic_code_review.review.comments import Comment, CommentStore
 from semantic_code_review.review.session import ReviewSession
 from tests.test_review_session import _Frames
 
+PENDING_URL = "https://gh/o/r/pull/7#pullrequestreview-1"
+EMPTY_STATE = {"unsent": [], "submitted_url": None, "submitted_from": None, "unanchored": 0}
+
 
 class FakeSink:
     """A `ReviewSink` that hands out ids and records every call.
 
-    `refuse` holds the comment ids (or `"submit"`, `"resolve"`) whose
-    next call GitHub refuses; `pending` is what `resume` returns.
+    `refuse` holds the comment ids (or `"submit"`, `"resolve"`,
+    `"reconcile"`) whose next call GitHub refuses; `not_found` the ones
+    it refuses as not knowing the node, one entry per refusal. `pending` is what `resume`
+    returns. GitHub's side of a reconciliation is `on_github`: per node
+    id, a `CommentStanding` or None (gone); a node id the fake issued and
+    was not told otherwise about is pending.
     """
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, Any]] = []
         self.refuse: set[str] = set()
+        self.not_found: list[str] = []
         self.pending: pending_review.Resumed | None = None
         self.resume_refused = False
+        self.on_github: dict[str, github_graphql.CommentStanding | None] = {}
+        self.issued: set[str] = set()
         self._n = 0
 
     def _next(self, prefix: str) -> str:
         self._n += 1
-        return f"{prefix}{self._n}"
+        node = f"{prefix}{self._n}"
+        if prefix == "C":
+            self.issued.add(node)
+        return node
+
+    def _refusal(self, key: str) -> None:
+        if key in self.not_found:
+            self.not_found.remove(key)
+            raise github_graphql.GitHubRefused(f"Could not resolve to a node for {key}", not_found=True)
+        if key in self.refuse:
+            self.refuse.discard(key)
+            raise github_graphql.GitHubRefused(f"HTTP 502 for {key}")
+
+    def reconcile(self, node_ids: list[str]) -> dict[str, github_graphql.CommentStanding | None]:
+        self.calls.append(("reconcile", list(node_ids)))
+        self._refusal("reconcile")
+        out: dict[str, github_graphql.CommentStanding | None] = {}
+        for node in node_ids:
+            if node in self.on_github:
+                out[node] = self.on_github[node]
+            elif node in self.issued:
+                out[node] = github_graphql.CommentStanding(review_id="PRR_fake", review_state="PENDING", review_url="")
+            else:
+                out[node] = None
+        return out
 
     def resume(self, node_index: dict[str, str]) -> pending_review.Resumed | None:
         self.calls.append(("resume", dict(node_index)))
         if self.resume_refused:
             raise github_graphql.GitHubRefused("HTTP 401")
+        if self.pending is not None:
+            # What the pending review yielded is on GitHub, pending.
+            self.issued.update(c.node_id for c in self.pending.comments if c.node_id)
+            self.issued.update(node for node, cid in node_index.items() if cid in self.pending.reclaimed)
         return self.pending
 
     def deliver(self, c: Comment, by_id: dict[str, Comment]) -> pending_review.Delivered:
         kind = "delete" if c.withdrawn else "update" if c.node_id else "reply" if c.in_reply_to_id else "thread"
         self.calls.append((kind, c.id, c.body))
-        if c.id in self.refuse:
-            self.refuse.discard(c.id)
-            raise github_graphql.GitHubRefused(f"HTTP 502 for {c.id}")
+        self._refusal(c.id)
         if kind == "delete":
+            self.issued.discard(c.node_id or "")
             return pending_review.Delivered(node_id=None, thread_id=None)
         if kind == "update":
             return pending_review.Delivered(node_id=c.node_id, thread_id=c.thread_id)
@@ -64,7 +101,9 @@ class FakeSink:
     def submit(self, event: str, body: str) -> github_graphql.SubmittedReview:
         self.calls.append(("submit", event, body))
         if "submit" in self.refuse:
+            self.refuse.discard("submit")
             raise github_graphql.GitHubRefused("HTTP 422: review body required")
+        self._refusal("submit")
         return github_graphql.SubmittedReview(
             node_id="PRR_s", database_id=9, url="https://gh/o/r/pull/7#pullrequestreview-9"
         )
@@ -93,6 +132,23 @@ class _Harness:
 
     def kinds(self) -> list[str]:
         return [call[0] for call in self.sink.calls]
+
+    def gone(self, cid: str) -> None:
+        """GitHub no longer knows this comment's pending twin."""
+        node = self.session.store.find(cid)
+        assert node is not None and node.node_id
+        self.sink.on_github[node.node_id] = None
+
+    def published(self, cid: str, *, body: str | None = None) -> None:
+        """The review holding this comment was submitted from GitHub's web UI."""
+        node = self.session.store.find(cid)
+        assert node is not None and node.node_id
+        self.sink.on_github[node.node_id] = github_graphql.CommentStanding(
+            review_id="PRR_web",
+            review_state="APPROVED",
+            review_url=PENDING_URL,
+            body=body if body is not None else node.body,
+        )
 
     def comment_frames(self, cid: str) -> list[tuple[str, str | None]]:
         """`(delivery, send_error)` of every `comment` frame for `cid`."""
@@ -144,7 +200,7 @@ def test_data_json_carries_the_pending_review_state(run_dir: paths.RunDir) -> No
     h = _Harness(run_dir)
     data = h.session.data_json()
     assert data["counterpart"] == "github"
-    assert data["pending_review"] == {"unsent": [], "submitted_url": None, "unanchored": 0}
+    assert data["pending_review"] == EMPTY_STATE
 
 
 def test_there_is_no_stream_to_wait_on(run_dir: paths.RunDir) -> None:
@@ -165,10 +221,10 @@ def test_a_send_is_delivered_into_the_pending_review_and_records_its_ids(run_dir
     c1 = h.by_id()["c1"]
     assert (c1.delivery, c1.deliveries, c1.node_id, c1.thread_id, c1.send_error) == ("delivered", 1, "C1", "T2", None)
     assert response["comment_ids"] == ["c1"]
-    assert response["pending_review"] == {"unsent": [], "submitted_url": None, "unanchored": 0}
+    assert response["pending_review"] == EMPTY_STATE
     # The tab sees it go sent, then delivered; the review's state follows.
     assert h.comment_frames("c1") == [("draft", None), ("sent", None), ("delivered", None)]
-    assert h.frames.payloads("pending-review") == [{"unsent": [], "submitted_url": None, "unanchored": 0}]
+    assert h.frames.payloads("pending-review") == [EMPTY_STATE]
 
 
 def test_a_refused_send_leaves_the_comment_unsent_and_names_it(run_dir: paths.RunDir) -> None:
@@ -208,9 +264,9 @@ def test_an_unsent_comment_is_retried_on_the_next_send_and_by_retry(run_dir: pat
     assert h.kinds() == ["thread", "thread", "thread"]
     assert h.by_id()["c1"].delivery == "delivered" and h.by_id()["c2"].delivery == "delivered"
 
-    # And the interval retry, with nothing to do, touches GitHub not at all.
+    # The interval retry reconciles, then has nothing to deliver.
     state = h.session.retry_deliveries()
-    assert state["unsent"] == [] and len(h.sink.calls) == 3
+    assert state["unsent"] == [] and h.kinds()[3:] == ["reconcile"]
 
 
 def test_send_all_delivers_each_draft_on_its_own(run_dir: paths.RunDir) -> None:
@@ -339,7 +395,8 @@ def test_resume_adopts_the_pending_review_as_delivered_comments(run_dir: paths.R
 
     h.session.resume_pending_review()
 
-    assert h.sink.calls == [("resume", {})]
+    # Adopted, then what the store now believes is reconciled.
+    assert h.sink.calls == [("resume", {}), ("reconcile", ["C11"])]
     adopted = h.by_id()["gh-11"]
     assert (adopted.source, adopted.delivery, adopted.deliveries, adopted.node_id) == ("local", "delivered", 1, "C11")
     assert adopted.is_writable
@@ -354,7 +411,7 @@ def test_resume_reclaims_a_pending_comment_the_ingest_recorded_as_upstream(run_d
 
     h.session.resume_pending_review()
 
-    assert h.sink.calls == [("resume", {"C_own": "c-own"})]
+    assert h.sink.calls == [("resume", {"C_own": "c-own"}), ("reconcile", ["C_own"])]
     assert h.by_id()["c-own"].is_writable and h.by_id()["c-own"].delivery == "delivered"
 
 
@@ -415,7 +472,7 @@ def test_submit_publishes_and_the_comments_become_upstream(run_dir: paths.RunDir
 def test_approve_with_no_comments_is_the_lgtm(run_dir: paths.RunDir) -> None:
     h = _Harness(run_dir)
     response = h.session.submit({"event": "APPROVE"})
-    assert h.sink.calls == [("submit", "APPROVE", "")]
+    assert h.sink.calls == [("reconcile", []), ("submit", "APPROVE", "")]
     assert response["submitted"] == 0 and response["review_url"]
 
 
@@ -485,3 +542,318 @@ def test_an_upstream_thread_without_a_recorded_id_is_refused(run_dir: paths.RunD
     err = _refused(lambda: h.session.set_thread_resolved("gh-1", True))
     assert err.status == 409 and "thread id" in str(err)
     assert h.sink.calls == []
+
+
+# --- reconciliation ---------------------------------------------------------
+# GitHub is authoritative for its draft. Whenever there is a sign the
+# store's view diverged — a NOT_FOUND refusal, the chooser opening, a
+# Submit, the retry tick — the store re-derives it from GitHub.
+
+REMOVED = "removed from your pending review on GitHub — Send again to re-add"
+
+
+def _delivered(h: _Harness, *cids: str) -> None:
+    for cid in cids:
+        h.session.upsert_comment(_note(cid, line=len(cid) * 7))
+    h.session.send_all()
+    assert all(h.by_id()[c].delivery == "delivered" for c in cids)
+
+
+def test_reconcile_leaves_a_comment_still_pending_alone(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    _delivered(h, "c1")
+    before = h.by_id()["c1"]
+
+    result = h.session.reconcile()
+
+    assert h.sink.calls[-1] == ("reconcile", ["C1"])
+    assert result["outcomes"] == {"c1": "pending"}
+    assert h.by_id()["c1"] == before
+    assert result["submitted_from"] is None
+
+
+def test_reconcile_returns_a_comment_deleted_on_github_to_draft_with_a_notice(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    _delivered(h, "c1", "c2")
+    h.gone("c1")
+
+    result = h.session.reconcile()
+
+    assert result["outcomes"] == {"c1": "removed", "c2": "pending"}
+    c1 = h.by_id()["c1"]
+    assert (c1.delivery, c1.deliveries, c1.node_id, c1.thread_id, c1.send_error) == ("draft", 0, None, None, None)
+    assert c1.notice == REMOVED and c1.is_draft
+    assert h.frames.payloads("comment")[-1]["notice"] == REMOVED
+    assert result["unsent"] == [], "a draft is not unsent; it does not block Submit"
+    # Sending it again re-adds it, and the notice goes.
+    h.session.send_comment("c1")
+    again = h.by_id()["c1"]
+    assert (again.delivery, again.notice) == ("delivered", None)
+    assert again.node_id is not None and again.node_id != "C1"
+
+
+def test_reconcile_completes_a_deletion_whose_target_is_already_gone(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    _delivered(h, "c1")
+    h.sink.refuse.add("c1")
+    h.session.delete_comment("c1")
+    assert h.session.pending_review_state()["unsent"][0]["deleted"] is True
+    h.gone("c1")
+
+    result = h.session.reconcile()
+
+    assert result["outcomes"] == {"c1": "deleted"}
+    assert h.session.store.find("c1") is None and result["unsent"] == []
+
+
+def test_reconcile_finds_the_review_published_from_github(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    _delivered(h, "c1", "c2")
+    h.session.upsert_comment(_note("draft", line=99))
+    h.published("c1")
+    h.published("c2", body="as GitHub has it")
+
+    result = h.session.reconcile()
+
+    assert result["outcomes"] == {"c1": "submitted", "c2": "submitted"}
+    assert (result["submitted_url"], result["submitted_from"]) == (PENDING_URL, "github")
+    by_id = h.by_id()
+    assert by_id["c1"].source == "github" and not by_id["c1"].is_writable
+    assert by_id["c2"].body == "as GitHub has it", "an edit that never landed does not read as if it had"
+    assert by_id["draft"].is_draft
+    assert h.frames.payloads("pending-review")[-1]["submitted_from"] == "github"
+    # The sink forgot the pending review: the next Send opens a new one.
+    h.session.send_comment("draft")
+    assert h.by_id()["draft"].delivery == "delivered"
+
+
+def test_reconcile_relays_a_github_failure_and_changes_nothing(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    _delivered(h, "c1")
+    h.sink.refuse.add("reconcile")
+    err = _refused(h.session.reconcile)
+    assert err.status == 502
+    assert h.by_id()["c1"].delivery == "delivered"
+
+
+def test_reconcile_is_for_the_github_counterpart_only(run_dir: paths.RunDir) -> None:
+    from tests.test_review_session import _Harness as _ClaudeHarness
+
+    assert _refused(_ClaudeHarness(run_dir).session.reconcile).status == 409
+
+
+# --- the triggers -------------------------------------------------------------
+
+
+def test_a_not_found_on_update_reconciles_and_the_comment_is_a_draft_again(run_dir: paths.RunDir) -> None:
+    """The live case: the pending comment was deleted on GitHub's web UI,
+    then edited here. The update meets NOT_FOUND; instead of unsent-and-
+    retry-forever the comment returns to draft with the notice."""
+    h = _Harness(run_dir)
+    _delivered(h, "c1")
+    h.gone("c1")
+    h.sink.not_found.append("c1")
+
+    edited = h.session.upsert_comment(_note("c1", "edited"))
+
+    assert h.kinds() == ["thread", "update", "reconcile"]
+    assert (edited["delivery"], edited["notice"], edited["send_error"], edited["body"]) == (
+        "draft",
+        REMOVED,
+        None,
+        "edited",
+    )
+    assert h.session.pending_review_state()["unsent"] == []
+
+
+def test_a_not_found_on_delete_reconciles_and_the_deletion_is_complete(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    _delivered(h, "c1")
+    h.gone("c1")
+    h.sink.not_found.append("c1")
+
+    h.session.delete_comment("c1")
+
+    assert h.kinds() == ["thread", "delete", "reconcile"]
+    assert h.session.store.find("c1") is None
+    assert h.session.pending_review_state()["unsent"] == []
+
+
+def test_a_not_found_on_add_reconciles_and_adds_into_a_fresh_review(run_dir: paths.RunDir) -> None:
+    """The cached pending review was discarded on the web: the add meets
+    NOT_FOUND, the reconcile drops the stale id, the add is applied once
+    more into a review created afresh."""
+    h = _Harness(run_dir)
+    h.session.upsert_comment(_note("c1"))
+    h.sink.not_found.append("c1")
+
+    response = h.session.send_comment("c1")
+
+    assert h.kinds() == ["thread", "reconcile", "thread"]
+    assert h.by_id()["c1"].delivery == "delivered"
+    assert response["pending_review"]["unsent"] == []
+
+
+def test_a_second_refusal_after_the_reconcile_is_unsent_not_a_loop(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    h.session.upsert_comment(_note("c1"))
+    h.sink.not_found.extend({"c1"})
+    h.sink.refuse.add("c1")  # consumed by the re-apply, after the not_found
+
+    h.session.send_comment("c1")
+
+    assert h.kinds() == ["thread", "reconcile", "thread"]
+    c1 = h.by_id()["c1"]
+    assert c1.delivery == "sent" and c1.send_error == "HTTP 502 for c1"
+    # Even a second NOT_FOUND on the re-apply is unsent, not another round.
+    h.session.upsert_comment(_note("c2", line=9))
+    h.sink.not_found.extend(["c2", "c2"])
+    h.session.send_comment("c2")
+    # The flush retries the unsent c1 first (it lands), then c2 twice.
+    assert h.kinds()[3:] == ["thread", "thread", "reconcile", "thread"]
+    assert h.by_id()["c2"].delivery == "sent" and "Could not resolve" in (h.by_id()["c2"].send_error or "")
+    # The next tick reconciles, then delivers it.
+    h.session.retry_deliveries()
+    assert h.kinds()[7:] == ["reconcile", "thread"]
+    assert all(c.delivery == "delivered" for c in h.by_id().values())
+
+
+def test_one_flush_reconciles_once_for_every_refused_comment(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    for cid, line in (("c1", 1), ("c2", 2)):
+        h.session.upsert_comment(_note(cid, line=line))
+    h.sink.not_found.extend({"c1", "c2"})
+
+    h.session.send_all()
+
+    assert h.kinds() == ["thread", "reconcile", "thread", "thread", "thread"]
+    assert all(c.delivery == "delivered" for c in h.by_id().values())
+
+
+def test_other_refusals_do_not_reconcile(run_dir: paths.RunDir) -> None:
+    """Network, auth, rate limit: the comment stays unsent for the retry;
+    GitHub's view is not re-derived over a failure that says nothing
+    about it."""
+    h = _Harness(run_dir)
+    h.session.upsert_comment(_note("c1"))
+    h.sink.refuse.add("c1")
+    h.session.send_comment("c1")
+    assert h.kinds() == ["thread"]
+    assert h.by_id()["c1"].send_error == "HTTP 502 for c1"
+
+
+def test_the_retry_tick_reconciles_first_so_it_self_heals(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    _delivered(h, "c1")
+    h.sink.refuse.add("c1")
+    h.session.upsert_comment(_note("c1", "edited"))
+    assert h.by_id()["c1"].send_error is not None
+    h.gone("c1")
+
+    state = h.session.retry_deliveries()
+
+    assert h.kinds()[-2:] == ["update", "reconcile"] or h.kinds()[-1] == "reconcile"
+    assert state["unsent"] == []
+    assert h.by_id()["c1"].delivery == "draft" and h.by_id()["c1"].notice == REMOVED
+
+
+def test_the_retry_tick_survives_github_being_unreachable(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    h.session.upsert_comment(_note("c1"))
+    h.sink.refuse.add("c1")
+    h.session.send_comment("c1")
+    h.sink.refuse.update({"reconcile", "c1"})
+    state = h.session.retry_deliveries()
+    assert [u["id"] for u in state["unsent"]] == ["c1"]
+
+
+def test_resume_reconciles_what_the_store_already_believes(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    _delivered(h, "c1")
+    h.gone("c1")
+    h = _Harness(run_dir)  # a restart of the run
+    h.sink.on_github = {"C1": None}
+
+    h.session.resume_pending_review()
+
+    assert h.kinds() == ["resume", "reconcile"]
+    assert h.by_id()["c1"].delivery == "draft" and h.by_id()["c1"].notice == REMOVED
+
+
+# --- Submit after the reconcile -------------------------------------------------
+
+
+def test_submit_refuses_when_the_review_was_published_from_github(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    _delivered(h, "c1")
+    h.published("c1")
+
+    err = _refused(lambda: h.session.submit({"event": "COMMENT"}))
+
+    assert err.status == 409
+    assert err.body() == {"error": "the review was already submitted on GitHub", "submitted_url": PENDING_URL}
+    assert not any(call[0] == "submit" for call in h.sink.calls)
+    assert h.by_id()["c1"].source == "github"
+    assert h.frames.payloads("pending-review")[-1]["submitted_from"] == "github"
+    # Having seen that, a second Submit is a fresh review — an LGTM here.
+    response = h.session.submit({"event": "APPROVE"})
+    assert response["submitted"] == 0 and h.sink.calls[-1] == ("submit", "APPROVE", "")
+    assert h.session.pending_review_state()["submitted_from"] == "viewer"
+
+
+def test_submit_after_a_comment_vanished_publishes_what_is_left(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    _delivered(h, "c1", "c2")
+    h.gone("c1")
+
+    response = h.session.submit({"event": "REQUEST_CHANGES", "body": "one nit"})
+
+    assert response["submitted"] == 1
+    by_id = h.by_id()
+    assert by_id["c1"].is_draft and by_id["c1"].notice == REMOVED
+    assert by_id["c2"].source == "github"
+
+
+def test_submit_with_nothing_pending_after_a_reconcile_is_still_the_lgtm(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    _delivered(h, "c1")
+    h.gone("c1")
+    response = h.session.submit({"event": "APPROVE"})
+    assert response["submitted"] == 0
+    assert h.kinds()[-2:] == ["reconcile", "submit"]
+
+
+def test_a_not_found_on_submit_reconciles_and_submits_once_more(run_dir: paths.RunDir) -> None:
+    """The pending review was discarded between the reconcile and the
+    submit: one more look, one more submit into a fresh review."""
+    h = _Harness(run_dir)
+    h.sink.not_found.append("submit")
+    response = h.session.submit({"event": "APPROVE"})
+    assert h.kinds() == ["reconcile", "submit", "reconcile", "submit"]
+    assert response["review_url"]
+
+
+def test_a_not_found_on_submit_that_finds_a_publication_is_refused(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    _delivered(h, "c1")
+    h.sink.not_found.append("submit")
+    # The review was published from the web while Submit was underway:
+    # the first reconcile still saw it pending, the second does not.
+    real_reconcile = h.sink.reconcile
+
+    def flip_then(node_ids: list[str]) -> dict:
+        out = real_reconcile(node_ids)
+        h.published("c1")
+        return out
+
+    h.sink.reconcile = flip_then  # type: ignore[method-assign]
+    err = _refused(lambda: h.session.submit({"event": "APPROVE"}))
+    assert err.status == 409 and err.body()["submitted_url"] == PENDING_URL
+    assert h.kinds() == ["thread", "reconcile", "submit", "reconcile"]
+
+
+def test_a_submit_github_refuses_for_another_reason_is_relayed_once(run_dir: paths.RunDir) -> None:
+    h = _Harness(run_dir)
+    h.sink.refuse.add("submit")
+    err = _refused(lambda: h.session.submit({"event": "COMMENT"}))
+    assert err.status == 502 and h.kinds() == ["reconcile", "submit"]

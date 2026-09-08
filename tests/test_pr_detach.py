@@ -121,7 +121,7 @@ def test_scr_pr_returns_with_the_run_id_while_the_server_serves_github_mode(
     with urllib.request.urlopen(info.url + "/data.json", timeout=5) as r:
         data = json.load(r)
     assert data["counterpart"] == "github"
-    assert data["pending_review"] == {"unsent": [], "submitted_url": None, "unanchored": 0}
+    assert data["pending_review"] == {"unsent": [], "submitted_url": None, "submitted_from": None, "unanchored": 0}
     # The child looked for a pending review through gh before binding.
     assert "api graphql" in fake_gh.read_text(encoding="utf-8")
 

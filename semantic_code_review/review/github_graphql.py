@@ -35,9 +35,25 @@ class GitHubRefused(errors.ScrError, git_ops.GhError):
     """A ``gh api graphql`` call failed or GitHub returned errors.
 
     502: the review server relayed a request its counterpart refused.
+    `not_found` says the refusal was GitHub not knowing a node the call
+    addressed — a comment or review deleted or published from the web —
+    which is a sign the store's view has diverged and is reconciled,
+    where a network, auth or rate-limit failure is retried as it stands.
     """
 
     status = 502
+
+    def __init__(self, message: str, *, not_found: bool = False) -> None:
+        super().__init__(message)
+        self.not_found = not_found
+
+    def body(self) -> dict[str, Any]:
+        return {"error": str(self), "not_found": self.not_found}
+
+
+def _is_not_found(text: str) -> bool:
+    """Whether gh's or GraphQL's error text is GitHub not knowing a node."""
+    return "NOT_FOUND" in text or "Could not resolve to a node" in text
 
 
 #: The verdicts `submitPullRequestReview` accepts.
@@ -68,13 +84,17 @@ def _loggable_vars(variables: dict[str, Any], *, limit: int = 300) -> dict[str, 
     return out
 
 
-def _gh_graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
+def _gh_graphql(query: str, variables: dict[str, Any], *, tolerate_not_found: bool = False) -> dict[str, Any]:
     """Run a GraphQL request via ``gh api graphql``. Returns the parsed
     ``data`` envelope.
 
     ``variables`` distinguishes ``bool`` and ``int`` (sent with ``-F`` so
     gh emits a JSON literal) from everything else (sent with ``-f`` as a
     string). GraphQL string + ID + enum inputs all accept the string form.
+
+    `tolerate_not_found`: a `nodes(ids:)` lookup answers an unknown id
+    with a null element *and* a NOT_FOUND error beside the data; with
+    this set, errors that are all NOT_FOUND leave the data to the caller.
 
     Raises:
         GitHubRefused: gh exited non-zero (which it does on GraphQL-level
@@ -100,7 +120,7 @@ def _gh_graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
             stderr.strip(),
             stdout.strip(),
         )
-        raise GitHubRefused(f"gh api graphql failed: {detail}")
+        raise GitHubRefused(f"gh api graphql failed: {detail}", not_found=_is_not_found(detail))
     try:
         body = json.loads(stdout)
     except ValueError as e:
@@ -120,13 +140,15 @@ def _gh_graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
         )
         raise GitHubRefused(f"gh api graphql: expected object, got {type(body).__name__}")
     if body.get("errors"):
-        log.error(
-            "gh api graphql returned errors\n  query: %s\n  variables: %s\n  errors: %s",
-            _compact_query(query),
-            _loggable_vars(variables),
-            body["errors"],
-        )
-        raise GitHubRefused(f"GitHub: {_error_messages(body['errors'])}")
+        not_found = _all_not_found(body["errors"])
+        if not (tolerate_not_found and not_found and isinstance(body.get("data"), dict)):
+            log.error(
+                "gh api graphql returned errors\n  query: %s\n  variables: %s\n  errors: %s",
+                _compact_query(query),
+                _loggable_vars(variables),
+                body["errors"],
+            )
+            raise GitHubRefused(f"GitHub: {_error_messages(body['errors'])}", not_found=not_found)
     data = body.get("data")
     if not isinstance(data, dict):
         log.error(
@@ -136,6 +158,16 @@ def _gh_graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
         )
         raise GitHubRefused("gh api graphql: response missing 'data' envelope")
     return data
+
+
+def _all_not_found(raw_errors: object) -> bool:
+    """Every error is GitHub not knowing a node (`type: NOT_FOUND`)."""
+    if not isinstance(raw_errors, list) or not raw_errors:
+        return False
+    return all(
+        isinstance(e, dict) and (e.get("type") == "NOT_FOUND" or _is_not_found(str(e.get("message") or "")))
+        for e in raw_errors
+    )
 
 
 def _error_messages(raw_errors: object) -> str:
@@ -193,6 +225,13 @@ def query_pr_review_state(repo: str, number: int) -> PrReviewState:
     if not owner or not name:
         raise GitHubRefused(f"invalid repo {repo!r}: expected 'owner/name'")
     data = _gh_graphql(_PR_STATE_QUERY, {"owner": owner, "repo": name, "number": int(number)})
+    return _state_from(data, repo, number)
+
+
+def _state_from(data: dict[str, Any], repo: str, number: int) -> PrReviewState:
+    """The `PrReviewState` in a response carrying `viewer` and the PR's
+    pending `reviews`.
+    """
     viewer_login = ((data.get("viewer") or {}).get("login")) or ""
     pr = (data.get("repository") or {}).get("pullRequest") or {}
     pr_id = pr.get("id")
@@ -212,6 +251,107 @@ def query_pr_review_state(repo: str, number: int) -> PrReviewState:
         viewer_login=str(viewer_login),
         pending_review_id=str(pending_id) if pending_id else None,
     )
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation: where the comments the store knows stand on GitHub
+# ---------------------------------------------------------------------------
+
+
+_RECONCILE_QUERY = """
+query($owner: String!, $repo: String!, $number: Int!) {
+  viewer { login }
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      id
+      reviews(first: 50, states: [PENDING]) {
+        nodes { id author { login } }
+      }
+    }
+  }
+  nodes(ids: %s) {
+    ... on PullRequestReviewComment {
+      id
+      body
+      pullRequestReview { id state url }
+    }
+  }
+}
+"""
+
+#: `nodes(ids:)` takes at most this many ids per call.
+_NODES_PER_CALL = 100
+
+
+@dataclasses.dataclass(frozen=True)
+class CommentStanding:
+    """Where one comment the store knows stands on GitHub: the body it
+    holds, the review it is in and that review's state (`PENDING`, or a
+    published one — `COMMENTED`, `APPROVED`, `CHANGES_REQUESTED`,
+    `DISMISSED`) with its URL.
+    """
+
+    review_id: str
+    review_state: str
+    review_url: str
+    body: str = ""
+
+    @property
+    def pending(self) -> bool:
+        return self.review_state == "PENDING"
+
+
+@dataclasses.dataclass(frozen=True)
+class Reconciliation:
+    """One look at GitHub for everything the store believes: the PR's
+    state (its node id, the viewer's pending review if any) and, per
+    comment node id asked about, its standing — None when GitHub no
+    longer knows the node.
+    """
+
+    state: PrReviewState
+    standing: dict[str, CommentStanding | None]
+
+
+def query_reconciliation(repo: str, number: int, node_ids: list[str]) -> Reconciliation:
+    """Where each of `node_ids` stands, plus the PR's pending-review
+    state, in one call per hundred ids. Ids are inlined as literals —
+    `gh api graphql` has no clean list variable.
+
+    Raises:
+        GitHubRefused: the call failed for a reason other than an
+            unknown id, `repo` is not `owner/name`, or the PR is gone.
+    """
+    owner, _, name = repo.partition("/")
+    if not owner or not name:
+        raise GitHubRefused(f"invalid repo {repo!r}: expected 'owner/name'")
+    standing: dict[str, CommentStanding | None] = {}
+    state: PrReviewState | None = None
+    chunks = [node_ids[i : i + _NODES_PER_CALL] for i in range(0, len(node_ids), _NODES_PER_CALL)] or [[]]
+    for chunk in chunks:
+        query = _RECONCILE_QUERY % json.dumps(chunk)
+        data = _gh_graphql(query, {"owner": owner, "repo": name, "number": int(number)}, tolerate_not_found=True)
+        if state is None:
+            state = _state_from(data, repo, number)
+        nodes = data.get("nodes") or []
+        for node_id, raw in zip(chunk, nodes, strict=False):
+            if not isinstance(raw, dict) or raw.get("id") != node_id:
+                standing[node_id] = None
+                continue
+            review = raw.get("pullRequestReview") or {}
+            if not review.get("id"):
+                standing[node_id] = None
+                continue
+            standing[node_id] = CommentStanding(
+                review_id=str(review["id"]),
+                review_state=str(review.get("state") or ""),
+                review_url=str(review.get("url") or ""),
+                body=str(raw.get("body") or ""),
+            )
+        for node_id in chunk[len(nodes) :]:
+            standing[node_id] = None
+    assert state is not None
+    return Reconciliation(state=state, standing=standing)
 
 
 # ---------------------------------------------------------------------------
@@ -549,10 +689,12 @@ def set_thread_resolved(thread_id: str, resolved: bool) -> None:
 
 __all__ = [
     "REVIEW_EVENTS",
+    "CommentStanding",
     "GitHubRefused",
     "NewThread",
     "PendingComment",
     "PrReviewState",
+    "Reconciliation",
     "SubmittedReview",
     "add_review_comment_reply",
     "add_review_thread",
@@ -560,6 +702,7 @@ __all__ = [
     "delete_review_comment",
     "list_pending_review_comments",
     "query_pr_review_state",
+    "query_reconciliation",
     "set_thread_resolved",
     "submit_review",
     "update_review_comment",

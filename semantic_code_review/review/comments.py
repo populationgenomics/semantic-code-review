@@ -24,6 +24,7 @@ import json
 import os
 import threading
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -128,6 +129,10 @@ class Comment(BaseModel):
     # Why the last delivery to GitHub failed; the comment is *unsent*
     # while set. Cleared by the next Send and by a delivery that lands.
     send_error: str | None = None
+    # What happened to the comment on GitHub's side that the reviewer
+    # should know (its pending twin was deleted there, so it is a draft
+    # again). Cleared by the next Send.
+    notice: str | None = None
 
     @property
     def is_writable(self) -> bool:
@@ -369,6 +374,52 @@ class CommentStore:
             self._flush_locked()
             return adopted
 
+    def with_node_ids(self) -> list[Comment]:
+        """Every local comment GitHub has been told about — delivered,
+        unsent, or a withdrawn tombstone — in store order: what a
+        reconciliation asks GitHub about.
+        """
+        with self._lock:
+            return [c for c in self._ordered_locked() if c.source == "local" and c.node_id]
+
+    def reset_to_draft(self, comment_id: str, *, notice: str) -> Comment:
+        """GitHub no longer holds this comment (deleted from the pending
+        review there): it is the reviewer's draft again, never delivered,
+        carrying `notice` until the next Send.
+
+        Raises:
+            CommentNotFound: no such comment, or a tombstone.
+            ReadOnlyCommentError: not the reviewer's.
+        """
+        with self._lock:
+            c = self._items.get(comment_id)
+            if c is None or c.withdrawn:
+                raise CommentNotFound(f"comment {comment_id} not found")
+            if not c.is_writable:
+                raise ReadOnlyCommentError(f"comment {c.id} is from {c.source}; not the reviewer's")
+            data = c.model_dump()
+            data.update(
+                {
+                    "delivery": "draft",
+                    "deliveries": 0,
+                    "batch_no": None,
+                    "node_id": None,
+                    "thread_id": None,
+                    "send_error": None,
+                    "notice": notice,
+                    "updated_at": time.time(),
+                }
+            )
+            draft = Comment.model_validate(data)
+            self._items[comment_id] = draft
+            self._flush_locked()
+            return draft
+
+    def find(self, comment_id: str) -> Comment | None:
+        """One comment as it stands, tombstones included; None when gone."""
+        with self._lock:
+            return self._items.get(comment_id)
+
     def reclaim(self, comment_id: str) -> Comment:
         """A comment recorded as upstream turns out to be the reviewer's
         own, still in the pending review: make it theirs again — local,
@@ -408,19 +459,36 @@ class CommentStore:
                 raise CommentNotFound(f"comment {comment_id} not found")
             return c
 
-    def mark_submitted(self) -> list[Comment]:
+    def mark_submitted(self, published: Mapping[str, str | None] | None = None) -> list[Comment]:
         """The pending review was published: every local comment it held
         is an upstream comment now, read-only like every other comment
         that exists on GitHub. Returns the comments changed. Drafts stay
         the reviewer's.
+
+        Without `published`, every delivered comment — what Submit from
+        here covers. With it, only those ids, each with the body GitHub
+        holds (None to keep the local one): a review published from
+        GitHub's web UI, found by a reconciliation, where an edit that
+        never landed must not read as if it had.
         """
         with self._lock:
             changed: list[Comment] = []
             for c in self._ordered_locked():
-                if c.source != "local" or c.withdrawn or c.delivery != "delivered" or not c.node_id:
+                if c.source != "local" or c.withdrawn or not c.node_id:
+                    continue
+                if published is None:
+                    if c.delivery != "delivered":
+                        continue
+                    body = None
+                elif c.id in published:
+                    body = published[c.id]
+                else:
                     continue
                 data = c.model_dump()
-                data.update({"source": "github", "updated_at": time.time()})
+                data.update({"source": "github", "delivery": "delivered", "send_error": None})
+                data["updated_at"] = time.time()
+                if body is not None:
+                    data["body"] = body
                 updated = Comment.model_validate(data)
                 self._items[c.id] = updated
                 changed.append(updated)
@@ -605,7 +673,9 @@ class CommentStore:
 
     def _mark_sent_locked(self, c: Comment, batch_no: int) -> Comment:
         data = c.model_dump()
-        data.update({"delivery": "sent", "batch_no": batch_no, "send_error": None, "updated_at": time.time()})
+        data.update(
+            {"delivery": "sent", "batch_no": batch_no, "send_error": None, "notice": None, "updated_at": time.time()}
+        )
         sent = Comment.model_validate(data)
         self._items[c.id] = sent
         return sent

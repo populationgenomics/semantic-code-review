@@ -151,6 +151,22 @@ class ServerTasks:
     bind_debug_sink: Callable[[Callable[[dict], None]], None] | None = None
 
 
+#: What a comment says once a reconciliation finds its pending twin gone.
+_REMOVED_ON_GITHUB = "removed from your pending review on GitHub — Send again to re-add"
+
+
+@dataclasses.dataclass(frozen=True)
+class _Reconciled:
+    """What one reconciliation found: per comment id `pending`,
+    `submitted`, `removed` or `deleted`; and the URL of a review it found
+    published from GitHub — set only when this look discovered it, which
+    is what refuses a Submit that would otherwise publish over it.
+    """
+
+    outcomes: dict[str, str]
+    published_url: str | None
+
+
 class ReviewSessionError(errors.ScrError):
     """A refusal the session states in the terms the route answers with.
 
@@ -348,6 +364,7 @@ class ReviewSession:
         # sent comment would add it twice.
         self._github_lock = threading.Lock()
         self._submitted_url: str | None = None
+        self._submitted_from: Literal["viewer", "github"] | None = None
         self._unanchored = 0
         #: Known at construction, not at attach time: the viewer decides
         #: whether to mount the overview-mode button on its first
@@ -632,7 +649,8 @@ class ReviewSession:
     def resume_pending_review(self) -> None:
         """Take over the reviewer's pending review on the PR, if one
         exists: its comments the store lacks are adopted as delivered,
-        so nothing is submitted sight-unseen. Best-effort at start: a
+        so nothing is submitted sight-unseen, and what the store already
+        believes is reconciled against GitHub. Best-effort at start: a
         lookup GitHub refuses is logged, and the first Send looks again.
         """
         if self._github is None:
@@ -642,47 +660,85 @@ class ReviewSession:
         except github_graphql.GitHubRefused as e:
             log.warning("could not look for a pending review: %s", e)
             return
-        if resumed is None:
-            return
-        for c in resumed.comments:
-            self.store.adopt(c)
-        for cid in resumed.reclaimed:
-            # A comment this run already holds as the reviewer's needs
-            # nothing; one the ingest recorded as upstream is theirs.
-            if self.store.get(cid).source == "github":
-                self.store.reclaim(cid)
-        self._unanchored = resumed.unanchored
-        log.info(
-            "resumed the pending review: %d comment(s) adopted, %d without a line",
-            len(resumed.comments),
-            resumed.unanchored,
-        )
+        if resumed is not None:
+            for c in resumed.comments:
+                self.store.adopt(c)
+            for cid in resumed.reclaimed:
+                # A comment this run already holds as the reviewer's needs
+                # nothing; one the ingest recorded as upstream is theirs.
+                if self.store.get(cid).source == "github":
+                    self.store.reclaim(cid)
+            self._unanchored = resumed.unanchored
+            log.info(
+                "resumed the pending review: %d comment(s) adopted, %d without a line",
+                len(resumed.comments),
+                resumed.unanchored,
+            )
+        if self.store.with_node_ids():
+            with self._github_lock:
+                try:
+                    self._reconcile_locked()
+                except github_graphql.GitHubRefused as e:
+                    log.warning("could not reconcile with GitHub: %s", e)
+
+    def reconcile(self) -> dict[str, Any]:
+        """Re-derive where every comment GitHub was told about stands, from
+        GitHub — the viewer asks before showing what Submit would publish.
+        Returns the pending review's state plus `outcomes`: per comment id,
+        `pending`, `submitted`, `removed` (a draft again) or `deleted` (a
+        tombstone whose deletion turned out complete).
+
+        Raises:
+            ReviewSessionError: 409 — the counterpart is Claude.
+            GitHubRefused: 502 — GitHub could not be asked.
+        """
+        if self._github is None:
+            raise ReviewSessionError(409, "this review's counterpart is Claude; there is nothing to reconcile")
+        with self._github_lock:
+            outcome = self._reconcile_locked()
+            state = self.pending_review_state()
+        self._publish("pending-review", state)
+        return {**state, "outcomes": outcome.outcomes}
 
     def retry_deliveries(self) -> dict[str, Any]:
         """Deliver every unsent comment again — the viewer's interval, and
-        a gesture after a refusal. Returns the pending review's state.
+        a gesture after a refusal — after reconciling with GitHub, so a
+        comment whose pending twin is gone returns to draft rather than
+        being retried forever. Returns the pending review's state.
 
         Raises:
             ReviewSessionError: 409 — the counterpart is Claude.
         """
         if self._github is None:
             raise ReviewSessionError(409, "this review's counterpart is Claude; nothing is retried")
+        with self._github_lock:
+            try:
+                self._reconcile_locked()
+            except github_graphql.GitHubRefused as e:
+                # GitHub unreachable: the deliveries below fail the same
+                # way and stay unsent; nothing to re-derive from.
+                log.warning("could not reconcile with GitHub: %s", e)
         return self._flush_to_github()
 
     def submit(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Publish the pending review with a verdict.
 
         Wire format: `{ "event": "COMMENT" | "APPROVE" | "REQUEST_CHANGES",
-        "body"?: str }`. Every comment the review holds becomes an
-        upstream comment (read-only) and is fanned out; drafts stay the
-        reviewer's. The session goes on: the tab closing ends it.
+        "body"?: str }`. Reconciles with GitHub first — this is exactly
+        when a stale view bites. Every comment the review holds becomes
+        an upstream comment (read-only) and is fanned out; drafts stay
+        the reviewer's. With nothing pending and nothing unsent, Approve
+        or Request changes publish an empty review — the LGTM. The
+        session goes on: the tab closing ends it.
 
         Raises:
             ReviewSessionError: 409 — the counterpart is Claude; 400 — a
-                malformed payload; 409 with `unsent` — a comment GitHub
-                does not hold as it stands, named, so nothing is published
-                that the reviewer believes is in it.
-            GitHubRefused: 502 — GitHub refused the submit.
+                malformed payload; 409 with `submitted_url` — the
+                reconcile found the review already published from GitHub;
+                409 with `unsent` — a comment GitHub does not hold as it
+                stands, named, so nothing is published that the reviewer
+                believes is in it.
+            GitHubRefused: 502 — GitHub refused the reconcile or the submit.
         """
         if self._github is None:
             raise ReviewSessionError(409, "this review's counterpart is Claude; there is nothing to submit")
@@ -693,6 +749,12 @@ class ReviewSession:
         if not isinstance(body, str):
             raise ReviewSessionError(400, "body must be a string")
         with self._github_lock:
+            outcome = self._reconcile_locked()
+            if outcome.published_url is not None:
+                self._publish("pending-review", self.pending_review_state())
+                raise ReviewSessionError(
+                    409, "the review was already submitted on GitHub", submitted_url=outcome.published_url
+                )
             unsent = self._unsent()
             if unsent:
                 n = len(unsent)
@@ -701,9 +763,24 @@ class ReviewSession:
                     f"{n} comment{'s are' if n != 1 else ' is'} unsent; GitHub does not hold the review as shown",
                     unsent=unsent,
                 )
-            submitted = self._github.submit(event, body)
+            try:
+                submitted = self._github.submit(event, body)
+            except github_graphql.GitHubRefused as e:
+                if not e.not_found:
+                    raise
+                # The pending review went away between the reconcile and
+                # the submit: look again, and submit once more into what
+                # is there — an empty review when nothing is.
+                log.warning("submit found no pending review (%s); reconciling and submitting once more", e)
+                outcome = self._reconcile_locked()
+                if outcome.published_url is not None:
+                    raise ReviewSessionError(
+                        409, "the review was already submitted on GitHub", submitted_url=outcome.published_url
+                    ) from None
+                submitted = self._github.submit(event, body)
             changed = self.store.mark_submitted()
             self._submitted_url = submitted.url
+            self._submitted_from = "viewer"
         for c in changed:
             self._publish_comment(c)
         state = self.pending_review_state()
@@ -713,12 +790,14 @@ class ReviewSession:
     def pending_review_state(self) -> dict[str, Any]:
         """What the viewer shows of the pending review: the comments GitHub
         does not hold as they stand (each with why), the URL of the review
-        once submitted, and how many pending comments have no line in
-        this diff and so are not shown.
+        once submitted and where from (`viewer`, or `github` when it was
+        published from GitHub's web UI), and how many pending comments
+        have no line in this diff and so are not shown.
         """
         return {
             "unsent": self._unsent(),
             "submitted_url": self._submitted_url,
+            "submitted_from": self._submitted_from,
             "unanchored": self._unanchored,
         }
 
@@ -736,29 +815,105 @@ class ReviewSession:
             for c in self.store.undelivered()
         ]
 
+    def _reconcile_locked(self) -> _Reconciled:
+        """Ask GitHub where every comment it was told about stands, and
+        make the store agree. Called with the GitHub lock held.
+
+        Per comment: still in the pending review — nothing; in a review
+        published from GitHub — an upstream comment now, with the body
+        GitHub holds, and the review's URL is the session's; unknown to
+        GitHub — deleted from the pending review there, so the reviewer's
+        draft again with a notice (a tombstone's deletion is complete and
+        it is dropped). The sink drops a cached pending review id GitHub
+        no longer reports.
+
+        Raises:
+            GitHubRefused: GitHub could not be asked; nothing changed.
+        """
+        assert self._github is not None
+        known = self.store.with_node_ids()
+        standing = self._github.reconcile([c.node_id for c in known if c.node_id])
+        outcomes: dict[str, str] = {}
+        published: dict[str, str | None] = {}
+        published_url: str | None = None
+        for c in known:
+            where = standing.get(c.node_id or "")
+            if where is None:
+                if c.withdrawn:
+                    self.store.mark_delivered(c.id)
+                    outcomes[c.id] = "deleted"
+                else:
+                    self._publish_comment(self.store.reset_to_draft(c.id, notice=_REMOVED_ON_GITHUB))
+                    outcomes[c.id] = "removed"
+            elif where.pending:
+                outcomes[c.id] = "pending"
+            else:
+                outcomes[c.id] = "submitted"
+                published_url = where.review_url or published_url
+                if not c.withdrawn:
+                    # A pending edit never landed: what GitHub published is
+                    # what the comment reads now.
+                    published[c.id] = where.body if where.body != c.body else None
+        for c in self.store.mark_submitted(published) if published else []:
+            self._publish_comment(c)
+        if published_url is not None:
+            self._submitted_url = published_url
+            self._submitted_from = "github"
+        return _Reconciled(outcomes=outcomes, published_url=published_url if published else None)
+
     def _flush_to_github(self) -> dict[str, Any]:
         """Deliver every sent comment into the pending review, one at a
-        time; a refusal marks that comment unsent and the rest go on.
-        Fans out each comment's new state and then the review's.
+        time; a refusal marks that comment unsent and the rest go on. A
+        refusal because GitHub no longer knows what was addressed
+        reconciles once for the whole flush and re-applies that delivery
+        once where it still makes sense; a second refusal is unsent like
+        any other, for the next retry — never a loop. Fans out each
+        comment's new state and then the review's.
         """
         assert self._github is not None
         with self._github_lock:
+            reconciled = False
             for c in self.store.undelivered():
-                by_id = {k.id: k for k in self.store.all()}
-                try:
-                    delivered = self._github.deliver(c, by_id)
-                except github_graphql.GitHubRefused as e:
-                    log.warning("GitHub refused comment %s: %s", c.id, e)
-                    failed = self.store.mark_send_failed(c.id, str(e))
-                    if not failed.withdrawn:
-                        self._publish_comment(failed)
+                if self._deliver_once(c, final=False):
                     continue
-                landed = self.store.mark_delivered(c.id, node_id=delivered.node_id, thread_id=delivered.thread_id)
-                if landed is not None:
-                    self._publish_comment(landed)
+                if not reconciled:
+                    try:
+                        self._reconcile_locked()
+                    except github_graphql.GitHubRefused as e:
+                        log.warning("could not reconcile with GitHub: %s", e)
+                    reconciled = True
+                again = self.store.find(c.id)
+                # Reconciled away (a draft again, or a tombstone whose
+                # deletion was complete): nothing left to deliver.
+                if again is None or again.delivery != "sent":
+                    continue
+                self._deliver_once(again, final=True)
             state = self.pending_review_state()
         self._publish("pending-review", state)
         return state
+
+    def _deliver_once(self, c: comments.Comment, *, final: bool) -> bool:
+        """One delivery attempt. True when it landed or was marked unsent;
+        False when GitHub did not know what was addressed and the caller
+        may reconcile and try once more (`final` marks it unsent instead).
+        """
+        assert self._github is not None
+        by_id = {k.id: k for k in self.store.all()}
+        try:
+            delivered = self._github.deliver(c, by_id)
+        except github_graphql.GitHubRefused as e:
+            if e.not_found and not final:
+                log.warning("GitHub no longer knows what comment %s addressed (%s); reconciling", c.id, e)
+                return False
+            log.warning("GitHub refused comment %s: %s", c.id, e)
+            failed = self.store.mark_send_failed(c.id, str(e))
+            if not failed.withdrawn:
+                self._publish_comment(failed)
+            return True
+        landed = self.store.mark_delivered(c.id, node_id=delivered.node_id, thread_id=delivered.thread_id)
+        if landed is not None:
+            self._publish_comment(landed)
+        return True
 
     # --- fold summaries -------------------------------------------------
 

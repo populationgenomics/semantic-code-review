@@ -92,6 +92,31 @@ def test_resume_skips_what_the_store_already_holds(gh: GhSequence, review: Revie
     assert resumed.reclaimed == ["c-known"]
 
 
+# --- reconcile --------------------------------------------------------------
+
+
+def test_reconcile_reports_each_standing_and_takes_githubs_pending_review(gh: GhSequence, review: Review) -> None:
+    gh.expect("query", _state(pending=[("PRR_p", "alice")]))
+    gh.expect("addPullRequestReviewThread", _thread("TH1", "C1"))
+    c = _local("c1")
+    review.deliver(c, {"c1": c})
+    assert review.review_id == "PRR_p"
+
+    response = _state()  # the pending review was discarded on the web
+    response["data"]["nodes"] = [
+        None,
+        {"id": "C2", "body": "b", "pullRequestReview": {"id": "PRR_x", "state": "APPROVED", "url": "u"}},
+    ]
+    response["errors"] = [{"type": "NOT_FOUND", "message": "Could not resolve to a node"}]
+    gh.expect("query", response)
+
+    standing = review.reconcile(["C1", "C2"])
+
+    assert standing["C1"] is None
+    assert standing["C2"] == gql.CommentStanding(review_id="PRR_x", review_state="APPROVED", review_url="u", body="b")
+    assert review.review_id is None, "the cached id is dropped; the next delivery creates afresh"
+
+
 # --- deliver ----------------------------------------------------------------
 
 

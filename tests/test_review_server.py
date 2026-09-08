@@ -739,6 +739,7 @@ _ROUTES = [
     ("POST", "/comments", 400),
     ("POST", "/comments/send-all", 200),
     ("POST", "/comments/retry", 409),
+    ("POST", "/reconcile", 409),
     ("POST", "/submit", 409),
     ("POST", "/comments/nope/send", 404),
     ("POST", "/comments/nope/resolve", 404),
@@ -831,6 +832,25 @@ def test_in_pr_mode_a_submit_is_refused_while_a_comment_is_unsent(github_server)
     code, body = _post(srv, "/comments/retry", {})
     assert code == 200 and body["unsent"] == []
     assert _status(srv, "GET", "/wait?timeout=0") == 409
+
+
+def test_in_pr_mode_reconcile_answers_the_state_with_per_comment_outcomes(github_server) -> None:
+    srv, sink = github_server
+    _post(srv, "/comments", {"id": "c1", "file": "a.py", "side": "new", "line": 3, "body": "one"})
+    _post(srv, "/comments/c1/send", {})
+    sink.on_github["C1"] = None
+
+    code, body = _post(srv, "/reconcile", {})
+
+    assert code == 200
+    assert body["outcomes"] == {"c1": "removed"}
+    assert set(body) == {"unsent", "submitted_url", "submitted_from", "unanchored", "outcomes"}
+    _, listed = _request(srv.url() + "/comments")
+    c1 = next(c for c in listed["comments"] if c["id"] == "c1")
+    assert c1["delivery"] == "draft" and c1["notice"]
+    sink.refuse.add("reconcile")
+    code, body = _post(srv, "/reconcile", {})
+    assert code == 502 and body["not_found"] is False
 
 
 def test_in_pr_mode_resolve_reaches_github_and_a_pending_thread_is_refused(github_server) -> None:

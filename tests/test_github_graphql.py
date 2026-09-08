@@ -68,7 +68,37 @@ def test_a_gh_failure_is_a_refusal_the_session_can_answer_with(gh: GhSequence) -
     assert isinstance(excinfo.value, errors.ScrError)
     assert isinstance(excinfo.value, gh_rest.GhError)
     assert excinfo.value.status == 502
-    assert excinfo.value.body() == {"error": str(excinfo.value)}
+    assert excinfo.value.body() == {"error": str(excinfo.value), "not_found": False}
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        GhFailure("GraphQL: Could not resolve to a node with the global id of 'PRRC_x' (update)"),
+        {"errors": [{"type": "NOT_FOUND", "message": "gone"}]},
+    ],
+)
+def test_github_not_knowing_a_node_is_a_not_found_refusal(gh: GhSequence, failure: object) -> None:
+    """Whether gh relays it on stderr (exit 1) or the envelope carries a
+    typed error, GitHub not knowing a node is the one refusal that means
+    the store's view has diverged."""
+    gh.expect("query", failure)  # type: ignore[arg-type]
+    with pytest.raises(gql.GitHubRefused) as excinfo:
+        gql.query_pr_review_state("o/r", 1)
+    assert excinfo.value.not_found is True
+    assert excinfo.value.body()["not_found"] is True
+
+
+def test_other_refusals_are_not_not_found(gh: GhSequence) -> None:
+    gh.expect("query", GhFailure("HTTP 502: bad gateway"))
+    with pytest.raises(gql.GitHubRefused) as excinfo:
+        gql.query_pr_review_state("o/r", 1)
+    assert excinfo.value.not_found is False
+    mixed = [{"type": "RATE_LIMITED", "message": "slow down"}, {"type": "NOT_FOUND", "message": "x"}]
+    gh.expect("query", {"errors": mixed})
+    with pytest.raises(gql.GitHubRefused) as excinfo:
+        gql.query_pr_review_state("o/r", 1)
+    assert excinfo.value.not_found is False
 
 
 def test_graphql_errors_surface_their_messages(gh: GhSequence) -> None:
@@ -100,6 +130,66 @@ def test_query_pr_review_state_refuses_a_missing_pr_and_a_bad_repo(gh: GhSequenc
         gql.query_pr_review_state("o/r", 1)
     with pytest.raises(gql.GitHubRefused, match="owner/name"):
         gql.query_pr_review_state("nonsense", 1)
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation
+# ---------------------------------------------------------------------------
+
+
+def _standing(review_id: str, state: str, url: str = "") -> dict:
+    return {"pullRequestReview": {"id": review_id, "state": state, "url": url}}
+
+
+def test_reconciliation_reads_each_comments_standing_and_the_pr_state(gh: GhSequence) -> None:
+    """One call: the PR's pending review and where every asked-about
+    comment stands. An unknown id comes back null beside a NOT_FOUND
+    error, which is data, not a refusal."""
+    response = _state(pending=[("PRR_p", "alice")])
+    response["data"]["nodes"] = [
+        {"id": "C1", **_standing("PRR_p", "PENDING")},
+        None,
+        {"id": "C3", **_standing("PRR_old", "APPROVED", "https://gh/o/r/pull/1#pullrequestreview-3")},
+    ]
+    response["errors"] = [{"type": "NOT_FOUND", "path": ["nodes", 1], "message": "Could not resolve to a node"}]
+    gh.expect("query", response)
+
+    result = gql.query_reconciliation("o/r", 1, ["C1", "C2", "C3"])
+
+    assert result.state.pending_review_id == "PRR_p"
+    assert result.standing["C1"] == gql.CommentStanding(review_id="PRR_p", review_state="PENDING", review_url="")
+    assert result.standing["C1"].pending
+    assert result.standing["C2"] is None
+    assert result.standing["C3"] is not None and not result.standing["C3"].pending
+    assert result.standing["C3"].review_url.endswith("pullrequestreview-3")
+    # The ids ride inlined in the query, not as a variable.
+    assert gh.variables("query") == [{"owner": "o", "repo": "r", "number": "1"}]
+
+
+def test_reconciliation_with_nothing_to_ask_still_reads_the_pr_state(gh: GhSequence) -> None:
+    response = _state()
+    response["data"]["nodes"] = []
+    gh.expect("query", response)
+    result = gql.query_reconciliation("o/r", 1, [])
+    assert result.state.pending_review_id is None and result.standing == {}
+
+
+def test_reconciliation_batches_a_hundred_ids_per_call(gh: GhSequence) -> None:
+    ids = [f"C{i}" for i in range(150)]
+    first = _state(pending=[("PRR_p", "alice")])
+    first["data"]["nodes"] = [{"id": i, **_standing("PRR_p", "PENDING")} for i in ids[:100]]
+    second = _state(pending=[("PRR_p", "alice")])
+    second["data"]["nodes"] = [{"id": i, **_standing("PRR_p", "PENDING")} for i in ids[100:]]
+    gh.expect("query", first)
+    gh.expect("query", second)
+    result = gql.query_reconciliation("o/r", 1, ids)
+    assert len(result.standing) == 150 and gh.ops() == ["query", "query"]
+
+
+def test_reconciliation_relays_other_failures(gh: GhSequence) -> None:
+    gh.expect("query", GhFailure("HTTP 401: bad credentials"))
+    with pytest.raises(gql.GitHubRefused, match="bad credentials"):
+        gql.query_reconciliation("o/r", 1, ["C1"])
 
 
 # ---------------------------------------------------------------------------

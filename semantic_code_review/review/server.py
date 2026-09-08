@@ -443,6 +443,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/comments/retry":
             self._dispatch(self.ctx.session.retry_deliveries)
             return
+        if path == "/reconcile":
+            self._dispatch(self.ctx.session.reconcile)
+            return
         if path == "/submit":
             payload = self._body()
             if payload is not None:

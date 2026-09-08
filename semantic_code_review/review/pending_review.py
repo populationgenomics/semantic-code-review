@@ -25,7 +25,7 @@ import dataclasses
 import datetime
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Protocol
 
 from .. import paths
@@ -66,6 +66,8 @@ class ReviewSink(Protocol):
     """
 
     def resume(self, node_index: Mapping[str, str]) -> Resumed | None: ...
+
+    def reconcile(self, node_ids: Sequence[str]) -> Mapping[str, github_graphql.CommentStanding | None]: ...
 
     def deliver(self, c: comments.Comment, by_id: Mapping[str, comments.Comment]) -> Delivered: ...
 
@@ -162,6 +164,26 @@ class PendingReview:
             github_comments.fetch_comment_commits(repo_git, out)
             github_comments.decorate_with_head_anchors(repo_git, self.head_sha, out)
         return Resumed(comments=out, reclaimed=reclaimed, unanchored=unanchored)
+
+    # --- reconciliation ------------------------------------------------------
+
+    def reconcile(self, node_ids: Sequence[str]) -> Mapping[str, github_graphql.CommentStanding | None]:
+        """Where each comment GitHub was told about stands now, and a
+        fresh look at the PR: the cached pending review id is replaced by
+        what GitHub says (None when it was discarded or published), so
+        the next delivery looks up or creates afresh.
+
+        GitHub is authoritative for its draft; this is how the store
+        learns what changed there.
+
+        Raises:
+            GitHubRefused: the lookup failed (not an unknown id — those
+                are answered as None).
+        """
+        result = github_graphql.query_reconciliation(self.repo, self.number, list(node_ids))
+        self._pr_node_id = result.state.pr_node_id
+        self._review_id = result.state.pending_review_id
+        return result.standing
 
     # --- delivery ----------------------------------------------------------
 
