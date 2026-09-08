@@ -237,15 +237,22 @@ def test_no_augment_keeps_an_augmented_diff_it_finds(run_dir) -> None:
     assert run_dir.augmented.read_text(encoding="utf-8") == annotated
 
 
-def test_both_entry_paths_prepare_the_run_dir_the_same_way(tmp_path) -> None:
-    """The two --no-augment branches were copy-paste mirrors of each
-    other, which is how they came to differ. Both must route through the
-    one helper."""
-    import inspect
+def test_both_entry_paths_prepare_the_run_dir_the_same_way(run_dir, monkeypatch) -> None:
+    """The two --no-augment branches were once copy-paste mirrors of each
+    other, which is how they came to differ. Both route through the one
+    `serve_run`, so the PR path prepares the run dir the way the local
+    one does."""
+    import json
 
     from semantic_code_review.review import pr_flow, runner
+    from semantic_code_review.review.config import ReviewConfig
 
-    for flow in (runner.serve_run, pr_flow.run_pr_flow):
-        src = inspect.getsource(flow)
-        assert "ensure_augmented_diff(run_dir)" in src, flow.__name__
-        assert 'augmented.diff").write_text' not in src, flow.__name__
+    run_dir.meta.write_text(json.dumps({"url": "https://github.com/o/r/pull/7", "headRefOid": "abc"}), encoding="utf-8")
+    run_dir.raw_diff.write_text("diff --git a/a.py b/a.py\n", encoding="utf-8")
+    served: list[object] = []
+    monkeypatch.setattr(runner, "serve_review", lambda rd, *_a, **kw: served.append((rd, kw["counterpart"])))
+
+    assert pr_flow.serve_pr_run(run_dir, ReviewConfig(augment=False, open_browser=False), argv=()) == 0
+
+    assert served == [(run_dir, "github")]
+    assert run_dir.augmented.read_text(encoding="utf-8") == "diff --git a/a.py b/a.py\n"

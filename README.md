@@ -11,8 +11,9 @@ The same review runs at two radii. As a Claude Code plugin
 (`/scr:review`), your inline comments are drafts until you send them;
 each Send reaches the authoring agent as it happens, and its answers
 appear in the thread. As `scr pr`, the
-same flow runs against a GitHub PR and posts your comments as a single
-review the author — or their agent — picks up later. Both open one
+same flow runs against a GitHub PR: each comment you send goes into
+your pending review on GitHub, and Submit publishes it as one review
+the author — or their agent — picks up later. Both open one
 browser viewer: a side-by-side diff with semantic-group navigation,
 fold-level "what did this block change" annotations, and inline comments
 you leave by clicking a line number.
@@ -222,13 +223,23 @@ The three commands you'll actually use:
   review's thread, or settle it.
 - `scr pr <owner/repo> [<number>]` — the same flow against a GitHub
   PR. Omit the number to pick from the open PRs requesting your
-  review; on Done it posts your inline comments back as a single
-  COMMENT-event review (confirms first unless `--yes`). Needs the `gh`
-  CLI on `PATH` and authenticated.
+  review. Returns at once with the viewer's URL and the run id, like
+  `scr review`; the server keeps running until the tab has been closed
+  for the idle period. Needs the `gh` CLI on `PATH` and authenticated.
 
-`scr pr` is `scr review` plus a GitHub round-trip: same fetch, augment,
-viewer, and comment store, with the comments grouped into one review
-object via `gh api` at the end.
+`scr pr` is `scr review` with GitHub as the counterpart: same fetch,
+augment, viewer and comment store, but a comment you **Send** goes into
+your *pending review* on GitHub — created on the first Send, or resumed
+if you already have one on the PR, whose comments then show as
+*pending* — and **Submit** in the bar publishes it as Comment, Approve
+or Request changes with an optional summary. Approve with no comments
+is the LGTM. Editing a pending comment updates it on GitHub in place;
+deleting one deletes it there. A Send GitHub refuses leaves the comment
+*unsent*, retried on the next Send and every 30 seconds while the tab
+is open, and Submit refuses until every comment has landed. Resolving
+or unresolving an existing review thread from the viewer flips it on
+GitHub at once. Claude is not in the loop: nothing is printed for it
+and there is no `--wait`.
 
 On a PR that already carries review comments, `scr pr` ingests them into
 the viewer alongside your own. Each ingested comment is re-anchored from
@@ -249,6 +260,39 @@ them on every push.
 - `scr runs path` — print the runs root resolved for the current cwd.
 - `scr config show | edit | path` — inspect or edit the config files.
 </details>
+
+### Running servers
+
+`scr review` and `scr pr` leave a review server running per run, and
+the CLI owns those processes:
+
+- `scr runs ps [--here] [--prune]` — every recorded server, one line
+  each: run id, state, URL, pid, uptime, version/build, counterpart,
+  whether a `--wait` is listening, how many tabs are open. All repos'
+  runs roots by default; `--here` for the current repo's. A server
+  whose process is gone shows as `stale` (removed with `--prune`); one
+  running a different build of scr than the CLI shows as
+  `other-build`.
+- `scr runs stop <run_id> | --all` — SIGTERM, then SIGKILL if it has
+  not gone within a few seconds. Exit 0 when a server was stopped, 1
+  when none was running.
+- `scr runs restart <run_id>` — stop it and start it again from the
+  installed build, with the arguments and working directory it was
+  started with. If the viewer misbehaves after upgrading scr, this is
+  the fix.
+- `scr runs logs <run_id> [-f]` — the server's log; `-f` follows until
+  it exits.
+- `scr review … --foreground` / `scr pr … --foreground` — serve in the
+  invoking process instead: logs to stderr, blocks until Ctrl-C or the
+  idle timeout. `viewer:` and `run_id:` are still printed first, and
+  `--wait` / `scr comment` reach it the same way.
+
+A second `scr review` or `scr pr` for a run a server already holds
+reuses that server only if it is the same build — the same installed
+package, interpreter and viewer bundle. A server of another build (two
+checkouts at one version, a re-installed venv, a rebuilt bundle) is
+stopped and a fresh one started, with a line on stderr saying so; a
+stale record is dropped.
 
 ### Where run artefacts live
 

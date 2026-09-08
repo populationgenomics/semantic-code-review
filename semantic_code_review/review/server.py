@@ -1,7 +1,7 @@
 """Ephemeral localhost HTTP server in front of one [[review-session]].
 
-Spawned by ``scr review``; dies when the viewer POSTs /exit or when the
-idle timeout elapses. No external deps — stdlib ``http.server``.
+Spawned by ``scr review`` and ``scr pr``; dies when the idle timeout
+elapses (or on ``POST /exit``). No external deps — stdlib ``http.server``.
 
 Transport only: a route decodes the request, calls the session, and
 turns what comes back into a response. The session's refusals arrive as
@@ -31,52 +31,21 @@ import sys
 import threading
 import time
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, ClassVar
 
 from .. import errors, paths
+from ..viewer import static
+from . import identity, stream
 from .comments import CommentStore
+from .pending_review import ReviewSink
 from .prefs import PrefsStore
-from .session import Counterpart, PostCallable, ReviewSession, ServerTasks
+from .session import Counterpart, ReviewSession, ServerTasks
 
 log = logging.getLogger(__name__)
-
-
-# --- Static asset resolution --------------------------------------------
-# Normally every asset is read from the packaged assets/ directory: the
-# viewer.js bundle ships as package_data (built into the wheel by
-# release.yml), so wheel and plugin installs both serve it from there. A
-# SCR_VIEWER_BUILD_DIR override (set by the test harness, which bundles a
-# fresh viewer.js out-of-tree) wins for viewer.js only; everything else
-# (CSS, vendor, index.html) is always read from the in-tree assets/.
-
-ASSETS_DIR = Path(__file__).resolve().parent.parent / "viewer" / "assets"
-
-
-def _resolve_asset(rel: str) -> Path:
-    """Locate a static asset, honouring SCR_VIEWER_BUILD_DIR for
-    build artefacts.
-
-    The build dir only ever holds the bundled viewer.js (esbuild
-    output); everything else — index.html, CSS, vendored highlight
-    bundle — is always read from the in-tree assets/ directory.
-    The trailing path-traversal guard keeps `_serve_static`'s
-    whitelist from being the only line of defence.
-    """
-    if ".." in Path(rel).parts:
-        raise FileNotFoundError(f"refused path-traversal asset: {rel!r}")
-    build_dir = os.environ.get("SCR_VIEWER_BUILD_DIR")
-    if build_dir and rel == "viewer.js":
-        p = Path(build_dir) / rel
-        if p.exists():
-            return p
-    p = ASSETS_DIR / rel
-    if p.exists():
-        return p
-    raise FileNotFoundError(f"asset not found: {rel} (looked in {ASSETS_DIR}{', ' + build_dir if build_dir else ''})")
 
 
 # Sentinel pushed onto subscriber queues to ask the handler thread to
@@ -188,6 +157,9 @@ class ServerContext:
     session: ReviewSession
     done_event: threading.Event
     prefs: PrefsStore
+    #: The server's own record — what `server.json` holds and `/health`
+    #: answers. Set by `ReviewServer.start`, once the port is known.
+    info: stream.ServerInfo | None = None
     last_activity: float = 0.0
     subscribers: list[queue.Queue] = field(default_factory=list)
     buffer: list[_BufferedEvent] = field(default_factory=list)
@@ -266,8 +238,13 @@ class _Handler(BaseHTTPRequestHandler):
     # --- routes ---------------------------------------------------------
 
     def do_GET(self) -> None:
-        self._touch()
         path = self.path.split("?", 1)[0]
+        if path == "/health":
+            # Not a touch: `scr runs ps` probing a server must not hold
+            # its idle clock.
+            self._json(200, self._health())
+            return
+        self._touch()
         if path in ("/", "/index.html"):
             self._serve_asset("index.html", "text/html; charset=utf-8")
             return
@@ -289,12 +266,6 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/prefs":
             self._dispatch(self.ctx.prefs.read)
             return
-        if path == "/post-config":
-            self._dispatch(self.ctx.session.post_config)
-            return
-        if path == "/post-preview":
-            self._dispatch(lambda: {"comments": self.ctx.session.post_preview()})
-            return
         if path == "/events":
             self._stream_events()
             return
@@ -302,6 +273,24 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_wait()
             return
         self._json(404, {"error": "not found"})
+
+    def _health(self) -> dict[str, Any]:
+        """`GET /health`: the server's record plus what it is doing now —
+        whether a `--wait` is attached and how many viewer tabs hold an
+        SSE stream. The one route a client can ask a live server what
+        build it is.
+        """
+        info = self.ctx.info
+        if info is None:
+            raise RuntimeError("the server answered before start() recorded it")
+        with self.ctx.state_lock:
+            viewers = len(self.ctx.subscribers)
+        return {
+            **info.to_json(),
+            "run_id": self.ctx.session.run_dir.slug,
+            "listening": self.ctx.session.listening,
+            "viewers": viewers,
+        }
 
     def _handle_wait(self) -> None:
         """`GET /wait?timeout=S` — Claude's end of the stream: block up to
@@ -345,7 +334,7 @@ class _Handler(BaseHTTPRequestHandler):
     #: KaTeX's stylesheet requests fonts by name from `vendor/fonts/`; the
     #: set is fixed and their basenames well-formed, so a tight pattern
     #: serves them without 20 near-identical whitelist entries. The
-    #: `_resolve_asset` traversal guard still applies.
+    #: `static.resolve_asset` traversal guard still applies.
     _KATEX_FONT_RE: ClassVar[re.Pattern[str]] = re.compile(r"vendor/fonts/KaTeX_[A-Za-z0-9]+-[A-Za-z]+\.woff2")
 
     def _serve_static(self, rel: str) -> None:
@@ -359,7 +348,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _serve_asset(self, rel: str, ctype: str) -> None:
         try:
-            path = _resolve_asset(rel)
+            path = static.resolve_asset(rel)
         except FileNotFoundError as e:
             self._json(500, {"error": str(e)})
             return
@@ -445,6 +434,17 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/comments/send-all":
             self._dispatch(self.ctx.session.send_all)
             return
+        if path == "/comments/retry":
+            self._dispatch(self.ctx.session.retry_deliveries)
+            return
+        if path == "/reconcile":
+            self._dispatch(self.ctx.session.reconcile)
+            return
+        if path == "/submit":
+            payload = self._body()
+            if payload is not None:
+                self._dispatch(lambda: self.ctx.session.submit(payload))
+            return
         comment_action = _COMMENT_ACTION_RE.fullmatch(path)
         if comment_action is not None:
             self._handle_comment_action(comment_action["id"], comment_action["action"])
@@ -459,11 +459,6 @@ class _Handler(BaseHTTPRequestHandler):
             payload = self._body()
             if payload is not None:
                 self._dispatch(lambda: self.ctx.session.fold_summary(payload))
-            return
-        if path == "/post-review":
-            payload = self._body()
-            if payload is not None:
-                self._dispatch(lambda: self.ctx.session.post(payload))
             return
         if path == "/console/ask":
             payload = self._body()
@@ -584,7 +579,7 @@ class ReviewServer:
 
     Owns the socket, the SSE fan-out and the idle clock; the review
     itself lives on :attr:`session`, which is also what callers reach
-    for to attach tasks or read the post result back.
+    for to attach tasks.
 
     Usage:
 
@@ -601,16 +596,22 @@ class ReviewServer:
         run_dir: paths.RunDir,
         viewer_json: dict[str, Any],
         counterpart: Counterpart,
+        argv: Sequence[str],
+        github: ReviewSink | None = None,
         host: str = "127.0.0.1",
         port: int = 0,
-        post_callback: PostCallable | None = None,
-        post_meta: dict[str, Any] | None = None,
         debug: bool = False,
         explainer: bool = False,
         prefs_path: Path | None = None,
     ) -> None:
+        """`argv` is what `scr runs restart` re-executes (after the program
+        name) to bring this server back — the serving process's own
+        arguments, `--serve-run` included.
+        """
         self.run_dir = run_dir
         self.done_event = threading.Event()
+        self._counterpart: Counterpart = counterpart
+        self._argv = tuple(argv)
 
         def publish(event_type: str, payload: dict[str, Any], *, buffer: bool = True) -> None:
             # Reads self.ctx at call time: the context needs the session
@@ -623,10 +624,9 @@ class ReviewServer:
             store=CommentStore(run_dir.comments),
             publish=publish,
             counterpart=counterpart,
+            github=github,
             debug=debug,
             explainer_enabled=explainer,
-            post_callback=post_callback,
-            post_meta=post_meta,
         )
         self.ctx = ServerContext(
             session=self.session,
@@ -650,11 +650,33 @@ class ReviewServer:
         self._httpd = _ReviewHTTPServer((self._host, self._port), _Bound)
         self._httpd.daemon_threads = True
         self._port = self._httpd.server_address[1]
+        build = identity.this_build()
+        ctx.info = stream.ServerInfo(
+            url=self.url(),
+            port=self._port,
+            pid=os.getpid(),
+            started_at=time.time(),
+            version=build.version,
+            build=build.build,
+            package=build.package,
+            counterpart=self._counterpart,
+            cwd=os.getcwd(),
+            argv=self._argv,
+        )
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
 
     def url(self) -> str:
         return f"http://{self._host}:{self._port}"
+
+    @property
+    def info(self) -> stream.ServerInfo:
+        """The server's record — `server.json`'s content. Known once
+        `start()` has bound the port.
+        """
+        if self.ctx.info is None:
+            raise RuntimeError("ReviewServer.info read before start()")
+        return self.ctx.info
 
     @property
     def port(self) -> int:

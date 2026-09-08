@@ -220,6 +220,7 @@ _GRAPHQL_OK = {
                     "pageInfo": {"hasNextPage": False},
                     "nodes": [
                         {
+                            "id": "PRRT_a",
                             "isResolved": True,
                             "comments": {
                                 "pageInfo": {"hasNextPage": False},
@@ -230,6 +231,7 @@ _GRAPHQL_OK = {
                             },
                         },
                         {
+                            "id": "PRRT_b",
                             "isResolved": False,
                             "comments": {
                                 "pageInfo": {"hasNextPage": False},
@@ -263,6 +265,8 @@ def test_fetch_metadata_maps_databaseid_to_resolution_and_node_id() -> None:
     assert m[11].thread_resolved is True and m[11].node_id == "PRRC_node11"
     assert m[12].thread_resolved is True and m[12].node_id == "PRRC_node12"
     assert m[99].thread_resolved is False and m[99].node_id == "PRRC_node99"
+    # The thread's own id is what resolve / unresolve address.
+    assert (m[11].thread_id, m[12].thread_id, m[99].thread_id) == ("PRRT_a", "PRRT_a", "PRRT_b")
 
 
 def test_fetch_resolution_propagates_graphql_errors() -> None:
@@ -298,30 +302,33 @@ def test_fetch_comments_decorates_with_thread_resolved_and_node_id() -> None:
     by_id = {c.id: c for c in comments}
     assert by_id["gh-11"].thread_resolved is True
     assert by_id["gh-11"].node_id == "PRRC_node11"
+    assert by_id["gh-11"].thread_id == "PRRT_a"
     assert by_id["gh-12"].thread_resolved is True
     assert by_id["gh-12"].node_id == "PRRC_node12"
     assert len(calls) == 2
 
 
 def test_fetch_comment_commits_batches_unique_ids(tmp_path: Path) -> None:
-    """One git-fetch with every distinct commit_id, deduped, sorted."""
+    """One git-fetch with every distinct commit_id, deduped, sorted. A
+    local comment with a commit is one adopted from a pending review
+    and is fetched like an ingested one; one without is at head."""
     cs = [
         Comment(id="gh-1", file="a.py", side="new", line=1, body="x", source="github", commit_id="aaa"),
         Comment(id="gh-2", file="a.py", side="new", line=2, body="y", source="github", commit_id="aaa"),  # duplicate
         Comment(id="gh-3", file="a.py", side="new", line=3, body="z", source="github", commit_id="bbb"),
-        # Skipped: missing commit_id, not github-sourced.
-        Comment(id="gh-4", file="a.py", side="new", line=4, body="w", source="github"),
-        Comment(id="local-1", file="a.py", side="new", line=5, body="local", source="local", commit_id="ccc"),
+        Comment(id="gh-4", file="a.py", side="new", line=4, body="w", source="github"),  # no commit
+        Comment(id="local-1", file="a.py", side="new", line=5, body="local", source="local"),  # authored at head
+        Comment(id="gh-9", file="a.py", side="new", line=6, body="adopted", source="local", commit_id="ccc"),
     ]
     fake = _fake_gh_run(stdout="", returncode=0)
     with patch("semantic_code_review.git_ops.subprocess.run", side_effect=fake) as run_mock:
         fetched = fetch_comment_commits(tmp_path, cs)
-    assert fetched == {"aaa", "bbb"}
+    assert fetched == {"aaa", "bbb", "ccc"}
     # Single batched fetch, deduped + sorted.
     cmds = [c[0][0] for c in run_mock.call_args_list]
     fetches = [c for c in cmds if "fetch" in c]
     assert len(fetches) == 1
-    assert fetches[0][-2:] == ["aaa", "bbb"]
+    assert fetches[0][-3:] == ["aaa", "bbb", "ccc"]
 
 
 def test_fetch_comment_commits_falls_back_per_sha_on_failure(tmp_path: Path) -> None:
@@ -391,6 +398,16 @@ def test_decorate_skips_local_and_old_side_comments(tmp_path: Path) -> None:
     assert cs[0].anchor_status is None
     assert cs[1].head_line is None
     assert cs[1].anchor_status is None
+    assert run_mock.call_count == 0
+
+
+def test_decorate_propagates_a_local_comment_adopted_from_a_pending_review(tmp_path: Path) -> None:
+    """A local comment carrying a commit was written against that commit
+    on GitHub (a resumed pending review) and moves like an ingested one."""
+    cs = [Comment(id="gh-7", file="a.py", side="new", line=10, body="x", source="local", commit_id="HEAD")]
+    with patch("semantic_code_review.git_ops.subprocess.run") as run_mock:
+        decorate_with_head_anchors(tmp_path, "HEAD", cs)
+    assert (cs[0].head_line, cs[0].anchor_status) == (10, "anchored")
     assert run_mock.call_count == 0
 
 

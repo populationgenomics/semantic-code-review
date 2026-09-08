@@ -79,7 +79,8 @@
           A PR (or local diff) becomes a <em>run directory</em>, gets
           annotated by the augment pipeline, is served to a browser by
           an ephemeral HTTP server, and — for <code>scr pr</code> —
-          posts the reviewer's comments back to GitHub as one review.
+          delivers each comment the reviewer sends into their pending
+          review on GitHub, published as one review on Submit.
         </p>
 
         <div class="rounded-lg border border-slate-200 bg-white p-4">
@@ -248,7 +249,7 @@ flowchart TB
                 <tr class="border-b border-slate-100"><td class="py-1.5"><code>augmented.diff</code></td><td><code>format/emit</code></td><td><code>viewer/build_json</code>, viewer browser</td></tr>
                 <tr class="border-b border-slate-100"><td class="py-1.5"><code>augmented.scr.json</code></td><td><code>format/sidecar</code></td><td><code>fold_summary</code>, <code>viewer/build_json</code></td></tr>
                 <tr class="border-b border-slate-100"><td class="py-1.5"><code>trace/*.json</code></td><td><code>augment/pass_</code></td><td>humans, support</td></tr>
-                <tr><td class="py-1.5"><code>comments.json</code></td><td><code>review/comments</code></td><td><code>review/server</code>, <code>scr pr</code> poster</td></tr>
+                <tr><td class="py-1.5"><code>comments.json</code></td><td><code>review/comments</code></td><td><code>review/server</code>, <code>scr review --wait</code></td></tr>
               </tbody>
             </table>
           </div>
@@ -525,9 +526,11 @@ flowchart LR
                 <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">GET</td><td class="font-mono">/explainer</td><td>the persisted document (404 = not generated yet)</td></tr>
                 <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">POST</td><td class="font-mono">/explainer/skeleton</td><td>writes the Map + section plan</td></tr>
                 <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">POST</td><td class="font-mono">/explainer/section/&lt;id&gt;</td><td>runs the pass that writes that section</td></tr>
-                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">GET</td><td class="font-mono">/post-config</td><td>is this review posting, and to what</td></tr>
-                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">GET</td><td class="font-mono">/post-preview</td><td>the comments the modal would send</td></tr>
-                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">POST</td><td class="font-mono">/post-review</td><td>posts the selected ids; keeps the result</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">POST</td><td class="font-mono">/comments/&lt;id&gt;/send · /comments/send-all</td><td>send a draft, or every draft, to the counterpart</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">POST</td><td class="font-mono">/comments/&lt;id&gt;/{resolve,unresolve}</td><td>settle a thread (on GitHub first, in PR mode)</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">GET</td><td class="font-mono">/wait?timeout=</td><td>review mode: Claude's long-poll for the next batch</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">POST</td><td class="font-mono">/comments/retry</td><td>PR mode: deliver every unsent comment again</td></tr>
+                <tr class="border-b border-slate-100"><td class="py-1.5 font-mono">POST</td><td class="font-mono">/submit</td><td>PR mode: publish the pending review with a verdict</td></tr>
                 <tr><td class="py-1.5 font-mono">POST</td><td class="font-mono">/exit</td><td>graceful shutdown</td></tr>
               </tbody>
             </table>
@@ -538,7 +541,7 @@ flowchart LR
             <pre class="mermaid">
 flowchart TB
   pipe["augment pipeline\n_safe_emit&#40;on_event,…&#41;"]
-  sess["ReviewSession\nfold-summary · console · explainer · posted"]
+  sess["ReviewSession\nfold-summary · console · explainer · comments"]
   pub["server.publish&#40;type,payload&#41;"]
   buf["ring buffer\n+ subscriber queues"]
   sse1((viewer A))

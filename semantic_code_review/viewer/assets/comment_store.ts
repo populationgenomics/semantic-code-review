@@ -15,6 +15,9 @@
 // `apply` / `remove` are the other direction: a `comment` /
 // `comment-deleted` SSE frame — another tab's edit, a Send landing as
 // delivered, Claude's reply — lands in the dict without a round trip.
+// A frame can land before the fetch that caused it resolves (in PR mode
+// a Send is delivered before the response is written), so a resolving
+// `send` never moves a comment backwards from what a frame said.
 
 export interface CommentStore {
   /** Populate the in-memory dict from the backend. Resolves once the
@@ -42,6 +45,22 @@ export interface CommentStore {
   /** Send every draft as one batch. Resolves with the ids sent. */
   sendAll(): Promise<string[]>;
 
+  /** PR mode: deliver every unsent comment again. Resolves with the
+   *  pending review's state, or null on failure. */
+  retry(): Promise<PendingReviewState | null>;
+
+  /** PR mode: re-derive the pending review from GitHub. Resolves with
+   *  the state and per-comment outcomes, or null when GitHub could not
+   *  be reached (the comments' new states arrive as `comment` frames). */
+  reconcile(): Promise<ReconcileResponse | null>;
+
+  /** PR mode: publish the pending review with a verdict. */
+  submit(event: ReviewEvent, body: string): Promise<SubmitOutcome>;
+
+  /** Resolve or unresolve the thread holding `id`. Resolves with the
+   *  server's refusal text, or null when it landed. */
+  resolve(id: string, resolved: boolean): Promise<string | null>;
+
   /** Take a comment as the server states it (an SSE frame). */
   apply(c: ReviewerComment): void;
 
@@ -49,6 +68,17 @@ export interface CommentStore {
   remove(id: string): void;
 }
 
+
+/** The server's `error` (or the transport's) off a failed response. */
+async function errorOf(r: Response | null, fallback: string): Promise<{ error: string; body: Record<string, unknown> }> {
+  if (!r) return { error: fallback, body: {} };
+  try {
+    const body = await r.json() as Record<string, unknown>;
+    return { error: typeof body.error === "string" ? body.error : `${fallback} (${r.status})`, body };
+  } catch (_) {
+    return { error: `${fallback} (${r.status})`, body: {} };
+  }
+}
 
 export function makeServerStore(endpoint: string): CommentStore {
   const dict: Record<string, ReviewerComment> = Object.create(null);
@@ -101,7 +131,7 @@ export function makeServerStore(endpoint: string): CommentStore {
           if (!sent) return null;
           const c = dict[id];
           if (!c) return null;
-          dict[id] = { ...c, delivery: "sent" };
+          if ((c.delivery ?? "draft") === "draft") dict[id] = { ...c, delivery: "sent" };
           return dict[id];
         })
         .catch(() => null);
@@ -113,11 +143,48 @@ export function makeServerStore(endpoint: string): CommentStore {
         .then((sent) => {
           for (const id of sent.comment_ids) {
             const c = dict[id];
-            if (c) dict[id] = { ...c, delivery: "sent" };
+            if (c && (c.delivery ?? "draft") === "draft") dict[id] = { ...c, delivery: "sent" };
           }
           return sent.comment_ids;
         })
         .catch(() => []);
+    },
+
+    retry(): Promise<PendingReviewState | null> {
+      return post("/comments/retry", {})
+        .then((r) => (r.ok ? r.json() as Promise<PendingReviewState> : null))
+        .catch(() => null);
+    },
+
+    reconcile(): Promise<ReconcileResponse | null> {
+      return post("/reconcile", {})
+        .then((r) => (r.ok ? r.json() as Promise<ReconcileResponse> : null))
+        .catch(() => null);
+    },
+
+    async submit(event: ReviewEvent, body: string): Promise<SubmitOutcome> {
+      let r: Response | null = null;
+      try {
+        r = await post("/submit", { event, body });
+      } catch (_) {
+        r = null;
+      }
+      if (r && r.ok) return { ok: true, response: await r.json() as SubmitResponse };
+      const { error, body: refusal } = await errorOf(r, "the review server is unreachable");
+      const unsent = Array.isArray(refusal.unsent) ? refusal.unsent as UnsentComment[] : [];
+      const submitted_url = typeof refusal.submitted_url === "string" ? refusal.submitted_url : null;
+      return { ok: false, status: r ? r.status : 0, error, unsent, submitted_url };
+    },
+
+    async resolve(id: string, resolved: boolean): Promise<string | null> {
+      let r: Response | null = null;
+      try {
+        r = await post(`/comments/${encodeURIComponent(id)}/${resolved ? "resolve" : "unresolve"}`, {});
+      } catch (_) {
+        r = null;
+      }
+      if (r && r.ok) return null;
+      return (await errorOf(r, "the review server is unreachable")).error;
     },
 
     apply(c: ReviewerComment): void {
@@ -169,6 +236,25 @@ export function makeNoopStore(): CommentStore {
         }
       }
       return Promise.resolve(ids);
+    },
+
+    retry(): Promise<PendingReviewState | null> {
+      return Promise.resolve({ unsent: [], submitted_url: null, submitted_from: null, unanchored: 0 });
+    },
+
+    reconcile(): Promise<ReconcileResponse | null> {
+      return Promise.resolve(null);
+    },
+
+    submit(): Promise<SubmitOutcome> {
+      return Promise.resolve({ ok: false, status: 0, error: "no review server", unsent: [], submitted_url: null });
+    },
+
+    resolve(id: string, resolved: boolean): Promise<string | null> {
+      for (const c of Object.values(dict)) {
+        if (c.id === id || c.in_reply_to_id === id) dict[c.id] = { ...c, thread_resolved: resolved };
+      }
+      return Promise.resolve(null);
     },
 
     apply(c: ReviewerComment): void {

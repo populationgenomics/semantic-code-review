@@ -5,7 +5,7 @@
 // caller registers. The wire format is one EventSource frame per
 // pipeline phase (overview-start, overview, overview-failed,
 // hunk-start, hunk, fold-summary, explainer, done, comment,
-// comment-deleted, listening); payload shapes live in
+// comment-deleted, listening, pending-review); payload shapes live in
 // `types.d.ts`. Replay on reconnect is handled by the browser's
 // EventSource implementation (it sends Last-Event-ID automatically;
 // the server replays from its buffer).
@@ -27,6 +27,7 @@ interface SseHandlers {
   comment?: (payload: SseCommentEvent) => void;
   commentDeleted?: (payload: SseCommentDeletedEvent) => void;
   listening?: (payload: SseListeningEvent) => void;
+  pendingReview?: (payload: SsePendingReviewEvent) => void;
 }
 
 /** Subscribe to `<endpoint>/events`. Returns the EventSource so
@@ -82,6 +83,7 @@ function connect(endpoint: string, handlers: SseHandlers): EventSource | null {
   if (handlers.comment) wireJson<SseCommentEvent>("comment", handlers.comment);
   if (handlers.commentDeleted) wireJson<SseCommentDeletedEvent>("comment-deleted", handlers.commentDeleted);
   if (handlers.listening) wireJson<SseListeningEvent>("listening", handlers.listening);
+  if (handlers.pendingReview) wireJson<SsePendingReviewEvent>("pending-review", handlers.pendingReview);
   return es;
 }
 

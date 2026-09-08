@@ -89,8 +89,8 @@ interface FetchResponse {
 const fetchResponses: FetchResponse[] = [];
 const fetchCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
 // `GET /explainer` is answered by URL rather than from the positional
-// queue: boot fires it behind /comments and PostModal's /post-config,
-// so its position depends on wiring the test has no reason to know.
+// queue: boot fires it behind /comments, so its position depends on
+// wiring the test has no reason to know.
 let explainerLoadResponse: FetchResponse | null = null;
 // `/prefs` likewise: boot's GET is the first fetch after /data.json, and
 // a PATCH lands 200ms after any gesture that changes a preference —
@@ -153,6 +153,7 @@ interface ViewerData {
   explainer?: boolean;
   counterpart?: "claude" | "github";
   listening?: boolean;
+  pending_review?: { unsent: unknown[]; submitted_url: string | null; submitted_from: string | null; unanchored: number };
   pr?: Record<string, unknown>;
   smells_catalogue?: Record<string, unknown>;
   files?: Array<Record<string, unknown>>;
@@ -452,7 +453,9 @@ function dropPageListeners(): void {
 // (armed before the body runs) is not among them.
 
 const armedTimers: Array<ReturnType<typeof setTimeout>> = [];
+const armedIntervals: Array<ReturnType<typeof setInterval>> = [];
 let realSetTimeout: typeof setTimeout | null = null;
+let realSetInterval: typeof setInterval | null = null;
 
 function recordTimers(): void {
   if (realSetTimeout !== null) return;
@@ -463,6 +466,15 @@ function recordTimers(): void {
     armedTimers.push(id);
     return id;
   }) as typeof setTimeout;
+  // The send bar's retry of unsent comments is an interval; the same
+  // hygiene, so one test's unsent state never fires into the next.
+  realSetInterval = globalThis.setInterval;
+  const realI = realSetInterval;
+  globalThis.setInterval = ((fn: TimerHandler, ms?: number, ...args: unknown[]) => {
+    const id = realI(fn as () => void, ms, ...args);
+    armedIntervals.push(id);
+    return id;
+  }) as typeof setInterval;
 }
 
 function dropTimers(): void {
@@ -471,6 +483,12 @@ function dropTimers(): void {
   realSetTimeout = null;
   for (const id of armedTimers) clearTimeout(id);
   armedTimers.length = 0;
+  if (realSetInterval !== null) {
+    globalThis.setInterval = realSetInterval;
+    realSetInterval = null;
+  }
+  for (const id of armedIntervals) clearInterval(id);
+  armedIntervals.length = 0;
 }
 
 // --- Global hooks ----------------------------------------------------------
@@ -5922,26 +5940,22 @@ describe("comment lifecycle (ADR 0009)", () => {
   const posts = (path: string): number =>
     fetchCalls.filter((c) => c.url === path && c.init?.method === "POST").length;
 
-  test("review mode mounts the send bar and no Done; PR mode the reverse", async () => {
+  test("review mode mounts the send bar with the listening indicator; no Done, no Submit", async () => {
     await bootViewer(makeData({ counterpart: "claude" }));
     expect(document.querySelector(".send-bar")).not.toBeNull();
     expect(document.querySelector(".send-all-btn")).not.toBeNull();
-    expect(document.querySelector(".done-btn")).toBeNull();
     expect(document.querySelector(".listening-indicator")).not.toBeNull();
-
-    document.body.innerHTML = "";
-    await bootViewer(makeData({ counterpart: "github" }));
-    expect(document.querySelector(".done-btn")).not.toBeNull();
-    expect(document.querySelector(".send-bar")).toBeNull();
+    expect(document.querySelector(".done-btn")).toBeNull();
+    expect(document.querySelector(".submit-btn")).toBeNull();
+    expect(document.querySelector(".pending-review-status")).toBeNull();
   });
 
-  test("PR mode shows no lifecycle chrome: Done posts everything", async () => {
+  test("review mode offers no resolve control on a thread", async () => {
     window.location.hash = "#fold=code";
-    await bootViewer(makeData({ pending: false, counterpart: "github" }), { comments: [localComment("c1", 1)] });
+    await bootViewer(makeData({ pending: false }), { comments: [localComment("c1", 1)] });
     await tick();
     expect(entry("c1")).not.toBeNull();
-    expect(badgeOf("c1")).toBeNull();
-    expect(sendBtn("c1")).toBeNull();
+    expect(document.querySelector(".comment-btn-resolve")).toBeNull();
   });
 
   test("a draft carries its badge and Send; Send POSTs and the badge reads sent", async () => {
@@ -6103,5 +6117,494 @@ describe("comment lifecycle (ADR 0009)", () => {
   test("a /data.json without a counterpart fails the boot", async () => {
     await bootViewer(makeData({ counterpart: undefined }));
     expect(document.querySelector(".boot-error")!.textContent).toContain("counterpart");
+  });
+});
+
+
+describe("the pending review (ADR 0009, slice 2)", () => {
+  const emptyReview = { unsent: [], submitted_url: null, submitted_from: null, unanchored: 0 };
+  // Opening the chooser asks GitHub first; these cases are about what
+  // follows, so the ask is answered with nothing changed.
+  beforeEach(() => serveByUrl("/reconcile", { status: 200, body: { ...emptyReview, outcomes: {} } }));
+  const githubData = (overrides: Partial<ViewerData> = {}): ViewerData =>
+    makeData({ counterpart: "github", pending: false, pending_review: emptyReview, ...overrides });
+  const localComment = (id: string, line: number, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    id, file: "a.py", side: "new", line, body: `note ${id}`, created_at: 1, updated_at: 1,
+    source: "local", delivery: "draft", deliveries: 0, batch_no: null, withdrawn: false, send_error: null, ...extra,
+  });
+  const ingested = (id: string, line: number, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    id, file: "a.py", side: "new", line, body: `upstream ${id}`, created_at: 1, updated_at: 1,
+    source: "github", author: "alice", node_id: `N_${id}`, thread_id: `T_${id}`, thread_resolved: false, ...extra,
+  });
+  const entry = (id: string): HTMLElement | null =>
+    document.querySelector<HTMLElement>(`.comment-thread-entry[data-comment-id="${id}"]`);
+  const badge = (id: string): HTMLElement | null => entry(id)?.querySelector<HTMLElement>(".comment-badge") ?? null;
+  const threadRow = (id: string): HTMLElement | null =>
+    document.querySelector<HTMLElement>(`.row-annotation.annot-comment[data-thread-id="${id}"]`);
+  const posts = (path: string): Array<Record<string, unknown>> =>
+    fetchCalls
+      .filter((c) => c.url === path && c.init?.method === "POST")
+      .map((c) => JSON.parse((c.init!.body as string) || "{}") as Record<string, unknown>);
+  const chooser = (): HTMLElement => document.querySelector<HTMLElement>(".submit-chooser")!;
+  const openChooser = (): HTMLElement => {
+    document.querySelector<HTMLElement>(".submit-btn")!.click();
+    return chooser();
+  };
+
+  test("PR mode mounts Send all and Submit in the bar; no Done, no modal, no listening indicator", async () => {
+    await bootViewer(githubData());
+    const bar = document.querySelector<HTMLElement>(".send-bar")!;
+    expect(bar.dataset.counterpart).toBe("github");
+    expect(bar.querySelector(".send-all-btn")).not.toBeNull();
+    expect(bar.querySelector(".submit-btn")!.textContent).toBe("Submit…");
+    expect(bar.querySelector(".pending-review-status")).not.toBeNull();
+    expect(document.querySelector(".done-btn")).toBeNull();
+    expect(document.querySelector(".post-modal")).toBeNull();
+    expect(document.querySelector(".listening-indicator")).toBeNull();
+    expect(chooser().classList.contains("hidden")).toBe(true);
+  });
+
+  test("a /data.json for GitHub without the pending review fails the boot", async () => {
+    await bootViewer(makeData({ counterpart: "github" }));
+    expect(document.querySelector(".boot-error")!.textContent).toContain("pending_review");
+  });
+
+  test("a draft carries its badge and Send; delivered, it reads pending and stays editable", async () => {
+    window.location.hash = "#fold=code";
+    await bootViewer(githubData(), { comments: [localComment("c1", 1)] });
+    await tick();
+    expect(badge("c1")!.textContent).toBe("draft");
+    expect(entry("c1")!.querySelector(".comment-btn-send")).not.toBeNull();
+    expect(document.querySelector(".send-all-count")!.textContent).toBe("1");
+    expect((document.querySelector(".send-all-btn") as HTMLButtonElement).title).toContain("pending review");
+
+    queueFetchResponse({ status: 200, body: { batch_no: 1, comment_ids: ["c1"], pending_review: emptyReview } });
+    entry("c1")!.querySelector<HTMLElement>(".comment-btn-send")!.click();
+    // The server states the delivery before it answers the Send: the
+    // frame must not be undone by the response landing after it.
+    lastEventSource().dispatch("comment", localComment("c1", 1, {
+      delivery: "delivered", deliveries: 1, node_id: "C1", thread_id: "T1",
+    }));
+    await tick();
+
+    expect(posts("/comments/c1/send")).toHaveLength(1);
+    expect(badge("c1")!.textContent).toBe("pending");
+    expect(badge("c1")!.getAttribute("data-delivery")).toBe("delivered");
+    expect(badge("c1")!.title).toContain("pending review");
+    expect(entry("c1")!.querySelector(".comment-btn-send")).toBeNull();
+    // The reviewer's own pending comment: edit and delete stay.
+    expect(entry("c1")!.querySelector(".comment-btn-edit")).not.toBeNull();
+    expect(entry("c1")!.querySelector(".comment-btn-del")).not.toBeNull();
+    expect(document.querySelector(".send-all-count")!.textContent).toBe("0");
+  });
+
+  test("a refused Send reads unsent with the reason; the bar counts it and retries on an interval", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    window.location.hash = "#fold=code";
+    await bootViewer(githubData(), { comments: [localComment("c1", 1)] });
+    await tick();
+    const status = document.querySelector<HTMLElement>(".pending-review-status")!;
+    expect(status.dataset.unsent).toBe("0");
+
+    const unsent = { id: "c1", file: "a.py", side: "new", line: 1, body: "note c1", deleted: false, error: "HTTP 502" };
+    lastEventSource().dispatch("comment", localComment("c1", 1, { delivery: "sent", send_error: "HTTP 502" }));
+    lastEventSource().dispatch("pending-review", { unsent: [unsent], submitted_url: null, unanchored: 0 });
+    await tick();
+
+    expect(badge("c1")!.textContent).toBe("unsent");
+    expect(badge("c1")!.getAttribute("data-delivery")).toBe("unsent");
+    expect(badge("c1")!.title).toContain("HTTP 502");
+    expect(entry("c1")!.querySelector(".comment-btn-send")).toBeNull();
+    expect(status.dataset.unsent).toBe("1");
+    expect(status.textContent).toBe("1 unsent — retrying");
+    expect(status.title).toContain("a.py:1");
+
+    // The interval retries while anything is unsent, and stops once
+    // the server says nothing is.
+    queueFetchResponse({ status: 200, body: emptyReview });
+    expect(posts("/comments/retry")).toHaveLength(0);
+    vi.advanceTimersByTime(30_000);
+    expect(posts("/comments/retry")).toHaveLength(1);
+    await tick();
+    expect(status.dataset.unsent).toBe("0");
+    vi.advanceTimersByTime(60_000);
+    expect(posts("/comments/retry")).toHaveLength(1);
+    vi.useRealTimers();
+  });
+
+  test("the chooser offers Comment / Approve / Request changes and a body; Submit posts them", async () => {
+    window.location.hash = "#fold=code";
+    await bootViewer(githubData(), {
+      comments: [localComment("c1", 1, { delivery: "delivered", deliveries: 1, node_id: "C1" }), localComment("d1", 2)],
+    });
+    await tick();
+    const panel = openChooser();
+    expect(panel.classList.contains("hidden")).toBe(false);
+    const radios = Array.from(panel.querySelectorAll<HTMLInputElement>('input[name="submit-event"]'));
+    expect(radios.map((r) => r.value)).toEqual(["COMMENT", "APPROVE", "REQUEST_CHANGES"]);
+    expect(radios.find((r) => r.checked)!.value).toBe("COMMENT");
+    expect(panel.querySelector(".submit-note")!.textContent).toContain("1 draft stays yours");
+
+    radios[2].checked = true;
+    (panel.querySelector(".submit-body") as HTMLTextAreaElement).value = "two nits";
+    queueFetchResponse({
+      status: 200,
+      body: { review_url: "https://github.com/o/r/pull/7#pullrequestreview-9", event: "REQUEST_CHANGES", submitted: 1 },
+    });
+    panel.querySelector<HTMLElement>(".submit-confirm")!.click();
+    await tick();
+    await tick();
+
+    expect(posts("/submit")).toEqual([{ event: "REQUEST_CHANGES", body: "two nits" }]);
+    expect(panel.classList.contains("hidden")).toBe(true);
+    const link = document.querySelector<HTMLAnchorElement>(".submitted-review-link")!;
+    expect(link.classList.contains("hidden")).toBe(false);
+    expect(link.href).toBe("https://github.com/o/r/pull/7#pullrequestreview-9");
+
+    // The server turns what the review held upstream: read-only now.
+    lastEventSource().dispatch("comment", localComment("c1", 1, {
+      source: "github", delivery: "delivered", deliveries: 1, node_id: "C1",
+    }));
+    await tick();
+    // Read-only: none of its own controls or badge; what is left on its
+    // row is the thread's — Reply and Resolve, as on any upstream thread.
+    expect(entry("c1")!.querySelector(".comment-btn-edit, .comment-btn-del, .comment-btn-send")).toBeNull();
+    expect(entry("c1")!.querySelector(".comment-badge")).toBeNull();
+    expect(Array.from(entry("c1")!.querySelectorAll(".comment-actions > *")).map((b) => b.className.split(" ").pop()))
+      .toEqual(["comment-btn-reply", "comment-btn-resolve"]);
+    expect(entry("c1")!.classList.contains("comment-thread-entry-ingested")).toBe(true);
+    // The draft stays the reviewer's.
+    expect(badge("d1")!.textContent).toBe("draft");
+  });
+
+  test("a refused Submit lists the unsent comments and keeps the chooser open", async () => {
+    await bootViewer(githubData());
+    const panel = openChooser();
+    queueFetchResponse({
+      status: 409,
+      body: {
+        error: "2 comments are unsent; GitHub does not hold the review as shown",
+        unsent: [
+          { id: "c1", file: "a.py", side: "new", line: 3, body: "first line\nmore", deleted: false, error: "HTTP 502" },
+          { id: "c2", file: "b.py", side: "old", line: 9, body: "gone", deleted: true, error: null },
+        ],
+      },
+    });
+    panel.querySelector<HTMLElement>(".submit-confirm")!.click();
+    await tick();
+    await tick();
+
+    expect(panel.classList.contains("hidden")).toBe(false);
+    const error = panel.querySelector<HTMLElement>(".submit-error")!;
+    expect(error.textContent).toContain("2 comments are unsent");
+    const items = Array.from(error.querySelectorAll<HTMLElement>(".submit-unsent li"));
+    expect(items.map((li) => li.dataset.commentId)).toEqual(["c1", "c2"]);
+    expect(items[0].textContent).toBe("a.py:3 (new) first line — HTTP 502");
+    expect(items[1].textContent).toBe("b.py:9 (old) deleted comment");
+    expect(document.querySelector(".submitted-review-link")!.classList.contains("hidden")).toBe(true);
+
+    // Any other refusal is shown as its message.
+    queueFetchResponse({ status: 502, body: { error: "GitHub: review body required" } });
+    panel.querySelector<HTMLElement>(".submit-confirm")!.click();
+    await tick();
+    await tick();
+    expect(error.textContent).toBe("GitHub: review body required");
+    panel.querySelector<HTMLElement>(".submit-cancel")!.click();
+    expect(panel.classList.contains("hidden")).toBe(true);
+  });
+
+  test("the chooser says how many pending comments this diff cannot show", async () => {
+    await bootViewer(githubData({ pending_review: { ...emptyReview, unanchored: 2 } }));
+    expect(openChooser().querySelector(".submit-note")!.textContent).toContain("2 pending comments on GitHub have no line");
+  });
+
+  test("resolve on an upstream thread fires at once and reverts, saying so, when GitHub refuses", async () => {
+    window.location.hash = "#fold=code";
+    await bootViewer(githubData(), { comments: [ingested("gh-1", 1)] });
+    await tick();
+    const button = threadRow("gh-1")!.querySelector<HTMLButtonElement>(".comment-btn-resolve")!;
+    expect(button.disabled).toBe(false);
+    expect(button.textContent).toBe("Resolve");
+
+    queueFetchResponse({ status: 200, body: { ok: true, resolved: true, comment_ids: ["gh-1"] } });
+    button.click();
+    // Optimistic: the thread collapses before the server answers.
+    expect(threadRow("gh-1")!.classList.contains("annot-comment-resolved")).toBe(true);
+    await tick();
+    expect(posts("/comments/gh-1/resolve")).toHaveLength(1);
+    expect(threadRow("gh-1")!.classList.contains("annot-comment-resolved")).toBe(true);
+
+    // Expand it and unresolve; GitHub refuses: the badge reverts and the
+    // row says why.
+    threadRow("gh-1")!.querySelector<HTMLElement>(".comment-thread-resolved-header")!.click();
+    const unresolve = threadRow("gh-1")!.querySelector<HTMLButtonElement>(".comment-btn-resolve")!;
+    expect(unresolve.textContent).toBe("Unresolve");
+    queueFetchResponse({ status: 502, body: { error: "gh api graphql failed: HTTP 502" } });
+    unresolve.click();
+    expect(threadRow("gh-1")!.classList.contains("annot-comment-resolved")).toBe(false);
+    await tick();
+    await tick();
+    expect(posts("/comments/gh-1/unresolve")).toHaveLength(1);
+    expect(threadRow("gh-1")!.classList.contains("annot-comment-resolved")).toBe(true);
+    expect(threadRow("gh-1")!.querySelector(".comment-thread-error")!.textContent).toContain("GitHub refused");
+  });
+
+  test("a thread still in the pending review cannot be resolved, and the button says why", async () => {
+    window.location.hash = "#fold=code";
+    await bootViewer(githubData(), {
+      comments: [localComment("c1", 1, { delivery: "delivered", deliveries: 1, node_id: "C1", thread_id: "T1" })],
+    });
+    await tick();
+    const button = threadRow("c1")!.querySelector<HTMLButtonElement>(".comment-btn-resolve")!;
+    expect(button.disabled).toBe(true);
+    expect(button.title).toContain("cannot be resolved");
+    expect(button.title).toContain("submitted");
+    button.click();
+    await tick();
+    expect(posts("/comments/c1/resolve")).toHaveLength(0);
+  });
+});
+
+
+describe("reconciliation with GitHub (ADR 0009, slice 2)", () => {
+  const emptyReview = { unsent: [], submitted_url: null, submitted_from: null, unanchored: 0 };
+  const githubData = (overrides: Partial<ViewerData> = {}): ViewerData =>
+    makeData({ counterpart: "github", pending: false, pending_review: emptyReview, ...overrides });
+  const localComment = (id: string, line: number, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    id, file: "a.py", side: "new", line, body: `note ${id}`, created_at: 1, updated_at: 1,
+    source: "local", delivery: "draft", deliveries: 0, batch_no: null, withdrawn: false, send_error: null, notice: null,
+    ...extra,
+  });
+  const pendingComment = (id: string, line: number, extra: Record<string, unknown> = {}): Record<string, unknown> =>
+    localComment(id, line, { delivery: "delivered", deliveries: 1, node_id: `N_${id}`, thread_id: `T_${id}`, ...extra });
+  const entry = (id: string): HTMLElement | null =>
+    document.querySelector<HTMLElement>(`.comment-thread-entry[data-comment-id="${id}"]`);
+  const badge = (id: string): HTMLElement | null => entry(id)?.querySelector<HTMLElement>(".comment-badge") ?? null;
+  const posts = (path: string): number =>
+    fetchCalls.filter((c) => c.url === path && c.init?.method === "POST").length;
+  const chooser = (): HTMLElement => document.querySelector<HTMLElement>(".submit-chooser")!;
+  const rows = (): HTMLElement[] => Array.from(chooser().querySelectorAll<HTMLElement>(".submit-list .label-comment"));
+  const REMOVED = "removed from your pending review on GitHub — Send again to re-add";
+
+  test("a draft with a notice reads draft (dashed badge) and says what GitHub did; Send clears it", async () => {
+    window.location.hash = "#fold=code";
+    await bootViewer(githubData(), { comments: [pendingComment("c1", 1)] });
+    await tick();
+    expect(badge("c1")!.textContent).toBe("pending");
+    expect(entry("c1")!.querySelector(".comment-notice")).toBeNull();
+
+    // The reconcile found its pending twin gone: the server states it.
+    lastEventSource().dispatch("comment", localComment("c1", 1, { notice: REMOVED }));
+    await tick();
+
+    expect(badge("c1")!.textContent).toBe("draft");
+    expect(badge("c1")!.getAttribute("data-delivery")).toBe("draft");
+    const notice = entry("c1")!.querySelector<HTMLElement>(".comment-notice")!;
+    expect(notice.textContent).toBe(REMOVED);
+    expect(notice.getAttribute("role")).toBe("alert");
+    expect(entry("c1")!.querySelector(".comment-btn-send")).not.toBeNull();
+    expect(document.querySelector(".send-all-count")!.textContent).toBe("1");
+
+    queueFetchResponse({ status: 200, body: { batch_no: 1, comment_ids: ["c1"], pending_review: emptyReview } });
+    entry("c1")!.querySelector<HTMLElement>(".comment-btn-send")!.click();
+    lastEventSource().dispatch("comment", pendingComment("c1", 1, { node_id: "N_new" }));
+    await tick();
+    expect(entry("c1")!.querySelector(".comment-notice")).toBeNull();
+    expect(badge("c1")!.textContent).toBe("pending");
+  });
+
+  test("the bar says when the review was submitted on GitHub, in text", async () => {
+    await bootViewer(githubData());
+    const link = document.querySelector<HTMLAnchorElement>(".submitted-review-link")!;
+    expect(link.classList.contains("hidden")).toBe(true);
+
+    lastEventSource().dispatch("pending-review", {
+      ...emptyReview, submitted_url: "https://github.com/o/r/pull/7#pullrequestreview-3", submitted_from: "github",
+    });
+
+    expect(link.classList.contains("hidden")).toBe(false);
+    expect(link.textContent).toBe("Submitted on GitHub ↗");
+    expect(link.dataset.from).toBe("github");
+    expect(link.href).toBe("https://github.com/o/r/pull/7#pullrequestreview-3");
+    expect(link.title).toContain("published from GitHub");
+
+    lastEventSource().dispatch("pending-review", { ...emptyReview, submitted_url: "https://gh/x", submitted_from: "viewer" });
+    expect(link.textContent).toBe("Review submitted ↗");
+    expect(link.dataset.from).toBe("viewer");
+  });
+
+  test("opening the chooser checks GitHub, then lists what it holds, in file and line order", async () => {
+    window.location.hash = "#fold=code";
+    await bootViewer(githubData(), {
+      comments: [
+        pendingComment("c9", 2, { file: "b.py", body: "second file" }),
+        pendingComment("c2", 2, { body: "line two\nmore about it" }),
+        pendingComment("c1", 1, { side: "old", body: "old side first" }),
+        pendingComment("r1", 2, { in_reply_to_id: "c2", body: "the reply", created_at: 5 }),
+        pendingComment("c3", 2, { body: "new side after old" }),
+        localComment("d1", 1, { body: "still a draft" }),
+      ],
+    });
+    await tick();
+    let resolveReconcile: (r: { status: number; body: unknown }) => void = () => {};
+    (globalThis.fetch as unknown as { mockImplementationOnce: (fn: (url: string) => Promise<Response>) => void })
+      .mockImplementationOnce((url: string) => new Promise((resolve) => {
+        fetchCalls.push({ url, init: { method: "POST" } });
+        resolveReconcile = (r) => resolve({ status: r.status, ok: r.status < 300, json: () => Promise.resolve(r.body) } as Response);
+      }));
+
+    document.querySelector<HTMLElement>(".submit-btn")!.click();
+
+    const status = chooser().querySelector<HTMLElement>(".submit-status")!;
+    expect(chooser().classList.contains("hidden")).toBe(false);
+    expect(status.textContent).toBe("Checking GitHub…");
+    expect(status.dataset.state).toBe("checking");
+    expect(posts("/reconcile")).toBe(1);
+    // The last known state paints at once, so the list is never empty
+    // while GitHub is asked.
+    expect(rows()).toHaveLength(5);
+
+    resolveReconcile({ status: 200, body: { ...emptyReview, outcomes: {} } });
+    await tick();
+    await tick();
+
+    expect(status.textContent).toBe("");
+    expect(status.dataset.state).toBe("fresh");
+    expect(chooser().querySelector(".submit-heading")!.textContent).toBe("Submit 5 comments as Comment");
+    expect(rows().map((r) => r.querySelector(".label-range")!.textContent)).toEqual([
+      "a.py:1 (old)", "a.py:2 (new)", "a.py:2 (new)", "a.py:2 (new)", "b.py:2 (new)",
+    ]);
+    expect(rows().map((r) => r.querySelector(".label-text")!.textContent)).toEqual([
+      "old side first", "line two", "↳ the reply", "new side after old", "second file",
+    ]);
+    // Full body on hover; a reply says what it answers and is marked.
+    expect(rows()[1].title).toBe("line two\nmore about it");
+    expect(rows()[2].classList.contains("label-reply")).toBe(true);
+    expect(rows()[2].title).toContain("in reply to: line two");
+    expect(rows()[2].dataset.threadId).toBe("c2");
+    // The draft is not in the review; the note says so.
+    expect(chooser().querySelector(".submit-note")!.textContent).toContain("1 draft stays yours");
+    expect(rows().some((r) => r.querySelector(".label-text")!.textContent === "still a draft")).toBe(false);
+    // Picking a verdict renames the heading.
+    const approve = chooser().querySelector<HTMLInputElement>('input[value="APPROVE"]')!;
+    approve.checked = true;
+    approve.dispatchEvent(new Event("change"));
+    expect(chooser().querySelector(".submit-heading")!.textContent).toBe("Submit 5 comments as Approve");
+  });
+
+  test("a listed comment reveals its thread without closing the chooser", async () => {
+    window.location.hash = "#fold=hunks";
+    await bootViewer(githubData(), { comments: [pendingComment("c1", 1)] });
+    await tick();
+    serveByUrl("/reconcile", { status: 200, body: { ...emptyReview, outcomes: { c1: "pending" } } });
+    document.querySelector<HTMLElement>(".submit-btn")!.click();
+    await tick();
+    await tick();
+    expect(document.querySelector('.row-annotation.annot-comment[data-thread-id="c1"]')).toBeNull();
+
+    const scrolled = recordingScrolls(() => rows()[0].click());
+
+    expect(chooser().classList.contains("hidden")).toBe(false);
+    const thread = document.querySelector<HTMLElement>('.row-annotation.annot-comment[data-thread-id="c1"]');
+    expect(thread).not.toBeNull();
+    expect(scrolled).toContain(thread);
+  });
+
+  test("the reconcile's answer redraws the list: a comment GitHub dropped leaves it", async () => {
+    window.location.hash = "#fold=code";
+    await bootViewer(githubData(), { comments: [pendingComment("c1", 1), pendingComment("c2", 2)] });
+    await tick();
+    serveByUrl("/reconcile", { status: 200, body: { ...emptyReview, outcomes: { c1: "removed", c2: "pending" } } });
+
+    document.querySelector<HTMLElement>(".submit-btn")!.click();
+    // The server states c1's new state before it answers.
+    lastEventSource().dispatch("comment", localComment("c1", 1, { notice: REMOVED }));
+    await tick();
+    await tick();
+
+    expect(chooser().querySelector(".submit-heading")!.textContent).toBe("Submit 1 comment as Comment");
+    expect(rows().map((r) => r.dataset.threadId)).toEqual(["c2"]);
+    expect(entry("c1")!.querySelector(".comment-notice")!.textContent).toBe(REMOVED);
+  });
+
+  test("GitHub unreachable: the chooser opens on the last known state, marked, and Submit stays available", async () => {
+    window.location.hash = "#fold=code";
+    await bootViewer(githubData(), { comments: [pendingComment("c1", 1)] });
+    await tick();
+    serveByUrl("/reconcile", { status: 502, body: { error: "gh api graphql failed: HTTP 502", not_found: false } });
+
+    document.querySelector<HTMLElement>(".submit-btn")!.click();
+    await tick();
+    await tick();
+
+    const status = chooser().querySelector<HTMLElement>(".submit-status")!;
+    expect(status.textContent).toBe("Could not reach GitHub — showing the last known state");
+    expect(status.dataset.state).toBe("stale");
+    expect(rows()).toHaveLength(1);
+    expect((chooser().querySelector(".submit-confirm") as HTMLButtonElement).disabled).toBe(false);
+    queueFetchResponse({ status: 200, body: { review_url: "https://gh/r", event: "COMMENT", submitted: 1 } });
+    chooser().querySelector<HTMLElement>(".submit-confirm")!.click();
+    await tick();
+    await tick();
+    expect(posts("/submit")).toBe(1);
+    expect(chooser().classList.contains("hidden")).toBe(true);
+  });
+
+  test("with nothing pending the chooser says so in place of the list", async () => {
+    await bootViewer(githubData());
+    serveByUrl("/reconcile", { status: 200, body: { ...emptyReview, outcomes: {} } });
+    document.querySelector<HTMLElement>(".submit-btn")!.click();
+    await tick();
+    await tick();
+    expect(rows()).toHaveLength(0);
+    expect(chooser().querySelector(".submit-empty")!.textContent).toBe("No comments — an Approve is an LGTM");
+    expect(chooser().querySelector(".submit-heading")!.textContent).toBe("Submit as Comment");
+  });
+
+  test("unsent comments are listed apart, above the button, before the reviewer decides", async () => {
+    window.location.hash = "#fold=code";
+    await bootViewer(githubData(), { comments: [pendingComment("c1", 1), localComment("c2", 2, { delivery: "sent", send_error: "HTTP 502" })] });
+    await tick();
+    const unsent = [{ id: "c2", file: "a.py", side: "new", line: 2, body: "note c2", deleted: false, error: "HTTP 502" }];
+    serveByUrl("/reconcile", { status: 200, body: { ...emptyReview, unsent, outcomes: { c1: "pending" } } });
+
+    document.querySelector<HTMLElement>(".submit-btn")!.click();
+    await tick();
+    await tick();
+
+    expect(rows().map((r) => r.dataset.threadId)).toEqual(["c1"]);
+    const section = chooser().querySelector<HTMLElement>(".submit-unsent-section")!;
+    expect(section.querySelector(".submit-unsent-title")!.textContent).toContain("1 comment unsent");
+    expect(section.querySelector(".submit-unsent-title")!.textContent).toContain("Submit is refused");
+    const items = Array.from(section.querySelectorAll<HTMLElement>(".submit-unsent li"));
+    expect(items.map((li) => li.dataset.commentId)).toEqual(["c2"]);
+    expect(items[0].textContent).toBe("a.py:2 (new) note c2 — HTTP 502");
+    // Before the button, not under it.
+    const order = Array.from(chooser().children).map((el) => el.className);
+    expect(order.indexOf("submit-unsent-section")).toBeLessThan(order.indexOf("submit-actions"));
+  });
+
+  test("a Submit refused as already submitted on GitHub says so, with the link, and the bar follows", async () => {
+    await bootViewer(githubData());
+    serveByUrl("/reconcile", { status: 200, body: { ...emptyReview, outcomes: {} } });
+    document.querySelector<HTMLElement>(".submit-btn")!.click();
+    await tick();
+    await tick();
+    queueFetchResponse({
+      status: 409,
+      body: { error: "the review was already submitted on GitHub", submitted_url: "https://github.com/o/r/pull/7#pullrequestreview-3" },
+    });
+
+    chooser().querySelector<HTMLElement>(".submit-confirm")!.click();
+    await tick();
+    await tick();
+
+    const error = chooser().querySelector<HTMLElement>(".submit-error")!;
+    expect(error.textContent).toContain("Already submitted on GitHub");
+    expect(error.querySelector<HTMLAnchorElement>("a")!.href).toBe("https://github.com/o/r/pull/7#pullrequestreview-3");
+    expect(chooser().classList.contains("hidden")).toBe(false);
+    const link = document.querySelector<HTMLAnchorElement>(".submitted-review-link")!;
+    expect(link.classList.contains("hidden")).toBe(false);
+    expect(link.textContent).toBe("Submitted on GitHub ↗");
   });
 });

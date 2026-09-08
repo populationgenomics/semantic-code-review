@@ -9,7 +9,9 @@ removes the record. These spawn a real child on a tmp run dir.
 from __future__ import annotations
 
 import json
+import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -21,7 +23,7 @@ from typer.testing import CliRunner
 
 from semantic_code_review import paths
 from semantic_code_review.cli import app
-from semantic_code_review.review import runner, stream
+from semantic_code_review.review import identity, runner, servers, stream
 from semantic_code_review.review.config import ReviewConfig
 
 
@@ -101,13 +103,35 @@ def test_run_review_returns_with_the_run_id_while_the_server_lives_on(repo: Path
     info = stream.read_server_info(run_dir)
     assert info is not None
     record = json.loads(run_dir.server_json.read_text(encoding="utf-8"))
-    assert set(record) == {"port", "pid", "started_at", "url"}
+    assert set(record) == {
+        "port",
+        "pid",
+        "started_at",
+        "url",
+        "version",
+        "build",
+        "package",
+        "counterpart",
+        "cwd",
+        "argv",
+    }
     assert info.pid != 0 and info.url.endswith(f":{info.port}")
     # The server is another process, reachable, and serving this run for Claude.
     with urllib.request.urlopen(info.url + "/data.json", timeout=5) as r:
         data = json.load(r)
     assert data["run_id"] == run_dir.slug
     assert data["counterpart"] == "claude"
+    # The child is this build, started from here, and knows how to come back.
+    this = identity.this_build()
+    assert (info.version, info.build, info.package) == (this.version, this.build, this.package)
+    assert info.counterpart == "claude" and info.cwd == os.getcwd()
+    assert info.argv is not None and info.argv[-2:] == ("--serve-run", run_dir.slug)
+    assert "--runs-root" in info.argv and "--no-augment" in info.argv
+    # /health says the same, plus what the server is doing now.
+    with urllib.request.urlopen(info.url + "/health", timeout=5) as r:
+        health = json.load(r)
+    assert health["build"] == this.build and health["run_id"] == run_dir.slug
+    assert health["listening"] is False and health["viewers"] == 0
 
     # No viewer, no --wait: the idle clock runs out and the record goes.
     _wait_until(lambda: not run_dir.server_json.exists(), what="idle shutdown", timeout=15)
@@ -137,7 +161,6 @@ def test_a_second_run_review_reuses_the_live_server(repo: Path, tmp_path: Path, 
 def test_a_sigterm_ends_the_session_cleanly(repo: Path, tmp_path: Path) -> None:
     """A `kill <pid>` of the recorded server takes the record with it, so
     the next `--wait` reads `ended` rather than a stale record."""
-    import os
     import signal
 
     runs_root = tmp_path / "runs"
@@ -152,21 +175,113 @@ def test_a_sigterm_ends_the_session_cleanly(repo: Path, tmp_path: Path) -> None:
     _wait_until(lambda: not stream.server_alive(info), what="the server to stop answering", timeout=10)
 
 
+def _dead_pid() -> int:
+    """A pid no process has: a child that has already exited and been reaped."""
+    with subprocess.Popen([sys.executable, "-c", "pass"]) as proc:
+        proc.wait()
+    assert not servers.pid_alive(proc.pid)
+    return proc.pid
+
+
 @pytest.mark.usefixtures("isolated_config")
-def test_a_stale_server_json_is_replaced(repo: Path, tmp_path: Path) -> None:
+def test_a_stale_server_json_is_replaced(repo: Path, tmp_path: Path, capsys) -> None:
     """A record a killed server left behind must not be reused."""
     from semantic_code_review.fetch import materialize_local_diff_run
 
     runs_root = tmp_path / "runs"
     run_dir = materialize_local_diff_run("HEAD~1..HEAD", runs_root, repo_root=repo)
+    dead = _dead_pid()
     run_dir.server_json.write_text(
-        json.dumps({"port": 1, "pid": 1, "started_at": 0.0, "url": "http://127.0.0.1:1"}), encoding="utf-8"
+        json.dumps({"port": 1, "pid": dead, "started_at": 0.0, "url": "http://127.0.0.1:1"}), encoding="utf-8"
     )
 
     assert _run_review(repo, runs_root, idle_timeout=2) == 0
 
     info = stream.read_server_info(run_dir)
     assert info is not None and info.port != 1
+    err = capsys.readouterr().err
+    assert f"removed a stale server.json (pid {dead} is gone)" in err
+    assert "already holds" not in err
+    _wait_until(lambda: not run_dir.server_json.exists(), what="idle shutdown", timeout=15)
+
+
+@pytest.mark.usefixtures("isolated_config")
+def test_a_live_pid_that_answers_nothing_is_a_stale_record_not_a_target(repo: Path, tmp_path: Path, capsys) -> None:
+    """The recorded pid may have been reused by a stranger: with nothing
+    scr-like at the recorded address, the record goes and nothing is
+    signalled."""
+    from semantic_code_review.fetch import materialize_local_diff_run
+
+    runs_root = tmp_path / "runs"
+    run_dir = materialize_local_diff_run("HEAD~1..HEAD", runs_root, repo_root=repo)
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        free_port = s.getsockname()[1]
+    run_dir.server_json.write_text(
+        json.dumps({"port": free_port, "pid": os.getpid(), "started_at": 0.0, "url": f"http://127.0.0.1:{free_port}"}),
+        encoding="utf-8",
+    )
+
+    assert _run_review(repo, runs_root, idle_timeout=2) == 0
+
+    err = capsys.readouterr().err
+    assert f"removed a stale server.json (pid {os.getpid()} answers nothing" in err
+    info = stream.read_server_info(run_dir)
+    assert info is not None and info.pid != os.getpid()
+    _wait_until(lambda: not run_dir.server_json.exists(), what="idle shutdown", timeout=15)
+
+
+@pytest.mark.usefixtures("isolated_config")
+def test_a_server_of_another_build_is_stopped_and_replaced(repo: Path, tmp_path: Path, capsys) -> None:
+    """The server keeps serving the build it started from; a CLI of a
+    different build never reuses it. Simulated by rewriting a live
+    child's record with a bogus build."""
+    runs_root = tmp_path / "runs"
+    assert _run_review(repo, runs_root, idle_timeout=60) == 0
+    run_dir = _the_run_dir(runs_root)
+    first = stream.read_server_info(run_dir)
+    assert first is not None
+    capsys.readouterr()
+
+    # A record from another build: same live child, different identity.
+    other = {**first.to_json(), "build": "0000deadbeef", "version": "0.1.0", "package": "/elsewhere/scr"}
+    run_dir.server_json.write_text(json.dumps(other), encoding="utf-8")
+
+    assert _run_review(repo, runs_root, idle_timeout=2) == 0
+
+    err = capsys.readouterr().err
+    assert "stopped the server holding this run" in err
+    assert f"pid {first.pid} was 0.1.0 at /elsewhere/scr" in err
+    assert "already holds" not in err
+    second = stream.read_server_info(run_dir)
+    assert second is not None and second.pid != first.pid
+    assert not servers.pid_alive(first.pid)
+    assert not stream.server_alive(first)
+    with urllib.request.urlopen(second.url + "/health", timeout=5) as r:
+        assert json.load(r)["pid"] == second.pid
+    _wait_until(lambda: not run_dir.server_json.exists(), what="idle shutdown", timeout=15)
+
+
+@pytest.mark.usefixtures("isolated_config")
+def test_a_server_without_a_build_identity_is_stopped_and_replaced(repo: Path, tmp_path: Path, capsys) -> None:
+    """A record an older scr wrote has no build; its server is never reused."""
+    runs_root = tmp_path / "runs"
+    assert _run_review(repo, runs_root, idle_timeout=60) == 0
+    run_dir = _the_run_dir(runs_root)
+    first = stream.read_server_info(run_dir)
+    assert first is not None
+    capsys.readouterr()
+
+    old = {"port": first.port, "pid": first.pid, "started_at": first.started_at, "url": first.url}
+    run_dir.server_json.write_text(json.dumps(old), encoding="utf-8")
+
+    assert _run_review(repo, runs_root, idle_timeout=2) == 0
+
+    err = capsys.readouterr().err
+    assert f"pid {first.pid} was an scr without a build identity" in err
+    second = stream.read_server_info(run_dir)
+    assert second is not None and second.pid != first.pid
+    assert not servers.pid_alive(first.pid)
     _wait_until(lambda: not run_dir.server_json.exists(), what="idle shutdown", timeout=15)
 
 
@@ -191,7 +306,7 @@ def test_a_child_that_dies_is_reported_with_its_log(repo: Path, tmp_path: Path, 
 
 
 def test_serve_run_refuses_a_directory_that_is_not_a_run(tmp_path: Path, capsys) -> None:
-    code = runner.serve_run(paths.RunDir(tmp_path / "nope"), ReviewConfig(augment=False, open_browser=False))
+    code = runner.serve_run(paths.RunDir(tmp_path / "nope"), ReviewConfig(augment=False, open_browser=False), argv=())
     assert code == 2
     assert "not a run directory" in capsys.readouterr().err
 

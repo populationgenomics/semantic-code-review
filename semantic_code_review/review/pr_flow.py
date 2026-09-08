@@ -1,70 +1,60 @@
-"""End-to-end GitHub PR review flow: resolve → fetch → serve → post.
+"""The `scr pr` command: resolve a PR, materialise its run, detach the
+review server.
 
-Drives `scr pr`: preflights ``gh``, resolves the PR number (picker or
-explicit), materialises a run directory, optionally runs the augment
-pipeline, serves the viewer until the reviewer is done. Posting is
-confirmed in the **viewer's modal**, not on the terminal — the
-reviewer reviews comments inline, clicks Done, ticks/unticks the
-final list, and confirms. The server fires the post callback on
-their behalf and reports the result back via ``ServeResult.posted``.
-
-The legacy terminal y/N flow lives behind ``--yes`` only as a way to
-skip the modal entirely: the server stays out of posting mode and
-the CLI posts after the viewer exits.
+Preflights ``gh``, resolves the PR number (picker or explicit),
+materialises the [[run-directory]] and hands it to `runner.detach_server`,
+which spawns the server as a detached child and prints the viewer's URL
+and the run id (ADR 0009). The child — `scr pr … --serve-run <slug>` —
+serves with GitHub as the [[counterpart]]: Sends go into the reviewer's
+[[pending-review]] and Submit publishes it, all from the browser. Nothing
+comes back to this process: it has returned by then.
 
 The flow uses plain ``sys.stderr`` / ``sys.stdout`` for I/O so it's
 testable without a Typer dependency. ``cli/pr.py`` is the CLI wrapper
 that builds a :class:`PrFlowOptions` from command-line args and calls
-:func:`run_pr_flow`.
+:func:`run_pr_flow`, or `serve_pr_run` for the child.
 """
 
 from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
 
 from .. import paths
 from ..fetch import GhFetchError, materialize_github_pr_run, preflight_gh
-from .comments import CommentStore, format_markdown
+from . import pending_review, runner
 from .config import ReviewConfig
-from .github import (
-    GhError,
-    PostResult,
-    comments_to_github,
-    list_review_requested_prs,
-    pick_pr_interactive,
-)
-from .github_graphql import post_review_via_graphql
-from .runner import build_server_tasks, ensure_augmented_diff, serve_review
-from .session import PostCallable, PostOutcome
+from .github import GhError, list_review_requested_prs, pick_pr_interactive
 
 
 @dataclass(frozen=True)
 class PrFlowOptions:
     """All inputs the PR flow needs: which PR, plus the settings every
     review session shares.
-
-    ``yes`` bypasses the in-browser confirmation modal — the viewer's
-    Done button stays a plain exit and the CLI posts everything after it
-    returns.
     """
 
     repo: str
     number: int | None
     config: ReviewConfig
-    yes: bool
 
 
-def run_pr_flow(opts: PrFlowOptions) -> int:
-    """Drive the PR review end-to-end. Returns the exit code.
+def run_pr_flow(opts: PrFlowOptions, *, argv: Sequence[str], foreground: bool = False) -> int:
+    """Resolve the PR, materialise its run, serve it — detached, or with
+    `foreground` in this process until the session ends. Returns the
+    exit code.
+
+    `argv` is this invocation's own arguments (`sys.argv[1:]`), which the
+    child re-executes with `--serve-run` appended; it reads the PR off
+    the run's `meta.json`, so a number the picker chose need not be in it.
 
     Exit codes:
-      0 — review completed cleanly (no unresolved local comments).
-      1 — graceful user-abort (no PR picked, posting cancelled, etc.).
-      2 — error condition: missing ``gh``, fetch failed, post failed,
-          or review completed with unresolved local comments.
+      0 — the server is reachable; stdout ends `viewer: <url>`, `run_id: <slug>`
+          (with `foreground`, begins with them, and the session has ended).
+      1 — graceful user-abort: no PR picked.
+      2 — error condition: missing ``gh``, fetch failed, or the server
+          did not start (its log is printed).
     """
     try:
         preflight_gh()
@@ -87,78 +77,31 @@ def run_pr_flow(opts: PrFlowOptions) -> int:
         return 2
 
     meta = json.loads(run_dir.meta.read_text(encoding="utf-8"))
-    head_sha = meta.get("headRefOid", "")
-    if not head_sha:
+    if not meta.get("headRefOid"):
         _err("scr pr: meta.json is missing headRefOid; can't anchor review")
         return 2
+    if foreground:
+        return runner.serve_foreground(
+            run_dir, opts.config, argv=argv, program="scr pr", github=pending_review.for_run(run_dir)
+        )
+    return runner.detach_server(run_dir, opts.config, argv=argv, program="scr pr")
 
-    tasks = build_server_tasks(run_dir, opts.config)
-    if not opts.config.augment:
-        ensure_augmented_diff(run_dir)
 
-    # `--yes` skips the modal entirely — server stays out of posting
-    # mode (Done = plain /exit) and the CLI does the post itself after
-    # serve_review returns. Default mode wires the callback + meta so
-    # the viewer's Done opens the confirm modal.
-    post_callback: PostCallable | None = None
-    post_meta: dict[str, Any] | None = None
-    if not opts.yes:
-        post_callback = _build_post_callback(opts.repo, number, run_dir)
-        post_meta = {
-            "repo": opts.repo,
-            "number": number,
-            "head_sha": head_sha,
-        }
-
-    result = serve_review(
-        run_dir,
-        opts.config,
-        tasks,
-        counterpart="github",
-        post=post_callback,
-        post_meta=post_meta,
-    )
-
-    posted: PostOutcome | None = result.posted
-
-    # CLI-side fallback for --yes: the server didn't post (we didn't
-    # wire it for that), so post everything ourselves now.
-    if posted is None and opts.yes:
-        mapped = comments_to_github(result.comments)
-        if not mapped:
-            _err(f"scr pr: no new local comments to post; comments are in {run_dir.comments}.")
-            return 0 if result.clean else 2
-        try:
-            posted = post_review_via_graphql(
-                opts.repo,
-                number,
-                mapped,
-                diff_text=run_dir.raw_diff.read_text(encoding="utf-8"),
-            )
-            CommentStore(run_dir.comments).mark_posted(posted.posted_node_ids)
-        except GhError as e:
-            _err(f"scr pr: posting failed: {e}")
-            _err(f"comments are still in {run_dir.comments} — re-run with --no-augment to retry.")
-            return 2
-
-    if posted is not None:
-        # Comments are on GitHub; the URL is the artefact. Keep stdout
-        # minimal so a slash command (or any downstream LLM) doesn't
-        # ingest the comment bodies and treat them as instructions.
-        sys.stdout.write(f"# Posted to {posted.review_url}\n")
-        word = "comment" if posted.posted == 1 else "comments"
-        sys.stdout.write(f"_{posted.posted} {word} posted._\n")
-        sys.stdout.flush()
-        _err(f"scr pr: posted {posted.posted} comment(s) — {posted.review_url}")
-        return 0 if result.clean else 2
-
-    # No post happened — modal cancelled, tab closed, --no-augment with
-    # no comments, etc. Dump the markdown so the user / a calling script
-    # has a record of what was being reviewed.
-    local_comments = [c for c in result.comments if c.source == "local"]
-    sys.stdout.write(format_markdown(local_comments, run_slug=run_dir.slug))
-    sys.stdout.flush()
-    return 0 if result.clean else 2
+def serve_pr_run(run_dir: paths.RunDir, cfg: ReviewConfig, *, argv: Sequence[str]) -> int:
+    """The detached server for a PR run: what `scr pr --serve-run` runs.
+    GitHub is the counterpart; the pending review is read off the run's
+    `meta.json`. `argv` is this process's own arguments, recorded for
+    `scr runs restart`.
+    """
+    if not run_dir.meta.exists():
+        _err(f"scr pr: {run_dir.path} is not a run directory")
+        return 2
+    try:
+        sink = pending_review.for_run(run_dir)
+    except ValueError as e:
+        _err(f"scr pr: {e}")
+        return 2
+    return runner.serve_run(run_dir, cfg, argv=argv, github=sink)
 
 
 def _resolve_pr_number(repo: str) -> tuple[int | None, int | None]:
@@ -189,37 +132,6 @@ def _resolve_pr_number(repo: str) -> tuple[int | None, int | None]:
     return None, picked
 
 
-def _build_post_callback(
-    repo: str,
-    number: int,
-    run_dir: paths.RunDir,
-) -> PostCallable:
-    """Closure the server fires on /post-review.
-
-    Reads the latest comments off ``comments.json`` (the store mutates
-    throughout the session), keeps every local comment whose id is in
-    ``selected_ids`` plus every non-local comment (needed for reply-
-    parent ``node_id`` lookups in :func:`comments_to_github`), maps,
-    and posts via GraphQL. Errors propagate; the server returns 500
-    to the modal so the reviewer sees the failure and can retry.
-    """
-
-    def post(selected_ids: list[str]) -> PostResult:
-        store = CommentStore(run_dir.comments)
-        all_comments = store.all()
-        selected = set(selected_ids)
-        filtered = [c for c in all_comments if c.source != "local" or c.id in selected]
-        mapped = comments_to_github(filtered)
-        # The raw diff is what GitHub will thread against; anchors are
-        # resolved to it before anything is written.
-        raw_diff = run_dir.raw_diff.read_text(encoding="utf-8")
-        result = post_review_via_graphql(repo, number, mapped, diff_text=raw_diff)
-        store.mark_posted(result.posted_node_ids)
-        return result
-
-    return post
-
-
 def _err(msg: str) -> None:
     """Write ``msg`` to stderr, appending a newline if missing, then flush."""
     if not msg.endswith("\n"):
@@ -228,4 +140,4 @@ def _err(msg: str) -> None:
     sys.stderr.flush()
 
 
-__all__ = ["PrFlowOptions", "run_pr_flow"]
+__all__ = ["PrFlowOptions", "run_pr_flow", "serve_pr_run"]

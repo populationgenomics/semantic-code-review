@@ -42,15 +42,65 @@ interface ViewerData {
    *  /data.json because the button is decided before augment finishes. */
   explainer?: boolean;
   /** Who the review's comments are for (ADR 0009). `claude` in review
-   *  mode: the Send surface and the listening indicator are mounted.
-   *  `github` in PR mode: Done and the post modal, as before. */
+   *  mode: the listening indicator is mounted beside Send all. `github`
+   *  in PR mode: Submit is, and a Send goes into the pending review. */
   counterpart: Counterpart;
   /** Whether a `--wait` is attached at first paint; `listening` SSE
    *  frames carry every change after. */
   listening: boolean;
+  /** PR mode only: the pending review at first paint; `pending-review`
+   *  SSE frames carry every change after. */
+  pending_review?: PendingReviewState;
 }
 
 type Counterpart = "claude" | "github";
+
+/** The pending review as the viewer shows it (PR mode): the comments
+ *  GitHub does not hold as they stand, the review's URL once submitted
+ *  and where from (`viewer`, or `github` when a reconciliation found it
+ *  published from GitHub's web UI), and how many pending comments have
+ *  no line in this diff. */
+interface PendingReviewState {
+  unsent: UnsentComment[];
+  submitted_url: string | null;
+  submitted_from: "viewer" | "github" | null;
+  unanchored: number;
+}
+
+/** `POST /reconcile`: the state as GitHub holds it now, plus per comment
+ *  id what the look found — `pending`, `submitted`, `removed` (a draft
+ *  again) or `deleted` (a deletion that turned out complete). */
+interface ReconcileResponse extends PendingReviewState {
+  outcomes: Record<string, "pending" | "submitted" | "removed" | "deleted">;
+}
+
+/** A sent comment GitHub refused, as Submit's refusal and the bar name
+ *  it. `deleted` marks a deletion GitHub has not applied yet — the row
+ *  is already gone from the page. */
+interface UnsentComment {
+  id: string;
+  file: string;
+  side: "old" | "new";
+  line: number;
+  body: string;
+  deleted: boolean;
+  error: string | null;
+}
+
+/** `POST /submit` on success. */
+interface SubmitResponse {
+  review_url: string;
+  event: ReviewEvent;
+  submitted: number;
+}
+
+type ReviewEvent = "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
+
+/** What a submit came back with: the review, or the refusal — a 409
+ *  names the unsent comments; anything else carries the message. */
+type SubmitOutcome =
+  | { ok: true; response: SubmitResponse }
+  | { ok: false; status: number; error: string; unsent: UnsentComment[]; submitted_url: string | null };
 
 /** Where a local comment stands towards its counterpart (ADR 0009). */
 type Delivery = "draft" | "sent" | "delivered";
@@ -303,6 +353,8 @@ interface SseListeningEvent {
   listening: boolean;
 }
 
+interface SsePendingReviewEvent extends PendingReviewState {}
+
 // --- Change explainer (ADR 0007) --------------------------------------------
 // The document served by GET /explainer, produced by POST
 // /explainer/skeleton, and fanned out as the `explainer` SSE frame so a
@@ -499,6 +551,17 @@ interface ReviewerComment {
   /** A delivered comment the reviewer deleted, kept server-side until
    *  its withdrawal is delivered. Never sent to the viewer. */
   withdrawn?: boolean;
+  /** PR mode: why GitHub refused the last delivery. Set, the comment is
+   *  *unsent*; cleared by a delivery that lands. */
+  send_error?: string | null;
+  /** PR mode: what happened on GitHub's side that the reviewer should
+   *  know — its pending twin was deleted there, so it is a draft again.
+   *  Cleared by the next Send. */
+  notice?: string | null;
+  /** GraphQL id of the review thread holding the comment — what resolve
+   *  and unresolve address. Set on ingested comments and once a local
+   *  one has reached the pending review. */
+  thread_id?: string | null;
   /** Display name of the author. Null for local comments (the
    *  reviewer is implicit). */
   author?: string | null;

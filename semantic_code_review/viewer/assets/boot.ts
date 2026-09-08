@@ -2,10 +2,10 @@
 //
 // Loads DATA from /data.json, wires the modules together in the right
 // order, and handles the few session-level pieces that don't naturally
-// belong to any single module: the counterpart's surface (the send bar
-// for Claude, the Done button for GitHub), SSE → patch dispatch, and
-// the per-event mutators that update DATA before delegating to the
-// right module.
+// belong to any single module: the counterpart's surface (the send bar,
+// shaped by whether Claude or GitHub is the counterpart), SSE → patch
+// dispatch, and the per-event mutators that update DATA before
+// delegating to the right module.
 
 import { Annotations } from "./annotations";
 import { Comments } from "./comments";
@@ -15,7 +15,6 @@ import { DebugDrawer } from "./debug_drawer";
 import { Explainer } from "./explainer";
 import { FileTextCache } from "./file_text";
 import { LayoutDividers } from "./layout_dividers";
-import { PostModal } from "./post_modal";
 import { Prefs } from "./prefs";
 import { Progress } from "./progress";
 import { Render } from "./render";
@@ -40,7 +39,7 @@ void Annotations;
 let DATA!: ViewerData;
 
 // SESSION_ENDPOINT is the prefix prepended to back-channel routes
-// (/exit, /comments, /events, /fold-summary). Empty string means
+// (/comments, /events, /fold-summary, /submit). Empty string means
 // "same origin" — the normal production path. The review server
 // always injects this meta tag; a missing tag is a broken shell, so
 // fail loud rather than silently wiring the back-channel off.
@@ -174,65 +173,26 @@ function installPrHeader(data: ViewerData): void {
 
 // --- The counterpart's surface ------------------------------------------
 // One fixed place in the `.pr-bar`, decided by who the comments are for
-// (ADR 0009). Claude: the send bar — Send all drafts and the listening
-// indicator; the session ends when the tab has been gone for the idle
-// period, so there is no Done. GitHub: Done and the post modal, until
-// slice 2 replaces them with Submit.
+// (ADR 0009). Claude: Send all drafts and the listening indicator.
+// GitHub: Send all drafts, the pending review's state and Submit. In
+// neither is there a Done: the session ends when the tab has been gone
+// for the idle period.
 
 function installCounterpartSurface(data: ViewerData): void {
   const bar = document.querySelector(".pr-bar");
   if (!bar) return;
-  if (data.counterpart === "claude") {
-    SendBar.install(bar, {
-      listening: data.listening,
-      draftCount: () => Comments.draftCount(),
-      sendAll: () => Comments.sendAll(),
-    });
-    return;
+  if (data.counterpart === "github" && !data.pending_review) {
+    throw new Error("/data.json carries no pending_review for the GitHub counterpart");
   }
-  installDoneButton(bar);
-}
-
-// Tells the review server we're finished. The server exits after this
-// fires; comments accumulated via Comments have already round-tripped on
-// each mutation. Single fetch, kept here rather than in comments.ts to
-// avoid coupling "I'm done" to the comment storage layer.
-function installDoneButton(bar: Element): void {
-  const endpoint = SESSION_ENDPOINT;
-  const btn = document.createElement("button");
-  btn.className = "done-btn";
-  btn.textContent = "Done";
-  btn.title = "Finish review and return comments to the caller";
-
-  // Default behaviour: POST /exit and let the server tear down. In
-  // `scr pr` mode, PostModal.install swaps this for an opener that
-  // pops the confirm-and-post modal first; the modal then triggers
-  // /exit itself once the reviewer either posts or closes it.
-  let onClick = (): void => {
-    btn.disabled = true;
-    btn.textContent = "Sending…";
-    fetch(`${endpoint}/exit`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    })
-      .catch(() => { /* server may exit before responding */ })
-      .finally(() => { btn.textContent = "Done ✓"; });
-  };
-
-  btn.addEventListener("click", () => onClick());
-  bar.appendChild(btn);
-
-  // Fire-and-forget: the modal infra is best-effort. If /post-config
-  // fails or the server isn't in posting mode, the default exit
-  // handler stays in place.
-  PostModal.install(endpoint).then((result) => {
-    if (result.onDoneClick) {
-      onClick = result.onDoneClick;
-      btn.title = "Review what will be posted before sending to GitHub";
-    }
-  }).catch((e) => {
-    console.warn("post modal: install failed, keeping default Done", e);
+  SendBar.install(bar, {
+    counterpart: data.counterpart,
+    listening: data.listening,
+    pendingReview: data.pending_review ?? null,
+    draftCount: () => Comments.draftCount(),
+    sendAll: () => Comments.sendAll(),
+    retry: () => Comments.retry(),
+    reconcile: () => Comments.reconcile(),
+    submit: (event, body) => Comments.submit(event, body),
   });
 }
 
@@ -295,10 +255,14 @@ function installSessionEvents(): void {
     debugLog: (payload) => DebugDrawer.onLog(payload),
     // The comment lifecycle (ADR 0009): every store change the session
     // makes — another tab's edit, a Send landing as delivered, Claude's
-    // reply, a withdrawal — and whether a `--wait` is attached.
+    // reply, a withdrawal, a Submit turning comments upstream — and
+    // whether a `--wait` is attached.
     comment: (payload) => Comments.onRemote(payload),
     commentDeleted: (payload) => Comments.onRemoved(payload.id),
     listening: (payload) => SendBar.setListening(payload.listening),
+    // PR mode: what GitHub does not hold as it stands, and the review
+    // once submitted.
+    pendingReview: (payload) => SendBar.setPendingReview(payload),
   });
 }
 

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import threading
 import time
 import urllib.request
@@ -49,13 +48,11 @@ def server(run_dir: paths.RunDir, tmp_path: Path):
         run_dir=run_dir,
         viewer_json={"version": "1", "files": [{"path": "a.py"}]},
         counterpart="claude",
+        argv=(),
         prefs_path=tmp_path / "prefs.json",
     )
     srv.start()
-    run_dir.server_json.write_text(
-        json.dumps({"port": srv.port, "pid": os.getpid(), "started_at": time.time(), "url": srv.url()}),
-        encoding="utf-8",
-    )
+    run_dir.server_json.write_text(json.dumps(srv.info.to_json()), encoding="utf-8")
     yield srv
     srv.stop()
     run_dir.server_json.unlink(missing_ok=True)

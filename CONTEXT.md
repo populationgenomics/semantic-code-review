@@ -27,13 +27,24 @@ overridable with `--runs-root`. Contents:
   so `RepoTools` (the MCP-exposed read_file / grep) can resolve paths
   during the LLM passes.
 - `comments.json` — the [[reviewer-comment]] store, with each comment's
-  lifecycle state and the last [[batch]] number assigned. Written by the
-  review server, and by `scr review --wait` once the server has gone.
-- `server.json` — `{port, pid, started_at, url}` of the review server
-  holding the run; present only while it runs (`serve_review` writes it
-  once bound and removes it on exit). How `scr review --wait` and
-  `scr comment` reach the server, and how a second `scr review` knows to
-  reuse it. `server.log` beside it is the detached server's stdio.
+  lifecycle state and the last [[batch]] number assigned; in PR mode
+  also the GitHub ids of a comment the [[pending-review]] holds
+  (`node_id`, `thread_id`) and why a delivery was refused
+  (`send_error`). Written by the review server, and by `scr review
+  --wait` once the server has gone. The pending review's own id is not
+  kept here: it is looked up on GitHub at start and on the first Send.
+- `server.json` — the review server holding the run (`stream.ServerInfo`):
+  `url`, `port`, `pid`, `started_at`; its build identity `version`,
+  `build` (`identity.this_build()` — a digest of the package's installed
+  location, the interpreter and the viewer bundle's mtime and size) and
+  `package`; `counterpart`; and `cwd` plus the server process's `argv`
+  (`--serve-run` form), which `scr runs restart` re-executes. Present
+  only while it runs (`serve_review` writes it once bound and removes
+  it on exit); `GET /health` answers the same plus `listening` and
+  `viewers`. How `scr review --wait` and `scr comment` reach the
+  server, and what a second `scr review` or `scr pr` reads to decide
+  whether to reuse it (`servers.clear_for`). `server.log` beside it is
+  the detached server's stdio.
 - `explainer.json` — the [[change-explainer]] document, when one has
   been generated. Absent until the reviewer asks for it; written and
   refilled section by section by the `serve_review` explainer routes.
@@ -123,7 +134,7 @@ model, concurrency, cache switches, port, idle timeout, browser,
 skip globs, extra-review prompt, client, debug, explainer on/off and
 its house style. Each flow's options type composes one as a `config`
 field and adds only its own source-side fields: `ReviewOptions` the
-[[run-spec]] endpoints, `PrFlowOptions` the repo/number/`--yes`.
+[[run-spec]] endpoints, `PrFlowOptions` the repo/number.
 
 The rule for what belongs in it is settings vs collaborators. A value
 the user chose travels in the config; a constructed object a flow hands
@@ -151,8 +162,10 @@ Two consumers derive from it rather than reading it whole:
 The state of one live review and the operations over it — `ReviewSession`
 in `review/session.py`. Holds the [[run-directory]], the [[viewer-data]]
 served as `/data.json`, the [[reviewer-comment]] store, its
-[[counterpart]], the `ServerTasks` once attached, and the guards that
-allow one console turn and one explainer pass at a time. It also holds
+[[counterpart]] — and, when that is GitHub, the `ReviewSink`
+(`review/pending_review.py`) every delivery goes through — the
+`ServerTasks` once attached, and the guards that allow one console turn
+and one explainer pass at a time. It also holds
 the stream to Claude: `wait_for_batch` (behind `GET /wait`) blocks until
 a [[batch]] is pending and hands the oldest over, marking it
 [[delivered]]; a Send wakes it; while one is blocked the session is
@@ -163,7 +176,10 @@ store method and fans the changed comments out (`comment`,
 `comment-deleted`). `review/server.py` is HTTP transport in front of it
 and holds no review state of its own: a route decodes the request, calls
 one session operation, and turns the result — or the failure — into a
-response.
+response. The server process keeps serving the build it started from,
+so it records that build in `server.json` and a later `scr review` /
+`scr pr` reuses it only when the build matches, stopping it otherwise
+(`review/servers.py`; `scr runs` manages the processes directly).
 
 Three rules make that split hold:
 
@@ -720,8 +736,9 @@ network refused is *unsent* and retried.
 **Delivered**
 A [[sent]] comment the [[counterpart]] holds: Claude has received the
 [[batch]] carrying it, or GitHub has it in the [[pending-review]]. An
-edit makes it a [[draft]] again, and re-sending delivers it as *revised*;
-deleting it delivers *withdrawn*.
+edit makes it a [[draft]] again, and re-sending delivers it as *revised*
+— in PR mode the edit is sent again on save, since the pending comment
+is editable in place; deleting it delivers *withdrawn*.
 _Avoid_: acknowledged, received
 
 **Batch**
@@ -740,7 +757,9 @@ only when Claude is asked to resume.
 GitHub's draft of a review: visible only to its author, its comments
 addable, editable and deletable until [[submit|submitted]]; one per user
 per PR. In PR mode it is where [[sent]] comments go; an existing one is
-resumed, not replaced.
+resumed, not replaced. GitHub is authoritative for it: the store
+reconciles to it on any sign of divergence (a refusal naming an unknown
+node, the Submit chooser opening, a Submit, the retry tick).
 _Avoid_: draft review (a [[draft]] is a comment the counterpart has not seen)
 
 **Submit**

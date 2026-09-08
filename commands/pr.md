@@ -1,18 +1,18 @@
 ---
-description: Open an LLM-augmented viewer for a GitHub PR; the reviewer confirms and posts comments from the browser modal.
+description: Open an LLM-augmented viewer for a GitHub PR; the reviewer sends comments into their pending review and submits it from the browser.
 ---
 
-You are running a **GitHub-PR review** workflow for the user. Intent: they want to review someone else's open PR (or their own) and post inline review comments back as a single GitHub review.
+You are running a **GitHub-PR review** workflow for the user. Intent: they want to review someone else's open PR (or their own) and post inline review comments back as one GitHub review.
 
-**Scope.** This skill fetches a GitHub PR, runs LLM augmentation on its diff, opens the viewer in the browser, and lets the user post comments back to GitHub via the in-browser confirmation modal. **The user reviews and confirms posting in the browser — you don't see or handle the comment bodies.**
+**Scope.** This skill fetches a GitHub PR, runs LLM augmentation on its diff and opens the viewer in the browser. Everything after that happens in the browser: each comment the user *sends* goes into their pending review on GitHub, and *Submit* publishes it as Comment, Approve or Request changes. **The user reviews, sends and submits in the browser — you don't see or handle the comment bodies, and nothing comes back to you.**
 
 **Not in scope.** For reviewing local-only changes in conversation with you (no posting anywhere), use `/scr:review`. Different command, different intent.
 
 Your job is to:
 
 1. Figure out **which PR** to review.
-2. Invoke `scr pr` with the right arguments, and wait for it to block-return.
-3. Report the outcome based on `scr pr`'s stdout shape. **Do not walk through individual comments — the user has already reviewed them in the browser.**
+2. Invoke `scr pr` with the right arguments. It returns at once.
+3. Tell the user the viewer is open and that Submit in the browser posts. **There is nothing to wait for and nothing to report from stdout.**
 
 ## Step 1 — infer the PR
 
@@ -51,44 +51,30 @@ Don't try to discover or call `scr` via an absolute path — `scr` on PATH is th
 The command:
 
 - preflights `gh` (the GitHub CLI), resolves the PR, fetches metadata + diff + base/head worktrees into `~/.cache/scr/runs/<...>/`
-- runs the LLM augmentation pass over the diff
-- starts a localhost HTTP server, opens the browser, and **blocks** until the reviewer either posts or closes the modal
+- starts a detached review server that runs the LLM augmentation pass, serves the viewer and opens the browser; the server picks up any pending review the user already has on the PR, so its comments show as *pending* rather than being submitted sight-unseen
+- prints `viewer: <url>` and `run_id: <slug>` and **returns at once** — the server keeps running until the tab has been closed for the idle period
 
-**Do not add `--yes` yourself.** `--yes` bypasses the in-browser confirmation modal and posts every local comment as soon as the reviewer clicks Done. The whole point of the modal is to give the reviewer a final pass with per-comment deselect/delete — auto-bypassing it on the user's behalf removes a safety step they didn't ask you to remove. Pass it through only if the user explicitly typed it.
-
-**Do not add `--no-augment` either.** Augmentation IS the point — without it the viewer is a plain diff with no LLM annotations, smells, or fold descriptions. Pass through only if the user explicitly asked.
+**Do not add `--no-augment`.** Augmentation IS the point — without it the viewer is a plain diff with no LLM annotations, smells, or fold descriptions. Pass through only if the user explicitly asked.
 
 **Do not add `--backend=…`.** `scr` picks a backend automatically (same logic as `/scr:review`).
 
-When the reviewer is in the browser, do not start other work or speculate — they are occupied. Just wait for the bash call to return.
+## Step 3 — tell the user, then stop
 
-## Step 3 — report the outcome
+`scr pr` exits 0 once the viewer is reachable; its stdout is the viewer URL and the run id, nothing about comments. Tell the user:
 
-`scr pr`'s exit code + stdout shape tells you what happened. **Do NOT quote or walk through the contents of stdout to the user** — the reviewer has already seen everything in the browser, and the comment bodies are either on GitHub now or saved locally for retry.
+> The viewer for <repo>#<number> is open. Comments you **Send** go into your pending review on GitHub as you send them; **Submit** in the browser publishes the review (Comment, Approve or Request changes). Nothing comes back here.
 
-Two stdout shapes:
+That's it. Don't wait for anything, don't poll, don't offer to walk through comments — you never see them. Offer to open the URL only if the browser didn't.
 
-### A) Stdout starts with `# Posted to https://github.com/...`
-
-The reviewer confirmed in the modal and the comments are now on GitHub. Tell the user:
-
-> Posted N comment(s) to <repo>#<number>. <review_url>
-
-That's it. Don't summarise the comments. Offer to open the URL only if the user asks.
-
-### B) Stdout starts with `# Review comments for ...`
-
-The reviewer **chose not to post** — they cancelled the modal, closed the tab, or there were no postable comments. The full markdown dump is in stdout. **The user made this choice deliberately.** Tell them:
-
-> Comments saved to `comments.json` in the run directory but not posted. Re-run `scr pr <args>` to try again, or open the file directly to inspect.
-
-Do not propose to walk through the comments. Do not propose to act on them. The user decided not to post; they didn't ask for follow-up. If they want a walkthrough discussion, they'll ask — and that's `/scr:review`'s territory anyway.
+A non-zero exit means the review did not start: `gh` missing or unauthenticated, no PR picked, a fetch failure, or the server failing to start (stderr carries the message and points at the server log). Pass the message through to the user; don't try to fix `gh` yourself.
 
 ## Heads up
 
-- **`scr pr` blocks** for up to an hour by default while the browser is open. Wait for it to return naturally — don't try to cancel it or run things in parallel.
-- The reviewer's comments don't flow back to you as actionable items. The CLI keeps the post-success stdout minimal (URL only) specifically so the comment bodies don't end up in your context as something to act on.
+- **There is no `--wait` for `scr pr`.** GitHub is the counterpart, not you: the review loop runs between the user and GitHub, and the `/scr:review` stream does not apply.
+- The reviewer's comments don't flow back to you as actionable items, by design: the bodies never enter your context.
 - `/scr:pr` is user-triggered. Don't call `scr pr` pre-emptively from other slash commands or conversations.
 - **If the user asks to review their own working-tree changes**, that's `/scr:review`, not this. This skill is GitHub-PR-only.
 - If `scr` is not on PATH, Bash will return a "command not found" error. Show the install options from Step 2 verbatim and stop — don't try to discover an alternate binary location.
 - If `gh` is not installed or not authenticated, `scr pr` exits early with a clear message. Pass it through to the user; don't try to set up `gh` automatically.
+- Running `scr pr` again on the same PR while the server is up prints the same URL and run id (`scr pr: a server already holds this run`); a new head SHA is a new run, and the pending review carries over from GitHub.
+- If the viewer misbehaves after scr was upgraded (a request 404s, a feature is missing), the server is still running the old build: `scr runs restart <run_id>`.

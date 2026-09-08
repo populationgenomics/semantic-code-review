@@ -1,19 +1,25 @@
-"""`scr pr` — review a GitHub PR; post the reviewer's comments back.
+"""`scr pr` — review a GitHub PR in the browser; Submit posts from there.
 
 This file is the argument-parsing shim. The orchestration lives in
 :mod:`semantic_code_review.review.pr_flow` so it stays testable without
-a Typer dependency.
+a Typer dependency. Two modes (ADR 0009): `scr pr <repo> [<number>]`
+materialises the run and detaches the server, printing the run id;
+`scr pr … --serve-run <slug>` is the detached server itself (hidden —
+`run_pr_flow` spawns it).
 """
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import typer
 
+from .. import paths
 from ..paths import default_runs_root
+from ..review import runner, servers
 from ..review.config import ReviewConfig
-from ..review.pr_flow import PrFlowOptions, run_pr_flow
+from ..review.pr_flow import PrFlowOptions, run_pr_flow, serve_pr_run
 from . import app
 from ._shared import (
     configure_logging,
@@ -69,16 +75,6 @@ def pr(
             "Overrides [augment].explainer_prompt."
         ),
     ),
-    yes: bool = typer.Option(
-        False,
-        "--yes",
-        help=(
-            "Skip the in-browser confirmation modal — post every local "
-            "comment as soon as the reviewer clicks Done. By default Done "
-            "opens a modal listing the comments-to-post with per-row "
-            "deselect/delete so the reviewer can prune before sending."
-        ),
-    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
     debug: bool = typer.Option(
         False,
@@ -86,9 +82,26 @@ def pr(
         envvar="SCR_DEBUG",
         help="Surface each CLI-backend subprocess spawn (raw argv + envelope) in the viewer's debug drawer.",
     ),
+    foreground: bool = typer.Option(
+        False,
+        runner.FOREGROUND_FLAG,
+        help=(
+            "Serve in this process instead of detaching: log to stderr, block until "
+            "Ctrl-C or the idle timeout. `viewer:` and `run_id:` are still printed first."
+        ),
+    ),
+    serve_run: str = typer.Option(None, servers.SERVE_RUN_FLAG, hidden=True),
 ) -> None:
-    """Review a GitHub PR; round-trip reviewer comments back as a single review."""
-    configure_logging(verbose)
+    """Review a GitHub PR in the browser; returns at once with the run id.
+
+    Comments you Send go into your pending review on GitHub as you send
+    them; Submit in the viewer publishes it. The review server detaches
+    and keeps running until the tab has been gone for the idle timeout.
+    """
+    configure_logging(verbose or foreground)
+    if foreground and serve_run is not None:
+        typer.echo(f"scr pr: {runner.FOREGROUND_FLAG} and {servers.SERVE_RUN_FLAG} are mutually exclusive", err=True)
+        raise typer.Exit(code=2)
 
     cfg = get_config()
     backend = cfg.resolve_backend(backend)
@@ -99,26 +112,27 @@ def pr(
     # before we spend time on PR resolution and worktree fetch.
     client = select_client(backend, model=model) if augment else None
 
-    opts = PrFlowOptions(
-        repo=repo,
-        number=number,
-        yes=yes,
-        config=ReviewConfig(
-            runs_root=runs_root or default_runs_root(),
-            augment=augment,
-            model=model,
-            concurrency=concurrency,
-            no_cache=no_cache,
-            cache_dir=cache_dir,
-            open_browser=not no_open,
-            port=port,
-            timeout=timeout,
-            extra_review_prompt=extra_review_prompt,
-            skip_globs=cfg.skip_globs,
-            explainer=cfg.explainer,
-            explainer_prompt=house_style,
-            client=client,
-            debug=debug,
-        ),
+    review_cfg = ReviewConfig(
+        runs_root=runs_root or default_runs_root(),
+        augment=augment,
+        model=model,
+        concurrency=concurrency,
+        no_cache=no_cache,
+        cache_dir=cache_dir,
+        open_browser=not no_open,
+        port=port,
+        timeout=timeout,
+        extra_review_prompt=extra_review_prompt,
+        skip_globs=cfg.skip_globs,
+        explainer=cfg.explainer,
+        explainer_prompt=house_style,
+        client=client,
+        debug=debug,
     )
-    raise typer.Exit(code=run_pr_flow(opts))
+    if serve_run is not None:
+        raise typer.Exit(
+            code=serve_pr_run(paths.RunDir(review_cfg.runs_root / serve_run), review_cfg, argv=sys.argv[1:])
+        )
+
+    opts = PrFlowOptions(repo=repo, number=number, config=review_cfg)
+    raise typer.Exit(code=run_pr_flow(opts, argv=sys.argv[1:], foreground=foreground))

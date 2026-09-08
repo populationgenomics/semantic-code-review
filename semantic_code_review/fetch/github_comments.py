@@ -112,6 +112,7 @@ query($owner:String!, $repo:String!, $number:Int!) {
       reviewThreads(first:100) {
         pageInfo { hasNextPage }
         nodes {
+          id
           isResolved
           comments(first:100) {
             pageInfo { hasNextPage }
@@ -128,15 +129,16 @@ query($owner:String!, $repo:String!, $number:Int!) {
 @dataclass(frozen=True)
 class _ReviewCommentMeta:
     """Per-comment metadata pulled from the GraphQL reviewThreads
-    query. Both fields are denormalised from the thread + the comment:
-    ``thread_resolved`` is the thread-level flag applied to every
-    member, ``node_id`` is the opaque GraphQL id (distinct from the
-    REST ``databaseId``) that mutations need when referencing this
-    comment as a reply parent.
+    query, denormalised from the thread + the comment: ``thread_resolved``
+    and ``thread_id`` are the thread's (what resolve / unresolve
+    address), applied to every member; ``node_id`` is the comment's
+    opaque GraphQL id (distinct from the REST ``databaseId``) that
+    mutations need when referencing it as a reply parent.
     """
 
     thread_resolved: bool
     node_id: str
+    thread_id: str | None = None
 
 
 def fetch_review_thread_metadata(ref: PRRef) -> dict[int, _ReviewCommentMeta]:
@@ -189,6 +191,7 @@ def fetch_review_thread_metadata(ref: PRRef) -> dict[int, _ReviewCommentMeta]:
         if not isinstance(t, dict):
             continue
         resolved = bool(t.get("isResolved"))
+        thread_id = t.get("id") if isinstance(t.get("id"), str) else None
         comments = t.get("comments") or {}
         if comments.get("pageInfo", {}).get("hasNextPage"):
             log.warning(
@@ -204,6 +207,7 @@ def fetch_review_thread_metadata(ref: PRRef) -> dict[int, _ReviewCommentMeta]:
                 out[dbid] = _ReviewCommentMeta(
                     thread_resolved=resolved,
                     node_id=node_id,
+                    thread_id=thread_id,
                 )
     return out
 
@@ -287,6 +291,7 @@ def fetch_pr_review_comments(ref: PRRef) -> list[Comment]:
                 if meta.thread_resolved:
                     c.thread_resolved = True
                 c.node_id = meta.node_id
+                c.thread_id = meta.thread_id
     return out
 
 
@@ -312,21 +317,29 @@ def decorate_with_head_anchors(
     head_sha: str,
     comments: list[Comment],
 ) -> None:
-    """Propagate every ingested side=new comment's anchor through to
-    ``head_sha`` and stamp ``head_line`` + ``anchor_status`` on each.
+    """Propagate every side=new comment written against a commit through
+    to ``head_sha`` and stamp ``head_line`` + ``anchor_status`` on each.
 
     Mutates the comments in place. side=old comments are pinned on the
     PR's base (which doesn't move for a non-rebased PR) so we skip them.
-    Session-local comments are already at head and skip too. The diff
-    for each ``(commit_id, path)`` is loaded once and reused across
-    every comment that shares the pair — one PR push typically leaves
-    a fistful of comments on the same file at the same commit.
+    A comment with no ``commit_id`` is at head already: an ingested one
+    is stamped anchored, a session-authored one (local, Claude's reply)
+    left alone. A local comment *with* a commit is one adopted from a
+    pending review and moves like an ingested one. The diff for each
+    ``(commit_id, path)`` is loaded once and reused across every comment
+    that shares the pair — one PR push typically leaves a fistful of
+    comments on the same file at the same commit.
     """
     diff_cache: dict[tuple[str, str], _PathDiff] = {}
     for c in comments:
-        if c.source != "github" or c.side != "new":
+        if c.side != "new":
             continue
-        if not c.commit_id or c.commit_id == head_sha:
+        if not c.commit_id:
+            if c.source == "github":
+                c.head_line = c.line
+                c.anchor_status = "anchored"
+            continue
+        if c.commit_id == head_sha:
             c.head_line = c.line
             c.anchor_status = "anchored"
             continue
@@ -341,8 +354,8 @@ def decorate_with_head_anchors(
 
 
 def fetch_comment_commits(repo_git: Path, comments: list[Comment]) -> set[str]:
-    """Shallow-fetch every distinct commit_id referenced by an ingested
-    comment, returning the set of SHAs now available in ``repo_git``.
+    """Shallow-fetch every distinct commit_id a comment carries,
+    returning the set of SHAs now available in ``repo_git``.
 
     Anchor propagation needs to diff each comment's commit_id against
     head_sha; only base_sha + head_sha are fetched by the run-dir
@@ -351,7 +364,7 @@ def fetch_comment_commits(repo_git: Path, comments: list[Comment]) -> set[str]:
     a 404 on one commit (force-push >90d ago) leaves the rest fetchable
     and the affected comments are marked orphaned downstream.
     """
-    wanted = sorted({c.commit_id for c in comments if c.commit_id and c.source == "github"})
+    wanted = sorted({c.commit_id for c in comments if c.commit_id})
     if not wanted:
         return set()
     return git_ops.try_fetch_depth1(repo_git, wanted)
