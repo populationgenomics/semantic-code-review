@@ -27,7 +27,7 @@ invocation's argv with `--runs-root <resolved> --serve-run <slug>`, a new
 session, stdio on the run dir's `server.log`), waits for `server.json`
 and returns; stdout ends `viewer: <url>` then `run_id: <slug>`; exit 0,
 or 2 with the log tail when the child dies before binding. The server
-writes `server.json` (`{port, pid, started_at, url}`) once bound and
+writes `server.json` (`{port, pid, started_at, url}`, later joined by the build identity `version, build, package, counterpart, cwd, argv`) once bound and
 removes it on exit; it exits after `--timeout` idle seconds with no
 request, no open viewer and no `--wait` attached. `scr review --wait
 <run_id> [--wait-timeout 540] [--runs-root …]` long-polls `GET
