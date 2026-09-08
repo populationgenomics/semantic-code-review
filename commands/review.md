@@ -168,6 +168,7 @@ The review is over: the tab has been closed for the idle period, or the server w
 ## Heads up
 
 - **`scr review` returns at once; `scr review --wait` is what blocks**, for up to 540 s per call, and only in the background. Never run `--wait` in the foreground as a way to "wait for the reviewer".
+- If the viewer misbehaves after scr was upgraded (a request 404s, a feature is missing), the server is still running the old build: `scr runs restart <run_id>`.
 - The reviewer can send at any time, including while you are working on an earlier batch. A batch landing is a background task completing; handle it at the next reasonable moment.
 - `/scr:review` is user-triggered. Don't call `scr review` pre-emptively from other slash commands or conversations.
 - **If the user asks to review a GitHub PR (URL or `owner/repo#N`), stop and tell them to use `/scr:pr` instead.** This skill only sees local changes and doesn't post anywhere; `/scr:pr` is the one that fetches a PR and round-trips comments back to GitHub.

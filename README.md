@@ -261,6 +261,39 @@ them on every push.
 - `scr config show | edit | path` — inspect or edit the config files.
 </details>
 
+### Running servers
+
+`scr review` and `scr pr` leave a review server running per run, and
+the CLI owns those processes:
+
+- `scr runs ps [--here] [--prune]` — every recorded server, one line
+  each: run id, state, URL, pid, uptime, version/build, counterpart,
+  whether a `--wait` is listening, how many tabs are open. All repos'
+  runs roots by default; `--here` for the current repo's. A server
+  whose process is gone shows as `stale` (removed with `--prune`); one
+  running a different build of scr than the CLI shows as
+  `other-build`.
+- `scr runs stop <run_id> | --all` — SIGTERM, then SIGKILL if it has
+  not gone within a few seconds. Exit 0 when a server was stopped, 1
+  when none was running.
+- `scr runs restart <run_id>` — stop it and start it again from the
+  installed build, with the arguments and working directory it was
+  started with. If the viewer misbehaves after upgrading scr, this is
+  the fix.
+- `scr runs logs <run_id> [-f]` — the server's log; `-f` follows until
+  it exits.
+- `scr review … --foreground` / `scr pr … --foreground` — serve in the
+  invoking process instead: logs to stderr, blocks until Ctrl-C or the
+  idle timeout. `viewer:` and `run_id:` are still printed first, and
+  `--wait` / `scr comment` reach it the same way.
+
+A second `scr review` or `scr pr` for a run a server already holds
+reuses that server only if it is the same build — the same installed
+package, interpreter and viewer bundle. A server of another build (two
+checkouts at one version, a re-installed venv, a rebuilt bundle) is
+stopped and a fresh one started, with a line on stderr saying so; a
+stale record is dropped.
+
 ### Where run artefacts live
 
 `scr` writes per-review state — a `meta.json`, the raw and augmented

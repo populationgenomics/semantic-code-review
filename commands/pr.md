@@ -77,3 +77,4 @@ A non-zero exit means the review did not start: `gh` missing or unauthenticated,
 - If `scr` is not on PATH, Bash will return a "command not found" error. Show the install options from Step 2 verbatim and stop — don't try to discover an alternate binary location.
 - If `gh` is not installed or not authenticated, `scr pr` exits early with a clear message. Pass it through to the user; don't try to set up `gh` automatically.
 - Running `scr pr` again on the same PR while the server is up prints the same URL and run id (`scr pr: a server already holds this run`); a new head SHA is a new run, and the pending review carries over from GitHub.
+- If the viewer misbehaves after scr was upgraded (a request 404s, a feature is missing), the server is still running the old build: `scr runs restart <run_id>`.

@@ -33,12 +33,18 @@ overridable with `--runs-root`. Contents:
   (`send_error`). Written by the review server, and by `scr review
   --wait` once the server has gone. The pending review's own id is not
   kept here: it is looked up on GitHub at start and on the first Send.
-- `server.json` — `{port, pid, started_at, url}` of the review server
-  holding the run; present only while it runs (`serve_review` writes it
-  once bound and removes it on exit). How `scr review --wait` and
-  `scr comment` reach the server, and how a second `scr review` or
-  `scr pr` knows to reuse it. `server.log` beside it is the detached
-  server's stdio.
+- `server.json` — the review server holding the run (`stream.ServerInfo`):
+  `url`, `port`, `pid`, `started_at`; its build identity `version`,
+  `build` (`identity.this_build()` — a digest of the package's installed
+  location, the interpreter and the viewer bundle's mtime and size) and
+  `package`; `counterpart`; and `cwd` plus the server process's `argv`
+  (`--serve-run` form), which `scr runs restart` re-executes. Present
+  only while it runs (`serve_review` writes it once bound and removes
+  it on exit); `GET /health` answers the same plus `listening` and
+  `viewers`. How `scr review --wait` and `scr comment` reach the
+  server, and what a second `scr review` or `scr pr` reads to decide
+  whether to reuse it (`servers.clear_for`). `server.log` beside it is
+  the detached server's stdio.
 - `explainer.json` — the [[change-explainer]] document, when one has
   been generated. Absent until the reviewer asks for it; written and
   refilled section by section by the `serve_review` explainer routes.
@@ -170,7 +176,10 @@ store method and fans the changed comments out (`comment`,
 `comment-deleted`). `review/server.py` is HTTP transport in front of it
 and holds no review state of its own: a route decodes the request, calls
 one session operation, and turns the result — or the failure — into a
-response.
+response. The server process keeps serving the build it started from,
+so it records that build in `server.json` and a later `scr review` /
+`scr pr` reuses it only when the build matches, stopping it otherwise
+(`review/servers.py`; `scr runs` manages the processes directly).
 
 Three rules make that split hold:
 
