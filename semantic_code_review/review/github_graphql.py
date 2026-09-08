@@ -96,10 +96,17 @@ def _gh_graphql(query: str, variables: dict[str, Any], *, tolerate_not_found: bo
     with a null element *and* a NOT_FOUND error beside the data; with
     this set, errors that are all NOT_FOUND leave the data to the caller.
 
+    gh exits non-zero whenever the envelope carries ``errors`` — including
+    the partial-success shape above, where the data is complete and the
+    errors are the answer — so the envelope is read before the exit code
+    is judged; the exit code alone decides only when there is no
+    envelope to read.
+
     Raises:
-        GitHubRefused: gh exited non-zero (which it does on GraphQL-level
-            errors too — a bad line anchor, an un-threadable reply), the
-            output was not JSON, or the envelope carried ``errors``.
+        GitHubRefused: gh exited non-zero with no JSON envelope (gh itself
+            failed: auth, network, a bad query), the output was not JSON,
+            or the envelope carried ``errors`` the caller does not
+            tolerate (a bad line anchor, an un-threadable reply).
     """
     args: list[str] = ["api", "graphql", "-f", f"query={query}"]
     for k, v in variables.items():
@@ -110,7 +117,20 @@ def _gh_graphql(query: str, variables: dict[str, Any], *, tolerate_not_found: bo
         else:
             args.extend(["-f", f"{k}={v}"])
     rc, stdout, stderr = git_ops.gh_capture(*args)
-    if rc != 0:
+    try:
+        body = json.loads(stdout) if stdout.strip() else None
+    except ValueError as e:
+        if rc != 0:
+            body = None
+        else:
+            log.error(
+                "gh api graphql returned unparseable JSON: %s\n  query: %s\n  stdout: %s",
+                e,
+                _compact_query(query),
+                stdout[:2000],
+            )
+            raise GitHubRefused(f"gh api graphql: unparseable JSON: {e}") from e
+    if rc != 0 and not (isinstance(body, dict) and ("data" in body or "errors" in body)):
         detail = stderr.strip() or stdout.strip() or f"exit {rc}"
         log.error(
             "gh api graphql failed (exit %s)\n  query: %s\n  variables: %s\n  stderr: %s\n  stdout: %s",
@@ -121,16 +141,6 @@ def _gh_graphql(query: str, variables: dict[str, Any], *, tolerate_not_found: bo
             stdout.strip(),
         )
         raise GitHubRefused(f"gh api graphql failed: {detail}", not_found=_is_not_found(detail))
-    try:
-        body = json.loads(stdout)
-    except ValueError as e:
-        log.error(
-            "gh api graphql returned unparseable JSON: %s\n  query: %s\n  stdout: %s",
-            e,
-            _compact_query(query),
-            stdout[:2000],
-        )
-        raise GitHubRefused(f"gh api graphql: unparseable JSON: {e}") from e
     if not isinstance(body, dict):
         log.error(
             "gh api graphql: expected object, got %s\n  query: %s\n  stdout: %s",

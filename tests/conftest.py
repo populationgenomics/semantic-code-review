@@ -102,6 +102,17 @@ class GhSequence:
         response = bucket.pop(0)
         if isinstance(response, GhFailure):
             return subprocess.CompletedProcess(args=["gh"], returncode=1, stdout="", stderr=response.stderr)
+        # As gh does: an envelope carrying `errors` exits 1 with the first
+        # message on stderr, the full envelope still on stdout.
+        errors = response.get("errors") if isinstance(response, dict) else None
+        if errors:
+            first = errors[0].get("message", "") if isinstance(errors[0], dict) else ""
+            return subprocess.CompletedProcess(
+                args=["gh"],
+                returncode=1,
+                stdout=json.dumps(response),
+                stderr=f"gh: {first}",
+            )
         return subprocess.CompletedProcess(args=["gh"], returncode=0, stdout=json.dumps(response), stderr="")
 
 

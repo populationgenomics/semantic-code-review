@@ -166,6 +166,52 @@ def test_reconciliation_reads_each_comments_standing_and_the_pr_state(gh: GhSequ
     assert gh.variables("query") == [{"owner": "o", "repo": "r", "number": "1"}]
 
 
+def test_reconciliation_survives_gh_exiting_one_on_a_partial_answer(gh: GhSequence) -> None:
+    """The live shape: gh exits 1 and puts 'Could not resolve to a node'
+    on stderr because the envelope carries a NOT_FOUND, while the data is
+    complete. That is an answer — the comment is gone — not a refusal."""
+    gh.expect(
+        "query",
+        {
+            "data": {
+                "viewer": {"login": "folded"},
+                "repository": {"pullRequest": {"id": "PR_1", "reviews": {"nodes": []}}},
+                "nodes": [None],
+            },
+            "errors": [
+                {
+                    "type": "NOT_FOUND",
+                    "path": ["nodes", 0],
+                    "locations": [{"line": 12, "column": 3}],
+                    "message": "Could not resolve to a node with the global id of 'PRRC_gone'.",
+                }
+            ],
+        },
+    )
+    result = gql.query_reconciliation("o/r", 1, ["PRRC_gone"])
+    assert result.state.pending_review_id is None
+    assert result.standing == {"PRRC_gone": None}
+
+
+def test_a_not_found_the_caller_does_not_tolerate_is_still_a_refusal(gh: GhSequence) -> None:
+    gh.expect(
+        "deletePullRequestReviewComment",
+        {
+            "data": {"deletePullRequestReviewComment": None},
+            "errors": [
+                {
+                    "type": "NOT_FOUND",
+                    "path": ["deletePullRequestReviewComment"],
+                    "message": "Could not resolve to a node with the global id of 'PRRC_gone'.",
+                }
+            ],
+        },
+    )
+    with pytest.raises(gql.GitHubRefused) as e:
+        gql.delete_review_comment("PRRC_gone")
+    assert e.value.not_found
+
+
 def test_reconciliation_with_nothing_to_ask_still_reads_the_pr_state(gh: GhSequence) -> None:
     response = _state()
     response["data"]["nodes"] = []
