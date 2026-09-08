@@ -146,9 +146,9 @@ def test_scr_pr_reuses_a_live_server(fake_gh: Path, tmp_path: Path, capsys) -> N
 def test_serve_pr_run_refuses_a_run_that_is_not_a_pr(tmp_path: Path, capsys) -> None:
     run_dir = paths.RunDir(tmp_path / "local-run").create()
     run_dir.meta.write_text(json.dumps({"title": "t", "headRefOid": "abc"}), encoding="utf-8")
-    assert pr_flow.serve_pr_run(run_dir, ReviewConfig(augment=False, open_browser=False)) == 2
+    assert pr_flow.serve_pr_run(run_dir, ReviewConfig(augment=False, open_browser=False), argv=()) == 2
     assert "no url" in capsys.readouterr().err
-    assert pr_flow.serve_pr_run(paths.RunDir(tmp_path / "nope"), ReviewConfig(augment=False)) == 2
+    assert pr_flow.serve_pr_run(paths.RunDir(tmp_path / "nope"), ReviewConfig(augment=False), argv=()) == 2
 
 
 def test_yes_is_no_longer_an_option() -> None:

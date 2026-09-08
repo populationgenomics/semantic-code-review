@@ -81,10 +81,11 @@ def run_pr_flow(opts: PrFlowOptions, *, argv: Sequence[str]) -> int:
     return runner.detach_server(run_dir, opts.config, argv=argv, program="scr pr")
 
 
-def serve_pr_run(run_dir: paths.RunDir, cfg: ReviewConfig) -> int:
+def serve_pr_run(run_dir: paths.RunDir, cfg: ReviewConfig, *, argv: Sequence[str]) -> int:
     """The detached server for a PR run: what `scr pr --serve-run` runs.
     GitHub is the counterpart; the pending review is read off the run's
-    `meta.json`.
+    `meta.json`. `argv` is this process's own arguments, recorded for
+    `scr runs restart`.
     """
     if not run_dir.meta.exists():
         _err(f"scr pr: {run_dir.path} is not a run directory")
@@ -94,7 +95,7 @@ def serve_pr_run(run_dir: paths.RunDir, cfg: ReviewConfig) -> int:
     except ValueError as e:
         _err(f"scr pr: {e}")
         return 2
-    return runner.serve_run(run_dir, cfg, github=sink)
+    return runner.serve_run(run_dir, cfg, argv=argv, github=sink)
 
 
 def _resolve_pr_number(repo: str) -> tuple[int | None, int | None]:

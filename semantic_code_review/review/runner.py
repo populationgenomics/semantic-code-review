@@ -230,13 +230,18 @@ def detach_server(run_dir: paths.RunDir, cfg: ReviewConfig, *, argv: Sequence[st
     return 0
 
 
-def serve_run(run_dir: paths.RunDir, cfg: ReviewConfig, *, github: ReviewSink | None = None) -> int:
+def serve_run(
+    run_dir: paths.RunDir, cfg: ReviewConfig, *, argv: Sequence[str], github: ReviewSink | None = None
+) -> int:
     """The detached server: serve an already-materialised run until the
     tab has been gone for the idle period. What `--serve-run` runs.
 
     With `github` the counterpart is GitHub (`scr pr`): the run's pending
     review is resumed before serving and Sends deliver into it. Without,
     Claude is: the comments reach it through `scr review --wait`.
+
+    `argv` is this process's own arguments after the program name
+    (`sys.argv[1:]`), recorded in `server.json` for `scr runs restart`.
 
     Prints nothing on stdout — nothing here is for the caller's process.
     """
@@ -251,7 +256,9 @@ def serve_run(run_dir: paths.RunDir, cfg: ReviewConfig, *, github: ReviewSink | 
     tasks = build_server_tasks(run_dir, cfg)
     if not cfg.augment:
         ensure_augmented_diff(run_dir)
-    serve_review(run_dir, cfg, tasks, counterpart="github" if github is not None else "claude", github=github)
+    serve_review(
+        run_dir, cfg, tasks, counterpart="github" if github is not None else "claude", argv=argv, github=github
+    )
     return 0
 
 
@@ -322,6 +329,7 @@ def serve_review(
     tasks: ServerTasks,
     *,
     counterpart: Counterpart,
+    argv: Sequence[str],
     github: ReviewSink | None = None,
     on_ready: Callable[[str], None] | None = None,
 ) -> ServeResult:
@@ -331,7 +339,9 @@ def serve_review(
     The session ends once the server has sat idle — no request, no open
     viewer, no `--wait` attached — for `cfg.timeout` seconds (or on
     `POST /exit`). While it runs, `server.json` in the run dir says how
-    to reach it; it is removed on the way out.
+    to reach it, which build it is and how to start it again (`argv`
+    is what `scr runs restart` re-executes; see `ReviewServer`); it is
+    removed on the way out.
 
     `github` is the [[pending-review]] when the counterpart is GitHub; an
     existing one is resumed before the server binds, so the first
@@ -361,6 +371,7 @@ def serve_review(
         run_dir=run_dir,
         viewer_json=viewer_json,
         counterpart=counterpart,
+        argv=argv,
         github=github,
         port=cfg.port,
         debug=cfg.debug,
@@ -436,12 +447,11 @@ def serve_review(
 
 
 def _write_server_json(run_dir: paths.RunDir, srv: ReviewServer) -> None:
-    """Record how to reach the server. Written whole then renamed, so a
-    reader never sees a torn record.
+    """Record the server (`stream.ServerInfo`). Written whole then
+    renamed, so a reader never sees a torn record.
     """
-    record = {"port": srv.port, "pid": os.getpid(), "started_at": time.time(), "url": srv.url()}
     tmp = run_dir.server_json.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    tmp.write_text(json.dumps(srv.info.to_json(), indent=2), encoding="utf-8")
     os.replace(tmp, run_dir.server_json)
 
 

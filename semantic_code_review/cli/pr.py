@@ -119,7 +119,9 @@ def pr(
         debug=debug,
     )
     if serve_run is not None:
-        raise typer.Exit(code=serve_pr_run(paths.RunDir(review_cfg.runs_root / serve_run), review_cfg))
+        raise typer.Exit(
+            code=serve_pr_run(paths.RunDir(review_cfg.runs_root / serve_run), review_cfg, argv=sys.argv[1:])
+        )
 
     opts = PrFlowOptions(repo=repo, number=number, config=review_cfg)
     raise typer.Exit(code=run_pr_flow(opts, argv=sys.argv[1:]))

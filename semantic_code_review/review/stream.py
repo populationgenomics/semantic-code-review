@@ -1,8 +1,9 @@
 """Reaching a detached review server: `server.json` and the client side
 of the stream to Claude (ADR 0009).
 
-A running server records `{port, pid, started_at, url}` in the
-[[run-directory]]'s `server.json` and removes it on exit. Anything that
+A running server records how to reach it, which build it is and how to
+start it again (`ServerInfo`) in the [[run-directory]]'s `server.json`,
+and removes it on exit. Anything that
 wants the server — `scr review` deciding whether one already holds the
 run, `scr review --wait`, `scr comment` — reads it here.
 
@@ -43,12 +44,27 @@ _ENDED_GRACE = 5.0
 
 @dataclasses.dataclass(frozen=True)
 class ServerInfo:
-    """What `server.json` says about the server holding a run."""
+    """What `server.json` says about the server holding a run: how to
+    reach it, which build it is, and how to start it again.
+
+    The identity fields (`version`, `build`, `package`) and the restart
+    fields (`counterpart`, `cwd`, `argv`) are None only in a record an
+    scr older than the build identity wrote; a server writes them all.
+    """
 
     url: str
     port: int
     pid: int
     started_at: float
+    version: str | None = None
+    #: `identity.BuildIdentity.build` of the serving process.
+    build: str | None = None
+    package: str | None = None
+    counterpart: str | None = None
+    #: The server process's working directory and its argv after the
+    #: program name — re-executed by `scr runs restart`.
+    cwd: str | None = None
+    argv: tuple[str, ...] | None = None
 
     @classmethod
     def from_json(cls, data: object) -> ServerInfo | None:
@@ -58,14 +74,31 @@ class ServerInfo:
         if not isinstance(data, dict):
             return None
         try:
+            argv = data.get("argv")
             return cls(
                 url=str(data["url"]),
                 port=int(data["port"]),
                 pid=int(data["pid"]),
                 started_at=float(data["started_at"]),
+                version=_optional_str(data.get("version")),
+                build=_optional_str(data.get("build")),
+                package=_optional_str(data.get("package")),
+                counterpart=_optional_str(data.get("counterpart")),
+                cwd=_optional_str(data.get("cwd")),
+                argv=None if argv is None else tuple(str(a) for a in argv),
             )
         except (KeyError, TypeError, ValueError):
             return None
+
+    def to_json(self) -> dict[str, Any]:
+        """The record as `server.json` and `GET /health` carry it."""
+        data = dataclasses.asdict(self)
+        data["argv"] = None if self.argv is None else list(self.argv)
+        return data
+
+
+def _optional_str(value: object) -> str | None:
+    return None if value is None else str(value)
 
 
 def read_server_info(run_dir: paths.RunDir) -> ServerInfo | None:

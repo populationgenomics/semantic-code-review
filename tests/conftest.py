@@ -12,7 +12,7 @@ through the bootstrap, so we have to arrange the build ourselves.
 
 The bundled output lives out-of-tree (alongside how `bin/scr` builds
 it) and is exposed via SCR_VIEWER_BUILD_DIR so the review server picks
-it up via `_resolve_asset`.
+it up via `viewer.static.resolve_asset`.
 """
 
 from __future__ import annotations
@@ -126,7 +126,7 @@ def _build_viewer_js() -> None:
 
     Output lands in a dedicated build dir under build/ (not the source
     tree) and is exposed via SCR_VIEWER_BUILD_DIR so the review
-    server's `_resolve_asset` picks it up. Skips silently if Node
+    server's `static.resolve_asset` picks it up. Skips silently if Node
     isn't available — tests that actually require the bundle will fail
     with a clear FileNotFoundError from the server.
     """

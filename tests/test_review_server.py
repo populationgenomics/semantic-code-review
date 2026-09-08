@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import queue
 import socket
 import struct
@@ -25,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from semantic_code_review import paths
+from semantic_code_review.review import identity, stream
 from semantic_code_review.review.comments import Comment, format_markdown
 from semantic_code_review.review.server import ReviewServer
 from semantic_code_review.review.session import ServerTasks
@@ -43,6 +45,7 @@ def server(run_dir: paths.RunDir, prefs_path: Path):
         run_dir=run_dir,
         viewer_json={"version": "1", "files": []},
         counterpart="claude",
+        argv=("review", "--serve-run", run_dir.slug),
         prefs_path=prefs_path,
     )
     srv.start()
@@ -231,7 +234,7 @@ def test_post_cannot_overwrite_ingested_comment(server, run_dir: paths.RunDir) -
         )
     )
     server.stop()
-    srv2 = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []}, counterpart="claude")
+    srv2 = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []}, counterpart="claude", argv=())
     srv2.start()
     try:
         try:
@@ -278,7 +281,7 @@ def test_delete_cannot_remove_ingested_comment(server, run_dir: paths.RunDir) ->
         )
     )
     server.stop()
-    srv2 = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []}, counterpart="claude")
+    srv2 = ReviewServer(run_dir=run_dir, viewer_json={"version": "1", "files": []}, counterpart="claude", argv=())
     srv2.start()
     try:
         conn = HTTPConnection("127.0.0.1", int(srv2.url().rsplit(":", 1)[1]), timeout=5)
@@ -526,6 +529,56 @@ def test_exit_beats_the_idle_countdown(server) -> None:
     _request(server.url() + "/exit", "POST", {})
     t.join(timeout=5.0)
     assert result["done"] is True
+
+
+# --- /health ------------------------------------------------------------
+
+
+def test_health_is_the_record_plus_what_the_server_is_doing(server, run_dir: paths.RunDir) -> None:
+    """`/health` carries `server.json`'s content — build identity, restart
+    argv — and the live state a `scr runs ps` row shows."""
+    this = identity.this_build()
+
+    code, body = _request(server.url() + "/health")
+
+    assert code == 200
+    assert body["run_id"] == run_dir.slug
+    assert body["url"] == server.url() and body["port"] == server.port and body["pid"] == os.getpid()
+    assert (body["version"], body["build"], body["package"]) == (this.version, this.build, this.package)
+    assert body["counterpart"] == "claude" and body["cwd"] == os.getcwd()
+    assert body["argv"] == ["review", "--serve-run", run_dir.slug]
+    assert body["listening"] is False and body["viewers"] == 0
+    assert body == {**server.info.to_json(), "run_id": run_dir.slug, "listening": False, "viewers": 0}
+    assert stream.ServerInfo.from_json(server.info.to_json()) == server.info
+
+
+def test_health_counts_tabs_and_listeners(server) -> None:
+    q: queue.Queue = queue.Queue()
+    with server.ctx.state_lock:
+        server.ctx.subscribers.append(q)
+    poller = threading.Thread(target=lambda: _request(server.url() + "/wait?timeout=1"), daemon=True)
+    poller.start()
+    for _ in range(100):
+        if server.session.listening:
+            break
+        time.sleep(0.01)
+
+    _, body = _request(server.url() + "/health")
+
+    assert body["viewers"] == 1 and body["listening"] is True
+    with server.ctx.state_lock:
+        server.ctx.subscribers.remove(q)
+    poller.join(timeout=5.0)
+
+
+def test_a_health_probe_does_not_hold_the_idle_clock(server) -> None:
+    """`scr runs ps` polling a server must not keep it alive."""
+    t, result = _spawn_waiter(server, timeout=0.3, idle_poll=0.02)
+    for _ in range(6):
+        _request(server.url() + "/health")
+        time.sleep(0.1)
+    t.join(timeout=1.0)
+    assert result["done"] is False
 
 
 # --- client hangups -----------------------------------------------------
@@ -794,6 +847,7 @@ def github_server(run_dir: paths.RunDir, prefs_path: Path):
         run_dir=run_dir,
         viewer_json={"version": "1", "files": []},
         counterpart="github",
+        argv=("pr", "o/r", "--serve-run", run_dir.slug),
         github=sink,
         prefs_path=prefs_path,
     )
@@ -988,6 +1042,7 @@ def test_serve_review_serves_pending_then_streams_and_finalises(run_dir: paths.R
             ReviewConfig(port=0, timeout=10, open_browser=False),
             ServerTasks(augment=fake_augment),
             counterpart="claude",
+            argv=(),
             on_ready=_on_ready,
         )
 
@@ -1041,6 +1096,7 @@ def test_serve_review_reports_the_idle_shutdown(run_dir: paths.RunDir, capsys) -
         ReviewConfig(port=0, timeout=1, open_browser=False),
         ServerTasks(),
         counterpart="claude",
+        argv=(),
     )
     assert result.clean is False
     assert "idle timeout — 1s with no request and no open viewer" in capsys.readouterr().err

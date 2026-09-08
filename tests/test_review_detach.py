@@ -9,6 +9,7 @@ removes the record. These spawn a real child on a tmp run dir.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -21,7 +22,7 @@ from typer.testing import CliRunner
 
 from semantic_code_review import paths
 from semantic_code_review.cli import app
-from semantic_code_review.review import runner, stream
+from semantic_code_review.review import identity, runner, stream
 from semantic_code_review.review.config import ReviewConfig
 
 
@@ -101,13 +102,35 @@ def test_run_review_returns_with_the_run_id_while_the_server_lives_on(repo: Path
     info = stream.read_server_info(run_dir)
     assert info is not None
     record = json.loads(run_dir.server_json.read_text(encoding="utf-8"))
-    assert set(record) == {"port", "pid", "started_at", "url"}
+    assert set(record) == {
+        "port",
+        "pid",
+        "started_at",
+        "url",
+        "version",
+        "build",
+        "package",
+        "counterpart",
+        "cwd",
+        "argv",
+    }
     assert info.pid != 0 and info.url.endswith(f":{info.port}")
     # The server is another process, reachable, and serving this run for Claude.
     with urllib.request.urlopen(info.url + "/data.json", timeout=5) as r:
         data = json.load(r)
     assert data["run_id"] == run_dir.slug
     assert data["counterpart"] == "claude"
+    # The child is this build, started from here, and knows how to come back.
+    this = identity.this_build()
+    assert (info.version, info.build, info.package) == (this.version, this.build, this.package)
+    assert info.counterpart == "claude" and info.cwd == os.getcwd()
+    assert info.argv is not None and info.argv[-2:] == ("--serve-run", run_dir.slug)
+    assert "--runs-root" in info.argv and "--no-augment" in info.argv
+    # /health says the same, plus what the server is doing now.
+    with urllib.request.urlopen(info.url + "/health", timeout=5) as r:
+        health = json.load(r)
+    assert health["build"] == this.build and health["run_id"] == run_dir.slug
+    assert health["listening"] is False and health["viewers"] == 0
 
     # No viewer, no --wait: the idle clock runs out and the record goes.
     _wait_until(lambda: not run_dir.server_json.exists(), what="idle shutdown", timeout=15)
@@ -137,7 +160,6 @@ def test_a_second_run_review_reuses_the_live_server(repo: Path, tmp_path: Path, 
 def test_a_sigterm_ends_the_session_cleanly(repo: Path, tmp_path: Path) -> None:
     """A `kill <pid>` of the recorded server takes the record with it, so
     the next `--wait` reads `ended` rather than a stale record."""
-    import os
     import signal
 
     runs_root = tmp_path / "runs"
@@ -191,7 +213,7 @@ def test_a_child_that_dies_is_reported_with_its_log(repo: Path, tmp_path: Path, 
 
 
 def test_serve_run_refuses_a_directory_that_is_not_a_run(tmp_path: Path, capsys) -> None:
-    code = runner.serve_run(paths.RunDir(tmp_path / "nope"), ReviewConfig(augment=False, open_browser=False))
+    code = runner.serve_run(paths.RunDir(tmp_path / "nope"), ReviewConfig(augment=False, open_browser=False), argv=())
     assert code == 2
     assert "not a run directory" in capsys.readouterr().err
 

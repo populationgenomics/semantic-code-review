@@ -157,7 +157,7 @@ def review(
         debug=debug,
     )
     if serve_run is not None:
-        raise typer.Exit(code=runner.serve_run(paths.RunDir(runs_root / serve_run), review_cfg))
+        raise typer.Exit(code=runner.serve_run(paths.RunDir(runs_root / serve_run), review_cfg, argv=sys.argv[1:]))
 
     opts = runner.ReviewOptions(
         spec=spec,

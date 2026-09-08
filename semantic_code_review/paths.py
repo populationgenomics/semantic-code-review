@@ -232,8 +232,9 @@ class RunDir:
 
     @property
     def server_json(self) -> Path:
-        """How to reach the review server while it runs: `{port, pid,
-        started_at, url}`. Present only while a server holds the run.
+        """The review server holding the run — how to reach it, which
+        build it is, how to start it again (`stream.ServerInfo`).
+        Present only while a server holds the run.
         """
         return self.path / "server.json"
 

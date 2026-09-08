@@ -252,7 +252,7 @@ def test_both_entry_paths_prepare_the_run_dir_the_same_way(run_dir, monkeypatch)
     served: list[object] = []
     monkeypatch.setattr(runner, "serve_review", lambda rd, *_a, **kw: served.append((rd, kw["counterpart"])))
 
-    assert pr_flow.serve_pr_run(run_dir, ReviewConfig(augment=False, open_browser=False)) == 0
+    assert pr_flow.serve_pr_run(run_dir, ReviewConfig(augment=False, open_browser=False), argv=()) == 0
 
     assert served == [(run_dir, "github")]
     assert run_dir.augmented.read_text(encoding="utf-8") == "diff --git a/a.py b/a.py\n"
