@@ -17,7 +17,7 @@ import typer
 
 from .. import paths
 from ..paths import default_runs_root
-from ..review import servers
+from ..review import runner, servers
 from ..review.config import ReviewConfig
 from ..review.pr_flow import PrFlowOptions, run_pr_flow, serve_pr_run
 from . import app
@@ -82,6 +82,14 @@ def pr(
         envvar="SCR_DEBUG",
         help="Surface each CLI-backend subprocess spawn (raw argv + envelope) in the viewer's debug drawer.",
     ),
+    foreground: bool = typer.Option(
+        False,
+        runner.FOREGROUND_FLAG,
+        help=(
+            "Serve in this process instead of detaching: log to stderr, block until "
+            "Ctrl-C or the idle timeout. `viewer:` and `run_id:` are still printed first."
+        ),
+    ),
     serve_run: str = typer.Option(None, servers.SERVE_RUN_FLAG, hidden=True),
 ) -> None:
     """Review a GitHub PR in the browser; returns at once with the run id.
@@ -90,7 +98,10 @@ def pr(
     them; Submit in the viewer publishes it. The review server detaches
     and keeps running until the tab has been gone for the idle timeout.
     """
-    configure_logging(verbose)
+    configure_logging(verbose or foreground)
+    if foreground and serve_run is not None:
+        typer.echo(f"scr pr: {runner.FOREGROUND_FLAG} and {servers.SERVE_RUN_FLAG} are mutually exclusive", err=True)
+        raise typer.Exit(code=2)
 
     cfg = get_config()
     backend = cfg.resolve_backend(backend)
@@ -124,4 +135,4 @@ def pr(
         )
 
     opts = PrFlowOptions(repo=repo, number=number, config=review_cfg)
-    raise typer.Exit(code=run_pr_flow(opts, argv=sys.argv[1:]))
+    raise typer.Exit(code=run_pr_flow(opts, argv=sys.argv[1:], foreground=foreground))

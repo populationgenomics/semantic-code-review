@@ -113,6 +113,14 @@ def review(
         "--wait-timeout",
         help="Seconds a --wait blocks before answering `nothing-yet`.",
     ),
+    foreground: bool = typer.Option(
+        False,
+        runner.FOREGROUND_FLAG,
+        help=(
+            "Serve in this process instead of detaching: log to stderr, block until "
+            "Ctrl-C or the idle timeout. `viewer:` and `run_id:` are still printed first."
+        ),
+    ),
     serve_run: str = typer.Option(None, servers.SERVE_RUN_FLAG, hidden=True),
 ) -> None:
     """Review a local git diff in the browser; returns at once with the run id.
@@ -121,13 +129,18 @@ def review(
     gone for the idle timeout. Comments the reviewer sends reach Claude
     through `scr review --wait <run_id>`.
     """
-    configure_logging(verbose)
+    configure_logging(verbose or foreground)
 
     runs_root = runs_root or default_runs_root()
     if wait is not None:
         raise typer.Exit(code=stream.run_wait(paths.RunDir(runs_root / wait), timeout=wait_timeout))
     if spec is None and serve_run is None:
         typer.echo("scr review: give a git ref or range to review", err=True)
+        raise typer.Exit(code=2)
+    if foreground and serve_run is not None:
+        typer.echo(
+            f"scr review: {runner.FOREGROUND_FLAG} and {servers.SERVE_RUN_FLAG} are mutually exclusive", err=True
+        )
         raise typer.Exit(code=2)
 
     cfg = get_config()
@@ -169,7 +182,7 @@ def review(
         config=review_cfg,
     )
     try:
-        code = runner.run_review(opts, argv=sys.argv[1:])
+        code = runner.run_review(opts, argv=sys.argv[1:], foreground=foreground)
     except EmptyDiff as e:
         # Empty-diff isn't an error — exit cleanly so calling scripts
         # ("review every commit on this branch") don't have to special-

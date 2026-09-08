@@ -144,9 +144,17 @@ def build_server_tasks(run_dir: paths.RunDir, cfg: ReviewConfig) -> ServerTasks:
     )
 
 
-def run_review(opts: ReviewOptions, *, argv: Sequence[str]) -> int:
-    """Materialise the run from a git ref/range, detach the review server,
-    print the run id. See `detach_server` for the child and the exit code.
+#: `scr review --foreground` / `scr pr --foreground`: serve in this process
+#: rather than detaching. Stripped from the argv `server.json` records, so
+#: `scr runs restart` brings the server back detached.
+FOREGROUND_FLAG = "--foreground"
+
+
+def run_review(opts: ReviewOptions, *, argv: Sequence[str], foreground: bool = False) -> int:
+    """Materialise the run from a git ref/range, then serve it: detached
+    (`detach_server`, printing the run id and returning) or, with
+    `foreground`, in this process until the session ends
+    (`serve_foreground`). Returns the exit code.
     """
     cfg = opts.config
     run_dir = materialize_local_diff_run(
@@ -158,6 +166,8 @@ def run_review(opts: ReviewOptions, *, argv: Sequence[str]) -> int:
         no_unstaged=opts.no_unstaged,
         spec_md_path=opts.spec_markdown,
     )
+    if foreground:
+        return serve_foreground(run_dir, cfg, argv=argv, program="scr review")
     return detach_server(run_dir, cfg, argv=argv, program="scr review")
 
 
@@ -208,20 +218,52 @@ def serve_argv(argv: Sequence[str], cfg: ReviewConfig, run_dir: paths.RunDir) ->
     return [*argv, "--runs-root", str(cfg.runs_root), servers.SERVE_RUN_FLAG, run_dir.slug]
 
 
-def serve_run(
-    run_dir: paths.RunDir, cfg: ReviewConfig, *, argv: Sequence[str], github: ReviewSink | None = None
+def serve_foreground(
+    run_dir: paths.RunDir, cfg: ReviewConfig, *, argv: Sequence[str], program: str, github: ReviewSink | None = None
 ) -> int:
-    """The detached server: serve an already-materialised run until the
-    tab has been gone for the idle period. What `--serve-run` runs.
+    """`--foreground`: serve a materialised run in this process until the
+    session ends — the idle clock, `POST /exit`, SIGTERM or Ctrl-C — and
+    exit 0. Stdout begins with the same `viewer:` / `run_id:` lines the
+    detached form prints, so a script can still read them.
+
+    `server.json` is written as for a detached server (`--wait` and `scr
+    comment` reach it the same way) and removed on exit; its argv is the
+    `--serve-run` form, so `scr runs restart` brings the server back
+    detached. A server already holding the run is stopped first,
+    whatever its build: this process was asked to be the server.
+    """
+    servers.clear_for(run_dir, this=identity.this_build(), program=program, err=sys.stderr, reuse=False)
+    record_argv = serve_argv([a for a in argv if a != FOREGROUND_FLAG], cfg, run_dir)
+    try:
+        return serve_run(
+            run_dir, cfg, argv=record_argv, github=github, on_ready=lambda url: _print_run_id(run_dir, url)
+        )
+    except KeyboardInterrupt:
+        sys.stderr.write(f"{program}: interrupted; the server has stopped\n")
+        sys.stderr.flush()
+        return 0
+
+
+def serve_run(
+    run_dir: paths.RunDir,
+    cfg: ReviewConfig,
+    *,
+    argv: Sequence[str],
+    github: ReviewSink | None = None,
+    on_ready: Callable[[str], None] | None = None,
+) -> int:
+    """Serve an already-materialised run until the tab has been gone for
+    the idle period. What `--serve-run` runs as the detached server, and
+    what `serve_foreground` runs in the invoking process.
 
     With `github` the counterpart is GitHub (`scr pr`): the run's pending
     review is resumed before serving and Sends deliver into it. Without,
     Claude is: the comments reach it through `scr review --wait`.
 
-    `argv` is this process's own arguments after the program name
-    (`sys.argv[1:]`), recorded in `server.json` for `scr runs restart`.
-
-    Prints nothing on stdout — nothing here is for the caller's process.
+    `argv` is what `server.json` records for `scr runs restart`: the
+    detached server's own arguments (`sys.argv[1:]`). `on_ready` runs
+    with the URL once the server is reachable; the detached server has
+    none — nothing it prints is for the caller's process.
     """
     if not run_dir.meta.exists():
         sys.stderr.write(f"scr: {run_dir.path} is not a run directory\n")
@@ -235,7 +277,13 @@ def serve_run(
     if not cfg.augment:
         ensure_augmented_diff(run_dir)
     serve_review(
-        run_dir, cfg, tasks, counterpart="github" if github is not None else "claude", argv=argv, github=github
+        run_dir,
+        cfg,
+        tasks,
+        counterpart="github" if github is not None else "claude",
+        argv=argv,
+        github=github,
+        on_ready=on_ready,
     )
     return 0
 

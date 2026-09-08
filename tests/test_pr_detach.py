@@ -90,8 +90,10 @@ def _wait_until(predicate, *, what: str, timeout: float) -> None:
     raise AssertionError(f"timed out waiting for {what}")
 
 
-def _run_pr(runs_root: Path, *, idle_timeout: int) -> int:
+def _run_pr(runs_root: Path, *, idle_timeout: int, foreground: bool = False) -> int:
     argv = ["pr", "o/r", "--no-augment", "--no-open", "--timeout", str(idle_timeout)]
+    if foreground:
+        argv.append("--foreground")
     opts = pr_flow.PrFlowOptions(
         repo="o/r",
         number=7,
@@ -101,7 +103,7 @@ def _run_pr(runs_root: Path, *, idle_timeout: int) -> int:
         patch.object(pr_flow, "preflight_gh", lambda: None),
         patch.object(pr_flow, "materialize_github_pr_run", lambda _url, root: _fake_materialize(root)),
     ):
-        return pr_flow.run_pr_flow(opts, argv=argv)
+        return pr_flow.run_pr_flow(opts, argv=argv, foreground=foreground)
 
 
 def test_scr_pr_returns_with_the_run_id_while_the_server_serves_github_mode(
@@ -141,6 +143,30 @@ def test_scr_pr_reuses_a_live_server(fake_gh: Path, tmp_path: Path, capsys) -> N
     assert "scr pr: a server already holds this run" in captured.err
     assert stream.read_server_info(paths.RunDir(runs_root / "o-r-pr7-abc12345")) == first
     _wait_until(lambda: not (runs_root / "o-r-pr7-abc12345" / "server.json").exists(), what="idle shutdown", timeout=15)
+
+
+def test_scr_pr_foreground_serves_github_mode_in_this_process(fake_gh: Path, tmp_path: Path, capsys) -> None:
+    """`--foreground` on `scr pr`: no child; GitHub is still the counterpart,
+    and the record's argv is the detached form for `scr runs restart`."""
+    runs_root = tmp_path / "runs"
+    run_dir = paths.RunDir(runs_root / "o-r-pr7-abc12345")
+    seen: dict = {}
+
+    def probe(url: str) -> None:
+        seen["info"] = stream.read_server_info(run_dir)
+        with urllib.request.urlopen(url + "/health", timeout=5) as r:
+            seen["health"] = json.load(r)
+
+    with patch.object(pr_flow.runner, "_print_run_id", lambda rd, url: (probe(url), print(f"run_id: {rd.slug}"))):
+        code = _run_pr(runs_root, idle_timeout=1, foreground=True)
+
+    assert code == 0
+    assert capsys.readouterr().out.splitlines()[0] == f"run_id: {run_dir.slug}"
+    assert seen["health"]["counterpart"] == "github" and seen["health"]["pid"] == os.getpid()
+    info = seen["info"]
+    assert info is not None and "--foreground" not in info.argv and info.argv[-2:] == ("--serve-run", run_dir.slug)
+    assert not run_dir.server_json.exists()
+    assert "api graphql" in fake_gh.read_text(encoding="utf-8")
 
 
 def test_serve_pr_run_refuses_a_run_that_is_not_a_pr(tmp_path: Path, capsys) -> None:

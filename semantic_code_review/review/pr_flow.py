@@ -40,8 +40,9 @@ class PrFlowOptions:
     config: ReviewConfig
 
 
-def run_pr_flow(opts: PrFlowOptions, *, argv: Sequence[str]) -> int:
-    """Resolve the PR, materialise its run, detach the server. Returns the
+def run_pr_flow(opts: PrFlowOptions, *, argv: Sequence[str], foreground: bool = False) -> int:
+    """Resolve the PR, materialise its run, serve it — detached, or with
+    `foreground` in this process until the session ends. Returns the
     exit code.
 
     `argv` is this invocation's own arguments (`sys.argv[1:]`), which the
@@ -49,7 +50,8 @@ def run_pr_flow(opts: PrFlowOptions, *, argv: Sequence[str]) -> int:
     the run's `meta.json`, so a number the picker chose need not be in it.
 
     Exit codes:
-      0 — the server is reachable; stdout ends `viewer: <url>`, `run_id: <slug>`.
+      0 — the server is reachable; stdout ends `viewer: <url>`, `run_id: <slug>`
+          (with `foreground`, begins with them, and the session has ended).
       1 — graceful user-abort: no PR picked.
       2 — error condition: missing ``gh``, fetch failed, or the server
           did not start (its log is printed).
@@ -78,6 +80,10 @@ def run_pr_flow(opts: PrFlowOptions, *, argv: Sequence[str]) -> int:
     if not meta.get("headRefOid"):
         _err("scr pr: meta.json is missing headRefOid; can't anchor review")
         return 2
+    if foreground:
+        return runner.serve_foreground(
+            run_dir, opts.config, argv=argv, program="scr pr", github=pending_review.for_run(run_dir)
+        )
     return runner.detach_server(run_dir, opts.config, argv=argv, program="scr pr")
 
 
