@@ -127,6 +127,17 @@ function submit(event: ReviewEvent, body: string): Promise<SubmitOutcome> {
   return _store.submit(event, body);
 }
 
+/** PR mode: re-derive the pending review from GitHub before showing what
+ *  Submit would publish. The comments' new states arrive as `comment`
+ *  frames; the store here is repainted so the list reads from it. */
+function reconcile(): Promise<ReconcileResponse | null> {
+  return _store.reconcile().then((result) => {
+    renderAll();
+    _onChange?.();
+    return result;
+  });
+}
+
 /** The server states a comment (a `comment` SSE frame): another tab's
  *  edit, a Send landing as delivered, Claude's reply. */
 function onRemote(c: ReviewerComment): void {
@@ -219,6 +230,64 @@ function threadsFor(file: string): ThreadSummary[] {
     }
   }
   return out.sort((a, b) => a.line - b.line || (a.side === b.side ? 0 : a.side === "old" ? -1 : 1));
+}
+
+/** One comment the pending review holds, as the Submit chooser lists
+ *  what it would publish: the label row's summary (its own first line,
+ *  its thread's id and state) and the reply relation. */
+export interface PendingSummary {
+  file: string;
+  thread: ThreadSummary;
+  isReply: boolean;
+  /** The first line of what a reply answers, or null for a root. */
+  parentText: string | null;
+  body: string;
+}
+
+/** Every local comment GitHub holds in the pending review, thread by
+ *  thread in file and line order (the old side before the new on a tie),
+ *  each root followed by its replies in the order written. */
+function pendingSummaries(): PendingSummary[] {
+  const all = _store.getAll();
+  const byId = new Map(all.map((c) => [c.id, c] as const));
+  const rootOf = (c: ReviewerComment): ReviewerComment => {
+    let cur = c;
+    const seen = new Set<string>();
+    while (cur.in_reply_to_id && byId.has(cur.in_reply_to_id) && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      cur = byId.get(cur.in_reply_to_id)!;
+    }
+    return cur;
+  };
+  const pending = all.filter((c) => !_isIngested(c) && _deliveryOf(c) === "delivered");
+  type Keyed = PendingSummary & { rootLine: number; rootSide: string; rootCreated: number; created: number };
+  const out: Keyed[] = [];
+  for (const c of pending) {
+    const ln = _displayLine(c);
+    if (ln == null) continue;
+    const root = rootOf(c);
+    const parent = c.in_reply_to_id ? byId.get(c.in_reply_to_id) : undefined;
+    out.push({
+      file: c.file,
+      thread: {
+        id: root.id, side: c.side, line: ln, text: _firstLine(c.body),
+        resolved: Boolean(root.thread_resolved), derivedFrom: c.derived_from ?? null,
+      },
+      isReply: Boolean(parent),
+      parentText: parent ? _firstLine(parent.body) : null,
+      body: c.body,
+      rootLine: _displayLine(root) ?? ln,
+      rootSide: root.side,
+      rootCreated: root.created_at || 0,
+      created: c.created_at || 0,
+    });
+  }
+  out.sort((a, b) =>
+    a.file.localeCompare(b.file) || a.rootLine - b.rootLine
+    || (a.rootSide === b.rootSide ? 0 : a.rootSide === "old" ? -1 : 1)
+    || a.rootCreated - b.rootCreated || a.thread.id.localeCompare(b.thread.id)
+    || Number(a.isReply) - Number(b.isReply) || a.created - b.created);
+  return out.map(({ rootLine: _l, rootSide: _s, rootCreated: _r, created: _c, ...summary }) => summary);
 }
 
 function _firstLine(body: string): string {
@@ -656,6 +725,13 @@ function _buildEntry(c: ReviewerComment, isReply: boolean, actions: EntryActions
   }
   for (const control of actions.trailing ?? []) bar.appendChild(control);
   if (bar.childElementCount) entry.appendChild(bar);
+  if (c.notice) {
+    // What happened to the comment on GitHub's side (its pending twin was
+    // deleted there): text, not colour, under the row it concerns.
+    const notice = _el("p", "comment-notice", c.notice);
+    notice.setAttribute("role", "alert");
+    entry.appendChild(notice);
+  }
   if (actions.notice) entry.appendChild(actions.notice);
   return entry;
 }
@@ -909,6 +985,8 @@ export const Comments = {
   sendAll,
   retry,
   submit,
+  reconcile,
+  pendingSummaries,
   onRemote,
   onRemoved,
 };

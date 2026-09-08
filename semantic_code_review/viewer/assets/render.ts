@@ -1345,6 +1345,21 @@ function _revealThread(f: FileBlock, thread: ThreadSummary, scope: PaneScope): v
   if (target) target.scrollIntoView({ block: "nearest" });
 }
 
+/** A thread's label row for a surface outside the diff — the Submit
+ *  chooser lists what it would publish this way — with the reveal that
+ *  opens the file and hunk carrying the thread and scrolls to it.
+ *  `thread.text` is whatever the caller wants read (a reply's own first
+ *  line), `thread.id` the rendered thread row to find. */
+function renderCommentLabel(file: string, thread: ThreadSummary): HTMLElement {
+  return _renderCommentLabel(thread, () => revealThread(file, thread));
+}
+
+function revealThread(file: string, thread: ThreadSummary): void {
+  const f = _data.files.find((x) => x.path === file);
+  if (!f) return;
+  _revealThread(f, thread, _state.mode === "overview" ? _panelScope : _diffScope());
+}
+
 /** Rebuild what the comment store feeds, in place: the manifests under
  *  collapsed hunk and file headers, and every fold box's label tree
  *  (re-attaching the fold chrome rebuilds them in the state the rows are
@@ -2410,5 +2425,7 @@ export const Render = {
   clearRenderedDiffCache,
   attachFileFolds,
   refreshCommentManifests,
+  renderCommentLabel,
+  revealThread,
   setSymbolSearch,
 };

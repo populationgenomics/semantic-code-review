@@ -56,12 +56,22 @@ interface ViewerData {
 type Counterpart = "claude" | "github";
 
 /** The pending review as the viewer shows it (PR mode): the comments
- *  GitHub does not hold as they stand, the review's URL once submitted,
- *  and how many pending comments have no line in this diff. */
+ *  GitHub does not hold as they stand, the review's URL once submitted
+ *  and where from (`viewer`, or `github` when a reconciliation found it
+ *  published from GitHub's web UI), and how many pending comments have
+ *  no line in this diff. */
 interface PendingReviewState {
   unsent: UnsentComment[];
   submitted_url: string | null;
+  submitted_from: "viewer" | "github" | null;
   unanchored: number;
+}
+
+/** `POST /reconcile`: the state as GitHub holds it now, plus per comment
+ *  id what the look found — `pending`, `submitted`, `removed` (a draft
+ *  again) or `deleted` (a deletion that turned out complete). */
+interface ReconcileResponse extends PendingReviewState {
+  outcomes: Record<string, "pending" | "submitted" | "removed" | "deleted">;
 }
 
 /** A sent comment GitHub refused, as Submit's refusal and the bar name
@@ -90,7 +100,7 @@ type ReviewEvent = "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
  *  names the unsent comments; anything else carries the message. */
 type SubmitOutcome =
   | { ok: true; response: SubmitResponse }
-  | { ok: false; status: number; error: string; unsent: UnsentComment[] };
+  | { ok: false; status: number; error: string; unsent: UnsentComment[]; submitted_url: string | null };
 
 /** Where a local comment stands towards its counterpart (ADR 0009). */
 type Delivery = "draft" | "sent" | "delivered";
@@ -544,6 +554,10 @@ interface ReviewerComment {
   /** PR mode: why GitHub refused the last delivery. Set, the comment is
    *  *unsent*; cleared by a delivery that lands. */
   send_error?: string | null;
+  /** PR mode: what happened on GitHub's side that the reviewer should
+   *  know — its pending twin was deleted there, so it is a draft again.
+   *  Cleared by the next Send. */
+  notice?: string | null;
   /** GraphQL id of the review thread holding the comment — what resolve
    *  and unresolve address. Set on ingested comments and once a local
    *  one has reached the pending review. */

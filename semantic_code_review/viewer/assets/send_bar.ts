@@ -2,13 +2,17 @@
 // 0009): *Send all drafts* with the count of unsent drafts, and beside
 // it what the counterpart decides. Claude: whether it is listening.
 // GitHub: the pending review's state (how many comments GitHub refused,
-// retried on an interval), *Submit* with its chooser — Comment / Approve
-// / Request changes and an optional body — and the review's link once
-// it is published.
+// retried on an interval), *Submit* with its chooser — what it would
+// publish, listed as GitHub holds it at that moment; Comment / Approve /
+// Request changes; an optional body — and the review's link once it is
+// published, from here or from GitHub.
 //
 // State is carried in text and shape, never in colour alone: the
 // listening glyph is a filled disc or a hollow ring, the unsent count is
-// a number, the submitted review a link.
+// a number, the submitted review a link, a notice a line of text.
+
+import { Comments, type PendingSummary } from "./comments";
+import { Render } from "./render";
 
 interface SendBarOptions {
   counterpart: Counterpart;
@@ -22,12 +26,17 @@ interface SendBarOptions {
   sendAll: () => Promise<void>;
   /** PR mode: deliver every unsent comment again. */
   retry: () => Promise<PendingReviewState | null>;
+  /** PR mode: re-derive the pending review from GitHub; null when it
+   *  could not be reached. */
+  reconcile: () => Promise<ReconcileResponse | null>;
   /** PR mode: publish the pending review. */
   submit: (event: ReviewEvent, body: string) => Promise<SubmitOutcome>;
 }
 
 /** How often unsent comments are retried while the tab is open. */
 export const RETRY_INTERVAL_MS = 30_000;
+
+const EMPTY_REVIEW: PendingReviewState = { unsent: [], submitted_url: null, submitted_from: null, unanchored: 0 };
 
 const EVENTS: ReadonlyArray<{ value: ReviewEvent; label: string; hint: string }> = [
   { value: "COMMENT", label: "Comment", hint: "Publish the comments without a verdict" },
@@ -41,9 +50,7 @@ let _indicator: HTMLElement | null = null;
 let _status: HTMLElement | null = null;
 let _link: HTMLAnchorElement | null = null;
 let _submitButton: HTMLButtonElement | null = null;
-let _chooser: HTMLElement | null = null;
-let _chooserError: HTMLElement | null = null;
-let _chooserNote: HTMLElement | null = null;
+let _chooser: Chooser | null = null;
 let _opts: SendBarOptions | null = null;
 let _pending: PendingReviewState | null = null;
 let _retryTimer: ReturnType<typeof setInterval> | null = null;
@@ -68,7 +75,6 @@ function install(bar: Element, opts: SendBarOptions): void {
     _link.className = "submitted-review-link hidden";
     _link.target = "_blank";
     _link.rel = "noopener noreferrer";
-    _link.textContent = "Review submitted ↗";
     root.appendChild(_link);
   }
 
@@ -92,19 +98,20 @@ function install(bar: Element, opts: SendBarOptions): void {
     _submitButton.title = "Publish your pending review on GitHub";
     _submitButton.addEventListener("click", (e) => {
       e.stopPropagation();
-      toggleChooser();
+      if (_chooser?.isOpen()) _chooser.hide();
+      else openChooser();
     });
     root.appendChild(_submitButton);
     _chooser = buildChooser();
-    root.appendChild(_chooser);
+    root.appendChild(_chooser.root);
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && _chooser && !_chooser.classList.contains("hidden")) hideChooser();
+      if (e.key === "Escape" && _chooser?.isOpen()) _chooser.hide();
     });
   }
 
   bar.appendChild(root);
   if (opts.counterpart === "claude") setListening(opts.listening);
-  else setPendingReview(opts.pendingReview ?? { unsent: [], submitted_url: null, unanchored: 0 });
+  else setPendingReview(opts.pendingReview ?? EMPTY_REVIEW);
   refresh();
 }
 
@@ -116,7 +123,7 @@ function refresh(): void {
   _button.disabled = n === 0;
   const where = _opts.counterpart === "claude" ? "to Claude as one batch" : "to your pending review on GitHub";
   _button.title = n === 0 ? "No drafts to send" : `Send ${n} draft${n === 1 ? "" : "s"} ${where}`;
-  if (_chooserNote) _chooserNote.textContent = chooserNote(n);
+  if (_chooser?.isOpen()) _chooser.repaint();
 }
 
 /** The `listening` SSE frame: a `--wait` attached or detached. */
@@ -158,12 +165,17 @@ function setPendingReview(state: PendingReviewState): void {
   if (_link) {
     if (state.submitted_url) {
       _link.href = state.submitted_url;
+      _link.dataset.from = state.submitted_from ?? "viewer";
+      _link.textContent = state.submitted_from === "github" ? "Submitted on GitHub ↗" : "Review submitted ↗";
+      _link.title = state.submitted_from === "github"
+        ? "Your pending review was published from GitHub's web UI; the comments it held are upstream now"
+        : "The review you submitted from here";
       _link.classList.remove("hidden");
     } else {
       _link.classList.add("hidden");
     }
   }
-  if (_chooserNote && _opts) _chooserNote.textContent = chooserNote(_opts.draftCount());
+  if (_chooser?.isOpen()) _chooser.repaint();
   armRetry(state.unsent.length > 0);
 }
 
@@ -189,28 +201,57 @@ function firstLine(body: string): string {
   return line.length > 60 ? line.slice(0, 57) + "…" : line;
 }
 
-/** What the chooser says about what Submit will not carry: drafts the
- *  reviewer has not sent, and pending comments this diff cannot show. */
-function chooserNote(drafts: number): string {
-  const parts: string[] = [];
-  if (drafts > 0) {
-    parts.push(`${drafts} draft${drafts === 1 ? "" : "s"} stay${drafts === 1 ? "s" : ""} yours — Send all first to include ${drafts === 1 ? "it" : "them"}.`);
-  }
-  const hidden = _pending?.unanchored ?? 0;
-  if (hidden > 0) {
-    parts.push(`${hidden} pending comment${hidden === 1 ? "" : "s"} on GitHub ${hidden === 1 ? "has" : "have"} no line in this diff and ${hidden === 1 ? "is" : "are"} not shown; ${hidden === 1 ? "it is" : "they are"} submitted with the review.`);
-  }
-  return parts.join(" ");
+function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
 // --- the chooser -------------------------------------------------------------
+// A panel under the bar, not a modal. Opening it asks GitHub where the
+// pending review stands (`reconcile`) and lists what Submit would publish
+// from the answer, so the reviewer sees what GitHub holds at that moment
+// rather than the store's last belief; unsent comments are listed apart,
+// above the button, as the refusal would name them.
 
-function buildChooser(): HTMLElement {
+interface Chooser {
+  root: HTMLElement;
+  isOpen: () => boolean;
+  hide: () => void;
+  /** Redraw the lists and notes from the store and the pending state. */
+  repaint: () => void;
+  /** The line above the list: checking, stale, or nothing. */
+  setStatus: (text: string, state: "checking" | "stale" | "fresh") => void;
+  setError: (render: (into: HTMLElement) => void) => void;
+  body: HTMLTextAreaElement;
+  event: () => ReviewEvent;
+}
+
+function buildChooser(): Chooser {
   const panel = document.createElement("div");
   panel.className = "submit-chooser hidden";
   panel.setAttribute("role", "dialog");
   panel.setAttribute("aria-label", "Submit review");
   panel.addEventListener("click", (e) => e.stopPropagation());
+
+  const heading = document.createElement("h3");
+  heading.className = "submit-heading";
+  panel.appendChild(heading);
+
+  const status = document.createElement("p");
+  status.className = "submit-status";
+  status.setAttribute("role", "status");
+  panel.appendChild(status);
+
+  const list = document.createElement("div");
+  list.className = "submit-list comment-manifest";
+  panel.appendChild(list);
+
+  const unsentSection = document.createElement("div");
+  unsentSection.className = "submit-unsent-section";
+  panel.appendChild(unsentSection);
+
+  const note = document.createElement("p");
+  note.className = "submit-note";
+  panel.appendChild(note);
 
   const options = document.createElement("div");
   options.className = "submit-events";
@@ -223,6 +264,7 @@ function buildChooser(): HTMLElement {
     input.name = "submit-event";
     input.value = ev.value;
     if (ev.value === "COMMENT") input.checked = true;
+    input.addEventListener("change", () => repaint());
     label.appendChild(input);
     label.appendChild(document.createTextNode(" " + ev.label));
     options.appendChild(label);
@@ -235,76 +277,180 @@ function buildChooser(): HTMLElement {
   body.placeholder = "Review summary (optional)";
   panel.appendChild(body);
 
-  _chooserNote = document.createElement("p");
-  _chooserNote.className = "submit-note";
-  panel.appendChild(_chooserNote);
-
-  _chooserError = document.createElement("p");
-  _chooserError.className = "submit-error";
-  _chooserError.setAttribute("role", "alert");
-  panel.appendChild(_chooserError);
+  const error = document.createElement("p");
+  error.className = "submit-error";
+  error.setAttribute("role", "alert");
+  panel.appendChild(error);
 
   const actions = document.createElement("div");
   actions.className = "submit-actions";
   const cancel = document.createElement("button");
   cancel.className = "submit-cancel";
   cancel.textContent = "Cancel";
-  cancel.addEventListener("click", () => hideChooser());
+  cancel.addEventListener("click", () => hide());
   const go = document.createElement("button");
   go.className = "submit-confirm";
   go.textContent = "Submit review";
   go.addEventListener("click", () => {
-    const checked = panel.querySelector<HTMLInputElement>('input[name="submit-event"]:checked');
-    if (!checked) return;
     go.disabled = true;
-    submitReview(checked.value as ReviewEvent, body.value.trim()).finally(() => { go.disabled = false; });
+    submitReview(chooser.event(), body.value.trim()).finally(() => { go.disabled = false; });
   });
   actions.appendChild(cancel);
   actions.appendChild(go);
   panel.appendChild(actions);
-  return panel;
+
+  const eventLabel = (): string => EVENTS.find((e) => e.value === chooser.event())!.label;
+
+  function repaint(): void {
+    const pending = Comments.pendingSummaries();
+    list.textContent = "";
+    if (pending.length === 0) {
+      heading.textContent = `Submit as ${eventLabel()}`;
+      const empty = document.createElement("p");
+      empty.className = "submit-empty";
+      empty.textContent = "No comments — an Approve is an LGTM";
+      list.appendChild(empty);
+    } else {
+      heading.textContent = `Submit ${plural(pending.length, "comment")} as ${eventLabel()}`;
+      for (const p of pending) list.appendChild(pendingRow(p));
+    }
+    unsentSection.textContent = "";
+    const unsent = _pending?.unsent ?? [];
+    if (unsent.length > 0) {
+      const title = document.createElement("p");
+      title.className = "submit-unsent-title";
+      title.textContent = `${plural(unsent.length, "comment")} unsent — not in the review, and Submit is refused while ${unsent.length === 1 ? "it is" : "they are"}:`;
+      unsentSection.appendChild(title);
+      const ul = document.createElement("ul");
+      ul.className = "submit-unsent";
+      for (const u of unsent) {
+        const item = document.createElement("li");
+        item.dataset.commentId = u.id;
+        item.textContent = describeUnsent(u);
+        ul.appendChild(item);
+      }
+      unsentSection.appendChild(ul);
+    }
+    note.textContent = chooserNote(_opts?.draftCount() ?? 0);
+  }
+
+  function hide(): void {
+    panel.classList.add("hidden");
+  }
+
+  const chooser: Chooser = {
+    root: panel,
+    isOpen: () => !panel.classList.contains("hidden"),
+    hide,
+    repaint,
+    setStatus: (text, state) => {
+      status.textContent = text;
+      status.dataset.state = state;
+    },
+    setError: (render) => {
+      error.textContent = "";
+      render(error);
+    },
+    body,
+    event: () => (panel.querySelector<HTMLInputElement>('input[name="submit-event"]:checked')?.value ?? "COMMENT") as ReviewEvent,
+  };
+  return chooser;
 }
 
-function toggleChooser(): void {
-  if (!_chooser) return;
-  if (_chooser.classList.contains("hidden")) showChooser();
-  else hideChooser();
+/** One pending comment as the chooser lists it: the label row the fold
+ *  manifests use, which reveals the thread on click; a reply indented
+ *  and marked as answering its parent. The chooser stays open. */
+function pendingRow(p: PendingSummary): HTMLElement {
+  const row = Render.renderCommentLabel(p.file, p.thread);
+  row.title = p.body;
+  const range = row.querySelector<HTMLElement>(".label-range");
+  if (range) range.textContent = `${p.file}:${p.thread.line} (${p.thread.side})`;
+  if (p.isReply) {
+    row.classList.add("label-reply");
+    const text = row.querySelector<HTMLElement>(".label-text");
+    if (text) text.textContent = `↳ ${text.textContent}`;
+    if (p.parentText) row.title = `${p.body}\n\nin reply to: ${p.parentText}`;
+  }
+  return row;
 }
 
-function showChooser(): void {
-  if (!_chooser || !_chooserError) return;
-  _chooserError.textContent = "";
-  _chooser.classList.remove("hidden");
-  _chooser.querySelector<HTMLInputElement>('input[name="submit-event"]:checked')?.focus();
+/** What the chooser says about what Submit will not carry: drafts the
+ *  reviewer has not sent, and pending comments this diff cannot show. */
+function chooserNote(drafts: number): string {
+  const parts: string[] = [];
+  if (drafts > 0) {
+    parts.push(`${plural(drafts, "draft")} stay${drafts === 1 ? "s" : ""} yours — Send all first to include ${drafts === 1 ? "it" : "them"}.`);
+  }
+  const hidden = _pending?.unanchored ?? 0;
+  if (hidden > 0) {
+    parts.push(`${plural(hidden, "pending comment")} on GitHub ${hidden === 1 ? "has" : "have"} no line in this diff and ${hidden === 1 ? "is" : "are"} not shown; ${hidden === 1 ? "it is" : "they are"} submitted with the review.`);
+  }
+  return parts.join(" ");
 }
 
-function hideChooser(): void {
-  _chooser?.classList.add("hidden");
+/** Open the chooser: paint the last known state at once, ask GitHub, and
+ *  repaint from the answer. GitHub unreachable leaves the last known
+ *  state, marked as such; Submit stays available and reconciles again
+ *  itself before deciding. */
+function openChooser(): void {
+  if (!_chooser || !_opts) return;
+  _chooser.setError(() => {});
+  _chooser.setStatus("Checking GitHub…", "checking");
+  _chooser.repaint();
+  _chooser.root.classList.remove("hidden");
+  _chooser.root.querySelector<HTMLInputElement>('input[name="submit-event"]:checked')?.focus();
+  _opts.reconcile().then((result) => {
+    if (!_chooser?.isOpen()) return;
+    if (result) {
+      setPendingReview(result);
+      _chooser.setStatus("", "fresh");
+    } else {
+      _chooser.setStatus("Could not reach GitHub — showing the last known state", "stale");
+      _chooser.repaint();
+    }
+  });
 }
 
 async function submitReview(event: ReviewEvent, body: string): Promise<void> {
-  if (!_opts || !_chooserError) return;
+  if (!_opts || !_chooser) return;
+  const chooser = _chooser;
   const outcome = await _opts.submit(event, body);
   if (outcome.ok) {
-    hideChooser();
-    if (_pending) setPendingReview({ ..._pending, submitted_url: outcome.response.review_url });
+    chooser.hide();
+    setPendingReview({ ...(_pending ?? EMPTY_REVIEW), submitted_url: outcome.response.review_url, submitted_from: "viewer" });
+    return;
+  }
+  if (outcome.submitted_url) {
+    const url = outcome.submitted_url;
+    setPendingReview({ ...(_pending ?? EMPTY_REVIEW), submitted_url: url, submitted_from: "github" });
+    chooser.setError((into) => {
+      into.appendChild(document.createTextNode("Already submitted on GitHub — the comments it held are upstream now. "));
+      const link = document.createElement("a");
+      link.href = url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = "Open the review ↗";
+      into.appendChild(link);
+    });
     return;
   }
   if (outcome.unsent.length > 0) {
-    _chooserError.textContent = "";
-    _chooserError.appendChild(document.createTextNode(`${outcome.error}:`));
-    const list = document.createElement("ul");
-    list.className = "submit-unsent";
-    for (const u of outcome.unsent) {
-      const item = document.createElement("li");
-      item.dataset.commentId = u.id;
-      item.textContent = describeUnsent(u);
-      list.appendChild(item);
-    }
-    _chooserError.appendChild(list);
+    setPendingReview({ ...(_pending ?? EMPTY_REVIEW), unsent: outcome.unsent });
+    chooser.setError((into) => {
+      into.appendChild(document.createTextNode(`${outcome.error}:`));
+      const list = document.createElement("ul");
+      list.className = "submit-unsent";
+      for (const u of outcome.unsent) {
+        const item = document.createElement("li");
+        item.dataset.commentId = u.id;
+        item.textContent = describeUnsent(u);
+        list.appendChild(item);
+      }
+      into.appendChild(list);
+    });
     return;
   }
-  _chooserError.textContent = outcome.error;
+  chooser.setError((into) => { into.textContent = outcome.error; });
 }
 
 export const SendBar = { install, refresh, setListening, setPendingReview };

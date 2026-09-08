@@ -191,6 +191,7 @@ function installCounterpartSurface(data: ViewerData): void {
     draftCount: () => Comments.draftCount(),
     sendAll: () => Comments.sendAll(),
     retry: () => Comments.retry(),
+    reconcile: () => Comments.reconcile(),
     submit: (event, body) => Comments.submit(event, body),
   });
 }

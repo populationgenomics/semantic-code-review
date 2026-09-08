@@ -49,6 +49,11 @@ export interface CommentStore {
    *  pending review's state, or null on failure. */
   retry(): Promise<PendingReviewState | null>;
 
+  /** PR mode: re-derive the pending review from GitHub. Resolves with
+   *  the state and per-comment outcomes, or null when GitHub could not
+   *  be reached (the comments' new states arrive as `comment` frames). */
+  reconcile(): Promise<ReconcileResponse | null>;
+
   /** PR mode: publish the pending review with a verdict. */
   submit(event: ReviewEvent, body: string): Promise<SubmitOutcome>;
 
@@ -151,6 +156,12 @@ export function makeServerStore(endpoint: string): CommentStore {
         .catch(() => null);
     },
 
+    reconcile(): Promise<ReconcileResponse | null> {
+      return post("/reconcile", {})
+        .then((r) => (r.ok ? r.json() as Promise<ReconcileResponse> : null))
+        .catch(() => null);
+    },
+
     async submit(event: ReviewEvent, body: string): Promise<SubmitOutcome> {
       let r: Response | null = null;
       try {
@@ -161,7 +172,8 @@ export function makeServerStore(endpoint: string): CommentStore {
       if (r && r.ok) return { ok: true, response: await r.json() as SubmitResponse };
       const { error, body: refusal } = await errorOf(r, "the review server is unreachable");
       const unsent = Array.isArray(refusal.unsent) ? refusal.unsent as UnsentComment[] : [];
-      return { ok: false, status: r ? r.status : 0, error, unsent };
+      const submitted_url = typeof refusal.submitted_url === "string" ? refusal.submitted_url : null;
+      return { ok: false, status: r ? r.status : 0, error, unsent, submitted_url };
     },
 
     async resolve(id: string, resolved: boolean): Promise<string | null> {
@@ -227,11 +239,15 @@ export function makeNoopStore(): CommentStore {
     },
 
     retry(): Promise<PendingReviewState | null> {
-      return Promise.resolve({ unsent: [], submitted_url: null, unanchored: 0 });
+      return Promise.resolve({ unsent: [], submitted_url: null, submitted_from: null, unanchored: 0 });
+    },
+
+    reconcile(): Promise<ReconcileResponse | null> {
+      return Promise.resolve(null);
     },
 
     submit(): Promise<SubmitOutcome> {
-      return Promise.resolve({ ok: false, status: 0, error: "no review server", unsent: [] });
+      return Promise.resolve({ ok: false, status: 0, error: "no review server", unsent: [], submitted_url: null });
     },
 
     resolve(id: string, resolved: boolean): Promise<string | null> {
