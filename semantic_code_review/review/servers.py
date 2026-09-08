@@ -22,13 +22,14 @@ import contextlib
 import dataclasses
 import json
 import os
+import pathlib
 import signal
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any, TextIO
 
 from .. import paths
@@ -229,6 +230,76 @@ def await_server_info(
     return None
 
 
+# --- scr runs: every server, and bringing one back --------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class Recorded:
+    """A `server.json` found under a runs root, with the run it names."""
+
+    run_dir: paths.RunDir
+    info: stream.ServerInfo
+
+
+def recorded(roots: Iterable[pathlib.Path]) -> list[Recorded]:
+    """Every readable `server.json` one level under each root — the
+    per-repo runs roots `scr runs ps` walks — oldest start first. A
+    record that does not parse is skipped: `ps` reports servers, and a
+    torn file names none.
+    """
+    found: list[Recorded] = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for run_path in sorted(p for p in root.iterdir() if p.is_dir()):
+            run_dir = paths.RunDir(run_path)
+            info = stream.read_server_info(run_dir)
+            if info is not None:
+                found.append(Recorded(run_dir=run_dir, info=info))
+    return sorted(found, key=lambda r: r.info.started_at)
+
+
+class CannotRestart(Exception):
+    """The record does not say how to start the server again, or what it
+    says no longer resolves.
+    """
+
+
+def restart_argv(run_dir: paths.RunDir, info: stream.ServerInfo) -> tuple[list[str], str]:
+    """The `(argv, cwd)` `scr runs restart` re-executes for `run_dir`'s
+    recorded server, checked: the record must carry them, the argv's
+    `--serve-run` must name this run under this runs root, and the cwd
+    must still exist (a server started from a since-deleted worktree
+    cannot come back from there).
+
+    Raises:
+        CannotRestart: with the reason, for the CLI to print.
+    """
+    if info.argv is None or info.cwd is None:
+        raise CannotRestart(f"the record for {run_dir.slug} predates restart support (no argv); start it again by hand")
+    argv = list(info.argv)
+    slug = _option_value(argv, SERVE_RUN_FLAG)
+    root = _option_value(argv, "--runs-root")
+    if slug != run_dir.slug or root is None:
+        raise CannotRestart(f"the recorded argv does not serve {run_dir.slug}: {' '.join(argv)}")
+    if pathlib.Path(root).resolve() != run_dir.path.parent.resolve():
+        raise CannotRestart(f"the recorded argv serves {slug} under {root}, not {run_dir.path.parent}")
+    if not run_dir.meta.exists():
+        raise CannotRestart(f"{run_dir.path} is no longer a run directory")
+    if not pathlib.Path(info.cwd).is_dir():
+        raise CannotRestart(f"the server was started from {info.cwd}, which no longer exists")
+    return argv, info.cwd
+
+
+def _option_value(argv: Sequence[str], flag: str) -> str | None:
+    """The value after the last `flag` in `argv` (`--flag value` form)."""
+    value = None
+    for i, arg in enumerate(argv):
+        if arg == flag and i + 1 < len(argv):
+            value = argv[i + 1]
+    return value
+
+
 def _wait_for(predicate: Callable[[], bool], *, timeout: float) -> bool:
     deadline = time.time() + timeout
     while True:
@@ -243,13 +314,17 @@ __all__ = [
     "SERVER_START_TIMEOUT",
     "SERVE_RUN_FLAG",
     "STOP_GRACE",
+    "CannotRestart",
     "Probe",
+    "Recorded",
     "await_server_info",
     "clear_for",
     "describe_build",
     "pid_alive",
     "probe",
     "probe_health",
+    "recorded",
+    "restart_argv",
     "spawn",
     "stop",
 ]
