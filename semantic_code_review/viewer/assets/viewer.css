@@ -76,7 +76,14 @@ body {
   padding: 10px 16px; display: flex; gap: 14px; align-items: center;
   flex-wrap: wrap;
 }
-.pr-title { font-weight: 600; margin-right: auto; }
+/* The title is what gives way: it takes the row's leftover width and
+   ellipsises, so the controls keep their line. Only below its floor
+   does the row wrap. */
+.pr-title {
+  font-weight: 600;
+  flex: 1 1 0; min-width: 16ch;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .pr-title .pr-meta { color: var(--fg-muted); margin-left: 8px; font-weight: 400; font-size: 12px; }
 .fold-slider { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .fold-slider button {
@@ -1401,7 +1408,7 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  * Claude is listening (review mode) or the pending review's state and
  * Submit (PR mode). Every state is in the text and a glyph or a number
  * (filled disc / hollow ring; a count), never colour alone. */
-.send-bar { display: flex; align-items: center; gap: 12px; margin-left: 8px; position: relative; }
+.send-bar { display: flex; align-items: center; gap: 12px; margin-left: 8px; }
 .listening-indicator { font-size: 12px; color: var(--fg-muted); white-space: nowrap; }
 .listening-indicator[data-listening="true"] { color: var(--fg); }
 .listening-glyph { display: inline-block; width: 1em; text-align: center; }
@@ -1485,9 +1492,11 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 .submit-btn:hover:not(:disabled) { filter: brightness(1.1); }
 
 /* The Submit chooser: a small panel under the bar, not a modal — the
- * diff stays readable while the verdict is picked. */
+ * diff stays readable while the verdict is picked. Positioned against
+ * the sticky .pr-bar, not the send bar: the bar spans the viewport, so
+ * the panel stays on screen wherever a wrapped row put Submit. */
 .submit-chooser {
-  position: absolute; top: calc(100% + 6px); right: 0; z-index: 60;
+  position: absolute; top: calc(100% + 6px); right: 16px; z-index: 60;
   width: min(420px, 90vw); padding: 12px 14px;
   background: var(--bg-alt); border: 1px solid var(--border); border-radius: 8px;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);

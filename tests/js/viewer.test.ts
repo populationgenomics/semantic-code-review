@@ -6194,6 +6194,25 @@ describe("the pending review (ADR 0009, slice 2)", () => {
     expect(chooser().classList.contains("hidden")).toBe(true);
   });
 
+  test("the title gives way to the controls, and the chooser is placed against the bar", async () => {
+    await bootViewer(githubData());
+    installStylesheet();
+    // jsdom has no layout, so the claim is the rules: the title is the
+    // row's only shrinking item and ellipsises, keeping the controls on
+    // their line; the chooser's containing block is the viewport-wide
+    // bar, not the send bar a wrapped row can put at the left edge.
+    const title = document.querySelector<HTMLElement>(".pr-title")!;
+    const cs = getComputedStyle(title);
+    expect(cs.flexBasis).toBe("0px");
+    expect(cs.textOverflow).toBe("ellipsis");
+    expect(cs.whiteSpace).toBe("nowrap");
+    expect(title.title).toBe(title.textContent!.trim());
+    // Unpositioned; jsdom reports an unset `position` as "".
+    expect(["", "static"]).toContain(getComputedStyle(document.querySelector<HTMLElement>(".send-bar")!).position);
+    expect(getComputedStyle(document.querySelector<HTMLElement>(".pr-bar")!).position).toBe("sticky");
+    expect(getComputedStyle(chooser()).right).toBe("16px");
+  });
+
   test("a /data.json for GitHub without the pending review fails the boot", async () => {
     await bootViewer(makeData({ counterpart: "github" }));
     expect(document.querySelector(".boot-error")!.textContent).toContain("pending_review");

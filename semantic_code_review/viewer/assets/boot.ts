@@ -169,6 +169,9 @@ function installPrHeader(data: ViewerData): void {
     if (base && head) bits.push(`${base}..${head}`);
     metaEl.textContent = bits.join(" · ");
   }
+  // The title truncates to make room for the bar's controls; the
+  // tooltip is where the rest of it is read.
+  if (titleEl) titleEl.title = (titleEl.textContent || "").trim();
 }
 
 // --- The counterpart's surface ------------------------------------------
