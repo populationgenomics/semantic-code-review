@@ -128,9 +128,9 @@ function _build(app: HTMLElement): PanelDom {
  *
  *  The document's cell carries the width; the panel takes what is left,
  *  down to the floor its diff stays readable at — the far end of the
- *  same clamp. It is here rather than gated on an open panel because the
- *  document's right edge is the reader's either way: with nothing beside
- *  it, the drag is how they set the measure. */
+ *  same clamp. The width is a custom property the stylesheet reads only
+ *  while the panel is open: with nothing beside it the document takes
+ *  the pane, and the divider is hidden. */
 function _divider(split: HTMLElement, docCell: HTMLElement): HTMLElement {
   return LayoutDividers.create({
     className: "layout-divider-doc",
@@ -146,7 +146,8 @@ function _divider(split: HTMLElement, docCell: HTMLElement): HTMLElement {
       // width set, the prose fills what the reader gave it instead of
       // holding 72ch inside it.
       docCell.classList.toggle("explainer-doc-sized", w !== null);
-      docCell.style.width = w === null ? "" : `${Math.round(w)}px`;
+      if (w === null) docCell.style.removeProperty("--doc-width");
+      else docCell.style.setProperty("--doc-width", `${Math.round(w)}px`);
     },
   });
 }
