@@ -76,7 +76,14 @@ body {
   padding: 10px 16px; display: flex; gap: 14px; align-items: center;
   flex-wrap: wrap;
 }
-.pr-title { font-weight: 600; margin-right: auto; }
+/* The title is what gives way: it takes the row's leftover width and
+   ellipsises, so the controls keep their line. Only below its floor
+   does the row wrap. */
+.pr-title {
+  font-weight: 600;
+  flex: 1 1 0; min-width: 16ch;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .pr-title .pr-meta { color: var(--fg-muted); margin-left: 8px; font-weight: 400; font-size: 12px; }
 .fold-slider { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .fold-slider button {
@@ -1401,7 +1408,7 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
  * Claude is listening (review mode) or the pending review's state and
  * Submit (PR mode). Every state is in the text and a glyph or a number
  * (filled disc / hollow ring; a count), never colour alone. */
-.send-bar { display: flex; align-items: center; gap: 12px; margin-left: 8px; position: relative; }
+.send-bar { display: flex; align-items: center; gap: 12px; margin-left: 8px; }
 .listening-indicator { font-size: 12px; color: var(--fg-muted); white-space: nowrap; }
 .listening-indicator[data-listening="true"] { color: var(--fg); }
 .listening-glyph { display: inline-block; width: 1em; text-align: center; }
@@ -1485,9 +1492,11 @@ html.dragging-divider { cursor: col-resize; user-select: none; }
 .submit-btn:hover:not(:disabled) { filter: brightness(1.1); }
 
 /* The Submit chooser: a small panel under the bar, not a modal — the
- * diff stays readable while the verdict is picked. */
+ * diff stays readable while the verdict is picked. Positioned against
+ * the sticky .pr-bar, not the send bar: the bar spans the viewport, so
+ * the panel stays on screen wherever a wrapped row put Submit. */
 .submit-chooser {
-  position: absolute; top: calc(100% + 6px); right: 0; z-index: 60;
+  position: absolute; top: calc(100% + 6px); right: 16px; z-index: 60;
   width: min(420px, 90vw); padding: 12px 14px;
   background: var(--bg-alt); border: 1px solid var(--border); border-radius: 8px;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
@@ -1909,14 +1918,17 @@ body { padding-bottom: 30px; }
    zone on each side of the prose. */
 .explainer-split.panel-open .explainer-doc { flex: 0 1 auto; }
 /* A width the reader set with the divider (layout_dividers.ts) sits
-   inline on the cell, and this class is what tells the prose to follow
-   the column rather than hold 72ch inside it: the measure is the
-   default, not a ceiling. The side padding is charged to the 100% by
-   border-box, so what the drag widens is the text. Shrink stays 1 — a
-   window narrower than the two cells were set to takes it out of the
-   document, once the panel has floored. */
-.explainer-doc.explainer-doc-sized { flex: 0 1 auto; }
-.explainer-doc.explainer-doc-sized .explainer { max-width: 100%; }
+   inline on the cell as `--doc-width`, and this class is what tells the
+   prose to follow the column rather than hold 72ch inside it: the
+   measure is the default, not a ceiling. The side padding is charged to
+   the 100% by border-box, so what the drag widens is the text. Shrink
+   stays 1 — a window narrower than the two cells were set to takes it
+   out of the document, once the panel has floored. Only while the panel
+   is open: alone, the document takes the pane at the default measure,
+   and there is no boundary to move. */
+.explainer-split.panel-open .explainer-doc.explainer-doc-sized { flex: 0 1 auto; width: var(--doc-width); }
+.explainer-split.panel-open .explainer-doc.explainer-doc-sized .explainer { max-width: 100%; }
+.explainer-split:not(.panel-open) > .layout-divider-doc { display: none; }
 .explainer-detail {
   /* The panel takes the remainder. Where the split divides is the
      reader's, dragged, so the panel has no width of its own to work

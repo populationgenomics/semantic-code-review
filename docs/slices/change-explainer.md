@@ -635,14 +635,15 @@ of leaving the mode. Rationale is the **ADR 0007 addendum of
   edge. The document clamps to `[340px, split − 380 − 8]`, persists as
   `scr-explainer-doc-width`, and a double-click hands the division back
   to the stylesheet. Arrow keys nudge it; every move reflows the
-  annotation arrows one frame at a time. The divider is not gated on an
-  open panel: with nothing beside the document, the drag is how the
-  reader sets the measure. The sidebar's edge is a peer boundary one level
+  annotation arrows one frame at a time. The divider and the width are
+  the open panel's: the width sits on the cell as `--doc-width`, which
+  the stylesheet reads only under `panel-open`, and the divider is hidden
+  without it — alone, the document takes the pane. The sidebar's edge is a peer boundary one level
   up, in `.layout` (`scr-sidebar-width`), so pushing the document right by
   lengthening the ToC works in both modes.
 - **A set width is the measure.** `.explainer`'s `72ch` is the default,
-  not a ceiling: a width on the cell adds `explainer-doc-sized`, and the
-  column's `max-width` becomes `100%` of what the reader gave it, side
+  not a ceiling: a width on the cell adds `explainer-doc-sized`, and with the panel
+  open the column's `max-width` becomes `100%` of what the reader gave it, side
   padding unchanged. With no width set the defaults stand exactly —
   measure-capped cell, centred while the panel is closed.
 - **Prose in the panel is capped at `64ch`**, the annotation boxes'
