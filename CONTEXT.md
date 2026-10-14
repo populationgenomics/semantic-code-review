@@ -1000,3 +1000,17 @@ and it has three consumers that must agree: the prompt
 the figure sanitiser, which runs on the way to disk
 (`augment/explainer_figures.py`, from `save_explainer`) and again at
 render (`viewer/assets/explainer_figure.ts`).
+
+The document **downloads** as one self-contained HTML file
+(`viewer/assets/explainer_export.ts`), for sharing outside the viewer.
+The press writes any unwritten prose section first and downloads after
+the last lands; a section that cannot be written drops the download
+with its name shown. The file is the pane's own render, serialised — not
+a second renderer, which would be a fourth party to the vocabulary
+contract above — with the viewer's controls translated: a reference
+links to its file or hunk on the PR's diff (`#diff-<sha256(path)>`,
+`R`/`L` line), or is text naming it in a local review; the skip box
+links to its heading. A control the export does not translate throws.
+CSS is read off the page's stylesheets (theme variables, explainer and
+highlight.js rules), so it tracks the pane; a CSP allows inline styles
+only.

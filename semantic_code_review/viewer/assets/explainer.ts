@@ -26,10 +26,12 @@
 // docs/explainer-presentation.md.
 
 import { renderMarkdown, renderInlineMarkdown } from "./console_render";
+import { ExplainerExport } from "./explainer_export";
 import { ExplainerFigures } from "./explainer_figure";
 import { ViewState } from "./view_state";
 
 let _endpoint = "";
+let _data: ViewerData | null = null;
 let _doc: ExplainerDocument | null = null;
 let _activeSectionId: string | null = null;
 let _phase: "absent" | "loading" | "ready" | "error" = "absent";
@@ -73,6 +75,12 @@ const _queue: string[] = [];
 // of them cannot be told from a wedged one.
 let _writingSince = 0;
 let _tick: number | null = null;
+// A download the reviewer asked for before every section was written.
+// It goes when the last one lands, and is dropped — with the reason on
+// `_exportError` — when nothing more is in flight and some section is
+// still unwritten (failed, or waiting on annotation).
+let _exportArmed = false;
+let _exportError = "";
 
 interface ExplainerInitOptions {
   onChange?: () => void;
@@ -82,7 +90,10 @@ interface ExplainerInitOptions {
 
 function init(endpoint: string, data: ViewerData, opts: ExplainerInitOptions = {}): void {
   _endpoint = endpoint;
+  _data = data;
   _doc = null;
+  _exportArmed = false;
+  _exportError = "";
   _phase = "absent";
   _error = "";
   _activeSectionId = null;
@@ -260,6 +271,7 @@ async function _drainQueue(): Promise<void> {
     _onChange?.();
     await _writeSection(id);
     _writing = null;
+    _settleExport();
     _onChange?.();
   }
   _stopTicking();
@@ -382,6 +394,84 @@ function _adopt(doc: ExplainerDocument, opts: { keepPhases?: boolean } = {}): vo
   _onChange?.();
 }
 
+// --- Download ---------------------------------------------------------------
+
+/** The top-level prose sections the document still lacks. None under
+ *  `not_warranted`: the verdict note is that document's whole answer,
+ *  and the prose it declined to write is not missing from it. */
+function _unwritten(): ExplainerSection[] {
+  if (_doc === null || _doc.verdict !== "narrate") return [];
+  return _doc.sections.filter((s) => s.kind !== "map" && s.state !== "ready");
+}
+
+/** Download the document as one HTML file, writing whatever sections it
+ *  still lacks first. A press is the decision to spend on them, the same
+ *  as entering the mode; the download follows the last one. */
+function requestDownload(): void {
+  if (_doc === null) return;
+  _exportError = "";
+  const missing = _unwritten();
+  if (missing.length === 0) {
+    void _download();
+    return;
+  }
+  _exportArmed = true;
+  for (const s of missing) generateSection(s.id);
+  _settleExport();
+  _onChange?.();
+}
+
+/** Send an armed download once nothing is missing, or drop it once
+ *  nothing more is coming. Called by the drain loop after it clears
+ *  `_writing`, not from `_adopt`: a section adopted mid-call still
+ *  renders as being written, and the copy would carry that status line
+ *  in place of its prose. */
+function _settleExport(): void {
+  if (!_exportArmed) return;
+  const missing = _unwritten();
+  if (missing.length === 0) {
+    _exportArmed = false;
+    void _download();
+    return;
+  }
+  if (_writing !== null || _queue.length > 0 || _deferred.length > 0) return;
+  _exportArmed = false;
+  _exportError = `Not downloaded — still unwritten: ${missing.map((s) => s.title).join(", ")}.`;
+}
+
+async function _download(): Promise<void> {
+  if (_doc === null || _data === null) return;
+  try {
+    const html = await ExplainerExport.build(_exportRoot(_doc), _data, document);
+    ExplainerExport.save(html, ExplainerExport.filename(_data));
+  } catch (e) {
+    _exportError = `Could not download the document: ${String(e instanceof Error ? e.message : e)}`;
+  }
+  _onChange?.();
+}
+
+/** The document as the pane renders it, minus what this tab is doing
+ *  about it: only written sections, and no download control. */
+function _exportRoot(doc: ExplainerDocument): HTMLElement {
+  const written = { ...doc, sections: doc.sections.filter((s) => s.kind === "map" || s.state === "ready") };
+  return _renderDocument(written, _el("div", "explainer"));
+}
+
+function _downloadBar(): HTMLElement {
+  const bar = _el("div", "explainer-download");
+  const missing = _unwritten().length;
+  const label = _exportArmed ? "Downloading once written…" : "Download";
+  const btn = _el("button", "explainer-download-btn", label) as HTMLButtonElement;
+  btn.disabled = _exportArmed;
+  btn.title = missing > 0
+    ? `Writes the ${missing} unwritten section${missing === 1 ? "" : "s"}, then saves the document as one HTML file`
+    : "Save this document as one HTML file";
+  btn.addEventListener("click", requestDownload);
+  bar.appendChild(btn);
+  if (_exportError) bar.appendChild(_el("p", "explainer-status explainer-error", _exportError));
+  return bar;
+}
+
 function sections(): ExplainerSection[] {
   return _doc ? _doc.sections : [];
 }
@@ -446,6 +536,7 @@ function renderPane(): HTMLElement {
     pane.appendChild(_generateButton("Generate reading guide"));
     return pane;
   }
+  pane.appendChild(_downloadBar());
   return _renderDocument(_doc, pane);
 }
 
@@ -497,6 +588,7 @@ function _renderSkipBox(box: ExplainerSkipBox): HTMLElement {
   el.appendChild(_renderBody(box.body));
   const target = _findSection(box.target_section_id);
   const btn = _el("button", "explainer-skip-link", `Skip to ${target ? target.title : box.target_section_id}`);
+  btn.dataset.targetHeading = _headingId(box.target_section_id);
   btn.addEventListener("click", () => setActiveSection(box.target_section_id));
   el.appendChild(btn);
   return el;
@@ -952,6 +1044,7 @@ export const Explainer = {
   generate,
   generateSection,
   generateAllPending,
+  requestDownload,
   onEvent,
   sections,
   sectionStatus,

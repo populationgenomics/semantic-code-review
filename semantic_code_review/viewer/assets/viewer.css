@@ -2044,6 +2044,30 @@ body { padding-bottom: 30px; }
   padding: 7px 16px; font-size: 14px; border-radius: 6px; cursor: pointer;
 }
 
+/* The download control, above the document it saves. Chrome, so it is
+   quiet: a bordered UI-font button, right-aligned out of the reading line. */
+.explainer-download { font-family: var(--ui); text-align: right; margin: 0 0 16px; }
+.explainer-download .explainer-status { text-align: left; }
+.explainer-download-btn {
+  font-family: var(--ui); font-size: 13px;
+  background: none; color: var(--fg-muted);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 12px; cursor: pointer;
+}
+.explainer-download-btn:hover:not(:disabled) { color: var(--fg); border-color: var(--fg-muted); }
+.explainer-download-btn:disabled { cursor: default; opacity: 0.7; }
+
+/* The exported file's own heading — what the viewer's top bar says. Only
+   in the downloaded document (explainer_export.ts). */
+.explainer-export-head { font-family: var(--ui); margin: 0 0 32px; }
+.explainer-export-head h1 { font-size: 28px; font-weight: 600; line-height: 1.25; margin: 0 0 6px; }
+.explainer-export-head p { font-size: 13px; color: var(--fg-muted); margin: 0; }
+.explainer-export-head a { color: var(--accent); }
+/* There, a reference is a link to the PR's diff or, with no PR, text. */
+a.explainer-ref, a.explainer-skip-link { text-decoration: none; }
+span.explainer-ref { cursor: auto; }
+span.explainer-ref:hover { text-decoration: none; }
+
 /* Structured affordances. The model supplies content; every presentation
    decision is here. */
 .explainer-callout {
