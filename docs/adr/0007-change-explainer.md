@@ -650,7 +650,10 @@ being handed a smaller seed.
 The readiness gate stays on the routed hunks. Those are the ones a
 section's own claims rest on; a hunk elsewhere in the listing that the
 per-hunk pass has not reached yet is shown as `(not annotated)` rather
-than blocking every section on the whole diff.
+than blocking every section on the whole diff. A hunk in a skipped file
+(`FileAnnotations.skipped`) is outside the gate on both counts — it is
+never sent for annotation, so counting it would block the section for
+good — and the listing names it as skipped.
 
 Caching is unaffected in shape. The walkthrough keys on its assembled
 user text, so a wider seed is a new key. Background keys on `(base_sha,

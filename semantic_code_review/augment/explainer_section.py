@@ -70,7 +70,7 @@ from .prompts import (
     EXPLAINER_TOOL_GUIDANCE,
     format_house_style,
 )
-from .schemas import AnnotatedDiff
+from .schemas import AnnotatedDiff, AnnotatedFile, AnnotatedHunk
 from .tools import TOOL_FUNCTIONS, RepoTools
 
 log = logging.getLogger(__name__)
@@ -340,8 +340,13 @@ def _ref_hunks(diff: AnnotatedDiff, ref: explainer_schema.Reference) -> list[tup
 
 
 def readiness(diff: AnnotatedDiff, refs: list[explainer_schema.Reference]) -> tuple[int, int]:
-    """`(annotated, total)` over the hunks a section is anchored to."""
-    pairs = anchored_hunks(diff, refs)
+    """`(annotated, total)` over the hunks a section is anchored to.
+
+    A skipped file's hunks count on neither side: they are never sent for
+    annotation, so counting them would hold the section unwritable for
+    good. The prompt names them as skipped instead (`_format_change`).
+    """
+    pairs = [(fi, hi) for fi, hi in anchored_hunks(diff, refs) if not diff.files[fi].ann.skipped]
     annotated = sum(1 for fi, hi in pairs if diff.files[fi].hunks[hi].ann.intent.strip())
     return annotated, len(pairs)
 
@@ -468,8 +473,20 @@ def _format_change(diff: AnnotatedDiff) -> str:
         lines += file_seed_lines(fi, f)
         for hi, h in enumerate(f.hunks):
             lines.append(f"    H{fi}_{hi}  {h.parsed.header.strip()}")
-            lines.append(f"          {h.ann.intent.strip() or '(not annotated)'}")
+            lines.append(f"          {_hunk_intent_line(f, h)}")
     return "\n".join(lines)
+
+
+#: What a skipped file's hunk says in place of an intent. The pass can
+#: still open the file with its tools; it is told why there is nothing
+#: established to lean on, so it does not narrate a guess as settled.
+SKIPPED_HUNK_LINE = "(skipped by the review's skip list — no intent established; read the file if you need it)"
+
+
+def _hunk_intent_line(f: AnnotatedFile, h: AnnotatedHunk) -> str:
+    if f.ann.skipped:
+        return SKIPPED_HUNK_LINE
+    return h.ann.intent.strip() or "(not annotated)"
 
 
 def _format_routing(diff: AnnotatedDiff, refs: list[explainer_schema.Reference]) -> str:

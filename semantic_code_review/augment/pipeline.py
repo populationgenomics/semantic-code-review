@@ -142,7 +142,7 @@ async def augment_run_dir(
     diff_files: list[AnnotatedFile] = []
     for pfile in parsed.files:
         if skip.should_skip(pfile.path, skip_globs):
-            ann = FileAnnotations(role=FileRole.GENERATED, summary=skip.SKIP_SUMMARY)
+            ann = FileAnnotations(role=FileRole.GENERATED, summary=skip.SKIP_SUMMARY, skipped=True)
             skipped_files.add(pfile.path)
         else:
             ann = FileAnnotations()

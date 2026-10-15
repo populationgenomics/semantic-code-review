@@ -897,3 +897,25 @@ async def test_a_house_style_for_the_explainer_never_reaches_the_hunk_pass(tmp_p
     assert hunk_envelopes == [e for e in plain if e[0] == "submit_annotations"]
     # And no other pass on the pipeline picked it up either.
     assert not any(_HOUSE_STYLE in system or _HOUSE_STYLE in user for _tool, system, user in styled)
+
+
+async def test_a_skipped_file_is_flagged_and_the_flag_survives_the_overview(tmp_path: Path) -> None:
+    """The explainer's readiness reads the flag, so it must outlast the
+    overview pass rewriting the file's summary."""
+    run = _make_run_dir(tmp_path)
+    backend, _ = _make_canned_backend(
+        overview_args={
+            "summary": "Bumps two constants.",
+            "files": [{"path": "f.py", "summary": "x and y bumped"}],
+        },
+        hunk_args_list=[],
+    )
+    cfg = config.AugmentConfig(model="t", concurrency=1, skip_globs=("f.py",))
+    await augment_run_dir(run, cfg, client=backend, cache=None)
+
+    from semantic_code_review.format.sidecar import load_sidecar
+
+    f = load_sidecar(run.sidecar).files[0]
+    assert f.ann.skipped
+    assert f.ann.summary == "x and y bumped"
+    assert all(not h.ann.intent for h in f.hunks)

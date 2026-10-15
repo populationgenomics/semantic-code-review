@@ -6,9 +6,11 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from semantic_code_review.format.emit import emit_augmented_diff
 from semantic_code_review.format.lint import lint_text
-from semantic_code_review.format.parse import parse_augmented_diff
+from semantic_code_review.format.parse import ParseError, parse_augmented_diff
 from semantic_code_review.format.sidecar import dump_sidecar, load_sidecar
 from semantic_code_review.format.strip import strip_annotations
 
@@ -235,3 +237,22 @@ def test_lint_rejects_unknown_smell_tag() -> None:
     # Parse still succeeds (tags are free strings), but lint rejects.
     assert not result.ok
     assert any("made-up-smell" in e for e in result.errors)
+
+
+def test_a_skipped_file_round_trips() -> None:
+    text = FIXTURE.read_text(encoding="utf-8").replace(
+        "#scr: scr-file-lang: python\n",
+        "#scr: scr-file-lang: python\n#scr: scr-file-skipped: true\n",
+    )
+    diff = parse_augmented_diff(text)
+    assert diff.files[0].ann.skipped
+    assert emit_augmented_diff(diff) == text
+
+
+def test_scr_file_skipped_takes_only_true() -> None:
+    text = FIXTURE.read_text(encoding="utf-8").replace(
+        "#scr: scr-file-lang: python\n",
+        "#scr: scr-file-lang: python\n#scr: scr-file-skipped: false\n",
+    )
+    with pytest.raises(ParseError, match="scr-file-skipped"):
+        parse_augmented_diff(text)
