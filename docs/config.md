@@ -12,11 +12,13 @@ setting it names:
 
 1. **User** — `~/.config/scr/config.toml` (or `$XDG_CONFIG_HOME/scr/config.toml`).
 2. **Committed** — the reviewed repo's `.scr/config.toml` at its top level:
-   the repo's shared review settings. It may set only `[augment]`
-   `extra_prompt`, `explainer_prompt`, `skip_globs` and `explainer`; any
-   other key fails the load, naming the key. Which backend, model, endpoint
-   or credential runs a review is the reviewer's, so those live only in the
-   user file.
+   the repo's shared review settings. `scr pr` reads it from the PR's base
+   commit, so the branch a PR merges into decides how it is reviewed and the
+   cwd plays no part; `scr review` reads the working tree. It may set only
+   `[augment]` `extra_prompt`, `explainer_prompt`, `skip_globs` and
+   `explainer`; any other key fails the load, naming the key. Which backend,
+   model, endpoint or credential runs a review is the reviewer's, so those
+   live only in the user file.
 3. **Repo entry** — the user file's `[repos."owner/name"]` table for the
    reviewed repo: your own settings for that repo. It takes every key the
    user file does. `scr init --scope repo` writes here.

@@ -342,8 +342,9 @@ _CONFIG_TEMPLATE = """\
 
 _COMMITTED_TEMPLATE = """\
 # This repo's scr review settings, meant to be committed: every reviewer's
-# scr reads it. It holds only these [augment] keys; backends, models and
-# credentials are each reviewer's, in their user config.
+# scr reads it, `scr pr` from the PR's base commit. It holds only these
+# [augment] keys; backends, models and credentials are each reviewer's, in
+# their user config.
 #
 # skip_globs: files the LLM passes skip, on top of the builtin
 #   lockfile/bundle/binary denylist (generated code, vendored trees).

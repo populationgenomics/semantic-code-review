@@ -24,7 +24,6 @@ from . import app
 from ._shared import (
     configure_logging,
     load_config,
-    local_repo,
     resolve_explainer_prompt,
     resolve_extra_review_prompt,
     select_client,
@@ -104,37 +103,42 @@ def pr(
         typer.echo(f"scr pr: {runner.FOREGROUND_FLAG} and {servers.SERVE_RUN_FLAG} are mutually exclusive", err=True)
         raise typer.Exit(code=2)
 
-    _, committed = local_repo(None)
-    cfg = load_config(repo=repo, committed_path=committed)
+    runs_root = runs_root or default_runs_root()
+    # The committed file cannot set the backend, model or credentials, so
+    # they resolve now, before the PR is fetched: a misconfiguration fails
+    # fast.
+    cfg = load_config(repo=repo, committed_path=None)
     backend = cfg.resolve_backend(backend)
     model = cfg.resolve_model(backend=backend, cli_value=model)
-    extra_review_prompt = resolve_extra_review_prompt(cfg, extra_prompt) if augment else None
-    house_style = resolve_explainer_prompt(cfg, explainer_prompt) if augment else None
-    # Resolve the backend up-front so a misconfiguration fails fast,
-    # before we spend time on PR resolution and worktree fetch.
     client = select_client(cfg, backend, model=model) if augment else None
 
-    review_cfg = ReviewConfig(
-        runs_root=runs_root or default_runs_root(),
-        augment=augment,
-        model=model,
-        concurrency=concurrency,
-        no_cache=no_cache,
-        cache_dir=cache_dir,
-        open_browser=not no_open,
-        port=port,
-        timeout=timeout,
-        extra_review_prompt=extra_review_prompt,
-        skip_globs=cfg.skip_globs,
-        explainer=cfg.explainer,
-        explainer_prompt=house_style,
-        client=client,
-        debug=debug,
-    )
-    if serve_run is not None:
-        raise typer.Exit(
-            code=serve_pr_run(paths.RunDir(review_cfg.runs_root / serve_run), review_cfg, argv=sys.argv[1:])
+    def config_for(run_dir: paths.RunDir) -> ReviewConfig:
+        """The review settings, reading the repo's committed config from
+        the PR's base commit: the branch the PR merges into decides how
+        it is reviewed, not the PR, and not whatever the cwd holds.
+        """
+        settled = load_config(repo=repo, committed_path=paths.committed_config_path(run_dir.base))
+        return ReviewConfig(
+            runs_root=runs_root,
+            augment=augment,
+            model=model,
+            concurrency=concurrency,
+            no_cache=no_cache,
+            cache_dir=cache_dir,
+            open_browser=not no_open,
+            port=port,
+            timeout=timeout,
+            extra_review_prompt=resolve_extra_review_prompt(settled, extra_prompt) if augment else None,
+            skip_globs=settled.skip_globs,
+            explainer=settled.explainer,
+            explainer_prompt=resolve_explainer_prompt(settled, explainer_prompt) if augment else None,
+            client=client,
+            debug=debug,
         )
 
-    opts = PrFlowOptions(repo=repo, number=number, config=review_cfg)
+    if serve_run is not None:
+        run_dir = paths.RunDir(runs_root / serve_run)
+        raise typer.Exit(code=serve_pr_run(run_dir, config_for(run_dir), argv=sys.argv[1:]))
+
+    opts = PrFlowOptions(repo=repo, number=number, runs_root=runs_root, config_for=config_for)
     raise typer.Exit(code=run_pr_flow(opts, argv=sys.argv[1:], foreground=foreground))
