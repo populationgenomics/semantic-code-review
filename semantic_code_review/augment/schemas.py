@@ -386,6 +386,11 @@ class FileAnnotations(BaseModel):
     summary: str = ""
     lang: str | None = None
     symbols: FileSymbols | None = None
+    #: Matched a skip glob (`augment.skip`), so its hunks were never sent
+    #: for annotation and carry no intent by design. Recorded rather than
+    #: re-derived: the globs are config, and config can change between the
+    #: augment pass and a later read of the sidecar.
+    skipped: bool = False
     fold_descriptions: list[FoldDescription] = Field(
         default_factory=list,
         description="Filled by the fold-summary pass, not the overview pass.",

@@ -558,11 +558,14 @@ presented as what it is.
 
 ### Trust
 
-The note can arrive in a committed `.scr/config.toml`, authored by
-whoever wrote the diff. This does not widen scr's trust boundary: the
-same file can already set `extra_prompt`, which buys a whole review
-pass, so the decision to trust a repo's `.scr/` exists and this follows
-it.
+The note can arrive in a repo's committed `.scr/config.toml`. This does
+not widen scr's trust boundary: the same file can already set
+`extra_prompt`, which buys a whole review pass, so the decision to trust
+a repo's `.scr/` exists and this follows it. `scr pr` reads that file
+from the PR's base commit, so a PR cannot write the note its own review
+reads; `scr review` reads the reviewer's working tree. The file can set
+only the review settings (`config.COMMITTED_KEYS`), never the backend,
+endpoint or credential command that runs the review.
 
 It is also the deliberate, opt-in replacement for something scr removed.
 Plain `claude -p` reads the reviewed repo's `CLAUDE.md`; scr's augment
@@ -650,7 +653,10 @@ being handed a smaller seed.
 The readiness gate stays on the routed hunks. Those are the ones a
 section's own claims rest on; a hunk elsewhere in the listing that the
 per-hunk pass has not reached yet is shown as `(not annotated)` rather
-than blocking every section on the whole diff.
+than blocking every section on the whole diff. A hunk in a skipped file
+(`FileAnnotations.skipped`) is outside the gate on both counts — it is
+never sent for annotation, so counting it would block the section for
+good — and the listing names it as skipped.
 
 Caching is unaffected in shape. The walkthrough keys on its assembled
 user text, so a wider seed is a new key. Background keys on `(base_sha,

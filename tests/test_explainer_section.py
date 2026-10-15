@@ -155,6 +155,32 @@ def test_a_section_with_no_references_is_trivially_ready(diff: AnnotatedDiff, do
     assert explainer_section.readiness(diff, intuition.refs) == (0, 0)
 
 
+def _skip_file(diff: AnnotatedDiff, index: int) -> AnnotatedDiff:
+    """`diff` with file `index` skipped, as the augment pass leaves it:
+    flagged, and its hunks carrying no intent."""
+    files = list(diff.files)
+    f = files[index]
+    files[index] = f.model_copy(
+        update={
+            "ann": f.ann.model_copy(update={"skipped": True}),
+            "hunks": [h.model_copy(update={"ann": HunkAnnotations(intent="")}) for h in f.hunks],
+        }
+    )
+    return diff.model_copy(update={"files": files})
+
+
+def test_a_skipped_files_hunks_count_on_neither_side(diff: AnnotatedDiff, doc) -> None:
+    """They are never sent for annotation, so counting them would hold the
+    section unwritable for good."""
+    code = explainer_section.find_section(doc, "code")
+    assert explainer_section.readiness(_skip_file(diff, 1), code.refs) == (1, 1)
+
+
+def test_a_section_over_only_skipped_files_is_ready(diff: AnnotatedDiff, doc) -> None:
+    background = explainer_section.find_section(doc, "background")
+    assert explainer_section.readiness(_skip_file(diff, 0), background.refs) == (0, 0)
+
+
 # --- Prompt shape --------------------------------------------------------
 
 
@@ -176,6 +202,12 @@ def test_the_seed_carries_the_whole_change_with_its_intents(diff: AnnotatedDiff,
     # anchored to — the walkthrough may point outward.
     assert "F1  gen/api_pb.ts" in text
     assert "Write the Code section." in text
+
+
+def test_a_skipped_files_hunks_say_why_they_carry_no_intent(diff: AnnotatedDiff, doc) -> None:
+    text = _prompt(_skip_file(diff, 1), doc, "code")
+    assert text.count(explainer_section.SKIPPED_HUNK_LINE) == 2
+    assert "(not annotated)" not in text
 
 
 def test_every_file_and_hunk_intent_reaches_both_passes(diff: AnnotatedDiff, doc) -> None:

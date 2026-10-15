@@ -12,8 +12,9 @@ from semantic_code_review.config import (
     BackendType,
     ConfigError,
     ScrConfig,
+    github_repo,
 )
-from semantic_code_review.paths import default_config_path, find_repo_config_path
+from semantic_code_review.paths import default_config_path
 
 
 def _write(path: Path, body: str) -> Path:
@@ -38,26 +39,13 @@ def test_default_config_path_falls_back_to_home(monkeypatch: pytest.MonkeyPatch,
     assert default_config_path() == tmp_path / ".config" / "scr" / "config.toml"
 
 
-def test_find_repo_config_walks_up(tmp_path: Path) -> None:
-    """A `.scr/config.toml` at any ancestor dir gets picked up."""
-    repo = tmp_path / "proj"
-    deep = repo / "a" / "b" / "c"
-    deep.mkdir(parents=True)
-    cfg = _write(repo / ".scr" / "config.toml", "")
-    assert find_repo_config_path(deep) == cfg
-
-
-def test_find_repo_config_returns_none_when_absent(tmp_path: Path) -> None:
-    assert find_repo_config_path(tmp_path) is None
-
-
 # ---------------------------------------------------------------------------
 # Parsing + merge
 # ---------------------------------------------------------------------------
 
 
 def test_load_empty_config_starts_with_builtins(tmp_path: Path) -> None:
-    cfg = ScrConfig.load(user_path=tmp_path / "missing.toml", repo_path=None)
+    cfg = ScrConfig.load(user_path=tmp_path / "missing.toml")
     assert cfg.backend is None
     assert cfg.model_default is None
     assert cfg.env == {}
@@ -87,13 +75,13 @@ def test_every_builtin_has_a_description() -> None:
 def test_max_turns_parsed_from_backend_table(tmp_path: Path) -> None:
     user = tmp_path / "config.toml"
     user.write_text("[backends.claude-cli]\nmax_turns = 8\n", encoding="utf-8")
-    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    cfg = ScrConfig.load(user_path=user)
     assert cfg.backends["claude-cli"].max_turns == 8
 
 
 def test_max_turns_defaults_to_none(tmp_path: Path) -> None:
     """Unset means "keep the driver default", not "no turns"."""
-    cfg = ScrConfig.load(user_path=tmp_path / "missing.toml", repo_path=None)
+    cfg = ScrConfig.load(user_path=tmp_path / "missing.toml")
     assert cfg.backends["claude-cli"].max_turns is None
 
 
@@ -103,7 +91,7 @@ def test_max_turns_rejects_non_positive_integers(tmp_path: Path, value: str) -> 
     user = tmp_path / "config.toml"
     user.write_text(f"[backends.claude-cli]\nmax_turns = {value}\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="max_turns"):
-        ScrConfig.load(user_path=user, repo_path=None)
+        ScrConfig.load(user_path=user)
 
 
 def test_field_doc_extracts_annotated_metadata() -> None:
@@ -127,7 +115,7 @@ Look for bugs, perf, security.
 """
 ''',
     )
-    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    cfg = ScrConfig.load(user_path=user)
     assert cfg.extra_review_prompt is not None
     assert cfg.extra_review_prompt.startswith("You are doing an extra")
     assert cfg.extra_review_prompt.endswith("perf, security.")
@@ -139,22 +127,23 @@ def test_augment_skip_globs_accumulate_across_scopes(tmp_path: Path) -> None:
     repo can add patterns without dropping the user's."""
     user = _write(tmp_path / "user.toml", '[augment]\nskip_globs = ["go.sum"]\n')
     repo = _write(tmp_path / "repo.toml", '[augment]\nskip_globs = ["gen/**", ""]\n')
-    cfg = ScrConfig.load(user_path=user, repo_path=repo)
+    cfg = ScrConfig.load(user_path=user, committed_path=repo)
     assert cfg.skip_globs == ("go.sum", "gen/**")  # empty strings dropped
-    assert cfg.sources["augment.skip_globs"] == str(repo)
+    assert cfg.sources["augment.skip_globs"] == f"{user}, {repo}"
+    assert "augment.skip_globs" not in cfg.shadowed
 
 
 def test_augment_explainer_defaults_on(tmp_path: Path) -> None:
     """Opt-out, not opt-in: the reviewers who benefit most from a reading
     guide are the ones who never configured one."""
-    cfg = ScrConfig.load(user_path=tmp_path / "absent.toml", repo_path=None)
+    cfg = ScrConfig.load(user_path=tmp_path / "absent.toml")
     assert cfg.explainer is True
     assert "augment.explainer" not in cfg.sources
 
 
 def test_augment_explainer_can_be_turned_off(tmp_path: Path) -> None:
     user = _write(tmp_path / "user.toml", "[augment]\nexplainer = false\n")
-    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    cfg = ScrConfig.load(user_path=user)
     assert cfg.explainer is False
     assert cfg.sources["augment.explainer"] == str(user)
 
@@ -164,7 +153,7 @@ def test_augment_explainer_repo_scope_wins(tmp_path: Path) -> None:
     a repo that turns the explainer off means off."""
     user = _write(tmp_path / "user.toml", "[augment]\nexplainer = true\n")
     repo = _write(tmp_path / "repo.toml", "[augment]\nexplainer = false\n")
-    cfg = ScrConfig.load(user_path=user, repo_path=repo)
+    cfg = ScrConfig.load(user_path=user, committed_path=repo)
     assert cfg.explainer is False
     assert cfg.sources["augment.explainer"] == str(repo)
 
@@ -172,13 +161,13 @@ def test_augment_explainer_repo_scope_wins(tmp_path: Path) -> None:
 def test_augment_explainer_rejects_non_boolean(tmp_path: Path) -> None:
     user = _write(tmp_path / "user.toml", '[augment]\nexplainer = "no"\n')
     with pytest.raises(ConfigError, match="explainer must be a boolean"):
-        ScrConfig.load(user_path=user, repo_path=None)
+        ScrConfig.load(user_path=user)
 
 
 def test_augment_skip_globs_rejects_non_list(tmp_path: Path) -> None:
     user = _write(tmp_path / "user.toml", '[augment]\nskip_globs = "go.sum"\n')
     with pytest.raises(ConfigError, match="skip_globs must be a list"):
-        ScrConfig.load(user_path=user, repo_path=None)
+        ScrConfig.load(user_path=user)
 
 
 def test_augment_extra_prompt_empty_string_is_ignored(tmp_path: Path) -> None:
@@ -191,7 +180,7 @@ def test_augment_extra_prompt_empty_string_is_ignored(tmp_path: Path) -> None:
 extra_prompt = "   \\n   "
 """,
     )
-    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    cfg = ScrConfig.load(user_path=user)
     assert cfg.extra_review_prompt is None
     assert "augment.extra_prompt" not in cfg.sources
 
@@ -216,12 +205,12 @@ extra_prompt = "team-wide review checklist"
 extra_prompt = "this repo wants a different lens"
 """,
     )
-    cfg = ScrConfig.load(user_path=user, repo_path=repo)
+    cfg = ScrConfig.load(user_path=user, committed_path=repo)
     assert cfg.extra_review_prompt == "this repo wants a different lens"
     assert cfg.sources["augment.extra_prompt"] == str(repo)
 
     # Without a per-repo override, the user-global setting flows through.
-    cfg_global_only = ScrConfig.load(user_path=user, repo_path=None)
+    cfg_global_only = ScrConfig.load(user_path=user)
     assert cfg_global_only.extra_review_prompt == "team-wide review checklist"
 
 
@@ -234,7 +223,7 @@ extra_prompt = 42
 """,
     )
     with pytest.raises(ConfigError, match="must be a string"):
-        ScrConfig.load(user_path=user, repo_path=None)
+        ScrConfig.load(user_path=user)
 
 
 def test_load_user_only(tmp_path: Path) -> None:
@@ -253,7 +242,7 @@ model = "gemini-2.5-pro"
 GOOGLE_CLOUD_PROJECT = "aasgard-dev"
 """,
     )
-    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    cfg = ScrConfig.load(user_path=user)
     assert cfg.backend == "gemini-api"
     assert cfg.model_default == "claude-opus-4-7"
     assert cfg.backends["gemini-api"].default_model == "gemini-2.5-pro"
@@ -269,14 +258,14 @@ def test_legacy_model_table_folds_into_backend(tmp_path: Path) -> None:
 "claude-api" = "claude-sonnet-4-7"
 """,
     )
-    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    cfg = ScrConfig.load(user_path=user)
     assert cfg.backends["claude-api"].default_model == "claude-sonnet-4-7"
     # Builtin type preserved.
     assert cfg.backends["claude-api"].type is BackendType.ANTHROPIC_SDK
 
 
-def test_repo_overrides_user(tmp_path: Path) -> None:
-    """Per-repo config takes precedence on conflicting keys."""
+def test_a_repo_entry_overrides_the_user_globals(tmp_path: Path) -> None:
+    """The repo entry wins on conflicting keys; the globals it doesn't name survive."""
     user = _write(
         tmp_path / "user.toml",
         """
@@ -286,27 +275,52 @@ default = "user-model"
 [env]
 GOOGLE_CLOUD_PROJECT = "user-project"
 GOOGLE_CLOUD_LOCATION = "us-central1"
-""",
-    )
-    repo = _write(
-        tmp_path / "repo.toml",
-        """
+
+[repos."acme/widgets"]
 backend = "gemini-api"
-[model]
+[repos."acme/widgets".model]
 default = "repo-model"
-[env]
+[repos."acme/widgets".env]
 GOOGLE_CLOUD_PROJECT = "repo-project"
 """,
     )
-    cfg = ScrConfig.load(user_path=user, repo_path=repo)
+    cfg = ScrConfig.load(user_path=user, repo="acme/widgets")
     assert cfg.backend == "gemini-api"
     assert cfg.model_default == "repo-model"
-    # Repo overrode shared keys; user's exclusive keys survive.
     assert cfg.env["GOOGLE_CLOUD_PROJECT"] == "repo-project"
     assert cfg.env["GOOGLE_CLOUD_LOCATION"] == "us-central1"
-    # Sources reflect the winning layer.
-    assert "repo.toml" in cfg.sources["backend"]
-    assert "user.toml" in cfg.sources["env.GOOGLE_CLOUD_LOCATION"]
+    assert cfg.sources["backend"] == f'{user} [repos."acme/widgets"]'
+    assert cfg.sources["env.GOOGLE_CLOUD_LOCATION"] == str(user)
+
+
+@pytest.mark.parametrize(
+    ("body", "offending"),
+    [
+        ('backend = "groq"\n', "backend"),
+        ('[model]\ndefault = "m"\n', "model"),
+        ('[backends.groq]\nbase_url = "https://example.com"\n', "backends"),
+        ('[backends.groq]\napi_key_command = "cat ~/.ssh/id_rsa"\n', "backends"),
+        ('[env]\nGOOGLE_CLOUD_PROJECT = "p"\n', "env"),
+        ("[augment]\nskip_globs = []\nmystery = 1\n", "augment.mystery"),
+    ],
+)
+def test_a_committed_file_sets_only_review_settings(tmp_path: Path, body: str, offending: str) -> None:
+    """Which backend, endpoint or credential runs a review is the reviewer's.
+    A repo naming one fails the load, naming the key and where it belongs."""
+    user = _write(tmp_path / "user.toml", "")
+    committed = _write(tmp_path / "committed.toml", body)
+    with pytest.raises(ConfigError) as e:
+        ScrConfig.load(user_path=user, repo="acme/widgets", committed_path=committed)
+    assert f'; {offending} belong in your user config ({user}), under [repos."acme/widgets"]' in str(e.value)
+
+
+def test_a_committed_file_may_set_every_review_setting(tmp_path: Path) -> None:
+    committed = _write(
+        tmp_path / "committed.toml",
+        '[augment]\nextra_prompt = "x"\nexplainer_prompt = "y"\nskip_globs = ["g"]\nexplainer = false\n',
+    )
+    cfg = ScrConfig.load(user_path=tmp_path / "absent.toml", committed_path=committed)
+    assert (cfg.extra_review_prompt, cfg.explainer_prompt, cfg.skip_globs, cfg.explainer) == ("x", "y", ("g",), False)
 
 
 def test_backends_table_can_add_a_new_entry(tmp_path: Path) -> None:
@@ -319,7 +333,7 @@ base_url = "http://localhost:11434/v1"
 model = "qwen2.5-coder:32b"
 """,
     )
-    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    cfg = ScrConfig.load(user_path=user)
     assert "localollama" in cfg.backends
     bdef = cfg.backends["localollama"]
     assert bdef.type is BackendType.OPENAI_COMPAT
@@ -338,7 +352,7 @@ base_url = "https://example.com/v1"
 api_key_command = ["gcloud", "secrets", "versions", "access", "latest", "--secret=anth"]
 """,
     )
-    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    cfg = ScrConfig.load(user_path=user)
     bdef = cfg.backends["gcloud-secret"]
     assert bdef.api_key_command == (
         "gcloud",
@@ -360,7 +374,7 @@ base_url = "https://example.com/v1"
 api_key_command = "gcloud secrets versions access latest --secret=anth"
 """,
     )
-    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    cfg = ScrConfig.load(user_path=user)
     bdef = cfg.backends["shell-string"]
     assert bdef.api_key_command == (
         "gcloud",
@@ -383,7 +397,7 @@ base_url = "https://example.com/v1"
 api_key_command = "fetch --header 'Auth: Bearer xyz' /path"
 """,
     )
-    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    cfg = ScrConfig.load(user_path=user)
     assert cfg.backends["quoting"].api_key_command == (
         "fetch",
         "--header",
@@ -403,7 +417,7 @@ base_url = "https://example.com/v1"
 api_key_command = ["bash", "-c", "cat /tmp/key"]
 """,
     )
-    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    cfg = ScrConfig.load(user_path=user)
     assert cfg.backends["list-form"].api_key_command == (
         "bash",
         "-c",
@@ -422,7 +436,7 @@ api_key_command = "echo 'unterminated"
 """,
     )
     with pytest.raises(ConfigError, match="unbalanced quotes"):
-        ScrConfig.load(user_path=user, repo_path=None)
+        ScrConfig.load(user_path=user)
 
 
 def test_api_key_command_wrong_type_raises(tmp_path: Path) -> None:
@@ -436,7 +450,7 @@ api_key_command = 42
 """,
     )
     with pytest.raises(ConfigError, match="must be a list of strings or a"):
-        ScrConfig.load(user_path=user, repo_path=None)
+        ScrConfig.load(user_path=user)
 
 
 def test_api_key_command_must_not_be_empty(tmp_path: Path) -> None:
@@ -450,7 +464,7 @@ api_key_command = []
 """,
     )
     with pytest.raises(ConfigError, match="must not be empty"):
-        ScrConfig.load(user_path=user, repo_path=None)
+        ScrConfig.load(user_path=user)
 
 
 def test_api_key_command_empty_string_raises(tmp_path: Path) -> None:
@@ -464,7 +478,7 @@ api_key_command = ""
 """,
     )
     with pytest.raises(ConfigError, match="must not be empty"):
-        ScrConfig.load(user_path=user, repo_path=None)
+        ScrConfig.load(user_path=user)
 
 
 def test_backends_table_overrides_builtin_field_by_field(tmp_path: Path) -> None:
@@ -475,7 +489,7 @@ def test_backends_table_overrides_builtin_field_by_field(tmp_path: Path) -> None
 model = "claude-sonnet-4-7"
 """,
     )
-    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    cfg = ScrConfig.load(user_path=user)
     bdef = cfg.backends["claude-api"]
     # type unchanged from builtin
     assert bdef.type is BackendType.ANTHROPIC_SDK
@@ -486,13 +500,13 @@ model = "claude-sonnet-4-7"
 def test_invalid_toml_raises_config_error(tmp_path: Path) -> None:
     bad = _write(tmp_path / "bad.toml", "this is = = not valid")
     with pytest.raises(ConfigError, match="invalid TOML"):
-        ScrConfig.load(user_path=bad, repo_path=None)
+        ScrConfig.load(user_path=bad)
 
 
 def test_unknown_backend_name_raises(tmp_path: Path) -> None:
     user = _write(tmp_path / "user.toml", 'backend = "telepathy"')
     with pytest.raises(ConfigError, match="not one of"):
-        ScrConfig.load(user_path=user, repo_path=None)
+        ScrConfig.load(user_path=user)
 
 
 def test_unknown_backend_type_raises(tmp_path: Path) -> None:
@@ -504,7 +518,7 @@ type = "carrier-pigeon"
 """,
     )
     with pytest.raises(ConfigError, match="carrier-pigeon"):
-        ScrConfig.load(user_path=user, repo_path=None)
+        ScrConfig.load(user_path=user)
 
 
 def test_new_backend_without_type_raises(tmp_path: Path) -> None:
@@ -516,7 +530,7 @@ model = "x"
 """,
     )
     with pytest.raises(ConfigError, match="`type` is required"):
-        ScrConfig.load(user_path=user, repo_path=None)
+        ScrConfig.load(user_path=user)
 
 
 def test_legacy_model_referencing_unknown_backend_raises(tmp_path: Path) -> None:
@@ -528,13 +542,13 @@ def test_legacy_model_referencing_unknown_backend_raises(tmp_path: Path) -> None
 """,
     )
     with pytest.raises(ConfigError, match="unknown backend"):
-        ScrConfig.load(user_path=user, repo_path=None)
+        ScrConfig.load(user_path=user)
 
 
 def test_non_string_model_value_raises(tmp_path: Path) -> None:
     user = _write(tmp_path / "user.toml", "[model]\ndefault = 42")
     with pytest.raises(ConfigError, match="must be a string"):
-        ScrConfig.load(user_path=user, repo_path=None)
+        ScrConfig.load(user_path=user)
 
 
 # ---------------------------------------------------------------------------
@@ -618,7 +632,7 @@ def test_write_inline_prompt_appends_section_when_absent(tmp_path: Path) -> None
     assert 'backend = "claude-api"' in text  # other sections preserved
     assert "[augment]" in text
     # Body landed inside a triple-quoted block.
-    cfg = ScrConfig.load(user_path=cfg_path, repo_path=None)
+    cfg = ScrConfig.load(user_path=cfg_path)
     assert cfg.extra_review_prompt == "Look for race conditions.\nAlso typos."
 
 
@@ -643,7 +657,7 @@ def test_write_inline_prompt_replaces_existing_assignment(tmp_path: Path) -> Non
     assert "[env]" in text
     assert "MY_VAR" in text
     assert "old prompt" not in text
-    cfg = ScrConfig.load(user_path=cfg_path, repo_path=None)
+    cfg = ScrConfig.load(user_path=cfg_path)
     assert cfg.extra_review_prompt == "new prompt"
 
 
@@ -658,7 +672,7 @@ def test_write_inline_prompt_empty_body_removes_assignment(tmp_path: Path) -> No
         encoding="utf-8",
     )
     write_inline_extra_prompt(cfg_path, "")
-    cfg = ScrConfig.load(user_path=cfg_path, repo_path=None)
+    cfg = ScrConfig.load(user_path=cfg_path)
     assert cfg.extra_review_prompt is None
     # Section header remains.
     text = cfg_path.read_text(encoding="utf-8")
@@ -676,7 +690,7 @@ def test_write_inline_prompt_inserts_under_existing_augment_section(tmp_path: Pa
         encoding="utf-8",
     )
     write_inline_extra_prompt(cfg_path, "new prompt")
-    cfg = ScrConfig.load(user_path=cfg_path, repo_path=None)
+    cfg = ScrConfig.load(user_path=cfg_path)
     assert cfg.extra_review_prompt == "new prompt"
     assert "future key goes here" in cfg_path.read_text(encoding="utf-8")
 
@@ -688,7 +702,7 @@ def test_write_inline_prompt_creates_file_when_absent(tmp_path: Path) -> None:
     cfg_path = tmp_path / "fresh.toml"
     assert not cfg_path.exists()
     write_inline_extra_prompt(cfg_path, "fresh prompt")
-    cfg = ScrConfig.load(user_path=cfg_path, repo_path=None)
+    cfg = ScrConfig.load(user_path=cfg_path)
     assert cfg.extra_review_prompt == "fresh prompt"
 
 
@@ -709,7 +723,7 @@ Name the dataset in every example.
 """
 ''',
     )
-    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    cfg = ScrConfig.load(user_path=user)
     assert cfg.explainer_prompt is not None
     assert cfg.explainer_prompt.startswith("Assume the reader knows Hail")
     assert cfg.explainer_prompt.endswith("in every example.")
@@ -717,7 +731,7 @@ Name the dataset in every example.
 
 
 def test_augment_explainer_prompt_defaults_to_none(tmp_path: Path) -> None:
-    cfg = ScrConfig.load(user_path=tmp_path / "absent.toml", repo_path=None)
+    cfg = ScrConfig.load(user_path=tmp_path / "absent.toml")
     assert cfg.explainer_prompt is None
     assert "augment.explainer_prompt" not in cfg.sources
 
@@ -726,7 +740,7 @@ def test_augment_explainer_prompt_empty_string_is_ignored(tmp_path: Path) -> Non
     """A config keeping an empty triple-quoted block has configured no
     house style, not an empty one."""
     user = _write(tmp_path / "user.toml", '[augment]\nexplainer_prompt = "   \\n   "\n')
-    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    cfg = ScrConfig.load(user_path=user)
     assert cfg.explainer_prompt is None
     assert "augment.explainer_prompt" not in cfg.sources
 
@@ -739,18 +753,18 @@ def test_augment_explainer_prompt_repo_overrides_user(tmp_path: Path) -> None:
     repo_dir.mkdir()
     repo = _write(repo_dir / "repo.toml", '[augment]\nexplainer_prompt = "how this repo explains itself"\n')
 
-    cfg = ScrConfig.load(user_path=user, repo_path=repo)
+    cfg = ScrConfig.load(user_path=user, committed_path=repo)
     assert cfg.explainer_prompt == "how this repo explains itself"
     assert cfg.sources["augment.explainer_prompt"] == str(repo)
 
-    inherited = ScrConfig.load(user_path=user, repo_path=None)
+    inherited = ScrConfig.load(user_path=user)
     assert inherited.explainer_prompt == "how I like documents to read"
 
 
 def test_augment_explainer_prompt_rejects_non_string(tmp_path: Path) -> None:
     user = _write(tmp_path / "user.toml", "[augment]\nexplainer_prompt = 42\n")
     with pytest.raises(ConfigError, match="augment.explainer_prompt must be a string"):
-        ScrConfig.load(user_path=user, repo_path=None)
+        ScrConfig.load(user_path=user)
 
 
 def test_the_two_inline_prompts_are_independent(tmp_path: Path) -> None:
@@ -760,7 +774,7 @@ def test_the_two_inline_prompts_are_independent(tmp_path: Path) -> None:
         tmp_path / "user.toml",
         '[augment]\nextra_prompt = "look for races"\nexplainer_prompt = "name the dataset"\n',
     )
-    cfg = ScrConfig.load(user_path=user, repo_path=None)
+    cfg = ScrConfig.load(user_path=user)
     assert cfg.extra_review_prompt == "look for races"
     assert cfg.explainer_prompt == "name the dataset"
 
@@ -781,3 +795,122 @@ def test_the_config_templates_explainer_prompt_example_parses(tmp_path: Path) ->
     uncommented = "\n".join(ln.removeprefix("# ").removeprefix("#") for ln in block.splitlines())
     parsed = tomllib.loads(uncommented)
     assert "Name the dataset" in parsed["augment"]["explainer_prompt"]
+
+
+def test_the_committed_templates_example_is_a_valid_committed_config(tmp_path: Path) -> None:
+    """`scr config edit --scope repo` seeds this; uncommented, it must load
+    as a committed file, so it shows only what a repo may set."""
+    from semantic_code_review.cli import config_cmd
+
+    text = config_cmd._COMMITTED_TEMPLATE
+    block = text[text.index("# [augment]\n") :]
+    committed = _write(
+        tmp_path / "committed.toml", "\n".join(ln.removeprefix("# ") for ln in block.splitlines()) + "\n"
+    )
+    cfg = ScrConfig.load(user_path=tmp_path / "absent.toml", committed_path=committed)
+    assert cfg.skip_globs == ("gen/**", "*.generated.ts")
+    assert cfg.explainer is False
+
+
+# ---------------------------------------------------------------------------
+# [repos."owner/name"]: the user's own settings for one repo
+# ---------------------------------------------------------------------------
+
+
+def test_a_repo_entry_applies_only_to_its_repo(tmp_path: Path) -> None:
+    user = _write(
+        tmp_path / "user.toml",
+        'backend = "claude-cli"\n[repos."acme/widgets"]\nbackend = "claude-api"\n',
+    )
+    assert ScrConfig.load(user_path=user, repo="acme/widgets").backend == "claude-api"
+    assert ScrConfig.load(user_path=user, repo="acme/other").backend == "claude-cli"
+    assert ScrConfig.load(user_path=user).backend == "claude-cli"
+
+
+def test_a_repo_entry_matches_case_insensitively(tmp_path: Path) -> None:
+    """GitHub repo names are case-insensitive; `scr pr Acme/Widgets` is the same repo."""
+    user = _write(tmp_path / "user.toml", '[repos."acme/widgets"]\nbackend = "claude-api"\n')
+    assert ScrConfig.load(user_path=user, repo="Acme/Widgets").backend == "claude-api"
+
+
+def test_layers_merge_global_then_committed_then_repo_entry(tmp_path: Path) -> None:
+    """The user's entry for a repo beats the repo's committed file, which
+    beats the user's global settings; what a layer hid is recorded."""
+    user = _write(
+        tmp_path / "user.toml",
+        """
+[augment]
+explainer_prompt = "global"
+extra_prompt = "global"
+skip_globs = ["a"]
+[repos."acme/widgets".augment]
+explainer_prompt = "mine for widgets"
+skip_globs = ["c"]
+""",
+    )
+    committed = _write(
+        tmp_path / "committed.toml",
+        '[augment]\nexplainer_prompt = "the repo\'s"\nextra_prompt = "the repo\'s"\nskip_globs = ["b"]\n',
+    )
+    cfg = ScrConfig.load(user_path=user, repo="acme/widgets", committed_path=committed)
+
+    entry = f'{user} [repos."acme/widgets"]'
+    assert cfg.explainer_prompt == "mine for widgets"
+    assert cfg.sources["augment.explainer_prompt"] == entry
+    assert cfg.shadowed["augment.explainer_prompt"] == str(committed)
+    assert cfg.extra_review_prompt == "the repo's"
+    assert cfg.shadowed["augment.extra_prompt"] == str(user)
+    assert cfg.skip_globs == ("a", "b", "c")
+    assert cfg.sources["augment.skip_globs"] == f"{user}, {committed}, {entry}"
+
+
+def test_a_repo_entry_can_set_machine_settings(tmp_path: Path) -> None:
+    """The entry is in the user's own file, so backends, models and [env] are all allowed."""
+    user = _write(
+        tmp_path / "user.toml",
+        """
+[repos."acme/widgets"]
+backend = "groq"
+[repos."acme/widgets".backends.groq]
+model = "widgets-model"
+[repos."acme/widgets".env]
+GOOGLE_CLOUD_PROJECT = "widgets"
+""",
+    )
+    cfg = ScrConfig.load(user_path=user, repo="acme/widgets")
+    assert cfg.backend == "groq"
+    assert cfg.backends["groq"].default_model == "widgets-model"
+    assert cfg.env == {"GOOGLE_CLOUD_PROJECT": "widgets"}
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ('repos = "acme/widgets"\n', "table of"),
+        ('[repos."widgets"]\nbackend = "groq"\n', "owner/name"),
+        ('[repos]\n"acme/widgets" = 1\n', "must be a table"),
+        ('[repos."acme/widgets"]\n[repos."Acme/Widgets"]\n', "different case"),
+        ('[repos."acme/widgets".repos."acme/other"]\n', "its own repos"),
+    ],
+)
+def test_a_malformed_repos_table_is_an_error(tmp_path: Path, body: str, message: str) -> None:
+    """Checked whichever repo is reviewed: a mis-keyed entry would otherwise never apply."""
+    user = _write(tmp_path / "user.toml", body)
+    with pytest.raises(ConfigError, match=message):
+        ScrConfig.load(user_path=user, repo="acme/other")
+
+
+@pytest.mark.parametrize(
+    ("url", "repo"),
+    [
+        ("https://github.com/acme/widgets.git", "acme/widgets"),
+        ("https://github.com/acme/widgets", "acme/widgets"),
+        ("https://token@github.com/acme/widgets/", "acme/widgets"),
+        ("git@github.com:acme/widgets.git", "acme/widgets"),
+        ("ssh://git@github.com/acme/widgets", "acme/widgets"),
+        ("https://gitlab.com/acme/widgets.git", None),
+        ("git@github.com:acme/widgets/extra.git", None),
+    ],
+)
+def test_github_repo_reads_the_remote_url(url: str, repo: str | None) -> None:
+    assert github_repo(url) == repo

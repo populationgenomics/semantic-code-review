@@ -82,19 +82,13 @@ def default_viewer_prefs_path() -> Path:
     return default_config_root() / "viewer-prefs.json"
 
 
-def find_repo_config_path(start: Path | None = None) -> Path | None:
-    """Walk up from `start` (cwd by default) looking for `.scr/config.toml`.
+def committed_config_path(root: Path) -> Path:
+    """Where a repo commits its review settings: `<root>/.scr/config.toml`.
 
-    Stops at the filesystem root or the first match. Returns None when
-    no per-repo override exists. The walk is bounded by the parent
-    chain — symlinks are followed by `Path.resolve()`.
+    `root` is a checkout's top level — the working tree for `scr review`,
+    the base worktree for `scr pr`. The file is optional.
     """
-    here = (start or Path.cwd()).resolve()
-    for d in (here, *here.parents):
-        candidate = d / ".scr" / "config.toml"
-        if candidate.is_file():
-            return candidate
-    return None
+    return root / ".scr" / "config.toml"
 
 
 def runs_cache_root() -> Path:

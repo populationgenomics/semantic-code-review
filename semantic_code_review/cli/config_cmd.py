@@ -9,8 +9,9 @@ from pathlib import Path
 import typer
 
 from .. import git_ops, paths
+from ..config import ScrConfig
 from . import app
-from ._shared import get_config
+from ._shared import load_config, local_repo
 
 config_app = typer.Typer(help="Inspect or edit scr's user/per-repo config.")
 app.add_typer(config_app, name="config")
@@ -26,32 +27,37 @@ def config_path() -> None:
 
 @config_app.command("show")
 def config_show() -> None:
-    """Print the resolved config (user + per-repo merged) and where each setting came from."""
-    from ..paths import default_config_path, find_repo_config_path
+    """Print the config a review of the cwd's repo resolves, and where each setting came from."""
+    from ..paths import default_config_path
 
-    cfg = get_config()
+    reviewed, committed = local_repo(None)
+    cfg = load_config(repo=reviewed, committed_path=committed)
     user = default_config_path()
-    repo = find_repo_config_path()
     typer.echo(f"# user config: {user} ({'present' if user.is_file() else 'absent'})")
-    typer.echo(f"# per-repo config: {repo or '(none found)'}{' (present)' if repo and repo.is_file() else ''}")
+    if committed is None:
+        typer.echo("# repo: (cwd is not in a git repo)")
+    else:
+        typer.echo(f"# repo: {reviewed or '(origin is not a GitHub repo)'}")
+        typer.echo(f"# committed config: {committed} ({'present' if committed.is_file() else 'absent'})")
     typer.echo("")
-    typer.echo(f"backend = {cfg.backend!r} (from {cfg.sources.get('backend', 'default')})")
+    typer.echo(f"backend = {cfg.backend!r} (from {_source(cfg, 'backend', 'default')})")
     if cfg.model_default is not None:
         typer.echo("[model]")
-        typer.echo(f"  default = {cfg.model_default!r} (from {cfg.sources.get('model.default', '?')})")
+        typer.echo(f"  default = {cfg.model_default!r} (from {_source(cfg, 'model.default')})")
     typer.echo("[backends]")
     for name in sorted(cfg.backends):
         bdef = cfg.backends[name]
         src = cfg.sources.get(f"backends.{name}", "builtin")
         typer.echo(f"  {name}  type={bdef.type.value}  (from {src})")
         if bdef.default_model is not None:
-            typer.echo(f"    model       = {bdef.default_model!r}")
+            typer.echo(f"    model       = {bdef.default_model!r}{_hidden(cfg, f'backends.{name}.model')}")
         if bdef.base_url is not None:
-            typer.echo(f"    base_url    = {bdef.base_url!r}")
+            typer.echo(f"    base_url    = {bdef.base_url!r}{_hidden(cfg, f'backends.{name}.base_url')}")
         if bdef.api_key_env is not None:
-            typer.echo(f"    api_key_env = {bdef.api_key_env!r}")
+            typer.echo(f"    api_key_env = {bdef.api_key_env!r}{_hidden(cfg, f'backends.{name}.api_key_env')}")
         if bdef.api_key_command is not None:
-            typer.echo(f"    api_key_command = {list(bdef.api_key_command)!r}")
+            argv = list(bdef.api_key_command)
+            typer.echo(f"    api_key_command = {argv!r}{_hidden(cfg, f'backends.{name}.api_key_command')}")
     if cfg.env:
         typer.echo("[env]")
         for k, v in cfg.env.items():
@@ -59,25 +65,37 @@ def config_show() -> None:
             # Values are redacted: [env] may hold an API key (the config-key
             # credential source), and `config show` output ends up in logs
             # and screen-shares.
-            typer.echo(f"  {k} = <redacted> (from {cfg.sources.get(f'env.{k}', '?')}, {applied})")
+            typer.echo(f"  {k} = <redacted> (from {_source(cfg, f'env.{k}')}, {applied})")
     if cfg.extra_review_prompt is not None or cfg.explainer_prompt is not None or cfg.skip_globs or not cfg.explainer:
         typer.echo("[augment]")
     if cfg.extra_review_prompt is not None:
         typer.echo(
-            f"  extra_prompt = {_prompt_snippet(cfg.extra_review_prompt)} "
-            f"(from {cfg.sources.get('augment.extra_prompt', '?')})"
+            f"  extra_prompt = {_prompt_snippet(cfg.extra_review_prompt)} (from {_source(cfg, 'augment.extra_prompt')})"
         )
     if cfg.explainer_prompt is not None:
         typer.echo(
             f"  explainer_prompt = {_prompt_snippet(cfg.explainer_prompt)} "
-            f"(from {cfg.sources.get('augment.explainer_prompt', '?')})"
+            f"(from {_source(cfg, 'augment.explainer_prompt')})"
         )
     if cfg.skip_globs:
-        typer.echo(f"  skip_globs = {list(cfg.skip_globs)} (from {cfg.sources.get('augment.skip_globs', '?')})")
+        typer.echo(f"  skip_globs = {list(cfg.skip_globs)} (from {_source(cfg, 'augment.skip_globs')})")
     # Only shown when off: the explainer is opt-out, so "on" is the
     # default and listing it every time would be noise.
     if not cfg.explainer:
-        typer.echo(f"  explainer = false (from {cfg.sources.get('augment.explainer', '?')})")
+        typer.echo(f"  explainer = false (from {_source(cfg, 'augment.explainer')})")
+
+
+def _hidden(cfg: ScrConfig, key: str) -> str:
+    """A note naming the lower layer whose `key` a later layer replaced."""
+    hidden = cfg.shadowed.get(key)
+    return "" if hidden is None else f"  (overrides {hidden})"
+
+
+def _source(cfg: ScrConfig, key: str, default: str = "?") -> str:
+    """Where `key` came from, and the lower layer's value it hid, if any."""
+    src = cfg.sources.get(key, default)
+    hidden = cfg.shadowed.get(key)
+    return src if hidden is None else f"{src}; overrides {hidden}"
 
 
 def _prompt_snippet(prompt: str) -> str:
@@ -107,8 +125,9 @@ def config_edit(
         "--scope",
         help=(
             "Which config to edit. 'user' (default) = "
-            "~/.config/scr/config.toml. 'repo' = <repo_root>/.scr/config.toml "
-            "for the current repo."
+            '~/.config/scr/config.toml, including your [repos."owner/name"] '
+            "entries. 'repo' = the current repo's committed .scr/config.toml, "
+            "which holds only [augment] review settings."
         ),
     ),
     template: str = typer.Option(
@@ -125,22 +144,28 @@ def config_edit(
 
     By default edits the whole user-global config file. Two args narrow
     that: `prompt` round-trips just the extra-review prompt through a
-    markdown tempfile; `--scope=repo` targets the per-repo override
-    instead of the user-global file.
+    markdown tempfile; `--scope=repo` targets the repo's committed
+    `.scr/config.toml` instead of the user file.
     """
     if scope not in ("user", "repo"):
         raise typer.BadParameter(f"--scope must be 'user' or 'repo', got {scope!r}")
     if subject not in ("config", "prompt"):
         raise typer.BadParameter(f"subject must be 'config' or 'prompt', got {subject!r}")
+    if template is not None and scope == "repo":
+        raise typer.BadParameter(
+            "--template adds a backend, which a repo's committed config cannot hold; "
+            'use the user scope, under [repos."owner/name"] for one repo'
+        )
 
     path = _resolve_config_edit_path(scope)
+    fresh = _CONFIG_TEMPLATE if scope == "user" else _COMMITTED_TEMPLATE
     if subject == "prompt":
         if template is not None:
             raise typer.BadParameter("--template only applies to the default 'config' subject")
-        _edit_inline_prompt(path)
+        _edit_inline_prompt(path, fresh)
         return
 
-    _edit_full_config(path, template)
+    _edit_full_config(path, template, fresh)
 
 
 def _resolve_config_edit_path(scope: str) -> Path:
@@ -158,7 +183,7 @@ def _resolve_config_edit_path(scope: str) -> Path:
     return Path(root_text) / ".scr" / "config.toml"
 
 
-def _edit_full_config(path: Path, template: str | None) -> None:
+def _edit_full_config(path: Path, template: str | None, fresh: str) -> None:
     """Open the whole config file in ``$EDITOR``, with the optional
     backend-template append from the legacy ``--template`` flag.
     """
@@ -169,7 +194,7 @@ def _edit_full_config(path: Path, template: str | None) -> None:
 
     paths.ensure_private_dir(path.parent)
     if not path.exists():
-        paths.write_private_file(path, _CONFIG_TEMPLATE)
+        paths.write_private_file(path, fresh)
 
     if template is not None:
         valid = sorted([SCAFFOLD_SECTION_NAME, *BUILTIN_BACKENDS])
@@ -192,7 +217,7 @@ def _edit_full_config(path: Path, template: str | None) -> None:
     _sp.run([editor, str(path)], check=False)
 
 
-def _edit_inline_prompt(path: Path) -> None:
+def _edit_inline_prompt(path: Path, fresh: str) -> None:
     """Extract `[augment].extra_prompt` into a tempfile, open $EDITOR
     on it as markdown, then splice the result back into the config.
 
@@ -205,16 +230,16 @@ def _edit_inline_prompt(path: Path) -> None:
     import subprocess as _sp
     import tempfile
 
-    from ..config import ScrConfig, write_inline_extra_prompt
+    from ..config import write_inline_extra_prompt
 
     paths.ensure_private_dir(path.parent)
     if not path.exists():
-        paths.write_private_file(path, _CONFIG_TEMPLATE)
+        paths.write_private_file(path, fresh)
 
     # Read the current prompt via the standard config loader so the
     # tempfile starts with what `scr config show` would say. Empty
     # body when no prompt is configured at this scope yet.
-    cfg = ScrConfig.load(user_path=path, repo_path=None)
+    cfg = ScrConfig.load(user_path=path)
     current = cfg.extra_review_prompt or ""
 
     # Initial contents: current prompt if set, else a placeholder
@@ -261,10 +286,16 @@ def _edit_inline_prompt(path: Path) -> None:
 _CONFIG_TEMPLATE = """\
 # scr config. CLI flags and env vars override these.
 #
-# A key may live in [env] below, but ONLY in your user config
-# (~/.config/scr/config.toml, written 0600) — never in a repo's
-# .scr/config.toml, which sits inside the repository. `.env` or your
+# This file is 0600, so a key may live in [env] below; `.env` or your
 # shell work too. `scr config show` redacts [env] values.
+#
+# Settings for one repo go in a [repos."owner/name"] table, which takes
+# every key this file does and wins over both this file's defaults and
+# the repo's committed .scr/config.toml:
+# [repos."acme/widgets"]
+# backend = "claude-cli"
+# [repos."acme/widgets".augment]
+# skip_globs = ["vendor/**"]
 
 # Default backend when --backend isn't passed. "auto" picks claude-api
 # if ANTHROPIC_API_KEY is set, else claude-cli if `claude` is on PATH.
@@ -287,7 +318,7 @@ _CONFIG_TEMPLATE = """\
 # GOOGLE_CLOUD_LOCATION = "global"
 
 # Extra file globs to skip in the LLM passes, on top of the builtin
-# lockfile/bundle/binary denylist. Accumulates with the user scope.
+# lockfile/bundle/binary denylist. Accumulates across layers.
 # [augment]
 # skip_globs = ["go.sum", "gen/**", "*.generated.ts"]
 
@@ -306,4 +337,29 @@ _CONFIG_TEMPLATE = """\
 # Assume the reader knows Hail and the analysis-runner, and not the
 # cohort model. Name the dataset in every example.
 # \"\"\"
+"""
+
+
+_COMMITTED_TEMPLATE = """\
+# This repo's scr review settings, meant to be committed: every reviewer's
+# scr reads it, `scr pr` from the PR's base commit. It holds only these
+# [augment] keys; backends, models and credentials are each reviewer's, in
+# their user config.
+#
+# skip_globs: files the LLM passes skip, on top of the builtin
+#   lockfile/bundle/binary denylist (generated code, vendored trees).
+# explainer_prompt: house style for the change explainer's reading guide.
+# extra_prompt: an extra per-hunk review prompt; its notes can be promoted
+#   to comments.
+# explainer: false removes the change explainer.
+
+# [augment]
+# skip_globs = ["gen/**", "*.generated.ts"]
+# explainer_prompt = \"\"\"
+# Assume the reader knows the cohort model.
+# \"\"\"
+# extra_prompt = \"\"\"
+# Flag missing tests and any public API change.
+# \"\"\"
+# explainer = false
 """

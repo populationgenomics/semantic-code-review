@@ -83,7 +83,7 @@ def build_pending_viewer_json(run_dir: paths.RunDir, skip_globs: tuple[str, ...]
 
     def _pending_ann(path: str) -> FileAnnotations:
         if skip.should_skip(path, skip_globs):
-            return FileAnnotations(role=FileRole.GENERATED, summary=skip.SKIP_SUMMARY)
+            return FileAnnotations(role=FileRole.GENERATED, summary=skip.SKIP_SUMMARY, skipped=True)
         return FileAnnotations()
 
     diff = AnnotatedDiff(

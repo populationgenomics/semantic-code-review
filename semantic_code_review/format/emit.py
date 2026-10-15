@@ -75,6 +75,8 @@ def _emit_file(f: AnnotatedFile) -> list[str]:
         lines.extend(_text("scr-file-role", ann.role.value))
     if ann.lang:
         lines.extend(_text("scr-file-lang", ann.lang))
+    if ann.skipped:
+        lines.extend(_text("scr-file-skipped", "true"))
     if ann.symbols is not None:
         lines.extend(_json("scr-file-symbols", ann.symbols.model_dump()))
     for fd in ann.fold_descriptions:

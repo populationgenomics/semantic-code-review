@@ -97,7 +97,10 @@ def _run_pr(runs_root: Path, *, idle_timeout: int, foreground: bool = False) -> 
     opts = pr_flow.PrFlowOptions(
         repo="o/r",
         number=7,
-        config=ReviewConfig(runs_root=runs_root, augment=False, open_browser=False, timeout=idle_timeout),
+        runs_root=runs_root,
+        config_for=lambda _run_dir: ReviewConfig(
+            runs_root=runs_root, augment=False, open_browser=False, timeout=idle_timeout
+        ),
     )
     with (
         patch.object(pr_flow, "preflight_gh", lambda: None),

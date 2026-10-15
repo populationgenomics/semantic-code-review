@@ -18,8 +18,9 @@ that builds a :class:`PrFlowOptions` from command-line args and calls
 from __future__ import annotations
 
 import json
+import pathlib
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from .. import paths
@@ -31,13 +32,17 @@ from .github import GhError, list_review_requested_prs, pick_pr_interactive
 
 @dataclass(frozen=True)
 class PrFlowOptions:
-    """All inputs the PR flow needs: which PR, plus the settings every
-    review session shares.
+    """All inputs the PR flow needs: which PR, where its run goes, and
+    how to settle the settings every review session shares.
     """
 
     repo: str
     number: int | None
-    config: ReviewConfig
+    runs_root: pathlib.Path
+    #: The review settings for the materialised run. A function of the
+    #: run because the repo's committed config is read from its base
+    #: worktree, which exists only once the run is materialised.
+    config_for: Callable[[paths.RunDir], ReviewConfig]
 
 
 def run_pr_flow(opts: PrFlowOptions, *, argv: Sequence[str], foreground: bool = False) -> int:
@@ -71,7 +76,7 @@ def run_pr_flow(opts: PrFlowOptions, *, argv: Sequence[str], foreground: bool = 
 
     pr_url = f"https://github.com/{opts.repo}/pull/{number}"
     try:
-        run_dir = materialize_github_pr_run(pr_url, opts.config.runs_root)
+        run_dir = materialize_github_pr_run(pr_url, opts.runs_root)
     except GhFetchError as e:
         _err(f"scr pr: {e}")
         return 2
@@ -80,11 +85,15 @@ def run_pr_flow(opts: PrFlowOptions, *, argv: Sequence[str], foreground: bool = 
     if not meta.get("headRefOid"):
         _err("scr pr: meta.json is missing headRefOid; can't anchor review")
         return 2
+    # Settled here, in the invoking process, even though a detached server
+    # settles its own: a bad committed config then fails this command
+    # rather than a child whose log the user has to read.
+    cfg = opts.config_for(run_dir)
     if foreground:
         return runner.serve_foreground(
-            run_dir, opts.config, argv=argv, program="scr pr", github=pending_review.for_run(run_dir)
+            run_dir, cfg, argv=argv, program="scr pr", github=pending_review.for_run(run_dir)
         )
-    return runner.detach_server(run_dir, opts.config, argv=argv, program="scr pr")
+    return runner.detach_server(run_dir, cfg, argv=argv, program="scr pr")
 
 
 def serve_pr_run(run_dir: paths.RunDir, cfg: ReviewConfig, *, argv: Sequence[str]) -> int:
