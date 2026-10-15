@@ -35,12 +35,11 @@ SOURCES: dict[str, CredentialSource] = {
 }
 
 
-def allowed_source_ids(name: str, bdef: BackendDef, *, scope: str) -> list[str]:
+def allowed_source_ids(name: str, bdef: BackendDef) -> list[str]:
     """The credential sources a backend accepts, in menu order.
 
-    `config` (a literal key in the TOML) is offered only for `--scope=user`
-    — a per-repo `.scr/config.toml` sits inside the repo, one `git add .`
-    from a committed secret.
+    `config` (a literal key in the TOML) is always the user config, which
+    is 0600: `scr init` writes nothing to a repo's `.scr/config.toml`.
     """
     if bdef.type is BackendType.CLAUDE_CLI:
         return ["none"]
@@ -48,10 +47,7 @@ def allowed_source_ids(name: str, bdef: BackendDef, *, scope: str) -> list[str]:
     # nor a fetch command.
     if not bdef.api_key_env and not bdef.api_key_command:
         return ["none"]
-    ids = ["env", "dotenv"]
-    if scope == "user":
-        ids.append("config")
-    ids.append("command")
+    ids = ["env", "dotenv", "config", "command"]
     if name == "gemini-api":
         ids.append("vertex")
     return ids

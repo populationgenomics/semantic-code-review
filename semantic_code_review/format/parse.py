@@ -265,6 +265,10 @@ def _file_annotations(directives: list[_Directive]) -> FileAnnotations:
             ann.role = FileRole(d.value)
         elif d.name == "scr-file-lang":
             ann.lang = d.value
+        elif d.name == "scr-file-skipped":
+            if d.value != "true":
+                raise ParseError(f"line {d.lineno}: scr-file-skipped must be 'true', got {d.value!r}")
+            ann.skipped = True
         elif d.name == "scr-file-symbols":
             try:
                 data = json.loads(d.value)

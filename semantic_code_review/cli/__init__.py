@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import typer
 
-from ._shared import _reset_config_cache, get_config, load_dotenv
+from ._shared import load_dotenv
 
 app = typer.Typer(
     help="Semantic Code Review — LLM-augmented PR diff viewer.",
@@ -62,7 +62,7 @@ from . import (  # noqa: E402  # side-effect imports must follow the `app` defin
     strip,
 )
 
-__all__ = ["_reset_config_cache", "app", "get_config"]
+__all__ = ["app"]
 
 
 if __name__ == "__main__":

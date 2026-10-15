@@ -1,14 +1,17 @@
 """User-level config for scr.
 
-Loads (and merges) two optional TOML files:
+Merges three optional layers, later winning on conflict:
 
-  - `~/.config/scr/config.toml` (or `$XDG_CONFIG_HOME/scr/config.toml`)
-    — user-wide defaults.
-  - `<repo>/.scr/config.toml` — per-repo overrides, found by walking
-    up from cwd.
+  1. `~/.config/scr/config.toml` (or `$XDG_CONFIG_HOME/scr/config.toml`)
+     — user-wide defaults.
+  2. The reviewed repo's committed `.scr/config.toml` — shared review
+     settings, limited to `COMMITTED_KEYS` under `[augment]`. The caller
+     names the file; this module does not search.
+  3. The user file's `[repos."owner/name"]` table for the reviewed repo
+     — the user's own settings for that repo.
 
-Per-repo wins on conflict. Both files are optional; their absence is
-the same as an empty config.
+`[augment].skip_globs` accumulates across layers instead of overriding.
+Every file is optional; its absence is the same as an empty config.
 
 Schema (all top-level fields optional):
 
@@ -50,7 +53,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any
 
-from .paths import default_config_path, find_repo_config_path, write_private_file
+from .paths import default_config_path, write_private_file
 
 
 class BackendType(str, Enum):
@@ -225,7 +228,9 @@ BUILTIN_BACKENDS: dict[str, BackendDef] = {
 
 @dataclass
 class ScrConfig:
-    """Resolved config: user file + per-repo file merged."""
+    """Resolved config: the user file, the repo's committed file and the
+    user's entry for the repo, merged in that order.
+    """
 
     backend: str | None = None
     backends: dict[str, BackendDef] = field(default_factory=dict)
@@ -262,25 +267,47 @@ class ScrConfig:
     explainer_prompt: str | None = None
     # Where each setting came from, for `scr config show`.
     sources: dict[str, str] = field(default_factory=dict)
+    # Source of a lower layer's value that a later layer replaced, by
+    # setting, so `scr config show` can say what was hidden.
+    shadowed: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(
         cls,
         *,
         user_path: Path | None = None,
-        repo_path: Path | None = None,
-        cwd: Path | None = None,
+        repo: str | None = None,
+        committed_path: Path | None = None,
     ) -> ScrConfig:
-        """Load and merge config files. Either path can be overridden for tests."""
+        """Load and merge the config layers for a review of `repo`.
+
+        Args:
+            user_path: The user file; the XDG default when None.
+            repo: The reviewed repo as `owner/name`, selecting the user
+                file's `[repos."owner/name"]` entry. None applies none.
+            committed_path: The reviewed repo's committed
+                `.scr/config.toml`. A path that does not exist is the same
+                as an empty file.
+
+        Raises:
+            ConfigError: A file is malformed, the committed file sets
+                anything but `COMMITTED_KEYS`, or `backend` names an
+                undefined backend.
+        """
         cfg = cls(backends=dict(BUILTIN_BACKENDS))
 
         user = user_path if user_path is not None else default_config_path()
-        if user.is_file():
-            cfg._merge(_parse(user), source=str(user))
+        user_raw = _parse(user) if user.is_file() else {}
+        repos = _repos_table(user_raw.pop("repos", None), source=str(user))
+        cfg._merge_layer(user_raw, source=str(user))
 
-        repo = repo_path if repo_path is not None else find_repo_config_path(cwd)
-        if repo is not None and repo.is_file():
-            cfg._merge(_parse(repo), source=str(repo))
+        if committed_path is not None and committed_path.is_file():
+            committed = _parse(committed_path)
+            _check_committed(committed, source=str(committed_path), user=user, repo=repo)
+            cfg._merge_layer(committed, source=str(committed_path))
+
+        if repo is not None and repo.lower() in repos:
+            cfg._merge_layer(repos[repo.lower()], source=f'{user} [repos."{repo}"]')
 
         # Backend reference must point at a defined backend (or "auto").
         if cfg.backend is not None and cfg.backend != "auto" and cfg.backend not in cfg.backends:
@@ -290,6 +317,17 @@ class ScrConfig:
             )
 
         return cfg
+
+    def _merge_layer(self, raw: dict[str, Any], *, source: str) -> None:
+        """`_merge` one layer, recording in `shadowed` what it replaced."""
+        before = dict(self.sources)
+        self._merge(raw, source=source)
+        for key, src in self.sources.items():
+            # `backends.<name>` names the table; its fields carry their own keys.
+            if key in _ACCUMULATED or (key.startswith("backends.") and key.count(".") == 1):
+                continue
+            if key in before and before[key] != src:
+                self.shadowed[key] = before[key]
 
     def _merge(self, raw: dict[str, Any], *, source: str) -> None:
         backend = raw.get("backend")
@@ -340,9 +378,10 @@ class ScrConfig:
             if globs is not None:
                 if not isinstance(globs, list) or not all(isinstance(g, str) for g in globs):
                     raise ConfigError(f"{source}: augment.skip_globs must be a list of strings")
-                # Accumulate across scopes so user + repo patterns both apply.
+                # Accumulate across layers so every layer's patterns apply.
                 self.skip_globs = (*self.skip_globs, *(g for g in globs if g))
-                self.sources["augment.skip_globs"] = source
+                prior = self.sources.get("augment.skip_globs")
+                self.sources["augment.skip_globs"] = source if prior is None else f"{prior}, {source}"
             explainer = augment.get("explainer")
             if explainer is not None:
                 if not isinstance(explainer, bool):
@@ -449,6 +488,80 @@ class ScrConfig:
 
 class ConfigError(RuntimeError):
     """Raised when a config file is malformed."""
+
+
+# What a repo's committed `.scr/config.toml` may set: how its changes
+# are reviewed. Which backend, model, endpoint or credential runs the
+# review is the reviewer's, so it is set only in the user file.
+COMMITTED_KEYS = frozenset({"extra_prompt", "explainer_prompt", "skip_globs", "explainer"})
+
+
+def _check_committed(raw: dict[str, Any], *, source: str, user: Path, repo: str | None) -> None:
+    """Reject a committed file that sets anything but `[augment]`'s `COMMITTED_KEYS`.
+
+    Raises:
+        ConfigError: Naming each offending key and where it belongs.
+    """
+    augment = raw.get("augment", {})
+    if not isinstance(augment, dict):
+        raise ConfigError(f"{source}: augment must be a table, got {type(augment).__name__}")
+    offending = sorted(
+        [k for k in raw if k != "augment"] + [f"augment.{k}" for k in augment if k not in COMMITTED_KEYS]
+    )
+    if offending:
+        table = f'[repos."{repo or "owner/name"}"]'
+        raise ConfigError(
+            f"{source}: a repo's committed config sets only [augment] "
+            f"{', '.join(sorted(COMMITTED_KEYS))}; {', '.join(offending)} "
+            f"belong in your user config ({user}), under {table} for this repo alone"
+        )
+
+
+# Settings that accumulate across layers rather than replace.
+_ACCUMULATED = frozenset({"augment.skip_globs"})
+
+_REPO_KEY = re.compile(r"[^/\s]+/[^/\s]+")
+
+# The remote URL forms GitHub hands out: https, scp-style ssh, ssh://.
+_GITHUB_REMOTE = re.compile(
+    r"(?:https://(?:[^@/]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)"
+    r"(?P<repo>[^/\s]+/[^/\s]+?)(?:\.git)?/?"
+)
+
+
+def github_repo(remote_url: str) -> str | None:
+    """`owner/name` for a GitHub remote URL, None for any other host."""
+    m = _GITHUB_REMOTE.fullmatch(remote_url)
+    return m.group("repo") if m else None
+
+
+def _repos_table(raw: object, *, source: str) -> dict[str, dict[str, Any]]:
+    """The user file's `[repos."owner/name"]` entries, keyed by the
+    lower-cased repo (GitHub repo names are case-insensitive).
+
+    Every entry is checked, not just the reviewed repo's: an entry keyed
+    `name` without its owner would otherwise never apply, silently.
+
+    Raises:
+        ConfigError: `repos` is not a table of tables, a key is not
+            `owner/name`, two keys differ only in case, or an entry nests
+            its own `repos`.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ConfigError(f'{source}: repos must be a table of [repos."owner/name"] tables')
+    for key, body in raw.items():
+        if not _REPO_KEY.fullmatch(key):
+            raise ConfigError(f'{source}: [repos."{key}"] must be keyed by the GitHub repo as "owner/name"')
+        if not isinstance(body, dict):
+            raise ConfigError(f'{source}: repos."{key}" must be a table, got {type(body).__name__}')
+        if "repos" in body:
+            raise ConfigError(f'{source}: [repos."{key}"] cannot contain its own repos table')
+    tables = {key.lower(): body for key, body in raw.items()}
+    if len(tables) != len(raw):
+        raise ConfigError(f"{source}: two [repos] entries name the same repo in different case")
+    return tables
 
 
 def _parse(path: Path) -> dict[str, Any]:
@@ -633,10 +746,12 @@ def _replace_in_augment_section(text: str, rx: re.Pattern[str], replacement: str
 
 __all__ = [
     "BUILTIN_BACKENDS",
+    "COMMITTED_KEYS",
     "BackendDef",
     "BackendType",
     "ConfigError",
     "ScrConfig",
     "field_doc",
+    "github_repo",
     "write_inline_extra_prompt",
 ]

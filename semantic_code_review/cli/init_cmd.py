@@ -4,25 +4,26 @@ Detects which backends are usable right now (mirroring the signals
 `resolve_auto` / `resolve_api_key` use), lets the user pick a default
 backend, guides credential setup, then picks a model — live-listing the
 backend's models once the credential resolves. Writes the choices to the
-user (or per-repo) config.
+user config: its top level, or with `--scope=repo` the
+`[repos."owner/name"]` entry for the cwd checkout's GitHub repo.
 
 Credential setup is a set of composable *sources* (see `credentials.py`);
 each backend accepts a subset. A key can go into a gitignored `.env`
 (0600), a fetch command (`api_key_command`, stored in config — a command
-is not a secret), an env var the user sets, or — user scope only — the
-user config's `[env]` table (0600). All secret/config writes are 0600
-(see `paths.write_private_file`); the config-key option is refused for
-`--scope=repo`, where the file lives inside the repository.
+is not a secret), an env var the user sets, or the user config's `[env]`
+table. All secret/config writes are 0600 (see `paths.write_private_file`).
 """
 
 from __future__ import annotations
 
 import dataclasses
+import json
 import os
 import re
 import shlex
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 import typer
@@ -30,6 +31,7 @@ import typer
 from .. import git_ops, paths
 from ..config import BackendDef, BackendType, ScrConfig
 from . import app, credentials, prompt
+from ._shared import local_repo
 
 
 @app.command("init")
@@ -37,36 +39,56 @@ def init(
     scope: str = typer.Option(
         "user",
         "--scope",
-        help="Where to write the config: 'user' (~/.config/scr/config.toml) or 'repo' (<repo>/.scr/config.toml).",
+        help=(
+            "Where to write the choices: 'user' (your defaults) or 'repo' (your settings for the "
+            'cwd checkout\'s GitHub repo, as [repos."owner/name"]). Both are in ~/.config/scr/config.toml.'
+        ),
     ),
 ) -> None:
     """Interactively configure scr: pick a backend, model, and credential source."""
     if scope not in ("user", "repo"):
         raise typer.BadParameter(f"--scope must be 'user' or 'repo', got {scope!r}")
 
-    cfg = ScrConfig.load()
-    path = _resolve_config_path(scope)
+    path = paths.default_config_path()
+    reviewed = _scope_repo(path) if scope == "repo" else None
+    cfg = ScrConfig.load(repo=reviewed)
 
     typer.echo("scr init — set up a default backend.\n")
     name = _choose_backend(cfg)
     bdef = cfg.backends[name]
     # Credential before model: a resolved key lets the model step list the
     # backend's actual models (and doubles as a live credential check).
-    cred = _credential_step(name, bdef, scope)
+    cred = _credential_step(name, bdef)
     model_override = _choose_model(name, bdef)
 
+    keys = () if reviewed is None else ("repos", reviewed)
     warning = _write_config(
         path,
+        keys=keys,
         backend=name,
         model_override=model_override,
         api_key_command=cred.api_key_command,
         config_env=cred.config_env,
     )
-    typer.echo(f"\nscr: wrote {path}")
+    typer.echo(f"\nscr: wrote {path}" + (f" [{_table(keys)}]" if keys else ""))
     if warning:
         typer.echo(f"scr: {warning}", err=True)
 
     _print_summary(name, bdef)
+
+
+def _scope_repo(path: Path) -> str:
+    """The cwd checkout's `owner/name`, spelt as an existing `[repos]`
+    entry in `path` spells it (entries match case-insensitively).
+    """
+    reviewed, _ = local_repo(None)
+    if reviewed is None:
+        typer.echo("scr: --scope=repo needs a checkout whose origin is a GitHub repo", err=True)
+        raise typer.Exit(code=2)
+    if path.is_file():
+        repos = tomllib.loads(path.read_text(encoding="utf-8")).get("repos", {})
+        return next((k for k in repos if k.lower() == reviewed.lower()), reviewed)
+    return reviewed
 
 
 # --- detection -------------------------------------------------------------
@@ -202,7 +224,7 @@ class _Credential:
     config_env: tuple[str, str] | None = None
 
 
-def _credential_step(name: str, bdef: BackendDef, scope: str) -> _Credential:
+def _credential_step(name: str, bdef: BackendDef) -> _Credential:
     """Guide credential setup by offering the backend's allowed sources.
 
     Whichever source is chosen, its key (when we can obtain it) is applied
@@ -214,7 +236,7 @@ def _credential_step(name: str, bdef: BackendDef, scope: str) -> _Credential:
         typer.echo(f"\nscr: credential ready — {status.detail}.")
         return _Credential()
 
-    ids = credentials.allowed_source_ids(name, bdef, scope=scope)
+    ids = credentials.allowed_source_ids(name, bdef)
     if status.state == "local" or ids == ["none"]:
         typer.echo(f"\nscr: {status.detail}.")
         return _Credential()
@@ -309,92 +331,128 @@ def _ensure_gitignored(entry: str) -> None:
 # --- config writing --------------------------------------------------------
 
 _FRESH_HEADER = """\
-# scr config — CLI flags and env vars override these. A key in [env] must
-# stay user-scoped (this file is 0600); never in a repo's .scr/config.toml.
+# scr config — CLI flags and env vars override these. This file is 0600, so
+# a key may sit in [env]; a repo's committed .scr/config.toml cannot hold one.
 """
 
-
-def _resolve_config_path(scope: str) -> Path:
-    if scope == "user":
-        return paths.default_config_path()
-    try:
-        root = git_ops.git(None, "rev-parse", "--show-toplevel").strip()
-    except git_ops.GitError as e:
-        typer.echo(f"scr: --scope=repo needs a git repo: {e}", err=True)
-        raise typer.Exit(code=2) from None
-    return Path(root) / ".scr" / "config.toml"
+# Any table header, `[x]` or `[[x]]`.
+_HEADER = re.compile(r"^[ \t]*\[.*$", re.MULTILINE)
 
 
 def _write_config(
     path: Path,
     *,
+    keys: tuple[str, ...] = (),
     backend: str,
     model_override: str | None,
     api_key_command: tuple[str, ...] | None,
     config_env: tuple[str, str] | None = None,
 ) -> str | None:
-    """Write the chosen backend/model to ``path``, preserving any existing
-    file. Returns a warning string when a `[backends.<name>]` section
-    already exists (left untouched) so the caller can surface it.
+    """Write the chosen backend/model into the table at `keys` of ``path``
+    (the top level when empty), preserving the rest of the file. Returns a
+    warning string when a `backends.<name>` table already exists there
+    (left untouched) so the caller can surface it.
+
+    The file is edited as text, so the result is parsed before it is
+    written: an edit that does not land where intended (say, the table is
+    spelt with other quoting) exits rather than writing a different
+    config.
     """
     paths.ensure_private_dir(path.parent)
     text = path.read_text(encoding="utf-8") if path.exists() else _FRESH_HEADER
-    text = _set_backend_line(text, backend)
+    table = _table(keys)
+    text = _set_key(text, table, "backend", json.dumps(backend), uncomment=not keys)
     if config_env is not None:
-        text = _set_env_key(text, *config_env)
+        text = _set_key(text, _table((*keys, "env")), config_env[0], json.dumps(config_env[1]))
 
     warning: str | None = None
+    block = _table((*keys, "backends", backend))
     if model_override or api_key_command:
-        if re.search(rf"^\[backends\.{re.escape(backend)}\]", text, re.MULTILINE):
+        if _table_span(text, block) is not None:
             warning = (
-                f"[backends.{backend}] already exists in the config; left as-is. "
-                f"Set model/api_key_command there with `scr config edit`."
+                f"[{block}] already exists in the config; left as-is. "
+                "Set model/api_key_command there with `scr config edit`."
             )
         else:
-            text = text.rstrip("\n") + "\n\n" + _render_backends_block(backend, model_override, api_key_command)
+            text = text.rstrip("\n") + "\n\n" + _render_backends_block(block, model_override, api_key_command)
 
+    _check_written(path, text, keys, backend=backend, config_env=config_env)
     paths.write_private_file(path, text)
     return warning
 
 
-def _set_env_key(text: str, var: str, value: str) -> str:
-    """Set ``var = "value"`` under an `[env]` table (the config-key source),
-    replacing an existing assignment or creating the section. Only ever
-    called for user-scoped config (0600); `allowed_source_ids` withholds
-    the config source for repo scope.
-    """
-    line = f'{var} = "{value}"'
-    assign = re.compile(rf"^[ \t]*{re.escape(var)}[ \t]*=.*$", re.MULTILINE)
-    if re.search(r"^\[env\]", text, re.MULTILINE):
-        if assign.search(text):
-            return assign.sub(line, text, count=1)
-        return re.sub(r"(^\[env\][^\n]*\n)", rf"\1{line}\n", text, count=1, flags=re.MULTILINE)
-    sep = "" if text.endswith("\n\n") else ("\n" if text.endswith("\n") else "\n\n")
-    return f"{text}{sep}[env]\n{line}\n"
+def _table(keys: tuple[str, ...]) -> str:
+    """The TOML table name for a key path; keys that are not bare are quoted."""
+    return ".".join(k if re.fullmatch(r"[A-Za-z0-9_-]+", k) else json.dumps(k) for k in keys)
 
 
-def _set_backend_line(text: str, backend: str) -> str:
-    """Set the top-level `backend = "..."`, replacing an existing (or
-    commented-template) assignment, else inserting one near the top.
+def _table_span(text: str, table: str) -> tuple[int, int] | None:
+    """The body of `[table]` as `(start, end)` offsets, or None when the
+    file has no such header. `""` is the top level: everything before the
+    first header.
     """
-    line = f'backend = "{backend}"'
-    pattern = re.compile(r"^[ \t]*#?[ \t]*backend[ \t]*=.*$", re.MULTILINE)
-    if pattern.search(text):
-        return pattern.sub(line, text, count=1)
-    sep = "" if text.endswith("\n") or not text else "\n"
-    return f"{text}{sep}{line}\n"
+    if not table:
+        first = _HEADER.search(text)
+        return 0, first.start() if first else len(text)
+    header = re.search(rf"^[ \t]*\[{re.escape(table)}\][ \t]*(?:#.*)?(?:\n|$)", text, re.MULTILINE)
+    if header is None:
+        return None
+    following = _HEADER.search(text, header.end())
+    return header.end(), following.start() if following else len(text)
+
+
+def _set_key(text: str, table: str, key: str, value: str, *, uncomment: bool = False) -> str:
+    """Set `key = value` in `[table]`: replace an existing assignment
+    (with `uncomment`, a commented-out one too), else add one at the end
+    of the table's body, creating the table at the end of the file when
+    it has none.
+    """
+    line = f"{key} = {value}"
+    span = _table_span(text, table)
+    if span is None:
+        sep = "" if text.endswith("\n\n") else ("\n" if text.endswith("\n") else "\n\n")
+        return f"{text}{sep}[{table}]\n{line}\n"
+    start, end = span
+    body = text[start:end]
+    comment = "#?[ \\t]*" if uncomment else ""
+    assign = re.compile(rf"^[ \t]*{comment}{re.escape(key)}[ \t]*=.*$", re.MULTILINE)
+    if assign.search(body):
+        body = assign.sub(lambda _m: line, body, count=1)
+    else:
+        kept = body.rstrip("\n")
+        body = f"{kept}{chr(10) if kept else ''}{line}\n" + ("\n" if end < len(text) else "")
+    return text[:start] + body + text[end:]
+
+
+def _check_written(
+    path: Path, text: str, keys: tuple[str, ...], *, backend: str, config_env: tuple[str, str] | None
+) -> None:
+    """Exit unless `text` parses with the choices at `keys`."""
+    try:
+        node = tomllib.loads(text)
+        for k in keys:
+            node = node[k]
+        landed = node["backend"] == backend and (config_env is None or node["env"][config_env[0]] == config_env[1])
+    except (tomllib.TOMLDecodeError, KeyError, TypeError) as e:
+        landed, why = False, f"{type(e).__name__}: {e}"
+    else:
+        why = "the values did not land where intended"
+    if not landed:
+        where = f"[{_table(keys)}]" if keys else "its top level"
+        typer.echo(f"scr: could not edit {path} safely ({why}); set {where} by hand with `scr config edit`", err=True)
+        raise typer.Exit(code=2)
 
 
 def _render_backends_block(
-    backend: str,
+    table: str,
     model_override: str | None,
     api_key_command: tuple[str, ...] | None,
 ) -> str:
-    out = [f"[backends.{backend}]"]
+    out = [f"[{table}]"]
     if model_override:
-        out.append(f'model = "{model_override}"')
+        out.append(f"model = {json.dumps(model_override)}")
     if api_key_command:
-        out.append(f'api_key_command = "{shlex.join(api_key_command)}"')
+        out.append(f"api_key_command = {json.dumps(shlex.join(api_key_command))}")
     return "\n".join(out) + "\n"
 
 

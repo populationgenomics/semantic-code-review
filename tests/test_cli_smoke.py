@@ -7,6 +7,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from semantic_code_review.cli import app
+from semantic_code_review.config import ScrConfig
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample.augmented.diff"
 
@@ -48,13 +49,7 @@ def test_config_path_prints_xdg_path(tmp_path: Path, monkeypatch) -> None:
 def test_config_show_reports_absent_user_config(tmp_path: Path, monkeypatch) -> None:
     """When no config files exist, `scr config show` still runs cleanly."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    # Drop the cached config so the XDG monkeypatch takes effect — the
-    # CLI lazily caches on first access, and an earlier test in this
-    # module may already have populated it from the developer's real
-    # ~/.config/scr/config.toml.
-    from semantic_code_review import cli as cli_module
-
-    cli_module._reset_config_cache()
+    monkeypatch.chdir(tmp_path)
     runner = CliRunner()
     result = runner.invoke(app, ["config", "show"])
     assert result.exit_code == 0, result.stdout
@@ -77,6 +72,25 @@ def test_config_edit_template_appends_block(tmp_path: Path, monkeypatch) -> None
     body = cfg_path.read_text(encoding="utf-8")
     assert "[backends.groq]" in body
     assert "$GROQ_API_KEY" in body  # auth hint
+
+
+def test_config_edit_repo_scope_seeds_the_committed_template(tmp_path: Path, monkeypatch) -> None:
+    """The repo scope is the committed file: seeded with review settings
+    only, and a backend template is refused there."""
+    root = tmp_path / "widgets"
+    _git_repo(root, "https://github.com/acme/widgets.git")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("EDITOR", "true")
+
+    refused = CliRunner().invoke(app, ["config", "edit", "--scope", "repo", "--template", "groq"])
+    assert refused.exit_code == 2
+    assert not (root / ".scr").exists()
+
+    result = CliRunner().invoke(app, ["config", "edit", "--scope", "repo"])
+    assert result.exit_code == 0, result.stdout
+    body = (root / ".scr" / "config.toml").read_text(encoding="utf-8")
+    assert "# skip_globs = " in body
+    assert "backend =" not in body
 
 
 def test_config_edit_template_skips_existing(tmp_path: Path, monkeypatch) -> None:
@@ -134,23 +148,16 @@ def test_lint_fails_on_bad_smell(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _isolated_config(tmp_path: Path, monkeypatch, body: str) -> None:
-    """Point the CLI's config loader at a config file holding `body`.
-
-    The per-repo lookup is stubbed out rather than redirected: it walks
-    up to the filesystem root, so a `.scr/config.toml` anywhere above the
-    checkout would otherwise merge into these assertions.
+def _isolated_config(tmp_path: Path, monkeypatch, body: str) -> ScrConfig:
+    """Point the CLI's config loader at a user file holding `body`, from a
+    cwd outside any git repo, and return that file's config.
     """
     xdg = tmp_path / "xdg"
     (xdg / "scr").mkdir(parents=True)
     (xdg / "scr" / "config.toml").write_text(body, encoding="utf-8")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
-
-    from semantic_code_review import cli as cli_module
-    from semantic_code_review import config as config_module
-
-    monkeypatch.setattr(config_module, "find_repo_config_path", lambda *_a, **_k: None)
-    cli_module._reset_config_cache()
+    monkeypatch.chdir(tmp_path)
+    return ScrConfig.load()
 
 
 def test_config_show_reports_the_explainer_house_style(tmp_path: Path, monkeypatch) -> None:
@@ -167,15 +174,51 @@ def test_config_show_reports_the_explainer_house_style(tmp_path: Path, monkeypat
     assert "explainer_prompt = <2-line prompt: 'Name the dataset in every example.'…>" in result.stdout
 
 
+def _git_repo(root: Path, origin: str) -> None:
+    import subprocess
+
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "remote", "add", "origin", origin], check=True)
+
+
+def test_local_repo_reads_the_origin_and_the_top_level(tmp_path: Path) -> None:
+    from semantic_code_review.cli._shared import local_repo
+
+    root = tmp_path / "widgets"
+    _git_repo(root, "git@github.com:acme/widgets.git")
+    (root / "sub").mkdir()
+    assert local_repo(root / "sub") == ("acme/widgets", root.resolve() / ".scr" / "config.toml")
+    assert local_repo(tmp_path) == (None, None)
+
+
+def test_config_show_names_the_layer_a_setting_overrides(tmp_path: Path, monkeypatch) -> None:
+    """The cwd's repo selects the user's [repos] entry; a value it hides is named."""
+    _isolated_config(
+        tmp_path,
+        monkeypatch,
+        '[augment]\nexplainer = true\n[repos."acme/widgets".augment]\nexplainer = false\n',
+    )
+    root = tmp_path / "widgets"
+    _git_repo(root, "https://github.com/acme/widgets.git")
+    monkeypatch.chdir(root)
+
+    result = CliRunner().invoke(app, ["config", "show"])
+    assert result.exit_code == 0, result.stdout
+    assert "# repo: acme/widgets" in result.stdout
+    user = tmp_path / "xdg" / "scr" / "config.toml"
+    assert f'explainer = false (from {user} [repos."acme/widgets"]; overrides {user})' in result.stdout
+
+
 def test_the_flag_loads_the_house_style_and_beats_the_config(tmp_path: Path, monkeypatch) -> None:
     from semantic_code_review.cli._shared import resolve_explainer_prompt
 
-    _isolated_config(tmp_path, monkeypatch, '[augment]\nexplainer_prompt = "from the config"\n')
-    assert resolve_explainer_prompt(None) == "from the config"
+    cfg = _isolated_config(tmp_path, monkeypatch, '[augment]\nexplainer_prompt = "from the config"\n')
+    assert resolve_explainer_prompt(cfg, None) == "from the config"
 
     note = tmp_path / "house.md"
     note.write_text("from the file\n", encoding="utf-8")
-    assert resolve_explainer_prompt(note) == "from the file"
+    assert resolve_explainer_prompt(cfg, note) == "from the file"
 
 
 def test_a_missing_or_empty_house_style_file_is_a_hard_error(tmp_path: Path, monkeypatch) -> None:
@@ -186,16 +229,16 @@ def test_a_missing_or_empty_house_style_file_is_a_hard_error(tmp_path: Path, mon
 
     from semantic_code_review.cli._shared import resolve_explainer_prompt
 
-    _isolated_config(tmp_path, monkeypatch, '[augment]\nexplainer_prompt = "from the config"\n')
+    cfg = _isolated_config(tmp_path, monkeypatch, '[augment]\nexplainer_prompt = "from the config"\n')
 
     with pytest.raises(typer.Exit) as missing:
-        resolve_explainer_prompt(tmp_path / "absent.md")
+        resolve_explainer_prompt(cfg, tmp_path / "absent.md")
     assert missing.value.exit_code == 2
 
     empty = tmp_path / "empty.md"
     empty.write_text("   \n", encoding="utf-8")
     with pytest.raises(typer.Exit) as blank:
-        resolve_explainer_prompt(empty)
+        resolve_explainer_prompt(cfg, empty)
     assert blank.value.exit_code == 2
 
 
@@ -208,15 +251,15 @@ def test_the_flag_against_a_disabled_explainer_exits(tmp_path: Path, monkeypatch
 
     from semantic_code_review.cli._shared import resolve_explainer_prompt
 
-    _isolated_config(tmp_path, monkeypatch, "[augment]\nexplainer = false\n")
+    cfg = _isolated_config(tmp_path, monkeypatch, "[augment]\nexplainer = false\n")
     note = tmp_path / "house.md"
     note.write_text("name the dataset\n", encoding="utf-8")
 
     with pytest.raises(typer.Exit) as off:
-        resolve_explainer_prompt(note)
+        resolve_explainer_prompt(cfg, note)
     assert off.value.exit_code == 2
     # The inline config value is not an explicit request, so it stays silent.
-    assert resolve_explainer_prompt(None) is None
+    assert resolve_explainer_prompt(cfg, None) is None
 
 
 def test_the_plugin_and_the_package_agree_on_the_version() -> None:

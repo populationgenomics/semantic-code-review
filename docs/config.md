@@ -7,20 +7,47 @@ working config is `scr init`; this doc is the full structure for hand-editing
 
 ## Files & precedence
 
-Two files, both optional, merged in order:
+Three layers, all optional, merged in order; a later layer wins for any
+setting it names:
 
 1. **User** — `~/.config/scr/config.toml` (or `$XDG_CONFIG_HOME/scr/config.toml`).
-2. **Repo** — the nearest `.scr/config.toml` walking up from the cwd.
+2. **Committed** — the reviewed repo's `.scr/config.toml` at its top level:
+   the repo's shared review settings. `scr pr` reads it from the PR's base
+   commit, so the branch a PR merges into decides how it is reviewed and the
+   cwd plays no part; `scr review` reads the working tree. It may set only
+   `[augment]` `extra_prompt`, `explainer_prompt`, `skip_globs` and
+   `explainer`; any other key fails the load, naming the key. Which backend,
+   model, endpoint or credential runs a review is the reviewer's, so those
+   live only in the user file.
+3. **Repo entry** — the user file's `[repos."owner/name"]` table for the
+   reviewed repo: your own settings for that repo. It takes every key the
+   user file does. `scr init --scope repo` writes here.
 
-The repo file is merged *after* the user file, so for scalar settings **repo
-overrides user**. On top of the files, **CLI flags and environment variables
-win at resolve time** (e.g. `--backend`, `--model`, an exported `$…_API_KEY`).
-`scr config show` prints the merged result and where each setting came from.
+The reviewed repo is the `owner/name` given to `scr pr`; for `scr review`
+and `scr config show` it is the GitHub repo the cwd checkout's `origin`
+points at. A checkout with no GitHub `origin` selects no repo entry. Repo
+entry keys are matched case-insensitively and must be `owner/name`; a
+malformed `[repos]` table is an error whichever repo is reviewed.
 
-Both files are written `0600` by `scr init` / `scr config edit`; the user
+`[augment].skip_globs` accumulates across layers rather than overriding.
+On top of the files, **CLI flags and environment variables win at resolve
+time** (e.g. `--backend`, `--model`, an exported `$…_API_KEY`).
+`scr config show` prints the merged result, where each setting came from,
+and which lower layer's value it overrides.
+
+```toml
+# In ~/.config/scr/config.toml
+[repos."acme/widgets"]
+backend = "claude-cli"
+
+[repos."acme/widgets".augment]
+skip_globs = ["vendor/**"]
+```
+
+Files written by `scr init` / `scr config edit` are `0600`; the user
 file's directory is `0700`.
 
-## A complete config
+## A complete user config
 
 ```toml
 # Default backend when --backend isn't passed. "auto" picks claude-api if
@@ -47,9 +74,8 @@ api_key_env = "GROQ_API_KEY"                  # env var holding the key
 model = "claude-sonnet-4-7"
 
 # Environment variables applied if not already set (shell / .env win). Good
-# for GCP project/location — and, USER config only, an API key (this file is
-# 0600; `scr config show` redacts these values). Never put a key in a repo's
-# .scr/config.toml — it sits inside the repository.
+# for GCP project/location — and an API key (the user file is 0600;
+# `scr config show` redacts these values).
 [env]
 GOOGLE_CLOUD_PROJECT = "my-project"
 GOOGLE_CLOUD_LOCATION = "global"
@@ -61,7 +87,7 @@ extra_prompt = """
 Flag missing tests and any public API change.
 """
 # Extra globs to skip in the LLM passes, on top of the builtin lockfile /
-# bundle / binary denylist. Accumulates across user + repo scopes.
+# bundle / binary denylist. Accumulates across layers.
 skip_globs = ["go.sum", "gen/**", "*.generated.ts"]
 ```
 
@@ -116,18 +142,19 @@ Builtins (run `scr config show` for the authoritative, resolved list):
 
 ### `[env]`
 `KEY = "value"` pairs applied with `os.environ.setdefault` at startup — so a
-shell export or a `.env` entry always wins over the config value. May hold an
-API key **only** in the user config (0600). `scr config show` redacts values.
+shell export or a `.env` entry always wins over the config value. User file
+only (0600), so it may hold an API key. `scr config show` redacts values.
 
 ### `[augment]`
 - `extra_prompt` — inline text for a second per-hunk pass; produces extra
   line-notes. Edit ergonomically with `scr config edit prompt`.
 - `skip_globs` — extra file globs excluded from the LLM passes, on top of the
   builtin denylist (lockfiles, minified/bundled JS/CSS, sourcemaps, images,
-  fonts, …). Accumulated across user + repo scopes. Matched against both the
-  full path and the basename.
+  fonts, …). Accumulated across layers. Matched against both the full path
+  and the basename.
 
 ## See also
 - `scr init` — interactive setup that writes most of this for you.
 - `scr config show` — the resolved config + provenance.
-- `scr config edit [prompt] [--scope user|repo] [--template <name>]`.
+- `scr config edit [prompt] [--scope user|repo] [--template <name>]` —
+  `--scope repo` edits the committed file; `--template` is user scope only.
