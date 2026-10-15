@@ -7,6 +7,7 @@
 
 import { describe, test, expect, vi, beforeEach } from "vitest";
 import { Explainer } from "../../semantic_code_review/viewer/assets/explainer";
+import { ExplainerExport } from "../../semantic_code_review/viewer/assets/explainer_export";
 import { ViewState } from "../../semantic_code_review/viewer/assets/view_state";
 
 const RUN = "local-main-abc12345";
@@ -1008,5 +1009,68 @@ describe("provenance", () => {
       "explainer-terms",
       "explainer-sources",
     ]);
+  });
+});
+
+// --- Download --------------------------------------------------------------
+
+describe("download", () => {
+  const PR = { title: "Thread a cursor", base_sha: "base1234", head_sha: "head5678" } as PRBlock;
+
+  function downloadButton(): HTMLButtonElement {
+    return Explainer.renderPane().querySelector(".explainer-download-btn") as HTMLButtonElement;
+  }
+
+  test("a written document downloads on the press, without the control", async () => {
+    boot({ pr: PR });
+    Explainer.onEvent(proseDoc({ state: "ready", body: "The proto is the contract." }) as SseExplainerEvent);
+    const save = vi.spyOn(ExplainerExport, "save").mockImplementation(() => {});
+    downloadButton().click();
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    const [html, name] = save.mock.calls[0];
+    expect(name).toBe(`${RUN}-overview.html`);
+    expect(html).toContain("The proto is the contract.");
+    expect(html).not.toContain("explainer-download");
+  });
+
+  test("an unwritten section is written first, then the document downloads", async () => {
+    boot({ pr: PR });
+    Explainer.onEvent(proseDoc() as SseExplainerEvent);
+    const save = vi.spyOn(ExplainerExport, "save").mockImplementation(() => {});
+    const calls = mockFetch([{ status: 200, body: proseDoc({ state: "ready", body: "written now" }) }]);
+    downloadButton().click();
+    expect(downloadButton().disabled).toBe(true);
+    expect(downloadButton().textContent).toBe("Downloading once written…");
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(calls.map((c) => c.url)).toEqual(["/explainer/section/code"]);
+    expect(save.mock.calls[0][0]).toContain("written now");
+    expect(downloadButton().disabled).toBe(false);
+  });
+
+  test("a section that cannot be written drops the download and says which", async () => {
+    boot({ pr: PR });
+    Explainer.onEvent(proseDoc() as SseExplainerEvent);
+    const save = vi.spyOn(ExplainerExport, "save").mockImplementation(() => {});
+    mockFetch([{ status: 500, body: { error: "backend down" } }]);
+    downloadButton().click();
+    await vi.waitFor(() =>
+      expect(Explainer.renderPane().querySelector(".explainer-download .explainer-error")!.textContent)
+        .toBe("Not downloaded — still unwritten: Code."),
+    );
+    expect(save).not.toHaveBeenCalled();
+    expect(downloadButton().disabled).toBe(false);
+  });
+
+  test("a not-warranted document downloads as it stands, spending nothing", async () => {
+    boot({ pr: PR });
+    Explainer.onEvent(proseDoc({ state: "pending" }) as SseExplainerEvent);
+    Explainer.onEvent({ ...proseDoc(), verdict: "not_warranted", verdict_note: "three renames" } as SseExplainerEvent);
+    const save = vi.spyOn(ExplainerExport, "save").mockImplementation(() => {});
+    const calls = mockFetch([]);
+    downloadButton().click();
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(calls).toHaveLength(0);
+    expect(save.mock.calls[0][0]).toContain("three renames");
+    expect(save.mock.calls[0][0]).not.toContain("Not written yet");
   });
 });
