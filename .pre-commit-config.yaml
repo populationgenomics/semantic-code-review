@@ -30,6 +30,21 @@ repos:
   # set in pyproject), so pass_filenames: false; fires on any staged .py.
   - repo: local
     hooks:
+      # The pip lockfiles are exports of uv.lock, so what bin/scr installs is
+      # what CI tests. --locked fails if uv.lock is stale against pyproject; a
+      # rewritten export fails the hook.
+      - id: export-requirements-lock
+        name: export requirements.lock from uv.lock
+        entry: uv export --quiet --locked --no-default-groups --no-emit-project -o requirements.lock
+        language: system
+        files: ^(pyproject\.toml|uv\.lock|requirements\.lock)$
+        pass_filenames: false
+      - id: export-requirements-dev-lock
+        name: export requirements-dev.lock from uv.lock
+        entry: uv export --quiet --locked --no-default-groups --extra dev --no-emit-project -o requirements-dev.lock
+        language: system
+        files: ^(pyproject\.toml|uv\.lock|requirements-dev\.lock)$
+        pass_filenames: false
       - id: pyright
         name: pyright
         entry: uv run --group lint pyright

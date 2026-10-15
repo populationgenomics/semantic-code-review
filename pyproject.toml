@@ -22,11 +22,10 @@ classifiers = [
   "Environment :: Console",
 ]
 # Direct deps pinned exactly. The full transitive closure is pinned with
-# hashes in requirements.lock; these top-level == constraints make sure
-# any wheel-only install (uv tool run, pip install) resolves to the same
-# direct versions the lockfile was generated against. When bumping, regen
-# both: edit here, then `uv pip compile pyproject.toml -o requirements.lock
-# --generate-hashes`.
+# hashes in uv.lock, exported to requirements.lock for bin/scr; these
+# top-level == constraints make sure any wheel-only install (uv tool run,
+# pip install) resolves to the same direct versions. When bumping: edit
+# here, `uv lock`, then `uv run pre-commit run --all-files` to re-export.
 dependencies = [
   "anthropic==0.116.0",
   "google-genai==1.75.0",

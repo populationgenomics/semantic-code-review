@@ -401,14 +401,18 @@ Lockfiles (all committed):
 
 - `build-requirements.lock` — PEP 517 build backend (`setuptools`,
   `wheel`).
-- `requirements.lock` — runtime Python deps (`anthropic`,
-  `pydantic`, `typer`, …).
-- `requirements-dev.lock` — runtime + `pytest` + `pytest-asyncio`.
+- `uv.lock` — the source of truth for Python deps: CI tests against
+  it (`uv sync --locked`).
+- `requirements.lock` — runtime Python deps, exported from `uv.lock`
+  for every platform (environment markers select the
+  platform-specific ones). `bin/scr` installs this file.
+- `requirements-dev.lock` — runtime + `pytest` + `pytest-asyncio`,
+  exported the same way.
 - `package-lock.json` — Node toolchain (`typescript`, `vitest`,
   `@playwright/test`, `jsdom`, `@types/node`).
-- `uv.lock` — the uv-resolved lockfile `uv build` (the release
-  workflow) and `uv run` resolve against; kept in sync with the
-  `requirements*.lock` pip closure.
+
+Pre-commit hooks re-export both `requirements*.lock` files and fail if
+either differs from `uv.lock`, so CI rejects a stale export.
 
 Frontend assets are vendored under
 `semantic_code_review/viewer/assets/vendor/` at pinned upstream
@@ -430,8 +434,8 @@ Refreshing:
 
 ```
 # Python
-uv pip compile pyproject.toml -o requirements.lock --generate-hashes
-uv pip compile pyproject.toml --extra dev -o requirements-dev.lock --generate-hashes
+uv lock --upgrade-package <name>   # or edit pyproject.toml, then `uv lock`
+uv run pre-commit run --all-files  # re-exports requirements*.lock from uv.lock
 printf 'setuptools>=68\nwheel\n' | uv pip compile - --generate-hashes -o build-requirements.lock
 
 # Node toolchain
