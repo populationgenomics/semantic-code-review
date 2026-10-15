@@ -74,6 +74,25 @@ def test_config_edit_template_appends_block(tmp_path: Path, monkeypatch) -> None
     assert "$GROQ_API_KEY" in body  # auth hint
 
 
+def test_config_edit_repo_scope_seeds_the_committed_template(tmp_path: Path, monkeypatch) -> None:
+    """The repo scope is the committed file: seeded with review settings
+    only, and a backend template is refused there."""
+    root = tmp_path / "widgets"
+    _git_repo(root, "https://github.com/acme/widgets.git")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("EDITOR", "true")
+
+    refused = CliRunner().invoke(app, ["config", "edit", "--scope", "repo", "--template", "groq"])
+    assert refused.exit_code == 2
+    assert not (root / ".scr").exists()
+
+    result = CliRunner().invoke(app, ["config", "edit", "--scope", "repo"])
+    assert result.exit_code == 0, result.stdout
+    body = (root / ".scr" / "config.toml").read_text(encoding="utf-8")
+    assert "# skip_globs = " in body
+    assert "backend =" not in body
+
+
 def test_config_edit_template_skips_existing(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("EDITOR", "true")

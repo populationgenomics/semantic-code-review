@@ -5,7 +5,8 @@ Merges three optional layers, later winning on conflict:
   1. `~/.config/scr/config.toml` (or `$XDG_CONFIG_HOME/scr/config.toml`)
      — user-wide defaults.
   2. The reviewed repo's committed `.scr/config.toml` — shared review
-     settings. The caller names the file; this module does not search.
+     settings, limited to `COMMITTED_KEYS` under `[augment]`. The caller
+     names the file; this module does not search.
   3. The user file's `[repos."owner/name"]` table for the reviewed repo
      — the user's own settings for that repo.
 
@@ -289,7 +290,8 @@ class ScrConfig:
                 as an empty file.
 
         Raises:
-            ConfigError: A file is malformed, or `backend` names an
+            ConfigError: A file is malformed, the committed file sets
+                anything but `COMMITTED_KEYS`, or `backend` names an
                 undefined backend.
         """
         cfg = cls(backends=dict(BUILTIN_BACKENDS))
@@ -300,7 +302,9 @@ class ScrConfig:
         cfg._merge_layer(user_raw, source=str(user))
 
         if committed_path is not None and committed_path.is_file():
-            cfg._merge_layer(_parse(committed_path), source=str(committed_path))
+            committed = _parse(committed_path)
+            _check_committed(committed, source=str(committed_path), user=user, repo=repo)
+            cfg._merge_layer(committed, source=str(committed_path))
 
         if repo is not None and repo.lower() in repos:
             cfg._merge_layer(repos[repo.lower()], source=f'{user} [repos."{repo}"]')
@@ -484,6 +488,33 @@ class ScrConfig:
 
 class ConfigError(RuntimeError):
     """Raised when a config file is malformed."""
+
+
+# What a repo's committed `.scr/config.toml` may set: how its changes
+# are reviewed. Which backend, model, endpoint or credential runs the
+# review is the reviewer's, so it is set only in the user file.
+COMMITTED_KEYS = frozenset({"extra_prompt", "explainer_prompt", "skip_globs", "explainer"})
+
+
+def _check_committed(raw: dict[str, Any], *, source: str, user: Path, repo: str | None) -> None:
+    """Reject a committed file that sets anything but `[augment]`'s `COMMITTED_KEYS`.
+
+    Raises:
+        ConfigError: Naming each offending key and where it belongs.
+    """
+    augment = raw.get("augment", {})
+    if not isinstance(augment, dict):
+        raise ConfigError(f"{source}: augment must be a table, got {type(augment).__name__}")
+    offending = sorted(
+        [k for k in raw if k != "augment"] + [f"augment.{k}" for k in augment if k not in COMMITTED_KEYS]
+    )
+    if offending:
+        table = f'[repos."{repo or "owner/name"}"]'
+        raise ConfigError(
+            f"{source}: a repo's committed config sets only [augment] "
+            f"{', '.join(sorted(COMMITTED_KEYS))}; {', '.join(offending)} "
+            f"belong in your user config ({user}), under {table} for this repo alone"
+        )
 
 
 # Settings that accumulate across layers rather than replace.
@@ -715,6 +746,7 @@ def _replace_in_augment_section(text: str, rx: re.Pattern[str], replacement: str
 
 __all__ = [
     "BUILTIN_BACKENDS",
+    "COMMITTED_KEYS",
     "BackendDef",
     "BackendType",
     "ConfigError",

@@ -264,8 +264,8 @@ def test_legacy_model_table_folds_into_backend(tmp_path: Path) -> None:
     assert cfg.backends["claude-api"].type is BackendType.ANTHROPIC_SDK
 
 
-def test_repo_overrides_user(tmp_path: Path) -> None:
-    """Per-repo config takes precedence on conflicting keys."""
+def test_a_repo_entry_overrides_the_user_globals(tmp_path: Path) -> None:
+    """The repo entry wins on conflicting keys; the globals it doesn't name survive."""
     user = _write(
         tmp_path / "user.toml",
         """
@@ -275,27 +275,52 @@ default = "user-model"
 [env]
 GOOGLE_CLOUD_PROJECT = "user-project"
 GOOGLE_CLOUD_LOCATION = "us-central1"
-""",
-    )
-    repo = _write(
-        tmp_path / "repo.toml",
-        """
+
+[repos."acme/widgets"]
 backend = "gemini-api"
-[model]
+[repos."acme/widgets".model]
 default = "repo-model"
-[env]
+[repos."acme/widgets".env]
 GOOGLE_CLOUD_PROJECT = "repo-project"
 """,
     )
-    cfg = ScrConfig.load(user_path=user, committed_path=repo)
+    cfg = ScrConfig.load(user_path=user, repo="acme/widgets")
     assert cfg.backend == "gemini-api"
     assert cfg.model_default == "repo-model"
-    # Repo overrode shared keys; user's exclusive keys survive.
     assert cfg.env["GOOGLE_CLOUD_PROJECT"] == "repo-project"
     assert cfg.env["GOOGLE_CLOUD_LOCATION"] == "us-central1"
-    # Sources reflect the winning layer.
-    assert "repo.toml" in cfg.sources["backend"]
-    assert "user.toml" in cfg.sources["env.GOOGLE_CLOUD_LOCATION"]
+    assert cfg.sources["backend"] == f'{user} [repos."acme/widgets"]'
+    assert cfg.sources["env.GOOGLE_CLOUD_LOCATION"] == str(user)
+
+
+@pytest.mark.parametrize(
+    ("body", "offending"),
+    [
+        ('backend = "groq"\n', "backend"),
+        ('[model]\ndefault = "m"\n', "model"),
+        ('[backends.groq]\nbase_url = "https://example.com"\n', "backends"),
+        ('[backends.groq]\napi_key_command = "cat ~/.ssh/id_rsa"\n', "backends"),
+        ('[env]\nGOOGLE_CLOUD_PROJECT = "p"\n', "env"),
+        ("[augment]\nskip_globs = []\nmystery = 1\n", "augment.mystery"),
+    ],
+)
+def test_a_committed_file_sets_only_review_settings(tmp_path: Path, body: str, offending: str) -> None:
+    """Which backend, endpoint or credential runs a review is the reviewer's.
+    A repo naming one fails the load, naming the key and where it belongs."""
+    user = _write(tmp_path / "user.toml", "")
+    committed = _write(tmp_path / "committed.toml", body)
+    with pytest.raises(ConfigError) as e:
+        ScrConfig.load(user_path=user, repo="acme/widgets", committed_path=committed)
+    assert f'; {offending} belong in your user config ({user}), under [repos."acme/widgets"]' in str(e.value)
+
+
+def test_a_committed_file_may_set_every_review_setting(tmp_path: Path) -> None:
+    committed = _write(
+        tmp_path / "committed.toml",
+        '[augment]\nextra_prompt = "x"\nexplainer_prompt = "y"\nskip_globs = ["g"]\nexplainer = false\n',
+    )
+    cfg = ScrConfig.load(user_path=tmp_path / "absent.toml", committed_path=committed)
+    assert (cfg.extra_review_prompt, cfg.explainer_prompt, cfg.skip_globs, cfg.explainer) == ("x", "y", ("g",), False)
 
 
 def test_backends_table_can_add_a_new_entry(tmp_path: Path) -> None:
@@ -770,6 +795,21 @@ def test_the_config_templates_explainer_prompt_example_parses(tmp_path: Path) ->
     uncommented = "\n".join(ln.removeprefix("# ").removeprefix("#") for ln in block.splitlines())
     parsed = tomllib.loads(uncommented)
     assert "Name the dataset" in parsed["augment"]["explainer_prompt"]
+
+
+def test_the_committed_templates_example_is_a_valid_committed_config(tmp_path: Path) -> None:
+    """`scr config edit --scope repo` seeds this; uncommented, it must load
+    as a committed file, so it shows only what a repo may set."""
+    from semantic_code_review.cli import config_cmd
+
+    text = config_cmd._COMMITTED_TEMPLATE
+    block = text[text.index("# [augment]\n") :]
+    committed = _write(
+        tmp_path / "committed.toml", "\n".join(ln.removeprefix("# ") for ln in block.splitlines()) + "\n"
+    )
+    cfg = ScrConfig.load(user_path=tmp_path / "absent.toml", committed_path=committed)
+    assert cfg.skip_globs == ("gen/**", "*.generated.ts")
+    assert cfg.explainer is False
 
 
 # ---------------------------------------------------------------------------

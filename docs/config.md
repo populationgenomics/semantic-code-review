@@ -12,10 +12,14 @@ setting it names:
 
 1. **User** — `~/.config/scr/config.toml` (or `$XDG_CONFIG_HOME/scr/config.toml`).
 2. **Committed** — the reviewed repo's `.scr/config.toml` at its top level:
-   the repo's shared review settings.
+   the repo's shared review settings. It may set only `[augment]`
+   `extra_prompt`, `explainer_prompt`, `skip_globs` and `explainer`; any
+   other key fails the load, naming the key. Which backend, model, endpoint
+   or credential runs a review is the reviewer's, so those live only in the
+   user file.
 3. **Repo entry** — the user file's `[repos."owner/name"]` table for the
    reviewed repo: your own settings for that repo. It takes every key the
-   user file does.
+   user file does. `scr init --scope repo` writes here.
 
 The reviewed repo is the `owner/name` given to `scr pr`; for `scr review`
 and `scr config show` it is the GitHub repo the cwd checkout's `origin`
@@ -41,7 +45,7 @@ skip_globs = ["vendor/**"]
 Files written by `scr init` / `scr config edit` are `0600`; the user
 file's directory is `0700`.
 
-## A complete config
+## A complete user config
 
 ```toml
 # Default backend when --backend isn't passed. "auto" picks claude-api if
@@ -68,9 +72,8 @@ api_key_env = "GROQ_API_KEY"                  # env var holding the key
 model = "claude-sonnet-4-7"
 
 # Environment variables applied if not already set (shell / .env win). Good
-# for GCP project/location — and, USER config only, an API key (this file is
-# 0600; `scr config show` redacts these values). Never put a key in a repo's
-# .scr/config.toml — it sits inside the repository.
+# for GCP project/location — and an API key (the user file is 0600;
+# `scr config show` redacts these values).
 [env]
 GOOGLE_CLOUD_PROJECT = "my-project"
 GOOGLE_CLOUD_LOCATION = "global"
@@ -137,8 +140,8 @@ Builtins (run `scr config show` for the authoritative, resolved list):
 
 ### `[env]`
 `KEY = "value"` pairs applied with `os.environ.setdefault` at startup — so a
-shell export or a `.env` entry always wins over the config value. May hold an
-API key **only** in the user config (0600). `scr config show` redacts values.
+shell export or a `.env` entry always wins over the config value. User file
+only (0600), so it may hold an API key. `scr config show` redacts values.
 
 ### `[augment]`
 - `extra_prompt` — inline text for a second per-hunk pass; produces extra
@@ -151,4 +154,5 @@ API key **only** in the user config (0600). `scr config show` redacts values.
 ## See also
 - `scr init` — interactive setup that writes most of this for you.
 - `scr config show` — the resolved config + provenance.
-- `scr config edit [prompt] [--scope user|repo] [--template <name>]`.
+- `scr config edit [prompt] [--scope user|repo] [--template <name>]` —
+  `--scope repo` edits the committed file; `--template` is user scope only.

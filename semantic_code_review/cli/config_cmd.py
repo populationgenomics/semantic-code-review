@@ -125,8 +125,9 @@ def config_edit(
         "--scope",
         help=(
             "Which config to edit. 'user' (default) = "
-            "~/.config/scr/config.toml. 'repo' = <repo_root>/.scr/config.toml "
-            "for the current repo."
+            '~/.config/scr/config.toml, including your [repos."owner/name"] '
+            "entries. 'repo' = the current repo's committed .scr/config.toml, "
+            "which holds only [augment] review settings."
         ),
     ),
     template: str = typer.Option(
@@ -143,22 +144,28 @@ def config_edit(
 
     By default edits the whole user-global config file. Two args narrow
     that: `prompt` round-trips just the extra-review prompt through a
-    markdown tempfile; `--scope=repo` targets the per-repo override
-    instead of the user-global file.
+    markdown tempfile; `--scope=repo` targets the repo's committed
+    `.scr/config.toml` instead of the user file.
     """
     if scope not in ("user", "repo"):
         raise typer.BadParameter(f"--scope must be 'user' or 'repo', got {scope!r}")
     if subject not in ("config", "prompt"):
         raise typer.BadParameter(f"subject must be 'config' or 'prompt', got {subject!r}")
+    if template is not None and scope == "repo":
+        raise typer.BadParameter(
+            "--template adds a backend, which a repo's committed config cannot hold; "
+            'use the user scope, under [repos."owner/name"] for one repo'
+        )
 
     path = _resolve_config_edit_path(scope)
+    fresh = _CONFIG_TEMPLATE if scope == "user" else _COMMITTED_TEMPLATE
     if subject == "prompt":
         if template is not None:
             raise typer.BadParameter("--template only applies to the default 'config' subject")
-        _edit_inline_prompt(path)
+        _edit_inline_prompt(path, fresh)
         return
 
-    _edit_full_config(path, template)
+    _edit_full_config(path, template, fresh)
 
 
 def _resolve_config_edit_path(scope: str) -> Path:
@@ -176,7 +183,7 @@ def _resolve_config_edit_path(scope: str) -> Path:
     return Path(root_text) / ".scr" / "config.toml"
 
 
-def _edit_full_config(path: Path, template: str | None) -> None:
+def _edit_full_config(path: Path, template: str | None, fresh: str) -> None:
     """Open the whole config file in ``$EDITOR``, with the optional
     backend-template append from the legacy ``--template`` flag.
     """
@@ -187,7 +194,7 @@ def _edit_full_config(path: Path, template: str | None) -> None:
 
     paths.ensure_private_dir(path.parent)
     if not path.exists():
-        paths.write_private_file(path, _CONFIG_TEMPLATE)
+        paths.write_private_file(path, fresh)
 
     if template is not None:
         valid = sorted([SCAFFOLD_SECTION_NAME, *BUILTIN_BACKENDS])
@@ -210,7 +217,7 @@ def _edit_full_config(path: Path, template: str | None) -> None:
     _sp.run([editor, str(path)], check=False)
 
 
-def _edit_inline_prompt(path: Path) -> None:
+def _edit_inline_prompt(path: Path, fresh: str) -> None:
     """Extract `[augment].extra_prompt` into a tempfile, open $EDITOR
     on it as markdown, then splice the result back into the config.
 
@@ -227,7 +234,7 @@ def _edit_inline_prompt(path: Path) -> None:
 
     paths.ensure_private_dir(path.parent)
     if not path.exists():
-        paths.write_private_file(path, _CONFIG_TEMPLATE)
+        paths.write_private_file(path, fresh)
 
     # Read the current prompt via the standard config loader so the
     # tempfile starts with what `scr config show` would say. Empty
@@ -279,10 +286,16 @@ def _edit_inline_prompt(path: Path) -> None:
 _CONFIG_TEMPLATE = """\
 # scr config. CLI flags and env vars override these.
 #
-# A key may live in [env] below, but ONLY in your user config
-# (~/.config/scr/config.toml, written 0600) — never in a repo's
-# .scr/config.toml, which sits inside the repository. `.env` or your
+# This file is 0600, so a key may live in [env] below; `.env` or your
 # shell work too. `scr config show` redacts [env] values.
+#
+# Settings for one repo go in a [repos."owner/name"] table, which takes
+# every key this file does and wins over both this file's defaults and
+# the repo's committed .scr/config.toml:
+# [repos."acme/widgets"]
+# backend = "claude-cli"
+# [repos."acme/widgets".augment]
+# skip_globs = ["vendor/**"]
 
 # Default backend when --backend isn't passed. "auto" picks claude-api
 # if ANTHROPIC_API_KEY is set, else claude-cli if `claude` is on PATH.
@@ -305,7 +318,7 @@ _CONFIG_TEMPLATE = """\
 # GOOGLE_CLOUD_LOCATION = "global"
 
 # Extra file globs to skip in the LLM passes, on top of the builtin
-# lockfile/bundle/binary denylist. Accumulates with the user scope.
+# lockfile/bundle/binary denylist. Accumulates across layers.
 # [augment]
 # skip_globs = ["go.sum", "gen/**", "*.generated.ts"]
 
@@ -324,4 +337,28 @@ _CONFIG_TEMPLATE = """\
 # Assume the reader knows Hail and the analysis-runner, and not the
 # cohort model. Name the dataset in every example.
 # \"\"\"
+"""
+
+
+_COMMITTED_TEMPLATE = """\
+# This repo's scr review settings, meant to be committed: every reviewer's
+# scr reads it. It holds only these [augment] keys; backends, models and
+# credentials are each reviewer's, in their user config.
+#
+# skip_globs: files the LLM passes skip, on top of the builtin
+#   lockfile/bundle/binary denylist (generated code, vendored trees).
+# explainer_prompt: house style for the change explainer's reading guide.
+# extra_prompt: an extra per-hunk review prompt; its notes can be promoted
+#   to comments.
+# explainer: false removes the change explainer.
+
+# [augment]
+# skip_globs = ["gen/**", "*.generated.ts"]
+# explainer_prompt = \"\"\"
+# Assume the reader knows the cohort model.
+# \"\"\"
+# extra_prompt = \"\"\"
+# Flag missing tests and any public API change.
+# \"\"\"
+# explainer = false
 """

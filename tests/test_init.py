@@ -7,6 +7,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from semantic_code_review.cli import app, credentials, init_cmd
@@ -123,12 +124,69 @@ def test_init_config_key_writes_env_table(clean_env, tmp_path, monkeypatch):
     assert stat.S_IMODE(cfg_path.stat().st_mode) == 0o600
 
 
-def test_config_source_offered_only_for_user_scope():
+def test_config_source_is_offered_for_a_keyed_backend():
+    """Every scope writes the user config (0600), so a key may go in its [env]."""
     from semantic_code_review.config import BUILTIN_BACKENDS
 
-    bdef = BUILTIN_BACKENDS["groq"]
-    assert "config" in credentials.allowed_source_ids("groq", bdef, scope="user")
-    assert "config" not in credentials.allowed_source_ids("groq", bdef, scope="repo")
+    assert "config" in credentials.allowed_source_ids("groq", BUILTIN_BACKENDS["groq"])
+
+
+def _github_checkout(root: Path, origin: str) -> None:
+    import subprocess
+
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "remote", "add", "origin", origin], check=True)
+
+
+def test_init_repo_scope_writes_the_users_repo_entry(clean_env, tmp_path, monkeypatch):
+    """`--scope=repo` is the user's own settings for the cwd's repo: the
+    user file's [repos."owner/name"], never the repo's committed file."""
+    root = tmp_path / "widgets"
+    _github_checkout(root, "git@github.com:acme/widgets.git")
+    monkeypatch.chdir(root)
+    cfg_path = _user_config(tmp_path)
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text('backend = "claude-cli"\n\n[augment]\nskip_globs = ["go.sum"]\n')
+    _drive(monkeypatch, backend="groq", source="config", key="sk-widgets", model="widgets-model")
+
+    result = CliRunner().invoke(app, ["init", "--scope", "repo"])
+    assert result.exit_code == 0, result.output
+
+    parsed = tomllib.loads(cfg_path.read_text())
+    entry = parsed["repos"]["acme/widgets"]
+    assert entry["backend"] == "groq"
+    assert entry["env"] == {"GROQ_API_KEY": "sk-widgets"}
+    assert entry["backends"]["groq"]["model"] == "widgets-model"
+    assert parsed["backend"] == "claude-cli"  # the user's default is untouched
+    assert parsed["augment"] == {"skip_globs": ["go.sum"]}
+    assert not (root / ".scr").exists()
+    assert ScrConfig.load(repo="acme/widgets").backend == "groq"
+
+
+def test_init_repo_scope_needs_a_github_checkout(clean_env, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(app, ["init", "--scope", "repo"])
+    assert result.exit_code == 2
+    assert "origin is a GitHub repo" in result.output
+
+
+def test_write_config_refuses_an_edit_that_misses_its_table(tmp_path):
+    """The file is edited as text; an entry spelt with other quoting is
+    not found, and the edit is refused rather than written wrong."""
+    p = tmp_path / "config.toml"
+    original = "[repos.'acme/widgets']\nbackend = \"claude-cli\"\n"
+    p.write_text(original)
+    with pytest.raises(typer.Exit):
+        init_cmd._write_config(
+            p, keys=("repos", "acme/widgets"), backend="groq", model_override=None, api_key_command=None
+        )
+    assert p.read_text() == original
+
+
+def test_set_key_adds_a_top_level_key_above_the_first_table():
+    out = init_cmd._set_key("# header\n\n[augment]\nskip_globs = []\n", "", "backend", '"groq"')
+    assert tomllib.loads(out) == {"backend": "groq", "augment": {"skip_globs": []}}
 
 
 def test_init_model_override_writes_backend_block(clean_env, tmp_path, monkeypatch):
@@ -183,9 +241,9 @@ def test_command_yields_key_true_and_false():
     assert init_cmd._command_yields_key(("scr-no-such-binary-xyz",)) is False
 
 
-def test_set_backend_line_uncomments_template():
+def test_set_key_uncomments_template():
     template = '# header\n# backend = "claude-api"\n\n[model]\n'
-    out = init_cmd._set_backend_line(template, "groq")
+    out = init_cmd._set_key(template, "", "backend", '"groq"', uncomment=True)
     assert 'backend = "groq"' in out
     assert '# backend = "claude-api"' not in out
 
