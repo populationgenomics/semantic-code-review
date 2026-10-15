@@ -9,8 +9,9 @@ from pathlib import Path
 import typer
 
 from .. import git_ops, paths
+from ..config import ScrConfig
 from . import app
-from ._shared import get_config
+from ._shared import load_config, local_repo
 
 config_app = typer.Typer(help="Inspect or edit scr's user/per-repo config.")
 app.add_typer(config_app, name="config")
@@ -26,32 +27,37 @@ def config_path() -> None:
 
 @config_app.command("show")
 def config_show() -> None:
-    """Print the resolved config (user + per-repo merged) and where each setting came from."""
-    from ..paths import default_config_path, find_repo_config_path
+    """Print the config a review of the cwd's repo resolves, and where each setting came from."""
+    from ..paths import default_config_path
 
-    cfg = get_config()
+    reviewed, committed = local_repo(None)
+    cfg = load_config(repo=reviewed, committed_path=committed)
     user = default_config_path()
-    repo = find_repo_config_path()
     typer.echo(f"# user config: {user} ({'present' if user.is_file() else 'absent'})")
-    typer.echo(f"# per-repo config: {repo or '(none found)'}{' (present)' if repo and repo.is_file() else ''}")
+    if committed is None:
+        typer.echo("# repo: (cwd is not in a git repo)")
+    else:
+        typer.echo(f"# repo: {reviewed or '(origin is not a GitHub repo)'}")
+        typer.echo(f"# committed config: {committed} ({'present' if committed.is_file() else 'absent'})")
     typer.echo("")
-    typer.echo(f"backend = {cfg.backend!r} (from {cfg.sources.get('backend', 'default')})")
+    typer.echo(f"backend = {cfg.backend!r} (from {_source(cfg, 'backend', 'default')})")
     if cfg.model_default is not None:
         typer.echo("[model]")
-        typer.echo(f"  default = {cfg.model_default!r} (from {cfg.sources.get('model.default', '?')})")
+        typer.echo(f"  default = {cfg.model_default!r} (from {_source(cfg, 'model.default')})")
     typer.echo("[backends]")
     for name in sorted(cfg.backends):
         bdef = cfg.backends[name]
         src = cfg.sources.get(f"backends.{name}", "builtin")
         typer.echo(f"  {name}  type={bdef.type.value}  (from {src})")
         if bdef.default_model is not None:
-            typer.echo(f"    model       = {bdef.default_model!r}")
+            typer.echo(f"    model       = {bdef.default_model!r}{_hidden(cfg, f'backends.{name}.model')}")
         if bdef.base_url is not None:
-            typer.echo(f"    base_url    = {bdef.base_url!r}")
+            typer.echo(f"    base_url    = {bdef.base_url!r}{_hidden(cfg, f'backends.{name}.base_url')}")
         if bdef.api_key_env is not None:
-            typer.echo(f"    api_key_env = {bdef.api_key_env!r}")
+            typer.echo(f"    api_key_env = {bdef.api_key_env!r}{_hidden(cfg, f'backends.{name}.api_key_env')}")
         if bdef.api_key_command is not None:
-            typer.echo(f"    api_key_command = {list(bdef.api_key_command)!r}")
+            argv = list(bdef.api_key_command)
+            typer.echo(f"    api_key_command = {argv!r}{_hidden(cfg, f'backends.{name}.api_key_command')}")
     if cfg.env:
         typer.echo("[env]")
         for k, v in cfg.env.items():
@@ -59,25 +65,37 @@ def config_show() -> None:
             # Values are redacted: [env] may hold an API key (the config-key
             # credential source), and `config show` output ends up in logs
             # and screen-shares.
-            typer.echo(f"  {k} = <redacted> (from {cfg.sources.get(f'env.{k}', '?')}, {applied})")
+            typer.echo(f"  {k} = <redacted> (from {_source(cfg, f'env.{k}')}, {applied})")
     if cfg.extra_review_prompt is not None or cfg.explainer_prompt is not None or cfg.skip_globs or not cfg.explainer:
         typer.echo("[augment]")
     if cfg.extra_review_prompt is not None:
         typer.echo(
-            f"  extra_prompt = {_prompt_snippet(cfg.extra_review_prompt)} "
-            f"(from {cfg.sources.get('augment.extra_prompt', '?')})"
+            f"  extra_prompt = {_prompt_snippet(cfg.extra_review_prompt)} (from {_source(cfg, 'augment.extra_prompt')})"
         )
     if cfg.explainer_prompt is not None:
         typer.echo(
             f"  explainer_prompt = {_prompt_snippet(cfg.explainer_prompt)} "
-            f"(from {cfg.sources.get('augment.explainer_prompt', '?')})"
+            f"(from {_source(cfg, 'augment.explainer_prompt')})"
         )
     if cfg.skip_globs:
-        typer.echo(f"  skip_globs = {list(cfg.skip_globs)} (from {cfg.sources.get('augment.skip_globs', '?')})")
+        typer.echo(f"  skip_globs = {list(cfg.skip_globs)} (from {_source(cfg, 'augment.skip_globs')})")
     # Only shown when off: the explainer is opt-out, so "on" is the
     # default and listing it every time would be noise.
     if not cfg.explainer:
-        typer.echo(f"  explainer = false (from {cfg.sources.get('augment.explainer', '?')})")
+        typer.echo(f"  explainer = false (from {_source(cfg, 'augment.explainer')})")
+
+
+def _hidden(cfg: ScrConfig, key: str) -> str:
+    """A note naming the lower layer whose `key` a later layer replaced."""
+    hidden = cfg.shadowed.get(key)
+    return "" if hidden is None else f"  (overrides {hidden})"
+
+
+def _source(cfg: ScrConfig, key: str, default: str = "?") -> str:
+    """Where `key` came from, and the lower layer's value it hid, if any."""
+    src = cfg.sources.get(key, default)
+    hidden = cfg.shadowed.get(key)
+    return src if hidden is None else f"{src}; overrides {hidden}"
 
 
 def _prompt_snippet(prompt: str) -> str:
@@ -205,7 +223,7 @@ def _edit_inline_prompt(path: Path) -> None:
     import subprocess as _sp
     import tempfile
 
-    from ..config import ScrConfig, write_inline_extra_prompt
+    from ..config import write_inline_extra_prompt
 
     paths.ensure_private_dir(path.parent)
     if not path.exists():
@@ -214,7 +232,7 @@ def _edit_inline_prompt(path: Path) -> None:
     # Read the current prompt via the standard config loader so the
     # tempfile starts with what `scr config show` would say. Empty
     # body when no prompt is configured at this scope yet.
-    cfg = ScrConfig.load(user_path=path, repo_path=None)
+    cfg = ScrConfig.load(user_path=path)
     current = cfg.extra_review_prompt or ""
 
     # Initial contents: current prompt if set, else a placeholder

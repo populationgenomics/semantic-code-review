@@ -90,5 +90,5 @@ def test_appended_template_still_loads_via_scrconfig(tmp_path) -> None:
         config_path.read_text(encoding="utf-8") + "\n" + block,
         encoding="utf-8",
     )
-    cfg = ScrConfig.load(user_path=config_path, repo_path=None)
+    cfg = ScrConfig.load(user_path=config_path)
     assert cfg.backends["groq"].default_model == "llama-3.3-70b-versatile"

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 import typer
 
+from .. import config, git_ops, paths
 from ..config import ConfigError, ScrConfig
 
 if TYPE_CHECKING:
@@ -22,44 +23,46 @@ if TYPE_CHECKING:
     # startup. See docs/style/python.md — the sanctioned expensive-import case.
     from ..augment.agents import Client
 
-# Lazily-loaded user/per-repo config. Loading is deferred to the first
-# `get_config()` call so a malformed config doesn't brick commands that
-# never touch it — most importantly `scr config edit`, which is the
-# user's escape hatch for fixing the very config that's broken. Also
-# means `scr --help` and `scr --version` work in any state.
-_CONFIG_CACHE: ScrConfig | None = None
 
+def load_config(*, repo: str | None, committed_path: Path | None) -> ScrConfig:
+    """Load the config for a review of `repo` and apply its `[env]`.
 
-def get_config() -> ScrConfig:
-    """Return the resolved config, loading + applying `[env]` on first use.
-
-    Subsequent calls return the cached instance. A `ConfigError` from
-    `ScrConfig.load()` is converted to a clean exit at the CLI boundary
-    so the user sees a short message rather than a Python traceback.
-    Order of env-var precedence: shell env > .env > config[env]; each
+    Loaded per command, not at import, so a malformed config doesn't
+    brick commands that never touch it — most importantly `scr config
+    edit`, the user's escape hatch for fixing it. A `ConfigError` becomes
+    a clean exit so the user sees a short message rather than a
+    traceback. Env-var precedence: shell env > .env > config[env]; each
     layer uses `setdefault` so the closer one wins.
+
+    Args:
+        repo: The reviewed repo as `owner/name`, or None when it has none.
+        committed_path: The reviewed repo's committed `.scr/config.toml`.
     """
-    global _CONFIG_CACHE
-    if _CONFIG_CACHE is None:
-        try:
-            cfg = ScrConfig.load()
-        except ConfigError as e:
-            sys.stderr.write(f"scr: {e}\n")
-            sys.stderr.flush()
-            raise SystemExit(1) from None
-        cfg.apply_env()
-        _CONFIG_CACHE = cfg
-    return _CONFIG_CACHE
+    try:
+        cfg = ScrConfig.load(repo=repo, committed_path=committed_path)
+    except ConfigError as e:
+        sys.stderr.write(f"scr: {e}\n")
+        sys.stderr.flush()
+        raise SystemExit(1) from None
+    cfg.apply_env()
+    return cfg
 
 
-def _reset_config_cache() -> None:
-    """Drop the cached config so the next `get_config()` re-reads from disk.
+def local_repo(start: Path | None) -> tuple[str | None, Path | None]:
+    """The GitHub identity and committed config path of the git repo
+    containing `start` (cwd when None).
 
-    Tests use this when they monkey-patch `XDG_CONFIG_HOME` or
-    `SCR_REPO_ROOT` and want the change reflected in the next command.
+    Returns `(None, None)` outside a git repo. The identity is None when
+    the repo has no `origin` or `origin` is not on GitHub: such a repo
+    has no `[repos."owner/name"]` entry to select.
     """
-    global _CONFIG_CACHE
-    _CONFIG_CACHE = None
+    code, top, _ = git_ops.git_capture(start, "rev-parse", "--show-toplevel")
+    if code != 0:
+        return None, None
+    root = Path(top.strip())
+    code, url, _ = git_ops.git_capture(root, "remote", "get-url", "origin")
+    repo = config.github_repo(url.strip()) if code == 0 else None
+    return repo, paths.committed_config_path(root)
 
 
 def load_dotenv(path: Path = Path(".env")) -> None:
@@ -110,16 +113,15 @@ def configure_logging(verbose: bool) -> None:
         h.setLevel(level)
 
 
-def select_client(backend: str, *, model: str) -> Client:
+def select_client(cfg: ScrConfig, backend: str, *, model: str) -> Client:
     """Resolve a backend name to a `Client` for the augment pipeline.
 
-    `backend` is "auto" or any name in `get_config().backends` (builtins +
+    `backend` is "auto" or any name in `cfg.backends` (builtins +
     user-defined `[backends.<name>]` entries). All dispatch lives in
     `semantic_code_review.backends`; this is the CLI's only entry point.
     """
     from .. import backends as _backends
 
-    cfg = get_config()
     if backend == "auto":
         backend = _backends.resolve_auto(config=cfg)
     return _backends.get(backend, config=cfg).resolve(model=model)
@@ -143,7 +145,7 @@ def _read_prompt_file(cli_path: Path, *, label: str) -> str:
     return text
 
 
-def resolve_extra_review_prompt(cli_path: Path | None) -> str | None:
+def resolve_extra_review_prompt(cfg: ScrConfig, cli_path: Path | None) -> str | None:
     """CLI --extra-prompt path wins, otherwise the inline config value.
 
     The CLI flag loads the prompt off the given file. When no CLI flag
@@ -152,10 +154,10 @@ def resolve_extra_review_prompt(cli_path: Path | None) -> str | None:
     """
     if cli_path is not None:
         return _read_prompt_file(cli_path, label="extra-review prompt")
-    return get_config().extra_review_prompt
+    return cfg.extra_review_prompt
 
 
-def resolve_explainer_prompt(cli_path: Path | None) -> str | None:
+def resolve_explainer_prompt(cfg: ScrConfig, cli_path: Path | None) -> str | None:
     """CLI --explainer-prompt path wins, otherwise the inline config value.
 
     Same resolution order as :func:`resolve_extra_review_prompt`, over
@@ -168,23 +170,23 @@ def resolve_explainer_prompt(cli_path: Path | None) -> str | None:
     is a silent no-op on an explicit request.
     """
     if cli_path is not None:
-        if not get_config().explainer:
+        if not cfg.explainer:
             typer.echo(
                 "scr: --explainer-prompt was given but [augment].explainer = false "
-                f"(from {get_config().sources.get('augment.explainer', '?')}) — "
+                f"(from {cfg.sources.get('augment.explainer', '?')}) — "
                 "no explainer document will be generated",
                 err=True,
             )
             raise typer.Exit(code=2)
         return _read_prompt_file(cli_path, label="explainer house-style prompt")
-    return get_config().explainer_prompt
+    return cfg.explainer_prompt
 
 
 __all__ = [
-    "_reset_config_cache",
     "configure_logging",
-    "get_config",
+    "load_config",
     "load_dotenv",
+    "local_repo",
     "resolve_explainer_prompt",
     "resolve_extra_review_prompt",
     "select_client",

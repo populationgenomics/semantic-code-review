@@ -23,7 +23,8 @@ from ..review.pr_flow import PrFlowOptions, run_pr_flow, serve_pr_run
 from . import app
 from ._shared import (
     configure_logging,
-    get_config,
+    load_config,
+    local_repo,
     resolve_explainer_prompt,
     resolve_extra_review_prompt,
     select_client,
@@ -103,14 +104,15 @@ def pr(
         typer.echo(f"scr pr: {runner.FOREGROUND_FLAG} and {servers.SERVE_RUN_FLAG} are mutually exclusive", err=True)
         raise typer.Exit(code=2)
 
-    cfg = get_config()
+    _, committed = local_repo(None)
+    cfg = load_config(repo=repo, committed_path=committed)
     backend = cfg.resolve_backend(backend)
     model = cfg.resolve_model(backend=backend, cli_value=model)
-    extra_review_prompt = resolve_extra_review_prompt(extra_prompt) if augment else None
-    house_style = resolve_explainer_prompt(explainer_prompt) if augment else None
+    extra_review_prompt = resolve_extra_review_prompt(cfg, extra_prompt) if augment else None
+    house_style = resolve_explainer_prompt(cfg, explainer_prompt) if augment else None
     # Resolve the backend up-front so a misconfiguration fails fast,
     # before we spend time on PR resolution and worktree fetch.
-    client = select_client(backend, model=model) if augment else None
+    client = select_client(cfg, backend, model=model) if augment else None
 
     review_cfg = ReviewConfig(
         runs_root=runs_root or default_runs_root(),
