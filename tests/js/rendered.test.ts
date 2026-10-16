@@ -397,10 +397,44 @@ describe("Rendered._plan — run folding", () => {
     const plan = _plan(st, pairs, "sections", "F0");
     const fs = folds(plan);
     expect(fs).toHaveLength(1);
-    expect(fs[0].scope).toBe("section");
-    expect(fs[0].count).toBe(3);   // heading + 2 body blocks
+    expect(fs[0]).toEqual({
+      kind: "fold", scope: "section", sectionKeys: ["h1"], blocks: 3, leadRun: null,
+    });
     // The changed section keeps its heading and changed block visible.
     expect(plan.filter((i) => i.kind === "pair")).toHaveLength(2);
+  });
+
+  test("consecutive unchanged sections collapse into one chip", () => {
+    // Nested headings, each its own section: without coalescing every
+    // section would emit its own chip, stacked with nothing between.
+    const pairs = [
+      p(1, { heading: 1 }), p(2),
+      p(3, { heading: 2 }), p(4), p(5),
+      p(6, { heading: 3 }),
+      p(7, { heading: 2 }), p(8),
+      p(9, { heading: 2 }), p(10, { changed: true }),
+    ];
+    const plan = _plan(st, pairs, "sections", "F0");
+    expect(plan[0]).toEqual({
+      kind: "fold", scope: "section",
+      sectionKeys: ["h1", "h3", "h6", "h7"], blocks: 8, leadRun: null,
+    });
+    expect(plan.slice(1).every((i) => i.kind === "pair")).toBe(true);
+  });
+
+  test("a body ending in a collapsed run merges into the following section chip", () => {
+    // Preamble run (no change to bleed toward at its end) abuts the
+    // collapsed section after it.
+    const pairs = [
+      p(1, { changed: true }), p(2), p(3), p(4), p(5), p(6),
+      p(7, { heading: 1 }), p(8),
+    ];
+    const plan = _plan(st, pairs, "sections", "F0");
+    expect(plan.map((i) => i.kind)).toEqual(["pair", "pair", "fold"]);
+    expect(plan[2]).toEqual({
+      kind: "fold", scope: "section", sectionKeys: ["h7"], blocks: 2,
+      leadRun: { kind: "fold", scope: "run", key: "h2", count: 4 },
+    });
   });
 
   test("reveal state peels blocks off a run's end and shrinks the chip", () => {
@@ -480,6 +514,26 @@ describe("Rendered.renderBody — fold chip DOM", () => {
     openBtn.click();
     expect(body.querySelector(".rmd-fold")).toBeNull();
     expect(body.querySelector(".rmd-ladder-btn.active")!.textContent).toBe("Open");
+  });
+
+  test("stacked unchanged sections render one chip; a click expands them all", async () => {
+    const doc = ["# A", "a1", "## B", "b1", "b2", "### C", "c1", "## D", "d1"].join("\n\n");
+    const f = mdFile("F12");
+    await flip(st, f, { base: doc, head: doc });
+    Rendered.setFoldLevel(st, f.id, "sections", () => {});
+
+    const body = document.createElement("div");
+    paint(st, body, f);
+
+    const chips = body.querySelectorAll(".rmd-fold");
+    expect(chips).toHaveLength(1);
+    const btn = chips[0].querySelector(".rmd-fold-expand") as HTMLElement;
+    expect(btn.textContent).toBe("⋯ 4 unchanged sections ⋯");
+    expect(btn.title).toBe("Expand these 4 sections (9 blocks)");
+
+    btn.click();
+    expect(body.querySelector(".rmd-fold")).toBeNull();
+    expect(body.querySelectorAll(".rmd-block")).toHaveLength(18);   // 9 blocks × 2 panes
   });
 
   test("outline entry expands its whole section", async () => {
