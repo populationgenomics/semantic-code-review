@@ -414,6 +414,12 @@ Lockfiles (all committed):
 Pre-commit hooks re-export both `requirements*.lock` files and fail if
 either differs from `uv.lock`, so CI rejects a stale export.
 
+Resolution takes only releases at least 7 days old (`[tool.uv]
+exclude-newer` in `pyproject.toml`, `min-release-age` in `.npmrc`), so a
+compromised release that is caught and yanked within the week never
+reaches a lockfile. `.github/dependabot.yml` proposes weekly grouped
+updates with the same cooldown.
+
 Frontend assets are vendored under
 `semantic_code_review/viewer/assets/vendor/` at pinned upstream
 versions with each project's LICENSE file alongside — never loaded

@@ -1,0 +1,38 @@
+# Version updates, one grouped PR per ecosystem per week. The cooldown
+# matches [tool.uv] exclude-newer and .npmrc min-release-age; security
+# updates ignore it.
+#
+# Dependabot updates uv.lock but not the requirements*.lock exports, so a
+# uv PR fails the lint job until someone runs `uv run pre-commit run
+# --all-files` on its branch and pushes the re-export.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      python:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      npm:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
