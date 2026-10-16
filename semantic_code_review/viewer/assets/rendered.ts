@@ -325,16 +325,32 @@ interface PairItem {
   pair: BlockPair;
 }
 
-/** A collapsed run of unchanged block-pairs, standing in as one
- *  full-width chip. `count` is how many pairs it hides; `key` is the
- *  stable reveal key; `run`/`section` distinguishes a run-fold from a
- *  whole-section fold (which chevron affordances differ). */
-interface FoldItem {
+/** A collapsed run of unchanged block-pairs inside one section body,
+ *  standing in as one full-width chip with reveal chevrons. `count` is
+ *  how many pairs it hides; `key` is the stable reveal key. */
+interface RunFold {
   kind: "fold";
+  scope: "run";
   key: string;
   count: number;
-  scope: "run" | "section";
 }
+
+/** One chip standing in for every collapsed region between two visible
+ *  rows at the `sections` level: a maximal sequence of whole unchanged
+ *  sections, plus `leadRun` when the body preceding them ends in a
+ *  collapsed run (nothing visible would separate the two chips).
+ *  `sectionKeys` are the sections it hides, in order; `blocks` counts
+ *  their pairs. Expanding opens every section and fully reveals the
+ *  lead run. */
+interface SectionFold {
+  kind: "fold";
+  scope: "section";
+  sectionKeys: string[];
+  blocks: number;
+  leadRun: RunFold | null;
+}
+
+type FoldItem = RunFold | SectionFold;
 
 type PlanItem = PairItem | FoldItem;
 
@@ -411,10 +427,7 @@ function _plan(
   for (const s of _sections(pairs)) {
     const forcedOpen = s.heading != null && !!open && open.has(_pairKey(s.heading));
     if (level === "sections" && s.heading != null && !_sectionChanged(s) && !forcedOpen) {
-      out.push({
-        kind: "fold", scope: "section",
-        key: _pairKey(s.heading), count: 1 + s.body.length,
-      });
+      _pushSectionFold(out, _pairKey(s.heading), 1 + s.body.length);
       continue;
     }
     // Heading stays visible as a landmark; a changed heading counts as a
@@ -425,6 +438,23 @@ function _plan(
     out.push(..._foldBody(st, s.body, s.heading != null && _pairChanged(s.heading), bodyLevel, fileId));
   }
   return out;
+}
+
+/** Append one collapsed section to the plan, coalescing it into the
+ *  chip already ending the plan: a preceding section chip absorbs it,
+ *  and a preceding run chip (a body ending in a collapsed run) becomes
+ *  the merged chip's lead run. Adjacent chips with no visible row
+ *  between them always render as one. */
+function _pushSectionFold(out: PlanItem[], key: string, blocks: number): void {
+  const last = out[out.length - 1];
+  if (last?.kind === "fold" && last.scope === "section") {
+    last.sectionKeys.push(key);
+    last.blocks += blocks;
+    return;
+  }
+  const leadRun = last?.kind === "fold" ? last : null;
+  if (leadRun) out.pop();
+  out.push({ kind: "fold", scope: "section", sectionKeys: [key], blocks, leadRun });
 }
 
 /** Fold the unchanged runs inside one section body. `leftIsChange` is
@@ -497,6 +527,20 @@ function _openSection(
   st: PaneState, fileId: string, key: string, repaint: () => void,
 ): void {
   (st.sectionOpen[fileId] ||= new Set<string>()).add(key);
+  repaint();
+}
+
+/** Expand a section chip: open each section it hides and fully reveal
+ *  its lead run, in one repaint. */
+function _expandSectionFold(
+  st: PaneState, fileId: string, item: SectionFold, repaint: () => void,
+): void {
+  const open = (st.sectionOpen[fileId] ||= new Set<string>());
+  for (const key of item.sectionKeys) open.add(key);
+  if (item.leadRun) {
+    const perFile = (st.reveal[fileId] ||= Object.create(null));
+    perFile[item.leadRun.key] = { top: Number.MAX_SAFE_INTEGER, bottom: 0 };
+  }
   repaint();
 }
 
@@ -633,15 +677,20 @@ function _renderFoldChip(
   st: PaneState, item: FoldItem, fileId: string, repaint: () => void,
 ): HTMLElement {
   const chip = _el("div", `rmd-fold rmd-fold-${item.scope}`);
-  const noun = item.scope === "section" ? "section" : "block";
-  const label = `${item.count} unchanged ${noun}${item.count === 1 ? "" : "s"}`;
   if (item.scope === "section") {
+    const n = item.sectionKeys.length;
+    const sections = _plural(n, "unchanged section");
+    const label = item.leadRun
+      ? `${_plural(item.leadRun.count, "unchanged block")} + ${sections}`
+      : sections;
     const btn = _el("button", "rmd-fold-expand", `⋯ ${label} ⋯`);
-    btn.title = "Expand this section";
-    btn.addEventListener("click", () => _openSection(st, fileId, item.key, repaint));
+    const blocks = item.blocks + (item.leadRun ? item.leadRun.count : 0);
+    btn.title = `Expand ${n === 1 ? "this section" : `these ${n} sections`} (${_plural(blocks, "block")})`;
+    btn.addEventListener("click", () => _expandSectionFold(st, fileId, item, repaint));
     chip.appendChild(btn);
     return chip;
   }
+  const label = _plural(item.count, "unchanged block");
   chip.appendChild(_revealChevron(st, fileId, item.key, "top", repaint));
   chip.appendChild(_el("span", "rmd-fold-label", `⋯ ${label} ⋯`));
   chip.appendChild(_revealChevron(st, fileId, item.key, "bottom", repaint));
@@ -661,6 +710,10 @@ function _revealChevron(
   btn.title = `Reveal the block ${dir} (shift-click for the whole run)`;
   btn.addEventListener("click", (e) => _revealRun(st, fileId, key, end, e.shiftKey, repaint));
   return btn;
+}
+
+function _plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
 function _el(tag: string, cls: string, text?: string): HTMLElement {
