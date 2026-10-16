@@ -21,6 +21,6 @@
     "jsdom": "25.0.1",
     "markdown-it": "14.3.2",
     "typescript": "5.7.3",
-    "vitest": "3.2.6"
+    "vitest": "4.1.11"
   }
 }
