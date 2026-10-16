@@ -34,7 +34,7 @@ dependencies = [
   # Streamable-HTTP so `claude -p` connects to one warm server instead of
   # spawning a stdio child per turn. Pulls starlette + uvicorn for the ASGI
   # transport.
-  "mcp==1.28.1",
+  "mcp==1.30.0",
   "openai==2.34.0",
   "pydantic==2.13.3",
   # Slim with only the providers scr calls: the full pydantic-ai adds ~40
