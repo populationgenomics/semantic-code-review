@@ -280,3 +280,16 @@ def test_the_plugin_and_the_package_agree_on_the_version() -> None:
         "bin/scr installs the pyproject version from PyPI, so a plugin "
         "advertising a different one is advertising a version it will not run"
     )
+
+
+def test_selecting_a_client_turns_off_the_pydantic_ai_banner(tmp_path: Path, monkeypatch) -> None:
+    """pydantic-ai prints a banner on a process's first agent run; scr
+    owns its terminal output, so selecting a client switches it off."""
+    import pydantic_ai
+
+    from semantic_code_review.cli._shared import select_client
+
+    monkeypatch.setattr(pydantic_ai, "BANNER_ENABLED", True)
+    cfg = _isolated_config(tmp_path, monkeypatch, "")
+    select_client(cfg, "ollama", model="llama3")
+    assert pydantic_ai.BANNER_ENABLED is False
