@@ -120,8 +120,13 @@ def select_client(cfg: ScrConfig, backend: str, *, model: str) -> Client:
     user-defined `[backends.<name>]` entries). All dispatch lives in
     `semantic_code_review.backends`; this is the CLI's only entry point.
     """
+    import pydantic_ai
+
     from .. import backends as _backends
 
+    # pydantic-ai prints a first-run banner to a terminal; scr owns its
+    # output, and a detached server's log is no place for it either.
+    pydantic_ai.BANNER_ENABLED = False
     if backend == "auto":
         backend = _backends.resolve_auto(config=cfg)
     return _backends.get(backend, config=cfg).resolve(model=model)
