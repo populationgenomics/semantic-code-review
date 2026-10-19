@@ -1,6 +1,7 @@
-# Version updates, one grouped PR per ecosystem per week. The cooldown
-# matches [tool.uv] exclude-newer and .npmrc min-release-age; security
-# updates ignore it.
+# Version updates weekly: minor and patch bumps grouped into one PR per
+# ecosystem, each major bump its own PR so one breaking change can't block
+# the rest. The cooldown matches [tool.uv] exclude-newer and .npmrc
+# min-release-age; security updates ignore it.
 #
 # Dependabot updates uv.lock but not the requirements*.lock exports, so a
 # uv PR fails the lint job until someone runs `uv run pre-commit run
@@ -16,6 +17,7 @@ updates:
     groups:
       python:
         patterns: ["*"]
+        update-types: [minor, patch]
 
   - package-ecosystem: npm
     directory: /
@@ -26,6 +28,7 @@ updates:
     groups:
       npm:
         patterns: ["*"]
+        update-types: [minor, patch]
 
   - package-ecosystem: github-actions
     directory: /
@@ -36,3 +39,4 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+        update-types: [minor, patch]
