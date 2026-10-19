@@ -27,19 +27,19 @@ classifiers = [
 # pip install) resolves to the same direct versions. When bumping: edit
 # here, `uv lock`, then `uv run pre-commit run --all-files` to re-export.
 dependencies = [
-  "anthropic==0.116.0",
-  "google-genai==1.75.0",
+  "anthropic==1.12.1",
+  "google-genai==2.29.0",
   "jinja2==3.1.6",
   # MCP host for the claude-cli backend (ADR 0003): serves RepoTools over
   # Streamable-HTTP so `claude -p` connects to one warm server instead of
   # spawning a stdio child per turn. Pulls starlette + uvicorn for the ASGI
   # transport.
   "mcp==1.30.0",
-  "openai==2.34.0",
+  "openai==3.26.1",
   "pydantic==2.13.3",
   # Slim with only the providers scr calls: the full pydantic-ai adds ~40
   # packages (logfire, keyring, fastmcp, pydantic-evals) scr never imports.
-  "pydantic-ai-slim[anthropic,google,openai]==2.5.0",
+  "pydantic-ai-slim[anthropic,google,openai]==2.54.0",
   "questionary==2.1.1",
   "tree-sitter==0.25.2",
   "tree-sitter-python==0.25.0",

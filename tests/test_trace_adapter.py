@@ -445,3 +445,26 @@ def test_a_pass_that_declared_no_ceiling_records_no_budget(tmp_path: Path) -> No
     trace_path = tmp_path / "nobudget.json"
     write_partial_trace([], trace_path=trace_path, model="m", system="s", tool_names=[], submit_tool="submit")
     assert "turn_budget" not in json.loads(trace_path.read_text())
+
+
+def test_provider_details_of_any_type_reach_the_trace(tmp_path: Path) -> None:
+    """Providers put arbitrary values in `provider_details`; Gemini's
+    `timestamp` is a datetime, which `json.dumps` rejects."""
+    trace_path = tmp_path / "t.json"
+    write_partial_trace(
+        [
+            ModelRequest(parts=[UserPromptPart(content="hi", timestamp=_ts())]),
+            ModelResponse(
+                parts=[TextPart(content="ok")],
+                timestamp=_ts(),
+                provider_details={"timestamp": _ts(), "traffic_type": "ON_DEMAND"},
+            ),
+        ],
+        trace_path=trace_path,
+        model="m",
+        system="s",
+        tool_names=[],
+        submit_tool="submit",
+    )
+    details = json.loads(trace_path.read_text())["iterations"][0]["response"]["provider_details"]
+    assert details == {"timestamp": "2026-05-05T00:00:00", "traffic_type": "ON_DEMAND"}
