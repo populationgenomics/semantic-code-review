@@ -47,6 +47,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import pydantic_core
 from pydantic_ai import CachePoint
 from pydantic_ai.messages import (
     ModelRequest,
@@ -202,7 +203,8 @@ def _response_to_dict(resp: ModelResponse) -> dict[str, Any]:
         # CLI backends run their tool loop inside the subprocess; this is
         # where the loop depth (`num_turns`) surfaces. Empty for SDK
         # backends, whose per-turn detail is already in `iterations`.
-        "provider_details": dict(resp.provider_details) if resp.provider_details else {},
+        # Values are whatever the provider returned (Gemini: a datetime).
+        "provider_details": pydantic_core.to_jsonable_python(resp.provider_details or {}),
         "content": _response_content(resp),
     }
 
