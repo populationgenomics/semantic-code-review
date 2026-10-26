@@ -24,6 +24,7 @@ from . import app
 from ._shared import (
     configure_logging,
     load_config,
+    require_viewer_bundle,
     resolve_explainer_prompt,
     resolve_extra_review_prompt,
     select_client,
@@ -103,6 +104,7 @@ def pr(
         typer.echo(f"scr pr: {runner.FOREGROUND_FLAG} and {servers.SERVE_RUN_FLAG} are mutually exclusive", err=True)
         raise typer.Exit(code=2)
 
+    require_viewer_bundle("scr pr")
     runs_root = runs_root or default_runs_root()
     # The committed file cannot set the backend, model or credentials, so
     # they resolve now, before the PR is fetched: a misconfiguration fails
