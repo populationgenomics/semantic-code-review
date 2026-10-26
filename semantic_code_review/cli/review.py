@@ -23,6 +23,7 @@ from ._shared import (
     configure_logging,
     load_config,
     local_repo,
+    require_viewer_bundle,
     resolve_explainer_prompt,
     resolve_extra_review_prompt,
     select_client,
@@ -143,6 +144,7 @@ def review(
             f"scr review: {runner.FOREGROUND_FLAG} and {servers.SERVE_RUN_FLAG} are mutually exclusive", err=True
         )
         raise typer.Exit(code=2)
+    require_viewer_bundle("scr review")
 
     reviewed, committed = local_repo(repo_root)
     cfg = load_config(repo=reviewed, committed_path=committed)

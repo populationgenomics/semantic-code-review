@@ -40,3 +40,21 @@ def resolve_asset(rel: str) -> pathlib.Path:
     if p.exists():
         return p
     raise FileNotFoundError(f"asset not found: {rel} (looked in {ASSETS_DIR}{', ' + build_dir if build_dir else ''})")
+
+
+def require_bundle() -> pathlib.Path:
+    """Locate the built `viewer.js`, or fail with how to build it.
+
+    `viewer.js` is built, not committed: a source checkout has none until
+    `npm run build`, and a server without it serves a page with no
+    viewer.
+
+    Raises:
+        FileNotFoundError: The bundle has not been built.
+    """
+    try:
+        return resolve_asset(BUNDLE)
+    except FileNotFoundError as e:
+        raise FileNotFoundError(
+            f"the viewer bundle is not built: {e}. In a source checkout, run `npm ci && npm run build`."
+        ) from None

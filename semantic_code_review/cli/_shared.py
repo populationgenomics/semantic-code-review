@@ -17,6 +17,7 @@ import typer
 
 from .. import config, git_ops, paths
 from ..config import ConfigError, ScrConfig
+from ..viewer import static
 
 if TYPE_CHECKING:
     # Type-only: importing agents eagerly pulls pydantic_ai into every CLI
@@ -113,6 +114,20 @@ def configure_logging(verbose: bool) -> None:
         h.setLevel(level)
 
 
+def require_viewer_bundle(program: str) -> None:
+    """Exit 2 when `viewer.js` is not built.
+
+    Checked before the run is fetched: a review server without the
+    bundle serves a page with no viewer, and the user finds out only
+    after the fetch and the augment pass.
+    """
+    try:
+        static.require_bundle()
+    except FileNotFoundError as e:
+        typer.echo(f"{program}: {e}", err=True)
+        raise typer.Exit(code=2) from None
+
+
 def select_client(cfg: ScrConfig, backend: str, *, model: str) -> Client:
     """Resolve a backend name to a `Client` for the augment pipeline.
 
@@ -192,6 +207,7 @@ __all__ = [
     "load_config",
     "load_dotenv",
     "local_repo",
+    "require_viewer_bundle",
     "resolve_explainer_prompt",
     "resolve_extra_review_prompt",
     "select_client",

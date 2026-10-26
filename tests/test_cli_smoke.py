@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from semantic_code_review.cli import app
@@ -293,3 +294,33 @@ def test_selecting_a_client_turns_off_the_pydantic_ai_banner(tmp_path: Path, mon
     cfg = _isolated_config(tmp_path, monkeypatch, "")
     select_client(cfg, "ollama", model="llama3")
     assert pydantic_ai.BANNER_ENABLED is False
+
+
+@pytest.mark.parametrize(
+    ("argv", "program"),
+    [
+        (["pr", "owner/name", "1"], "scr pr"),
+        (["review", "HEAD"], "scr review"),
+    ],
+)
+def test_an_unbuilt_viewer_bundle_stops_a_review_before_the_fetch(
+    tmp_path: Path, monkeypatch, argv: list[str], program: str
+) -> None:
+    """A source checkout has no `viewer.js` until `npm run build`; a server
+    without it serves a page with no viewer. The command says so and exits
+    before fetching or resolving anything."""
+    from semantic_code_review.cli import pr, review
+    from semantic_code_review.viewer import static
+
+    monkeypatch.delenv("SCR_VIEWER_BUILD_DIR", raising=False)
+    monkeypatch.setattr(static, "ASSETS_DIR", tmp_path / "assets")
+
+    def no_config(**_kwargs: object) -> None:
+        raise AssertionError("config loaded before the bundle check")
+
+    monkeypatch.setattr(pr, "load_config", no_config)
+    monkeypatch.setattr(review, "load_config", no_config)
+    result = CliRunner().invoke(app, argv)
+    assert result.exit_code == 2
+    assert f"{program}: the viewer bundle is not built" in result.output
+    assert "npm ci && npm run build" in result.output
