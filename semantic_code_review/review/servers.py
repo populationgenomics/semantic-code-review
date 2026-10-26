@@ -201,7 +201,9 @@ def spawn(run_dir: paths.RunDir, argv: Sequence[str], *, cwd: str) -> subprocess
     its stdio in `server.log`. Does not wait for it: see
     `await_server_info`.
     """
-    child_argv = [sys.executable, "-m", "semantic_code_review.cli", *argv]
+    # -P: `-m` would otherwise put `cwd` first on sys.path, and a cwd inside
+    # an scr checkout would serve that checkout's code, not this build's.
+    child_argv = [sys.executable, "-P", "-m", "semantic_code_review.cli", *argv]
     with run_dir.server_log.open("ab") as log_file:
         return subprocess.Popen(
             child_argv,
