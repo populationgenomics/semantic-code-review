@@ -21,7 +21,7 @@ from ..config import ConfigError, ScrConfig
 if TYPE_CHECKING:
     # Type-only: importing agents eagerly pulls pydantic_ai into every CLI
     # startup. See docs/style/python.md — the sanctioned expensive-import case.
-    from ..augment.agents import Client
+    from ..augment.agents import ClientFactory
 
 
 def load_config(*, repo: str | None, committed_path: Path | None) -> ScrConfig:
@@ -113,8 +113,8 @@ def configure_logging(verbose: bool) -> None:
         h.setLevel(level)
 
 
-def select_client(cfg: ScrConfig, backend: str, *, model: str) -> Client:
-    """Resolve a backend name to a `Client` for the augment pipeline.
+def select_client_factory(cfg: ScrConfig, backend: str, *, model: str) -> ClientFactory:
+    """Resolve a backend name to the `ClientFactory` for the LLM passes.
 
     `backend` is "auto" or any name in `cfg.backends` (builtins +
     user-defined `[backends.<name>]` entries). All dispatch lives in
@@ -194,5 +194,5 @@ __all__ = [
     "local_repo",
     "resolve_explainer_prompt",
     "resolve_extra_review_prompt",
-    "select_client",
+    "select_client_factory",
 ]

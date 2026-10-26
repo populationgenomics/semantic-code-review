@@ -25,7 +25,7 @@ from ._shared import (
     local_repo,
     resolve_explainer_prompt,
     resolve_extra_review_prompt,
-    select_client,
+    select_client_factory,
 )
 
 
@@ -152,7 +152,7 @@ def review(
     house_style = resolve_explainer_prompt(cfg, explainer_prompt) if augment else None
     # Resolve the backend up-front so a misconfiguration fails fast, before
     # we spend time building the diff / worktrees.
-    client = select_client(cfg, backend, model=model) if augment else None
+    client_factory = select_client_factory(cfg, backend, model=model) if augment else None
 
     review_cfg = ReviewConfig(
         runs_root=runs_root,
@@ -164,7 +164,7 @@ def review(
         open_browser=not no_open,
         port=port,
         timeout=timeout,
-        client=client,
+        client_factory=client_factory,
         extra_review_prompt=extra_review_prompt,
         skip_globs=cfg.skip_globs,
         explainer=cfg.explainer,

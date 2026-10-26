@@ -15,9 +15,11 @@ unqualified model name maps to.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import contextlib
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from typing import Any
+from types import TracebackType
+from typing import Any, Self
 
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
@@ -82,8 +84,11 @@ class Client:
     string models have no MCP concept here — the SDK Agent receives
     `deps=repo_tools` at `Agent.run` call time instead.
 
-    `aclose()` is delegated to the inner Model. SDK string models have
-    no per-run resources to release; the no-op fallthrough is fine.
+    A Client is used within one event loop: an SDK model's provider
+    holds an HTTP connection pool whose connections are bound to the
+    loop that opened them. Open one per loop through `ClientFactory.open`,
+    which enters it (`async with`) and closes the pool before the loop
+    ends. String models build their provider per Agent and hold nothing.
 
     `request_limit` bounds the agentic loop for SDK backends, the way
     `--max-turns` does for the CLI drivers. Without it a pass runs to
@@ -159,6 +164,51 @@ class Client:
             if callable(close):
                 # Dynamic probe: getattr erases the type, so pyright can't see the coroutine.
                 await close()  # pyright: ignore[reportGeneralTypeIssues]
+
+    async def __aenter__(self) -> Self:
+        if isinstance(self.model, Model):
+            await self.model.__aenter__()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        try:
+            await self.aclose()
+        finally:
+            if isinstance(self.model, Model):
+                # Closes the provider's HTTP pool on the loop that opened it.
+                await self.model.__aexit__(exc_type, exc, tb)
+
+
+@dataclass
+class ClientFactory:
+    """Builds the `Client` for one event loop.
+
+    The review server runs each LLM task (the augment pass, a fold
+    summary, an explainer pass, a console turn) under its own
+    `asyncio.run`, some concurrently on different threads. Each opens a
+    fresh Client with `open()`, so no HTTP pool outlives its loop or is
+    shared across loops. `build` has the backend's credentials already
+    resolved; it constructs, it doesn't authenticate.
+
+    `debug_sink` is the one setting that outlives a task: `--debug`
+    binds it once at server start, and `open()` hands it to each Client.
+    """
+
+    build: Callable[[], Client]
+    debug_sink: Callable[[dict[str, Any]], None] | None = None
+
+    @contextlib.asynccontextmanager
+    async def open(self) -> AsyncIterator[Client]:
+        """A Client for the running loop, closed when the block exits."""
+        client = self.build()
+        client.set_debug_sink(self.debug_sink)
+        async with client:
+            yield client
 
 
 def make_batch_agent(

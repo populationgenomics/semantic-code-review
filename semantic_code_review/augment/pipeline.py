@@ -214,9 +214,9 @@ async def augment_run_dir(
     )
 
     # CLI subprocess backends reach the tools through one warm HTTP MCP
-    # server for the whole run (ADR 0003 Slice 3) — started here, torn
-    # down with the client below — instead of cold-starting a stdio child
-    # per hunk. SDK backends get `deps=repo_tools` directly via `Agent.run`.
+    # server for the whole run (ADR 0003 Slice 3) — started here, stopped
+    # below — instead of cold-starting a stdio child per hunk. SDK backends
+    # get `deps=repo_tools` directly via `Agent.run`.
     mcp_host: mcp_http_host.McpHttpHost | None = None
     if client.is_subprocess_backend:
         mcp_host = mcp_http_host.McpHttpHost(repo_tools)
@@ -239,15 +239,10 @@ async def augment_run_dir(
         for fi, fp in enumerate(diff.files)
     }
 
-    # Subprocess clients allocate temp config files at first use;
-    # `aclosing` calls `client.aclose()` on exit so /tmp doesn't
-    # accumulate them across runs. SDKBackend's aclose is a no-op
-    # so this is uniform across backends.
     async with contextlib.AsyncExitStack() as run_stack:
         # One scope for both tool-using passes (per-hunk + extra-review):
-        # aclose() drops the client's temp MCP config, stop() shuts the
-        # host down — exception-safe, so neither leaks on a failed run.
-        await run_stack.enter_async_context(contextlib.aclosing(client))
+        # the MCP host stops exception-safe on a failed run. The client
+        # is the caller's, closed by whoever opened it.
         if mcp_host is not None:
             run_stack.callback(mcp_host.stop)
 

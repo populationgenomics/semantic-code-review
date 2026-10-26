@@ -287,9 +287,9 @@ def test_selecting_a_client_turns_off_the_pydantic_ai_banner(tmp_path: Path, mon
     owns its terminal output, so selecting a client switches it off."""
     import pydantic_ai
 
-    from semantic_code_review.cli._shared import select_client
+    from semantic_code_review.cli._shared import select_client_factory
 
     monkeypatch.setattr(pydantic_ai, "BANNER_ENABLED", True)
     cfg = _isolated_config(tmp_path, monkeypatch, "")
-    select_client(cfg, "ollama", model="llama3")
+    select_client_factory(cfg, "ollama", model="llama3")
     assert pydantic_ai.BANNER_ENABLED is False

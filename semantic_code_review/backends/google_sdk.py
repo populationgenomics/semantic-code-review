@@ -13,17 +13,19 @@ Vertex short-circuits credential resolution entirely — setting
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 
 import typer
+from pydantic_ai.models import Model
 
-from ..augment.agents import Client
+from ..augment.agents import Client, ClientFactory
 from .base import Backend, resolve_api_key, supports_native_output_with_tools
 
 _DEFAULT_GEMINI_API_MODEL = "gemini-2.5-pro"
 
 
 class GoogleSdkBackend(Backend):
-    def resolve(self, *, model: str) -> Client:
+    def resolve(self, *, model: str) -> ClientFactory:
         gem_model = _coerce_gemini_model(model, self.bdef.default_model)
         from pydantic_ai.models.google import GoogleModel
         from pydantic_ai.providers.google import GoogleProvider
@@ -35,20 +37,21 @@ class GoogleSdkBackend(Backend):
             # from the environment.
             from pydantic_ai.providers.google_cloud import GoogleCloudProvider
 
-            m = GoogleModel(model_name=gem_model, provider=GoogleCloudProvider())
+            return self._factory(lambda: GoogleModel(model_name=gem_model, provider=GoogleCloudProvider()))
+
+        api_key = self._resolve_key()
+        return self._factory(lambda: GoogleModel(model_name=gem_model, provider=GoogleProvider(api_key=api_key)))
+
+    def _factory(self, make_model: Callable[[], Model]) -> ClientFactory:
+        def build() -> Client:
+            m = make_model()
             return Client(
                 model=m,
                 request_limit=self.request_limit,
                 native_output=supports_native_output_with_tools(m),
             )
 
-        api_key = self._resolve_key()
-        m = GoogleModel(model_name=gem_model, provider=GoogleProvider(api_key=api_key))
-        return Client(
-            model=m,
-            request_limit=self.request_limit,
-            native_output=supports_native_output_with_tools(m),
-        )
+        return ClientFactory(build=build)
 
     def _resolve_key(self) -> str:
         bdef = self.bdef

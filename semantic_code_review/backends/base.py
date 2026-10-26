@@ -16,7 +16,7 @@ from abc import ABC, abstractmethod
 import typer
 from pydantic_ai.models import Model
 
-from ..augment.agents import Client
+from ..augment.agents import ClientFactory
 from ..config import BackendDef
 
 
@@ -46,8 +46,11 @@ class Backend(ABC):
         return self.bdef.max_turns or self.DEFAULT_REQUEST_LIMIT
 
     @abstractmethod
-    def resolve(self, *, model: str) -> Client:
-        """Return the `Client` the augment pipeline should drive."""
+    def resolve(self, *, model: str) -> ClientFactory:
+        """Resolve credentials; return the factory for this backend's Clients.
+
+        One Client per event loop — see `ClientFactory`.
+        """
 
     def supports_auto(self) -> bool:
         """Whether this backend can satisfy `--backend=auto` *right now*.

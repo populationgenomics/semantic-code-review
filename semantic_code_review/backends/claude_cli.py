@@ -23,7 +23,7 @@ from typing import Any
 
 import typer
 
-from ..augment.agents import Client
+from ..augment.agents import Client, ClientFactory
 from ._cli_driver import (
     SubprocessModel,
     _Invocation,
@@ -35,7 +35,7 @@ from .base import Backend
 class ClaudeCliBackend(Backend):
     auto_priority = 1
 
-    def resolve(self, *, model: str) -> Client:
+    def resolve(self, *, model: str) -> ClientFactory:
         if not shutil.which("claude"):
             raise typer.BadParameter(
                 f"--backend={self.name} but `claude` is not on PATH (install Claude Code CLI or set ANTHROPIC_API_KEY)."
@@ -48,12 +48,17 @@ class ClaudeCliBackend(Backend):
         # that dominates per-hunk cost. Left at the driver default unless
         # the config sets it; `usage.json` reports the turn distribution
         # a run actually used.
-        driver = (
-            ClaudeCLIModel(model=model)
-            if self.bdef.max_turns is None
-            else ClaudeCLIModel(model=model, max_turns_with_mcp=self.bdef.max_turns)
-        )
-        return Client(model=driver, is_subprocess_backend=True)
+        max_turns = self.bdef.max_turns
+
+        def build() -> Client:
+            driver = (
+                ClaudeCLIModel(model=model)
+                if max_turns is None
+                else ClaudeCLIModel(model=model, max_turns_with_mcp=max_turns)
+            )
+            return Client(model=driver, is_subprocess_backend=True)
+
+        return ClientFactory(build=build)
 
     def supports_auto(self) -> bool:
         return shutil.which("claude") is not None

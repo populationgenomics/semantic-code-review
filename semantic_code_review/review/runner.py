@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import paths
-from ..augment.agents import Client
+from ..augment.agents import Client, ClientFactory
 from ..augment.prompts import PROMPT_VERSION
 from ..cache.store import CacheStore
 from ..fetch import materialize_local_diff_run
@@ -85,27 +85,29 @@ def build_server_tasks(run_dir: paths.RunDir, cfg: ReviewConfig) -> ServerTasks:
     augment_cfg = cfg.for_augment()
     cache = None if cfg.no_cache else CacheStore(root=cfg.cache_dir, prompt_version=PROMPT_VERSION)
 
-    async def augment_task(rd: paths.RunDir, publish: Callable[..., None]) -> None:
-        await augment_run_dir(
-            rd,
-            augment_cfg,
-            client=cfg.client,
-            cache=cache,
-            on_event=publish,
-        )
+    # Every task below runs under its own `asyncio.run` and opens its own
+    # Client from this one factory (see `ClientFactory`). The console
+    # uses the augment backend too — SDK backends stream token-by-token,
+    # CLI subprocess backends answer one-shot per turn (ADR 0002, Slice 5).
+    clients = cfg.client_factory or ClientFactory(build=lambda: Client(model=f"anthropic:{cfg.model}"))
 
-    # The console reuses the augment backend — SDK backends stream
-    # token-by-token, CLI subprocess backends answer one-shot per turn
-    # (ADR 0002, Slice 5). When cfg.client is None the augment path
-    # defaults to the Anthropic SDK, so we mirror that to construct
-    # the console's client.
-    console_client = cfg.client or Client(model=f"anthropic:{cfg.model}")
-    bind_debug_sink: Callable[[Callable[[dict], None]], None] | None = None
+    async def augment_task(rd: paths.RunDir, publish: Callable[..., None]) -> None:
+        async with clients.open() as client:
+            await augment_run_dir(
+                rd,
+                augment_cfg,
+                client=client,
+                cache=cache,
+                on_event=publish,
+            )
+
     # In --debug, surface the client driver's per-spawn records in the
-    # viewer drawer. The augment pass shares this client, so its spawns
-    # flow too; set_debug_sink no-ops on the SDK string-model path.
-    if cfg.debug:
-        bind_debug_sink = lambda sink, c=console_client: c.set_debug_sink(sink)  # noqa: E731
+    # viewer drawer; every Client opened after the bind carries the sink.
+    # set_debug_sink no-ops on SDK backends.
+    def bind_to_clients(sink: Callable[[dict], None]) -> None:
+        clients.debug_sink = sink
+
+    bind_debug_sink = bind_to_clients if cfg.debug else None
 
     # Both explainer generators or neither: a skeleton without the
     # per-section pass yields a document whose every prose section
@@ -115,14 +117,14 @@ def build_server_tasks(run_dir: paths.RunDir, cfg: ReviewConfig) -> ServerTasks:
     explainer_section_task: ExplainerSectionCallable | None = None
     if cfg.explainer:
         explainer_task = _build_explainer_task(
-            client=cfg.client,
+            clients=clients,
             model=cfg.model,
             cache=cache,
             run_dir=run_dir,
             house_style=cfg.explainer_prompt,
         )
         explainer_section_task = _build_explainer_section_task(
-            client=cfg.client,
+            clients=clients,
             model=cfg.model,
             cache=cache,
             run_dir=run_dir,
@@ -132,12 +134,12 @@ def build_server_tasks(run_dir: paths.RunDir, cfg: ReviewConfig) -> ServerTasks:
     return ServerTasks(
         augment=augment_task,
         fold_summary=_build_fold_summary_task(
-            client=cfg.client,
+            clients=clients,
             model=cfg.model,
             cache=cache,
             run_dir=run_dir,
         ),
-        console=_build_console_task(client=console_client, run_dir=run_dir),
+        console=_build_console_task(clients=clients, run_dir=run_dir),
         explainer=explainer_task,
         explainer_section=explainer_section_task,
         bind_debug_sink=bind_debug_sink,
@@ -468,7 +470,7 @@ def _write_server_json(run_dir: paths.RunDir, srv: ReviewServer) -> None:
 
 def _build_fold_summary_task(
     *,
-    client: Client | None,
+    clients: ClientFactory,
     model: str,
     cache: CacheStore | None,
     run_dir: paths.RunDir,
@@ -490,29 +492,26 @@ def _build_fold_summary_task(
         qualified_name: str | None = None,
         kind: str | None = None,
     ) -> dict:
-        # client is None only when augment is False; in that path
-        # serve_review never wires this task up, so a None here would
-        # be a wiring bug — fail loudly.
-        assert client is not None, "fold-summary task called without an LLM backend"
-        return await apply_fold_summary_to_run(
-            client,
-            run_dir=run_dir,
-            file_idx=file_idx,
-            context=context,  # type: ignore[arg-type]
-            right_range=right_range,
-            left_range=left_range,
-            qualified_name=qualified_name,
-            kind=kind,
-            model=model,
-            cache=cache,
-        )
+        async with clients.open() as client:
+            return await apply_fold_summary_to_run(
+                client,
+                run_dir=run_dir,
+                file_idx=file_idx,
+                context=context,  # type: ignore[arg-type]
+                right_range=right_range,
+                left_range=left_range,
+                qualified_name=qualified_name,
+                kind=kind,
+                model=model,
+                cache=cache,
+            )
 
     return task
 
 
 def _build_explainer_task(
     *,
-    client: Client | None,
+    clients: ClientFactory,
     model: str,
     cache: CacheStore | None,
     run_dir: paths.RunDir,
@@ -534,18 +533,15 @@ def _build_explainer_task(
     from ..augment.explainer import document_to_payload, generate_explainer_skeleton
 
     async def task() -> dict:
-        # client is None only when augment is False, and serve_review
-        # never wires this task up in that case — a None here is a
-        # wiring bug, so fail loudly.
-        assert client is not None, "explainer task called without an LLM backend"
-        doc = await generate_explainer_skeleton(
-            client,
-            run_dir=run_dir,
-            model=model,
-            house_style=house_style,
-            cache=cache,
-            trace_dir=run_dir.trace,
-        )
+        async with clients.open() as client:
+            doc = await generate_explainer_skeleton(
+                client,
+                run_dir=run_dir,
+                model=model,
+                house_style=house_style,
+                cache=cache,
+                trace_dir=run_dir.trace,
+            )
         return document_to_payload(doc)
 
     return task
@@ -553,7 +549,7 @@ def _build_explainer_task(
 
 def _build_explainer_section_task(
     *,
-    client: Client | None,
+    clients: ClientFactory,
     model: str,
     cache: CacheStore | None,
     run_dir: paths.RunDir,
@@ -569,18 +565,16 @@ def _build_explainer_section_task(
     from ..augment.explainer_section import generate_explainer_section
 
     async def task(section_id: str) -> dict:
-        # As with the skeleton task: serve_review never wires this up
-        # without a backend, so a None here is a wiring bug.
-        assert client is not None, "explainer section task called without an LLM backend"
-        doc = await generate_explainer_section(
-            client,
-            run_dir=run_dir,
-            section_id=section_id,
-            model=model,
-            house_style=house_style,
-            cache=cache,
-            trace_dir=run_dir.trace,
-        )
+        async with clients.open() as client:
+            doc = await generate_explainer_section(
+                client,
+                run_dir=run_dir,
+                section_id=section_id,
+                model=model,
+                house_style=house_style,
+                cache=cache,
+                trace_dir=run_dir.trace,
+            )
         return document_to_payload(doc)
 
     return task
@@ -588,7 +582,7 @@ def _build_explainer_section_task(
 
 def _build_console_task(
     *,
-    client: Client,
+    clients: ClientFactory,
     run_dir: paths.RunDir,
 ) -> ConsoleCallable:
     """Construct the console turn driver ``serve_review`` installs once
@@ -606,16 +600,17 @@ def _build_console_task(
         cancel: threading.Event,
         selection: Any = None,
     ) -> tuple[str, list]:
-        return await stream_console_turn(
-            client,
-            run_dir=run_dir,
-            question=question,
-            history=history,
-            on_delta=on_delta,
-            on_tool=on_tool,
-            cancel=cancel,
-            selection=selection,
-        )
+        async with clients.open() as client:
+            return await stream_console_turn(
+                client,
+                run_dir=run_dir,
+                question=question,
+                history=history,
+                on_delta=on_delta,
+                on_tool=on_tool,
+                cancel=cancel,
+                selection=selection,
+            )
 
     return task
 

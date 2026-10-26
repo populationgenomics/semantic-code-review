@@ -1,8 +1,8 @@
 """Backend registry — name → adapter dispatch.
 
 The CLI calls `get(name, config=...)` to obtain a `Backend` instance,
-then `.resolve(model=...)` for the `Client` that drives the augment
-pipeline. `resolve_auto(config=...)` picks a backend when the user
+then `.resolve(model=...)` for the `ClientFactory` whose `Client`s drive
+the augment pipeline. `resolve_auto(config=...)` picks a backend when the user
 did not pass `--backend`.
 
 The registry maps `BackendType` to a `Backend` subclass. Builtins
