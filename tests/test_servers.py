@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import http.server
+import importlib.metadata
 import json
 import os
 import subprocess
@@ -173,3 +174,21 @@ def test_server_info_round_trips_and_tolerates_an_older_record() -> None:
     assert old is not None and old.build is None and old.argv is None
     assert stream.ServerInfo.from_json({"url": "u"}) is None
     assert stream.ServerInfo.from_json([]) is None
+
+
+def test_the_spawned_server_imports_this_build_not_one_in_its_cwd(tmp_path: Path) -> None:
+    """The server runs in the invoking shell's cwd. Started from inside
+    another scr checkout, it must still import the build that spawned it,
+    not the checkout's code."""
+    shadow = tmp_path / "checkout" / "semantic_code_review"
+    shadow.mkdir(parents=True)
+    (shadow / "__init__.py").write_text("")
+    (shadow / "cli.py").write_text("print('imported the checkout in cwd')\n")
+    run_dir = paths.RunDir(tmp_path / "run")
+    run_dir.path.mkdir()
+
+    child = servers.spawn(run_dir, ["--version"], cwd=str(shadow.parent))
+    assert child.wait(timeout=60) == 0
+    log = run_dir.server_log.read_text(encoding="utf-8")
+    assert "imported the checkout in cwd" not in log
+    assert importlib.metadata.version("semantic-code-review") in log
