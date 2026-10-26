@@ -17,15 +17,19 @@ it up via `viewer.static.resolve_asset`.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Self
 from unittest.mock import patch
 
 import pytest
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from semantic_code_review import paths
 
@@ -175,3 +179,31 @@ def _build_viewer_js() -> None:
         check=True,
     )
     os.environ["SCR_VIEWER_BUILD_DIR"] = str(build_dir)
+
+
+class LoopBoundModel(FunctionModel):
+    """A model whose resources are bound to the event loop that opened it.
+
+    Stands in for an SDK model: its provider's HTTP pool holds connections
+    bound to one loop, and a request from another loop, or after the pool
+    is closed, fails as the real one does ("Event loop is closed").
+    """
+
+    def __init__(self) -> None:
+        super().__init__(self._reply)
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.closed = False
+
+    async def __aenter__(self) -> Self:
+        self.loop = asyncio.get_running_loop()
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        if asyncio.get_running_loop() is not self.loop:
+            raise RuntimeError("closed on a loop other than the one that opened it")
+        self.closed = True
+
+    async def _reply(self, messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if self.closed or asyncio.get_running_loop() is not self.loop:
+            raise RuntimeError("Event loop is closed")
+        return ModelResponse(parts=[TextPart("ok")])

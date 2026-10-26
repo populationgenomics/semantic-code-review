@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import typer
 
-from ..augment.agents import Client
+from ..augment.agents import Client, ClientFactory
 from .base import Backend, resolve_api_key, supports_native_output_with_tools
 
 
 class OpenAICompatBackend(Backend):
-    def resolve(self, *, model: str) -> Client:
+    def resolve(self, *, model: str) -> ClientFactory:
         bdef = self.bdef
         if not bdef.base_url:
             raise typer.BadParameter(
@@ -31,15 +31,20 @@ class OpenAICompatBackend(Backend):
         from pydantic_ai.models.openai import OpenAIChatModel
         from pydantic_ai.providers.openai import OpenAIProvider
 
-        m = OpenAIChatModel(
-            model_name=model,
-            provider=OpenAIProvider(base_url=bdef.base_url, api_key=api_key),
-        )
-        return Client(
-            model=m,
-            request_limit=self.request_limit,
-            native_output=supports_native_output_with_tools(m),
-        )
+        base_url = bdef.base_url
+
+        def build() -> Client:
+            m = OpenAIChatModel(
+                model_name=model,
+                provider=OpenAIProvider(base_url=base_url, api_key=api_key),
+            )
+            return Client(
+                model=m,
+                request_limit=self.request_limit,
+                native_output=supports_native_output_with_tools(m),
+            )
+
+        return ClientFactory(build=build)
 
 
 __all__ = ["OpenAICompatBackend"]

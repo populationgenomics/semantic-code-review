@@ -26,7 +26,7 @@ from ._shared import (
     load_config,
     resolve_explainer_prompt,
     resolve_extra_review_prompt,
-    select_client,
+    select_client_factory,
 )
 
 
@@ -110,7 +110,7 @@ def pr(
     cfg = load_config(repo=repo, committed_path=None)
     backend = cfg.resolve_backend(backend)
     model = cfg.resolve_model(backend=backend, cli_value=model)
-    client = select_client(cfg, backend, model=model) if augment else None
+    client_factory = select_client_factory(cfg, backend, model=model) if augment else None
 
     def config_for(run_dir: paths.RunDir) -> ReviewConfig:
         """The review settings, reading the repo's committed config from
@@ -132,7 +132,7 @@ def pr(
             skip_globs=settled.skip_globs,
             explainer=settled.explainer,
             explainer_prompt=resolve_explainer_prompt(settled, explainer_prompt) if augment else None,
-            client=client,
+            client_factory=client_factory,
             debug=debug,
         )
 

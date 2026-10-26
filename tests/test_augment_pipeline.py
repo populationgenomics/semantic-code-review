@@ -19,7 +19,7 @@ from pydantic_ai.usage import RequestUsage
 
 from semantic_code_review import paths
 from semantic_code_review.augment import config
-from semantic_code_review.augment.agents import Client
+from semantic_code_review.augment.agents import Client, ClientFactory
 from semantic_code_review.augment.pipeline import augment_run_dir
 from semantic_code_review.format.parse import parse_augmented_diff
 
@@ -881,7 +881,7 @@ async def test_a_house_style_for_the_explainer_never_reaches_the_hunk_pass(tmp_p
             no_cache=True,
             open_browser=False,
             timeout=1,
-            client=backend,
+            client_factory=ClientFactory(build=lambda: backend),
             explainer_prompt=house_style,
         )
         tasks = runner.build_server_tasks(run, cfg)

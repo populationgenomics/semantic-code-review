@@ -11,7 +11,7 @@ import os
 
 import typer
 
-from ..augment.agents import Client
+from ..augment.agents import Client, ClientFactory
 from .base import Backend, resolve_api_key, supports_native_output_with_tools
 
 
@@ -20,17 +20,20 @@ class AnthropicSdkBackend(Backend):
 
     auto_priority = 0
 
-    def resolve(self, *, model: str) -> Client:
+    def resolve(self, *, model: str) -> ClientFactory:
         api_key = self._resolve_key()
         from pydantic_ai.models.anthropic import AnthropicModel
         from pydantic_ai.providers.anthropic import AnthropicProvider
 
-        m = AnthropicModel(model_name=model, provider=AnthropicProvider(api_key=api_key))
-        return Client(
-            model=m,
-            request_limit=self.request_limit,
-            native_output=supports_native_output_with_tools(m),
-        )
+        def build() -> Client:
+            m = AnthropicModel(model_name=model, provider=AnthropicProvider(api_key=api_key))
+            return Client(
+                model=m,
+                request_limit=self.request_limit,
+                native_output=supports_native_output_with_tools(m),
+            )
+
+        return ClientFactory(build=build)
 
     def supports_auto(self) -> bool:
         try:

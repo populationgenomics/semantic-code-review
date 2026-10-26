@@ -26,7 +26,7 @@ def test_resolves_key_via_command(monkeypatch: pytest.MonkeyPatch, tmp_path) -> 
         api_key_env="GEMINI_API_KEY",
         api_key_command=(str(fake_cmd),),
     )
-    client = GoogleSdkBackend("gemini-api", bdef).resolve(model="gemini-2.5-pro")
+    client = GoogleSdkBackend("gemini-api", bdef).resolve(model="gemini-2.5-pro").build()
     assert isinstance(client.model, GoogleModel)
     # No environ mutation: the key is held by the Provider only.
     assert "GEMINI_API_KEY" not in os.environ
@@ -48,7 +48,7 @@ def test_vertex_short_circuits_credential_resolution(monkeypatch: pytest.MonkeyP
         api_key_env="GEMINI_API_KEY",
         api_key_command=(str(fake_cmd),),
     )
-    client = GoogleSdkBackend("gemini-api", bdef).resolve(model="gemini-2.5-pro")
+    client = GoogleSdkBackend("gemini-api", bdef).resolve(model="gemini-2.5-pro").build()
     assert isinstance(client.model, GoogleModel)
 
 
@@ -72,6 +72,6 @@ def test_coerce_claude_model_to_default(
         default_model="gemini-2.5-flash",
         api_key_env="GEMINI_API_KEY",
     )
-    client = GoogleSdkBackend("gemini-api", bdef).resolve(model="claude-opus-4-7")
+    client = GoogleSdkBackend("gemini-api", bdef).resolve(model="claude-opus-4-7").build()
     assert isinstance(client.model, GoogleModel)
     assert client.model.model_name == "gemini-2.5-flash"

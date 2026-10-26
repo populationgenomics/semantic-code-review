@@ -20,7 +20,7 @@ def test_with_api_key_env_builds_client(monkeypatch: pytest.MonkeyPatch) -> None
         api_key_env="FAKE_KEY",
         default_model="some-model",
     )
-    client = OpenAICompatBackend("groq", bdef).resolve(model="some-model")
+    client = OpenAICompatBackend("groq", bdef).resolve(model="some-model").build()
     assert isinstance(client.model, OpenAIChatModel)
     # OpenAI-compat is a pydantic-ai SDK path, not a CLI subprocess.
     assert client.is_subprocess_backend is False
@@ -34,7 +34,7 @@ def test_without_api_key_env_uses_placeholder(monkeypatch: pytest.MonkeyPatch) -
         api_key_env=None,
         default_model="qwen2.5-coder:32b",
     )
-    client = OpenAICompatBackend("ollama", bdef).resolve(model="qwen2.5-coder:32b")
+    client = OpenAICompatBackend("ollama", bdef).resolve(model="qwen2.5-coder:32b").build()
     assert isinstance(client.model, OpenAIChatModel)
 
 
@@ -70,7 +70,11 @@ def test_github_builtin_falls_back_to_gh_auth_token(monkeypatch: pytest.MonkeyPa
     fake_gh.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ.get('PATH', '')}")
 
-    client = OpenAICompatBackend("github", BUILTIN_BACKENDS["github"]).resolve(
-        model="openai/gpt-4o-mini",
+    client = (
+        OpenAICompatBackend("github", BUILTIN_BACKENDS["github"])
+        .resolve(
+            model="openai/gpt-4o-mini",
+        )
+        .build()
     )
     assert isinstance(client.model, OpenAIChatModel)

@@ -171,3 +171,69 @@ def test_batch_agent_honours_the_same_switch() -> None:
     assert not isinstance(
         make_batch_agent("anthropic:claude-opus-4-8", "sys", native_output=False).output_type, NativeOutput
     )
+
+
+def test_each_opened_client_lives_and_dies_on_its_own_event_loop() -> None:
+    """A Client carried from one `asyncio.run` into the next drags along an
+    HTTP pool bound to the closed first loop; the second run then fails
+    with "Event loop is closed". `ClientFactory.open` gives each loop its
+    own Client and closes it before the loop ends."""
+    import asyncio
+
+    from pydantic_ai import Agent
+
+    from semantic_code_review.augment.agents import ClientFactory
+    from tests.conftest import LoopBoundModel
+
+    models: list[LoopBoundModel] = []
+
+    def build() -> Client:
+        models.append(LoopBoundModel())
+        return Client(model=models[-1])
+
+    factory = ClientFactory(build=build)
+
+    async def one_pass() -> str:
+        async with factory.open() as client:
+            return (await Agent(client.model).run("go")).output
+
+    assert asyncio.run(one_pass()) == "ok"
+    assert asyncio.run(one_pass()) == "ok"
+    assert len(models) == 2
+    assert all(m.closed for m in models)
+
+
+def test_every_opened_client_carries_the_factory_debug_sink() -> None:
+    """`--debug` binds the sink once, on the factory; Clients opened after
+    the bind each pass it to their driver."""
+    import asyncio
+
+    from semantic_code_review.augment.agents import ClientFactory
+    from tests.conftest import LoopBoundModel
+
+    class _SinkModel(LoopBoundModel):
+        sink: object = None
+
+        def set_debug_sink(self, sink: object) -> None:
+            self.sink = sink
+
+    models: list[_SinkModel] = []
+
+    def build() -> Client:
+        models.append(_SinkModel())
+        return Client(model=models[-1])
+
+    factory = ClientFactory(build=build)
+
+    def sink(record: dict) -> None:
+        pass
+
+    factory.debug_sink = sink
+
+    async def open_one() -> None:
+        async with factory.open():
+            pass
+
+    asyncio.run(open_one())
+    asyncio.run(open_one())
+    assert [m.sink for m in models] == [sink, sink]

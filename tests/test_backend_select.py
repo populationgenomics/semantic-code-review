@@ -185,7 +185,7 @@ def test_sdk_backends_carry_a_request_limit(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     bdef = BackendDef(type=BackendType.ANTHROPIC_SDK, default_model="m", api_key_env="ANTHROPIC_API_KEY")
-    client = AnthropicSdkBackend("claude-api", bdef).resolve(model="m")
+    client = AnthropicSdkBackend("claude-api", bdef).resolve(model="m").build()
     assert client.request_limit == AnthropicSdkBackend.DEFAULT_REQUEST_LIMIT
 
 
@@ -197,7 +197,7 @@ def test_max_turns_bounds_the_sdk_loop_too(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     bdef = BackendDef(type=BackendType.ANTHROPIC_SDK, default_model="m", api_key_env="ANTHROPIC_API_KEY", max_turns=7)
-    client = AnthropicSdkBackend("claude-api", bdef).resolve(model="m")
+    client = AnthropicSdkBackend("claude-api", bdef).resolve(model="m").build()
     assert client.request_limit == 7
 
 
@@ -228,7 +228,7 @@ def test_anthropic_native_output_follows_the_model(
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     bdef = BackendDef(type=BackendType.ANTHROPIC_SDK, default_model=model_name, api_key_env="ANTHROPIC_API_KEY")
-    client = AnthropicSdkBackend("claude-api", bdef).resolve(model=model_name)
+    client = AnthropicSdkBackend("claude-api", bdef).resolve(model=model_name).build()
     assert client.native_output is expected
 
 
@@ -250,7 +250,7 @@ def test_google_native_output_follows_the_model(
     monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "k")
     bdef = BackendDef(type=BackendType.GOOGLE_SDK, default_model=model_name, api_key_env="GEMINI_API_KEY")
-    client = GoogleSdkBackend("gemini-api", bdef).resolve(model=model_name)
+    client = GoogleSdkBackend("gemini-api", bdef).resolve(model=model_name).build()
     assert client.native_output is expected
 
 
@@ -263,22 +263,30 @@ def test_every_sdk_backend_bounds_its_loop(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "k")
-    gem = GoogleSdkBackend(
-        "gemini-api",
-        BackendDef(type=BackendType.GOOGLE_SDK, default_model="gemini-3-pro", api_key_env="GEMINI_API_KEY"),
-    ).resolve(model="gemini-3-pro")
+    gem = (
+        GoogleSdkBackend(
+            "gemini-api",
+            BackendDef(type=BackendType.GOOGLE_SDK, default_model="gemini-3-pro", api_key_env="GEMINI_API_KEY"),
+        )
+        .resolve(model="gemini-3-pro")
+        .build()
+    )
     assert gem.request_limit == GoogleSdkBackend.DEFAULT_REQUEST_LIMIT
 
     monkeypatch.setenv("OAI_KEY", "k")
-    oai = OpenAICompatBackend(
-        "openai",
-        BackendDef(
-            type=BackendType.OPENAI_COMPAT,
-            default_model="gpt-4o",
-            api_key_env="OAI_KEY",
-            base_url="https://example/v1",
-        ),
-    ).resolve(model="gpt-4o")
+    oai = (
+        OpenAICompatBackend(
+            "openai",
+            BackendDef(
+                type=BackendType.OPENAI_COMPAT,
+                default_model="gpt-4o",
+                api_key_env="OAI_KEY",
+                base_url="https://example/v1",
+            ),
+        )
+        .resolve(model="gpt-4o")
+        .build()
+    )
     assert oai.request_limit == OpenAICompatBackend.DEFAULT_REQUEST_LIMIT
 
 

@@ -1131,7 +1131,7 @@ def test_format_markdown_nonempty() -> None:
 
 
 def _task_config(*, augment: bool, debug: bool = False, explainer_prompt: str | None = None):
-    from semantic_code_review.augment.agents import Client
+    from semantic_code_review.augment.agents import Client, ClientFactory
     from semantic_code_review.review.config import ReviewConfig
 
     return ReviewConfig(
@@ -1141,7 +1141,7 @@ def _task_config(*, augment: bool, debug: bool = False, explainer_prompt: str | 
         no_cache=True,
         open_browser=False,
         timeout=1,
-        client=Client(model="anthropic:claude-opus-4-7"),
+        client_factory=ClientFactory(build=lambda: Client(model="anthropic:claude-opus-4-7")),
         debug=debug,
         explainer_prompt=explainer_prompt,
     )
@@ -1215,3 +1215,57 @@ def test_build_server_tasks_returns_an_empty_bundle_without_augment(run_dir: pat
     from semantic_code_review.review.runner import build_server_tasks
 
     assert build_server_tasks(run_dir, _task_config(augment=False)) == ServerTasks()
+
+
+def test_every_explainer_request_opens_its_own_client(run_dir: paths.RunDir, monkeypatch) -> None:
+    """Each explainer request runs under its own `asyncio.run`, after the
+    augment pass's loop has closed. Sharing one Client across them carried
+    an HTTP pool bound to a dead loop into every pass after the first, and
+    each overview section failed with "Event loop is closed"."""
+    import dataclasses
+
+    from pydantic_ai import Agent
+
+    from semantic_code_review.augment import explainer
+    from semantic_code_review.augment.agents import Client, ClientFactory
+    from semantic_code_review.review.runner import build_server_tasks
+    from tests.conftest import LoopBoundModel
+
+    models: list[LoopBoundModel] = []
+
+    def build() -> Client:
+        models.append(LoopBoundModel())
+        return Client(model=models[-1])
+
+    async def skeleton(client: Client, **_kwargs: object) -> str:
+        return (await Agent(client.model).run("go")).output
+
+    monkeypatch.setattr(explainer, "generate_explainer_skeleton", skeleton)
+    monkeypatch.setattr(explainer, "document_to_payload", lambda doc: {"doc": doc})
+    cfg = dataclasses.replace(_task_config(augment=True), client_factory=ClientFactory(build=build))
+    tasks = build_server_tasks(run_dir, cfg)
+    assert tasks.explainer is not None
+
+    assert asyncio.run(tasks.explainer()) == {"doc": "ok"}
+    assert asyncio.run(tasks.explainer()) == {"doc": "ok"}
+    assert len(models) == 2
+    assert all(m.closed for m in models)
+
+
+def test_the_debug_sink_binds_to_the_client_factory(run_dir: paths.RunDir) -> None:
+    import dataclasses
+
+    from semantic_code_review.augment.agents import Client, ClientFactory
+    from semantic_code_review.review.runner import build_server_tasks
+
+    factory = ClientFactory(build=lambda: Client(model="anthropic:claude-opus-4-7"))
+    tasks = build_server_tasks(
+        run_dir, dataclasses.replace(_task_config(augment=True, debug=True), client_factory=factory)
+    )
+    assert tasks.bind_debug_sink is not None
+
+    def sink(record: dict) -> None:
+        pass
+
+    tasks.bind_debug_sink(sink)
+    assert factory.debug_sink is sink

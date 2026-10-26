@@ -45,7 +45,7 @@ def test_resolve_returns_subprocess_client(monkeypatch: pytest.MonkeyPatch, tmp_
     monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ.get('PATH', '')}")
 
     bdef = BackendDef(type=BackendType.CLAUDE_CLI, default_model="claude-opus-4-7")
-    client = ClaudeCliBackend("claude-cli", bdef).resolve(model="claude-opus-4-7")
+    client = ClaudeCliBackend("claude-cli", bdef).resolve(model="claude-opus-4-7").build()
     assert isinstance(client.model, ClaudeCLIModel)
     assert client.is_subprocess_backend is True
 
@@ -277,7 +277,7 @@ async def test_configured_max_turns_caps_the_tool_loop(monkeypatch: pytest.Monke
     monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ.get('PATH', '')}")
 
     bdef = BackendDef(type=BackendType.CLAUDE_CLI, default_model="claude-opus-4-7", max_turns=8)
-    client = ClaudeCliBackend("claude-cli", bdef).resolve(model="claude-opus-4-7")
+    client = ClaudeCliBackend("claude-cli", bdef).resolve(model="claude-opus-4-7").build()
     model = client.model
     assert isinstance(model, ClaudeCLIModel)
     model.set_mcp_endpoint(_HTTP_ENDPOINT)
@@ -300,7 +300,7 @@ async def test_unset_max_turns_keeps_the_driver_default(monkeypatch: pytest.Monk
     monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ.get('PATH', '')}")
 
     bdef = BackendDef(type=BackendType.CLAUDE_CLI, default_model="claude-opus-4-7")
-    model = ClaudeCliBackend("claude-cli", bdef).resolve(model="claude-opus-4-7").model
+    model = ClaudeCliBackend("claude-cli", bdef).resolve(model="claude-opus-4-7").build().model
     assert isinstance(model, ClaudeCLIModel)
     model.set_mcp_endpoint(_HTTP_ENDPOINT)
 

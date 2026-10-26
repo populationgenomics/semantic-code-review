@@ -24,7 +24,7 @@ def test_resolves_key_via_command(monkeypatch: pytest.MonkeyPatch, tmp_path) -> 
         api_key_env="ANTHROPIC_API_KEY",
         api_key_command=(str(fake_cmd),),
     )
-    client = AnthropicSdkBackend("claude-api", bdef).resolve(model="claude-opus-4-7")
+    client = AnthropicSdkBackend("claude-api", bdef).resolve(model="claude-opus-4-7").build()
     assert isinstance(client.model, AnthropicModel)
     # No environ mutation: the key is held by the Provider only.
     assert "ANTHROPIC_API_KEY" not in os.environ
@@ -36,7 +36,7 @@ def test_resolves_key_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
         type=BackendType.ANTHROPIC_SDK,
         api_key_env="ANTHROPIC_API_KEY",
     )
-    client = AnthropicSdkBackend("claude-api", bdef).resolve(model="claude-opus-4-7")
+    client = AnthropicSdkBackend("claude-api", bdef).resolve(model="claude-opus-4-7").build()
     assert isinstance(client.model, AnthropicModel)
 
 

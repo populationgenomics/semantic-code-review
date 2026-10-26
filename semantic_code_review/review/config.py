@@ -8,7 +8,7 @@ fetch-side fields.
 
 The split is settings vs collaborators: a value the user chose (model,
 concurrency, port, globs) travels in the config; a constructed
-object the flow hands to a callee — the `Client`, the `CacheStore`, the
+object the flow hands to a callee — the `ClientFactory`, the `CacheStore`, the
 `on_event` publisher — stays an explicit parameter. `no_cache` and
 `cache_dir` are settings; the `CacheStore` built from them is not.
 """
@@ -38,9 +38,9 @@ class ReviewConfig:
     #: Idle seconds, not a session lifetime — see `ReviewServer.wait_until_done`.
     timeout: int = 3600
     extra_review_prompt: str | None = None
-    #: Preselected backend handle. None → `augment_run_dir` defaults to a
-    #: `Client` for the Anthropic SDK path.
-    client: agents.Client | None = None
+    #: The selected backend's client factory: each LLM task opens its own
+    #: `Client` from it. None → a `Client` for the Anthropic SDK path.
+    client_factory: agents.ClientFactory | None = None
     #: `--debug` / SCR_DEBUG: surface each CLI-backend subprocess spawn
     #: (raw argv + envelope) in the viewer's debug drawer.
     debug: bool = False
